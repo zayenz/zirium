@@ -1,0 +1,19 @@
+[package]
+name = "zirium-python"
+version = "0.0.1"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PyO3 bindings for the Zirium textual MLIR library"
+repository = "https://github.com/zayenz/zirium"
+readme = "../../README.md"
+homepage = "https://github.com/zayenz/zirium"
+
+[lib]
+name = "_zirium"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.27", features = ["extension-module"] }
+zirium = { path = "../zirium" }

@@ -1,0 +1,5 @@
+%scalars:4 = "test.scalars"() : () -> (si16, ui32, bf16, f8E4M3FN)
+%shapes:4 = "test.shapes"() : () -> (tensor<*xf32>, tensor<2xf32, #enc<layout>>, vector<[4]x[8]xf32>, memref<4xf32, strided<[1], offset: 0>, 3>)
+"test.locations"() : () -> () loc(callsite("callee" at "source.mlir":2:3))
+"test.fused"() : () -> () loc(fused<"pass">["name"("child"), "source.mlir":4:5])
+%invalid:3 = "test.invalid"() {items = [i32, !missing]} : () -> (tuple<i32, !missing>, !missing, !missing)

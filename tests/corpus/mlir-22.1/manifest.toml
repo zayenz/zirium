@@ -1,0 +1,236 @@
+schema_version = 1
+upstream_tag = "llvmorg-22.1.0"
+
+[[families]]
+name = "complete-proving-dialect-set"
+implementation_source = "mlir/include/mlir/IR/BuiltinOps.td, mlir/include/mlir/Dialect/Func/IR/FuncOps.td, mlir/include/mlir/Dialect/Arith/IR/ArithOps.td, and mlir/include/mlir/Dialect/ControlFlow/IR/ControlFlowOps.td"
+implementation_rule = "fixed assembly formats and semantic traits for builtin.module, func.func, func.return, func.call, arith.constant, arith.addi, cf.br, and cf.cond_br"
+fixture = "proving-dialects/{valid,malformed}.mlir"
+fixture_source = "positive spellings adapted from llvmorg-22.1.0 operation definitions plus project-authored malformed recovery"
+intentional_differences = "Zirium implements exactly eight fixed proving schemas and performs non-indexed semantic scans."
+license_notice = "Positive spellings are adapted from LLVM definitions under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "declarative-core-assembly"
+implementation_source = "mlir/include/mlir/Dialect/Arith/IR/ArithOps.td, mlir/include/mlir/Dialect/Func/IR/FuncOps.td, and mlir/include/mlir/Dialect/ControlFlow/IR/ControlFlowOps.td"
+implementation_rule = "assemblyFormat definitions for arith.constant, arith.addi, func.return, and cf.br"
+fixture = "declarative-core/{valid,malformed}.mlir"
+fixture_source = "positive forms adapted from the llvmorg-22.1.0 operation definitions plus project-authored malformed variants"
+intentional_differences = "Zirium interprets a compact fixed descriptor set rather than ODS/TableGen assembly formats."
+license_notice = "Positive spellings are adapted from LLVM definitions under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "canonical-generic-structural-round-trip"
+implementation_source = "mlir/lib/IR/AsmPrinter.cpp"
+implementation_rule = "OperationPrinter generic operation, region, block, type, attribute, and location printing"
+fixture = "{semantic-proving/valid.mlir,generic-complete/valid.mlir,shaped-affine/semantic-valid.mlir,payload-opaque/valid.mlir}"
+fixture_source = "Accumulated llvmorg-22.1.0 positive semantic fixtures covering generic operations, SSA and block references, regions, successors, properties, attributes, locations, builtin and opaque types, affine values, and large opaque payloads."
+intentional_differences = "Zirium emits deterministic generic syntax and inline-resolved aliases; semantic output does not preserve source spelling, formatting, comments, or retention."
+license_notice = "Fixtures are project-authored or adapted from LLVM tests as recorded by their existing manifest families."
+
+[[families]]
+name = "unknown-custom-and-ancestor-recovery"
+implementation_source = "mlir/lib/AsmParser/Parser.cpp"
+implementation_rule = "OperationParser::parseOperation and contextual delimiter recovery"
+fixture = "recovery-custom/malformed.mlir"
+fixture_source = "project-authored unknown custom operations and malformed nested delimiters"
+intentional_differences = "Unknown custom operation syntax is retained in an explicit unparsed CST node with a diagnostic; recovery stops before region, block, and following generic-operation boundaries. No dialect grammar is registered or inferred."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "trivia-and-line-comments"
+implementation_source = "mlir/lib/AsmParser/Lexer.cpp"
+implementation_rule = "Lexer::lexToken and Lexer::skipComment"
+fixture = "lexer.mlir"
+fixture_source = "project-authored lexical checklist"
+intentional_differences = "Whitespace and comments are retained as coalesced tokens."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "strings-and-escapes"
+implementation_source = "mlir/lib/AsmParser/Lexer.cpp"
+implementation_rule = "Lexer::lexString"
+fixture = "lexer.mlir"
+fixture_source = "project-authored lexical checklist"
+intentional_differences = "Malformed strings and escapes retain their bytes and produce diagnostics."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "identifiers"
+implementation_source = "mlir/lib/AsmParser/Lexer.cpp"
+implementation_rule = "Lexer::lexBareIdentifier, lexAtIdentifier, and lexPrefixedIdentifier"
+fixture = "lexer.mlir"
+fixture_source = "project-authored lexical checklist"
+intentional_differences = "Identifier text remains a source range and is not allocated; Zirium emits MLIR keyword spellings as BareIdentifier tokens instead of dedicated keyword token kinds."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "numbers"
+implementation_source = "mlir/lib/AsmParser/Lexer.cpp"
+implementation_rule = "Lexer::lexNumber"
+fixture = "lexer.mlir"
+fixture_source = "project-authored lexical checklist"
+intentional_differences = "None for recognized decimal, hexadecimal, and floating spellings."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "punctuation"
+implementation_source = "mlir/lib/AsmParser/TokenKinds.def"
+implementation_rule = "punctuation token definitions"
+fixture = "lexer.mlir"
+fixture_source = "project-authored lexical checklist"
+intentional_differences = "Every punctuation spelling remains represented by its exact source range."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "invalid-input-and-limits"
+implementation_source = "mlir/lib/AsmParser/Lexer.cpp"
+implementation_rule = "Lexer::lexToken error recovery"
+fixture = "lexer.mlir"
+fixture_source = "project-authored lexical checklist plus arbitrary-byte tests"
+intentional_differences = "Invalid UTF-8 and unexpected bytes become lossless invalid tokens; file and token limits diagnose while preserving total reconstruction."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "eof"
+implementation_source = "mlir/lib/AsmParser/TokenKinds.def"
+implementation_rule = "eof token definition"
+fixture = "lexer.mlir"
+fixture_source = "project-authored lexical checklist"
+intentional_differences = "A zero-width EOF sentinel is always appended at the source length."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "generic-operation-proving"
+implementation_source = "mlir/lib/AsmParser/Parser.cpp"
+implementation_rule = "OperationParser::parseGenericOperation"
+fixture = "generic-proving/*.mlir"
+fixture_source = "project-authored from the release-scope syntax checklist"
+intentional_differences = "None for this proving fixture."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "generic-operation-complete"
+implementation_source = "mlir/lib/AsmParser/Parser.cpp and mlir/lib/AsmParser/LocationParser.cpp"
+implementation_rule = "OperationParser::parseOperation, OperationParser::parseGenericOperationAfterOpName, OperationParser::parseBlock, and Parser::parseLocationInstance"
+fixture = "generic-complete/valid.mlir"
+fixture_source = "result groups and numbered uses selected from llvmorg-22.1.0 mlir/docs/LangRef.md and mlir/test/IR/print-ir-nesting.mlir; properties selected from llvmorg-22.1.0 mlir/test/IR/traits.mlir; bare successors, labeled blocks, and block arguments selected from llvmorg-22.1.0 mlir/test/IR/operation-equality.mlir; the optional successor argument group is selected from the tagged llvmorg-22.1.0 mlir/docs/LangRef.md grammar; multiple regions selected from llvmorg-22.1.0 mlir/test/IR/parser.mlir; trailing locations selected from llvmorg-22.1.0 mlir/test/IR/locations.mlir"
+intentional_differences = "Parsing is syntactic only: SSA values and blocks are not resolved, result counts and ownership are not validated, and registered custom operation syntax is excluded. The tagged llvmorg-22.1.0 mlir/docs/LangRef.md grammar specifies successor ::= caret-id (':' block-arg-list)?, while llvmorg-22.1.0 mlir/lib/AsmParser/Parser.cpp OperationParser::parseSuccessor accepts only the bare block-id form; Zirium adds the optional successor argument group syntactically per this task without resolving or validating it."
+license_notice = "Positive spellings are adapted from LLVM documentation and tests under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "generic-operation-complete-malformed-recovery"
+implementation_source = "mlir/lib/AsmParser/Parser.cpp and mlir/lib/AsmParser/LocationParser.cpp"
+implementation_rule = "generic operation, block, dictionary, and trailing-location recovery boundaries"
+fixture = "generic-complete/malformed.mlir"
+fixture_source = "project-authored malformed variants of the generic-operation-complete positive families"
+intentional_differences = "Malformed components retain all bytes and recover conservatively so following top-level operations and block contents remain visible. No semantic resolution or ownership diagnostics are attempted."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "core-scalar-types-and-attributes"
+implementation_source = "mlir/lib/AsmParser/TypeParser.cpp and mlir/lib/AsmParser/AttributeParser.cpp"
+implementation_rule = "Parser::parseType and Parser::parseAttribute"
+fixture = "core-syntax/valid.mlir"
+fixture_source = "positive integer, float, index, string, and type cases selected from llvmorg-22.1.0 mlir/test/IR/attribute.mlir"
+intentional_differences = "Parsing is syntactic; values and types remain source-backed and are not decoded or interned."
+license_notice = "Adapted from LLVM test cases under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "core-aliases-and-symbol-references"
+implementation_source = "mlir/lib/AsmParser/DialectSymbolParser.cpp and mlir/lib/AsmParser/AttributeParser.cpp"
+implementation_rule = "Parser::parseExtendedType, Parser::parseExtendedAttr, and Parser::parseAttribute (symbol-reference case)"
+fixture = "core-syntax/valid.mlir"
+fixture_source = "positive alias grammar selected from llvmorg-22.1.0 mlir/test/IR/parser.mlir and symbol case selected from llvmorg-22.1.0 mlir/test/IR/attribute.mlir"
+intentional_differences = "Alias and symbol references are retained as exact source slices without name resolution."
+license_notice = "Adapted from LLVM test cases under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "core-array-and-dictionary-attributes"
+implementation_source = "mlir/lib/AsmParser/AttributeParser.cpp"
+implementation_rule = "Parser::parseAttribute (array case) and Parser::parseAttributeDict"
+fixture = "core-syntax/valid.mlir"
+fixture_source = "positive array and dictionary cases selected from llvmorg-22.1.0 mlir/test/IR/attribute.mlir"
+intentional_differences = "Duplicate dictionary keys and attribute semantics are not checked by the syntax layer."
+license_notice = "Adapted from LLVM test cases under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "builtin-locations"
+implementation_source = "mlir/lib/AsmParser/LocationParser.cpp"
+implementation_rule = "Parser::parseLocationInstance"
+fixture = "core-syntax/valid.mlir"
+fixture_source = "positive unknown, file-line-column, name, callsite, and fused cases selected from llvmorg-22.1.0 mlir/test/IR/locations.mlir"
+intentional_differences = "Locations are represented syntactically without uniquing or resolving location aliases."
+license_notice = "Adapted from LLVM test cases under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "core-syntax-malformed-recovery"
+implementation_source = "mlir/lib/AsmParser/Parser.cpp"
+implementation_rule = "parser diagnostic and delimiter recovery paths"
+fixture = "core-syntax/malformed.mlir"
+fixture_source = "project-authored malformed variants of the owned llvmorg-22.1.0 positive families"
+intentional_differences = "Malformed tokens are retained and recovery continues at array, dictionary, attribute, and operation boundaries."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "function-tuple-and-shaped-types"
+implementation_source = "mlir/lib/AsmParser/TypeParser.cpp"
+implementation_rule = "Parser::parseFunctionType, Parser::parseTupleType, Parser::parseTensorType, Parser::parseVectorType, Parser::parseVectorDimensionList, Parser::parseDimensionListRanked, and Parser::parseMemRefType"
+fixture = "shaped-affine/valid.mlir"
+fixture_source = "positive spellings selected from llvmorg-22.1.0 mlir/test/IR/parser.mlir and mlir/test/IR/invalid-builtin-types.mlir"
+intentional_differences = "Dimensions, tensor encodings, memref layouts, and memory spaces remain source-backed syntax and are not decoded."
+license_notice = "Adapted from LLVM test cases under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "affine-maps-sets-and-expressions"
+implementation_source = "mlir/lib/AsmParser/AffineParser.cpp"
+implementation_rule = "AffineParser::parseAffineMapOrIntegerSetInline, AffineParser::parseAffineMapRange, AffineParser::parseIntegerSetConstraints, AffineParser::parseAffineExpr, and AffineParser::parseAffineMapOfSSAIds"
+fixture = "shaped-affine/{valid,semantic-valid,semantic-malformed,semantic-edge}.mlir"
+fixture_source = "positive map, set, and precedence spellings selected from llvmorg-22.1.0 mlir/test/IR/affine-map.mlir and mlir/test/IR/affine-set.mlir"
+intentional_differences = "Affine identifiers, coefficients, maps, and sets remain source-backed syntax and are not decoded."
+license_notice = "Adapted from LLVM test cases under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "shaped-affine-malformed-and-depth-recovery"
+implementation_source = "mlir/lib/AsmParser/TypeParser.cpp and mlir/lib/AsmParser/AffineParser.cpp"
+implementation_rule = "type and affine diagnostic recovery paths"
+fixture = "shaped-affine/{malformed,depth-limit}.mlir"
+fixture_source = "project-authored malformed and nesting-limit variants of the owned llvmorg-22.1.0 families"
+intentional_differences = "Nesting is conservatively limited and malformed expressions recover at type, attribute, and operation boundaries."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "dense-sparse-and-dense-resource-elements"
+implementation_source = "mlir/lib/AsmParser/AttributeParser.cpp"
+implementation_rule = "Parser::parseDenseElementsAttr, Parser::parseSparseElementsAttr, and Parser::parseDenseResourceElementsAttr"
+fixture = "payload-opaque/valid.mlir"
+fixture_source = "dense positive spelling selected from llvmorg-22.1.0 mlir/test/IR/attribute.mlir; sparse positive spelling selected from llvmorg-22.1.0 mlir/test/IR/pretty-attributes.mlir; dense_resource positive spelling selected from llvmorg-22.1.0 mlir/test/IR/dense-resource-elements-attr.mlir"
+intentional_differences = "Payloads and resource handles remain source ranges; elements are not decoded and resources are not loaded."
+license_notice = "Adapted from LLVM test cases under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "wide-numeric-attributes"
+implementation_source = "mlir/lib/AsmParser/AttributeParser.cpp and mlir/lib/AsmParser/Parser.cpp"
+implementation_rule = "Parser::parseAttribute and Parser::parseOptionalInteger"
+fixture = "payload-opaque/valid.mlir"
+fixture_source = "wide hexadecimal integer positive spelling selected from llvmorg-22.1.0 mlir/test/IR/parser.mlir"
+intentional_differences = "Wide literals remain source ranges and are not converted to APInt or APFloat values."
+license_notice = "Adapted from LLVM test cases under Apache-2.0 WITH LLVM-exception."
+
+[[families]]
+name = "balanced-opaque-dialect-bodies"
+implementation_source = "mlir/lib/AsmParser/DialectSymbolParser.cpp"
+implementation_rule = "Parser::parseExtendedType, Parser::parseExtendedAttr, and Parser::parseDialectSymbolBody"
+fixture = "payload-opaque/valid.mlir"
+fixture_source = "project-authored balanced opaque vendor type and attribute forms; no LLVM source text is copied"
+intentional_differences = "Bodies remain uninterpreted source ranges and unknown custom operation boundaries are not inferred."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."
+
+[[families]]
+name = "payload-opaque-malformed-and-limits"
+implementation_source = "mlir/lib/AsmParser/Parser.cpp and mlir/lib/AsmParser/AttributeParser.cpp"
+implementation_rule = "delimiter recovery and resource-limit paths"
+fixture = "payload-opaque/{malformed,oversized}.mlir"
+fixture_source = "project-authored malformed and oversized variants of the owned llvmorg-22.1.0 positive families"
+intentional_differences = "Scans are bounded by configurable delimiter-depth, payload-byte, and numeric-literal-byte limits."
+license_notice = "Fixture is project-authored; no LLVM source text is copied."

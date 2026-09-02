@@ -1,0 +1,5 @@
+"core.bad.array"() {value = [1 2], kept = "yes"} : () -> ()
+"core.bad.dictionary"() {value = {missing 1, kept = 2}, after = #alias} : () -> ()
+"core.bad.symbol"() {value = @root:@leaf, kept = loc(unknown)} : () -> ()
+"core.bad.location"() {value = loc(callsite("x" at "y":1:2), kept = "yes"} : () -> ()
+"core.after"() {value = 1 : i32} : () -> ()

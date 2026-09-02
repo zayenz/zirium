@@ -1,0 +1,44 @@
+[build-system]
+requires = ["maturin>=1.9.3,<2"]
+build-backend = "maturin"
+
+[project]
+name = "zirium"
+version = "0.0.1"
+description = "Lossless textual MLIR parsing and semantic processing"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+authors = [{ name = "Zayenz" }]
+requires-python = ">=3.11,<3.15"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/zayenz/zirium"
+Repository = "https://github.com/zayenz/zirium"
+Documentation = "https://github.com/zayenz/zirium/blob/main/docs/getting-started.md"
+Issues = "https://github.com/zayenz/zirium/issues"
+
+[tool.maturin]
+manifest-path = "crates/zirium-python/Cargo.toml"
+python-source = "python"
+module-name = "zirium._zirium"
+features = ["pyo3/extension-module"]
+exclude = ["python/zirium/__pycache__/**", "**/*.pyc"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint.per-file-ignores]
+"python/benchmarks/*.py" = ["EXE001"]

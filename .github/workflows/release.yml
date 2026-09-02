@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Check that the release commit is on main
+        shell: bash
+        run: |
+          set -eu
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD
+      - name: Match tag and package versions
+        shell: bash
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          python3 - "$version" <<'PY'
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          version = sys.argv[1]
+          if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+              raise SystemExit(f"invalid release tag: v{version}")
+
+          with Path("crates/zirium/Cargo.toml").open("rb") as file:
+              cargo = tomllib.load(file)
+          with Path("crates/zirium-python/Cargo.toml").open("rb") as file:
+              python_crate = tomllib.load(file)
+          with Path("pyproject.toml").open("rb") as file:
+              python = tomllib.load(file)
+
+          versions = {
+              "Rust crate": cargo["package"]["version"],
+              "Python extension crate": python_crate["package"]["version"],
+              "Python package": python["project"]["version"],
+          }
+          mismatches = {name: value for name, value in versions.items() if value != version}
+          if mismatches:
+              raise SystemExit(f"tag v{version} does not match package versions: {mismatches}")
+          if python_crate["package"].get("publish") is not False:
+              raise SystemExit("zirium-python must remain non-publishable")
+          if f"## {version}" not in Path("CHANGELOG.md").read_text():
+              raise SystemExit(f"CHANGELOG.md has no {version} entry")
+          PY
+
+  wheels:
+    name: Wheel CPython ${{ matrix.python-version }}
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          maturin-version: v1.15.0
+          target: x86_64-unknown-linux-gnu
+          manylinux: "2014"
+          args: >-
+            --release --locked --compatibility pypi
+            --interpreter python${{ matrix.python-version }} --out dist
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uvx --from twine==7.0.0 twine check dist/*.whl
+      - name: Check and install the wheel
+        shell: bash
+        run: |
+          set -eu
+          python_tag="cp${{ matrix.python-version }}"
+          python_tag="${python_tag/./}"
+          wheel=$(find dist -maxdepth 1 -name "zirium-*-${python_tag}-${python_tag}-*manylinux*.whl" -print -quit)
+          test -n "$wheel"
+          case "$wheel" in
+            *abi3*) echo "unexpected stable-ABI wheel: $wheel" >&2; exit 1 ;;
+          esac
+          uv venv --python "${{ matrix.python-version }}" wheel-venv
+          uv pip install --python wheel-venv/bin/python "$wheel"
+          wheel-venv/bin/python -c \
+            'import zirium; d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.operation_table().count == 1; assert d.canonical_bytes()'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-wheel-cp${{ matrix.python-version }}-linux-x86_64
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  sdist:
+    name: Source distribution
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - run: uv python install 3.14
+      - run: uv build --sdist --python 3.14 --out-dir dist --clear
+      - run: uvx --from twine==7.0.0 twine check dist/*.tar.gz
+      - name: Check and install the source distribution
+        shell: bash
+        run: |
+          set -eu
+          archive=$(find dist -maxdepth 1 -name 'zirium-*.tar.gz' -print -quit)
+          test -n "$archive"
+          tar -tzf "$archive" | grep -q '/LICENSE-APACHE$'
+          tar -tzf "$archive" | grep -q '/LICENSE-MIT$'
+          uv venv --python 3.14 sdist-venv
+          uv pip install --python sdist-venv/bin/python "$archive"
+          sdist-venv/bin/python -c \
+            'import zirium; d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.operation_table().count == 1; assert d.canonical_bytes()'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-pypi:
+    name: Publish to PyPI
+    if: github.repository == 'zayenz/zirium'
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/zirium
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist

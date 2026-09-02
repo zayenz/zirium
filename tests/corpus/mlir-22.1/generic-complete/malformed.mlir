@@ -1,0 +1,10 @@
+%broken: = "test.bad_result"() : () -> ()
+"test.after_result"() : () -> ()
+"test.bad_successor"() [^next : (%arg : )] : () -> ()
+"test.after_successor"() : () -> ()
+"test.bad_properties"() <{value = }> : () -> ()
+"test.after_properties"() : () -> ()
+"test.bad_region"() ({ ^bb(%arg : i32) "test.kept"() : () -> () }) : () -> ()
+"test.after_region"() : () -> ()
+"test.bad_location"() : () -> () loc(
+"test.after_location"() : () -> ()

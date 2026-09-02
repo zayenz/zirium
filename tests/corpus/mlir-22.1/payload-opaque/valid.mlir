@@ -1,0 +1,2 @@
+"payloads"() {dense_value = dense<[1, 2, 3]> : tensor<3xi64>, sparse_value = sparse<[[0, 1], [1, 0]], [1.0, 2.0]> : tensor<2x2xf64>, resource_value = dense_resource<resource_handle> : tensor<4xi32>, wide = 0x1234567890abcdef1234567890abcdef : i128, opaque = #vendor.attr<{nested = ["literal > } ]", "escaped \\22 quote", (1, 2)]}>} : (!vendor.type<{nested = ["literal > } ]", (1, 2)]}>) -> ()
+"payloads.after"() : () -> ()

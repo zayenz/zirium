@@ -1,0 +1,7 @@
+/target/
+/fuzz/target/
+/fuzz/Cargo.lock
+/fuzz/corpus/
+/.venv/
+/python/zirium/*.so
+/uv.lock

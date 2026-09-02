@@ -1,0 +1,15 @@
+[package]
+name = "zirium"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Lossless textual MLIR syntax parsing and semantic processing"
+repository = "https://github.com/zayenz/zirium"
+readme = "../../README.md"
+homepage = "https://github.com/zayenz/zirium"
+documentation = "https://docs.rs/zirium"
+keywords = ["mlir", "parser", "compiler"]
+categories = ["parser-implementations", "compilers"]
+
+[dependencies]
