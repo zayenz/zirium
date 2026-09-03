@@ -3,7 +3,7 @@
 mod compare;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     io::{self, Write},
     path::Path,
@@ -108,6 +108,44 @@ impl std::error::Error for PrintError {
 }
 
 impl Document {
+    /// Prints selected operations with the operation, region, and block shells
+    /// that contain them. Unselected siblings are omitted.
+    pub fn write_selection<W: io::Write>(
+        &self,
+        sink: &mut W,
+        selected: &[OperationId],
+        layout: PrintLayout,
+        registry: &DialectRegistry,
+    ) -> Result<(), PrintError> {
+        if !self.is_semantically_complete() {
+            return Err(PrintError::IncompleteDocument);
+        }
+        let mut selected = selected.iter().copied().collect::<HashSet<_>>();
+        let mut worklist = selected.iter().copied().collect::<Vec<_>>();
+        while let Some(operation) = worklist.pop() {
+            for &region in self.operation_regions(operation).unwrap_or(&[]) {
+                for &block in self
+                    .region(region)
+                    .and_then(|region| region.blocks(self))
+                    .unwrap_or(&[])
+                {
+                    for &child in self.block_operations(block).unwrap_or(&[]) {
+                        if selected.insert(child) {
+                            worklist.push(child);
+                        }
+                    }
+                }
+            }
+        }
+        let mut adapter = IoAdapter { sink, error: None };
+        let result =
+            Printer::new_selection(self, &mut adapter, layout, registry, &selected).document();
+        if let Some(error) = adapter.error {
+            return Err(PrintError::Io(error));
+        }
+        result.map_err(PrintError::Format)
+    }
+
     /// Writes deterministic generic MLIR to a [`fmt::Write`] sink.
     ///
     /// # Errors
@@ -537,6 +575,7 @@ struct Printer<'a, W> {
     blocks: HashMap<BlockId, usize>,
     mode: DialectPrintMode,
     registry: &'a DialectRegistry,
+    selected: Option<&'a HashSet<OperationId>>,
 }
 impl<'a, W: fmt::Write> Printer<'a, W> {
     fn new(
@@ -590,16 +629,137 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             blocks,
             mode,
             registry,
+            selected: None,
         }
     }
+    fn new_selection(
+        doc: &'a Document,
+        sink: &'a mut W,
+        layout: PrintLayout,
+        registry: &'a DialectRegistry,
+        selected: &'a HashSet<OperationId>,
+    ) -> Self {
+        let mut printer = Self::new(doc, sink, layout, DialectPrintMode::PreferCustom, registry);
+        printer.selected = Some(selected);
+        printer
+    }
+    fn retained(&self, operation: OperationId) -> bool {
+        self.selected.is_none_or(|selected| {
+            selected.contains(&operation)
+                || self
+                    .doc
+                    .operation_regions(operation)
+                    .unwrap_or(&[])
+                    .iter()
+                    .any(|&region| {
+                        self.doc
+                            .region(region)
+                            .and_then(|r| r.blocks(self.doc))
+                            .unwrap_or(&[])
+                            .iter()
+                            .any(|&block| {
+                                self.doc
+                                    .block_operations(block)
+                                    .unwrap_or(&[])
+                                    .iter()
+                                    .any(|&child| self.retained(child))
+                            })
+                    })
+        })
+    }
+    fn selected_comment(&mut self, operation: OperationId, indent: usize) -> fmt::Result {
+        let Some(selected) = self.selected else {
+            return Ok(());
+        };
+        if !selected.contains(&operation) {
+            return Ok(());
+        }
+        let (Some(source), Some(range)) = (
+            self.doc.source_bytes(),
+            self.doc.operation_syntax_range(operation),
+        ) else {
+            return Ok(());
+        };
+        let start = range.start() as usize;
+        let before = &source[..start];
+        let line_start = before
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i + 1);
+        if !source[line_start..start]
+            .iter()
+            .all(|byte| byte.is_ascii_whitespace())
+        {
+            return Ok(());
+        }
+        let mut comments = Vec::new();
+        let mut cursor = line_start;
+        while cursor > 0 {
+            let previous_end = cursor - 1;
+            let previous_start = source[..previous_end]
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map_or(0, |i| i + 1);
+            let line = &source[previous_start..previous_end];
+            if String::from_utf8_lossy(line).trim_start().starts_with("//") {
+                comments.push(String::from_utf8_lossy(line).trim().to_owned());
+                cursor = previous_start;
+            } else {
+                break;
+            }
+        }
+        comments.reverse();
+        for comment in comments {
+            self.sink.write_str(&comment)?;
+            self.newline(indent)?;
+        }
+        Ok(())
+    }
+    fn selected_trailing_comment(&mut self, operation: OperationId) -> fmt::Result {
+        let Some(selected) = self.selected else {
+            return Ok(());
+        };
+        if !selected.contains(&operation) {
+            return Ok(());
+        }
+        let (Some(source), Some(range)) = (
+            self.doc.source_bytes(),
+            self.doc.operation_source_range(operation),
+        ) else {
+            return Ok(());
+        };
+        let end = range.end() as usize;
+        let line_end = source[end..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(source.len(), |i| end + i);
+        let tail = String::from_utf8_lossy(&source[end..line_end]);
+        if let Some(comment) = tail.find("//") {
+            self.sink.write_char(' ')?;
+            self.sink.write_str(tail[comment..].trim_end())?;
+        }
+        Ok(())
+    }
     fn document(&mut self) -> fmt::Result {
-        for (index, &operation) in self.doc.root_operations().iter().enumerate() {
+        let roots = self
+            .doc
+            .root_operations()
+            .iter()
+            .copied()
+            .filter(|&op| self.retained(op))
+            .collect::<Vec<_>>();
+        let has_roots = !roots.is_empty();
+        let mut index = 0;
+        for operation in roots {
             if index != 0 {
                 self.newline(0)?;
             }
+            self.selected_comment(operation, 0)?;
             self.operation(operation, 0)?;
+            self.selected_trailing_comment(operation)?;
+            index += 1;
         }
-        if self.layout == PrintLayout::Pretty && !self.doc.root_operations().is_empty() {
+        if self.layout == PrintLayout::Pretty && has_roots {
             self.sink.write_char('\n')?;
         }
         Ok(())
@@ -768,7 +928,17 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             .doc
             .region(id)
             .and_then(|r| r.blocks(self.doc))
-            .ok_or(fmt::Error)?;
+            .ok_or(fmt::Error)?
+            .iter()
+            .copied()
+            .filter(|&block| {
+                self.doc
+                    .block_operations(block)
+                    .unwrap_or(&[])
+                    .iter()
+                    .any(|&op| self.retained(op))
+            })
+            .collect::<Vec<_>>();
         for (block_index, &block) in blocks.iter().enumerate() {
             let explicit = block_index != 0
                 || self.doc.block_label(block).ok_or(fmt::Error)?.is_some()
@@ -798,9 +968,19 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                 }
                 self.sink.write_char(':')?;
             }
-            for &operation in self.doc.block_operations(block).ok_or(fmt::Error)? {
+            let operations = self
+                .doc
+                .block_operations(block)
+                .ok_or(fmt::Error)?
+                .iter()
+                .copied()
+                .filter(|&op| self.retained(op))
+                .collect::<Vec<_>>();
+            for operation in operations {
                 self.newline(indent + 1 + usize::from(explicit))?;
+                self.selected_comment(operation, indent + 1 + usize::from(explicit))?;
                 self.operation(operation, indent + 1 + usize::from(explicit))?;
+                self.selected_trailing_comment(operation)?;
             }
         }
         if !blocks.is_empty() {

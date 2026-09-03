@@ -73,6 +73,7 @@ pub mod dialect;
 pub mod lexer;
 pub mod parser;
 pub mod printer;
+pub mod query;
 mod representation;
 pub mod semantic;
 pub mod source;
