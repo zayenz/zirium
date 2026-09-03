@@ -174,7 +174,8 @@ fn preserving_output_replaces_only_a_dirty_operation() {
     let source = b"// before\n\"left\"() : () -> ()\n\n\"right\"() : () -> () // after\n";
     let mut document = hybrid(source, LoweringMode::Strict);
     let right = document.root_operations()[1];
-    let mut editor = document.edit(&DialectRegistry::EMPTY).unwrap();
+    let empty_registry = DialectRegistry::EMPTY;
+    let mut editor = document.edit(&empty_registry).unwrap();
     editor
         .set_attribute(
             right,
@@ -200,7 +201,8 @@ fn result_type_edits_widen_preservation_to_the_enclosing_block() {
     let region = document.operation_regions(outer).unwrap()[0];
     let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
     let make = document.block_operations(block).unwrap()[0];
-    let mut editor = document.edit(&DialectRegistry::EMPTY).unwrap();
+    let empty_registry = DialectRegistry::EMPTY;
+    let mut editor = document.edit(&empty_registry).unwrap();
     editor.replace_result_types(make, &[i32_type()]).unwrap();
     editor.commit().unwrap();
     let output = document.preserving_bytes(PrintLayout::Pretty).unwrap();
@@ -213,25 +215,18 @@ fn result_type_edits_widen_preservation_to_the_enclosing_block() {
 }
 
 #[test]
-fn preserving_preflight_rejects_unknown_custom_syntax_before_sink_writes() {
+fn preserving_output_keeps_unknown_custom_syntax_exact_and_edits_reject_incomplete_documents() {
     let source = b"\"outer\"() ({\n  \"make\"() : () -> ()\n  vendor.unknown ???\n}) : () -> ()";
     let mut document = hybrid(source, LoweringMode::BestEffort);
-    let outer = document.root_operations()[0];
-    let region = document.operation_regions(outer).unwrap()[0];
-    let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
-    let make = document.block_operations(block).unwrap()[0];
-    let mut editor = document.edit(&DialectRegistry::EMPTY).unwrap();
-    editor.replace_result_types(make, &[]).unwrap();
-    editor.commit().unwrap();
     let mut sink = Vec::new();
-    let error = document
+    document
         .write_preserving(&mut sink, PrintLayout::Pretty)
-        .unwrap_err();
+        .unwrap();
+    assert_eq!(sink, source);
     assert!(matches!(
-        error,
-        zirium::printer::PreserveError::UnknownCustomSyntax(_)
+        document.edit(&DialectRegistry::EMPTY),
+        Err(zirium::semantic::EditError::IncompleteDocument)
     ));
-    assert!(sink.is_empty());
 }
 
 #[test]

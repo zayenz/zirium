@@ -786,9 +786,89 @@ fn unknown_custom_recovery_preserves_result_prefixes() {
             .count(),
         1
     );
-    assert_eq!(parsed.file().operations().count(), 1);
-    let operation = parsed.file().operations().next().unwrap();
+    let operations = parsed
+        .file()
+        .operations()
+        .map(|operation| node_text(parsed.tree(), &source, operation.id()))
+        .collect::<Vec<_>>();
+    assert_eq!(operations.len(), 2, "{operations:?}");
+    let operation = parsed.file().operations().nth(1).unwrap();
     assert!(node_text(parsed.tree(), &source, operation.id()).starts_with(b"%0 ="));
+
+    let bytes = b"vendor.before\n%0=vendor.compact\n";
+    let source = Source::new(bytes.as_slice()).unwrap();
+    let parsed = ParsedFile::parse(bytes.to_vec()).unwrap();
+    assert_eq!(parsed.syntax().file().operations().count(), 2);
+    let compact = parsed.syntax().file().operations().nth(1).unwrap();
+    assert!(
+        node_text(parsed.syntax().tree(), &source, compact.id()).starts_with(b"%0=vendor.compact")
+    );
+}
+
+#[test]
+fn unknown_custom_regions_are_recursively_parsed() {
+    let bytes = b"vendor.outer {\n  vendor.inner {\n    vendor.leaf\n  }\n}\n";
+    let source = Source::new(bytes.as_slice()).unwrap();
+    let parsed = ParsedFile::parse(bytes.to_vec()).unwrap();
+    assert_eq!(reconstruct(parsed.syntax().tree(), &source), bytes);
+    parsed.syntax().tree().verify().unwrap();
+    assert_eq!(parsed.syntax().file().operations().count(), 3);
+    assert_eq!(parsed.syntax().file().regions().count(), 2);
+}
+
+#[test]
+fn unknown_custom_attributes_remain_payloads_not_operations_or_regions() {
+    let bytes = b"vendor.op %x\n  attributes {flag = true}\nvendor.next\n";
+    let source = Source::new(bytes.as_slice()).unwrap();
+    let parsed = ParsedFile::parse(bytes.to_vec()).unwrap();
+    assert_eq!(reconstruct(parsed.syntax().tree(), &source), bytes);
+    let operations = parsed
+        .syntax()
+        .file()
+        .operations()
+        .map(|operation| node_text(parsed.syntax().tree(), &source, operation.id()))
+        .collect::<Vec<_>>();
+    assert_eq!(operations.len(), 2, "{operations:?}");
+    assert_eq!(parsed.syntax().file().regions().count(), 0);
+
+    let bytes = b"vendor.op attributes {}\n";
+    let source = Source::new(bytes.as_slice()).unwrap();
+    let parsed = ParsedFile::parse(bytes.to_vec()).unwrap();
+    assert_eq!(reconstruct(parsed.syntax().tree(), &source), bytes);
+    assert_eq!(parsed.syntax().file().operations().count(), 1);
+    assert_eq!(parsed.syntax().file().regions().count(), 0);
+
+    let bytes = b"vendor.op { vendor.inner } attributes {}\n";
+    let source = Source::new(bytes.as_slice()).unwrap();
+    let parsed = ParsedFile::parse(bytes.to_vec()).unwrap();
+    assert_eq!(reconstruct(parsed.syntax().tree(), &source), bytes);
+    assert_eq!(parsed.syntax().file().operations().count(), 2);
+    assert_eq!(parsed.syntax().file().regions().count(), 1);
+
+    let bytes = b"vendor.op\n  attributes {\n    \"flag\" = true\n  }\nvendor.next\n";
+    let source = Source::new(bytes.as_slice()).unwrap();
+    let parsed = ParsedFile::parse(bytes.to_vec()).unwrap();
+    assert_eq!(reconstruct(parsed.syntax().tree(), &source), bytes);
+    assert_eq!(parsed.syntax().file().operations().count(), 2);
+    assert_eq!(parsed.syntax().file().regions().count(), 0);
+
+    let bytes = b"vendor.first(@sym)\n  %operand attributes {flag = true}\nvendor.second\n";
+    let source = Source::new(bytes.as_slice()).unwrap();
+    let parsed = ParsedFile::parse(bytes.to_vec()).unwrap();
+    assert_eq!(reconstruct(parsed.syntax().tree(), &source), bytes);
+    assert_eq!(parsed.syntax().file().operations().count(), 2);
+    assert_eq!(parsed.syntax().file().regions().count(), 0);
+
+    for bytes in [
+        b"vendor.op {flag}\nvendor.next\n".as_slice(),
+        b"vendor.op {\"flag\"}\nvendor.next\n".as_slice(),
+    ] {
+        let source = Source::new(bytes).unwrap();
+        let parsed = ParsedFile::parse(bytes.to_vec()).unwrap();
+        assert_eq!(reconstruct(parsed.syntax().tree(), &source), bytes);
+        assert_eq!(parsed.syntax().file().operations().count(), 2);
+        assert_eq!(parsed.syntax().file().regions().count(), 0);
+    }
 }
 
 #[test]

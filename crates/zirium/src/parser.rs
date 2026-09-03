@@ -1,5 +1,5 @@
 use crate::{
-    dialect::{DialectRegistry, OperationDescriptor},
+    dialect::{DialectRegistry, OperationDescriptor, OperationShape},
     lexer::{Diagnostic as LexDiagnostic, Lexed, LexerLimits, TokenKind, lex_with_limits},
     representation::{
         CompactError, CompletedMarker, EventBuilder, Marker, NodeId, SyntaxKind, SyntaxTree,
@@ -380,7 +380,11 @@ impl<'a> FileSyntax<'a> {
             .filter(|id| {
                 matches!(
                     self.tree.kind(*id),
-                    Some(SyntaxKind::Operation | SyntaxKind::DialectOperation)
+                    Some(
+                        SyntaxKind::Operation
+                            | SyntaxKind::DialectOperation
+                            | SyntaxKind::UnparsedCustomOperation
+                    )
                 )
             })
             .map(|id| OperationSyntax {
@@ -391,7 +395,11 @@ impl<'a> FileSyntax<'a> {
     pub fn operation(self, id: NodeId) -> Option<OperationSyntax<'a>> {
         matches!(
             self.tree.kind(id),
-            Some(SyntaxKind::Operation | SyntaxKind::DialectOperation)
+            Some(
+                SyntaxKind::Operation
+                    | SyntaxKind::DialectOperation
+                    | SyntaxKind::UnparsedCustomOperation
+            )
         )
         .then_some(OperationSyntax {
             tree: self.tree,
@@ -826,6 +834,14 @@ impl<'a> OperationSyntax<'a> {
         children_of_kind(self.tree, self.id, SyntaxKind::Operand)
             .flat_map(move |operand| children_of_kind(self.tree, operand, SyntaxKind::OperandUse))
             .map(|id| OperandUseSyntax {
+                tree: self.tree,
+                id,
+            })
+    }
+    pub fn arguments(self) -> impl Iterator<Item = BlockArgumentSyntax<'a>> {
+        children_of_kind(self.tree, self.id, SyntaxKind::BlockArgumentList)
+            .flat_map(move |list| children_of_kind(self.tree, list, SyntaxKind::BlockArgument))
+            .map(|id| BlockArgumentSyntax {
                 tree: self.tree,
                 id,
             })
@@ -1558,7 +1574,7 @@ impl Parser<'_> {
                     .unwrap_or_default(),
             )
             .unwrap_or("");
-            if let Some(descriptor) = self.registry.operation(name) {
+            if let Some(descriptor) = self.registry.custom_operation(name) {
                 if descriptor.assembly.is_some() {
                     return DialectParser {
                         parser: self,
@@ -1574,6 +1590,9 @@ impl Parser<'_> {
                         descriptor,
                     });
                 }
+            }
+            if let Some(shape) = self.registry.operation_shape(name) {
+                return self.shaped_operation(marker, shape);
             }
             return self.unparsed_custom_operation(Some(marker));
         }
@@ -1608,6 +1627,56 @@ impl Parser<'_> {
                 .complete_with_error(location, SyntaxKind::TrailingLocation, !good)?;
         }
         self.builder.complete(marker, SyntaxKind::Operation)?;
+        Ok(())
+    }
+
+    fn shaped_operation(
+        &mut self,
+        marker: Marker,
+        shape: OperationShape,
+    ) -> Result<(), CompactError> {
+        let mut good = self.expect(TokenKind::BareIdentifier)?;
+        self.trivia()?;
+        good &= self.expect(TokenKind::AtIdentifier)?;
+        self.trivia()?;
+        match shape {
+            OperationShape::FuncLike => {
+                good &= self.block_argument_list(SyntaxKind::BlockArgumentList)?;
+                self.trivia()?;
+                if self.at(TokenKind::Arrow) {
+                    self.bump()?;
+                    self.trivia()?;
+                    if self.at(TokenKind::LParen) {
+                        self.type_list(0)?;
+                    } else {
+                        good &= self.type_syntax(0)?;
+                    }
+                    self.trivia()?;
+                }
+                if self.at(TokenKind::BareIdentifier) && self.current_text() == "attributes" {
+                    self.bump()?;
+                    self.trivia()?;
+                    self.attribute_dict()?;
+                    self.trivia()?;
+                }
+                if self.at(TokenKind::LBrace) {
+                    self.region()?;
+                }
+            }
+            OperationShape::CallLike => {
+                self.operand_list()?;
+                self.trivia()?;
+                if self.at(TokenKind::LBrace) {
+                    self.attribute_dict()?;
+                    self.trivia()?;
+                }
+                good &= self.expect(TokenKind::Colon)?;
+                self.trivia()?;
+                self.function_type()?;
+            }
+        }
+        self.builder
+            .complete_with_error(marker, SyntaxKind::DialectOperation, !good)?;
         Ok(())
     }
 
@@ -2856,12 +2925,25 @@ impl Parser<'_> {
         self.diagnostic_kind(ParseDiagnosticKind::UnknownCustomOperation);
         let start = self.position;
         let mut stack = Vec::new();
+        let mut line_boundary = false;
+        let mut completed_payload = false;
         while !self.at(TokenKind::Eof) {
             let current = self.current();
+            if stack.is_empty() && current == TokenKind::LBrace && self.region_shaped_body() {
+                self.region()?;
+                completed_payload = true;
+                continue;
+            }
             if stack.is_empty()
                 && (current == TokenKind::RBrace
                     || current == TokenKind::CaretIdentifier
                     || self.is_generic_operation_start()
+                    || (self.position > start
+                        && ((current == TokenKind::BareIdentifier
+                            && self.bare_custom_operation_start())
+                            || (current == TokenKind::PercentIdentifier
+                                && self.result_custom_operation_start()))
+                        && (line_boundary || completed_payload))
                     || (self.position > start
                         && current == TokenKind::BareIdentifier
                         && self.previous_nontrivia() == Some(TokenKind::PercentIdentifier)
@@ -2871,6 +2953,9 @@ impl Parser<'_> {
             }
             if stack.last() == Some(&current) {
                 stack.pop();
+                if stack.is_empty() {
+                    completed_payload = true;
+                }
             } else if let Some(close) = close_for(current) {
                 if stack.len() >= self.limits.max_delimiter_depth {
                     self.diagnostic_kind(ParseDiagnosticKind::DepthLimit);
@@ -2880,16 +2965,83 @@ impl Parser<'_> {
             } else if is_close(current) && stack.is_empty() {
                 break;
             }
+            let token_has_line_break = current == TokenKind::Whitespace
+                && self
+                    .source
+                    .get(
+                        self.tokens[self.position].range().start() as usize
+                            ..self.tokens[self.position].range().end() as usize,
+                    )
+                    .is_some_and(|bytes| bytes.contains(&b'\n'));
             self.bump()?;
+            if token_has_line_break {
+                line_boundary = true;
+            } else if !is_trivia(current) {
+                line_boundary = false;
+            }
         }
         self.builder
             .complete_with_error(marker, SyntaxKind::UnparsedCustomOperation, true)?;
         Ok(())
     }
+    fn result_custom_operation_start(&self) -> bool {
+        self.result_assignment_starts_operation(true)
+    }
+    fn bare_custom_operation_start(&self) -> bool {
+        let range = self.tokens[self.position].range();
+        self.source
+            .get(range.start() as usize..range.end() as usize)
+            != Some(b"attributes")
+    }
+    fn region_shaped_body(&self) -> bool {
+        let mut index = self.position + 1;
+        while self
+            .tokens
+            .get(index)
+            .is_some_and(|token| is_trivia(token.kind()))
+        {
+            index += 1;
+        }
+        match self.tokens.get(index).map(|token| token.kind()) {
+            Some(TokenKind::CaretIdentifier | TokenKind::PercentIdentifier) => true,
+            Some(TokenKind::String) => {
+                index += 1;
+                while self
+                    .tokens
+                    .get(index)
+                    .is_some_and(|token| is_trivia(token.kind()))
+                {
+                    index += 1;
+                }
+                self.tokens.get(index).map(|token| token.kind()) == Some(TokenKind::LParen)
+            }
+            Some(TokenKind::RBrace) => false,
+            Some(TokenKind::BareIdentifier) => {
+                let mnemonic = self.tokens[index].range();
+                index += 1;
+                while self
+                    .tokens
+                    .get(index)
+                    .is_some_and(|token| is_trivia(token.kind()))
+                {
+                    index += 1;
+                }
+                self.tokens.get(index).map(|token| token.kind()) != Some(TokenKind::Equal)
+                    && self
+                        .source
+                        .get(mnemonic.start() as usize..mnemonic.end() as usize)
+                        .is_some_and(|text| text.contains(&b'.'))
+            }
+            _ => false,
+        }
+    }
     fn is_generic_operation_start(&self) -> bool {
         if self.at(TokenKind::String) {
             return self.nth_nontrivia(1) == Some(TokenKind::LParen);
         }
+        self.result_assignment_starts_operation(false)
+    }
+    fn result_assignment_starts_operation(&self, allow_bare: bool) -> bool {
         if !self.at(TokenKind::PercentIdentifier) {
             return false;
         }
@@ -2960,7 +3112,11 @@ impl Parser<'_> {
         {
             index += 1;
         }
-        self.tokens.get(index).map(|token| token.kind()) == Some(TokenKind::String)
+        matches!(
+            self.tokens.get(index).map(|token| token.kind()),
+            Some(TokenKind::String)
+        ) || (allow_bare
+            && self.tokens.get(index).map(|token| token.kind()) == Some(TokenKind::BareIdentifier))
     }
     fn previous_nontrivia(&self) -> Option<TokenKind> {
         self.tokens[..self.position]

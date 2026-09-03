@@ -7,8 +7,8 @@ use zirium::{
     SyntaxKind,
     dialect::{
         AssemblyProgram, AttributeDescriptor, DialectRegistry, OperandCount, OperationDescriptor,
-        OperationSchema, RegionDescriptor, RegionKind, ResultCount, SymbolDescriptor,
-        TypeDescriptor,
+        OperationSchema, OperationShape, RegionDescriptor, RegionKind, ResultCount,
+        SymbolDescriptor, TypeDescriptor,
     },
     parser::{ParseDiagnosticKind, ParsedFile},
     printer::{DialectPrintMode, PrintLayout},
@@ -39,6 +39,105 @@ fn declarative_registry_owns_a_selected_builtin_subset() {
     );
     assert!(DialectRegistry::declarative(&["unknown.operation"]).is_err());
     assert!(DialectRegistry::declarative(&["cf.br", "cf.br"]).is_err());
+}
+
+#[test]
+fn owned_operation_shapes_lower_neutral_func_and_call_forms() {
+    assert!(std::mem::needs_drop::<DialectRegistry>());
+    for index in 0..32 {
+        let name = format!("vendor.temporary_{index}");
+        let registry =
+            DialectRegistry::with_operation_shapes(&[(name.as_str(), OperationShape::FuncLike)])
+                .unwrap();
+        drop(name);
+        assert_eq!(
+            registry.operation_shape(&format!("vendor.temporary_{index}")),
+            Some(OperationShape::FuncLike)
+        );
+    }
+    let registry = DialectRegistry::with_operation_shapes(&[
+        ("vendor.function", OperationShape::FuncLike),
+        ("vendor.invoke", OperationShape::CallLike),
+    ])
+    .unwrap();
+    let source = br#"module {
+      vendor.function @"quoted symbol"(%arg: i32 loc(unknown)) -> i32 attributes {tag = "body"} {
+        %result = vendor.invoke @"quoted symbol"(%arg) {tag = "call"} : (i32) -> i32
+        vendor.unregistered @other()
+      }
+      vendor.function @declaration()
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(parsed.syntax().diagnostics().len(), 1);
+    assert_eq!(
+        parsed.syntax().diagnostics()[0].kind(),
+        ParseDiagnosticKind::UnknownCustomOperation
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    let function = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("vendor.function"))
+        .unwrap();
+    let symbol = document.attribute_id(function, "sym_name").unwrap();
+    assert_eq!(
+        document.attribute_spelling_value(symbol),
+        Some("@\"quoted symbol\"")
+    );
+    let call = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("vendor.invoke"))
+        .unwrap();
+    assert_eq!(document.operands(call).unwrap().len(), 1);
+    assert_eq!(document.result_types(call).unwrap().len(), 1);
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("vendor.unregistered"))
+    );
+}
+
+#[test]
+fn core_registry_accepts_module_alias_without_changing_other_registries() {
+    assert_eq!(
+        DialectRegistry::core()
+            .operation_names()
+            .collect::<Vec<_>>(),
+        ["builtin.module", "func.func", "func.return", "func.call"]
+    );
+    let source = b"module { module { } }".as_slice();
+    let core = ParsedFile::parse_with_registry(source, DialectRegistry::core()).unwrap();
+    assert!(core.syntax().diagnostics().is_empty());
+    let document =
+        lower_with_dialect_registry(&core, LoweringMode::Strict, DialectRegistry::core())
+            .document
+            .unwrap();
+    let outer = document.root_operations()[0];
+    assert_eq!(document.operation_name(outer), Some("builtin.module"));
+    assert_eq!(document.statistics().operations, 2);
+
+    for registry in [DialectRegistry::proving(), &DialectRegistry::EMPTY] {
+        let parsed = ParsedFile::parse_with_registry(source, registry).unwrap();
+        assert!(!parsed.syntax().diagnostics().is_empty());
+    }
+}
+
+#[test]
+fn core_function_header_arguments_bind_to_the_entry_block() {
+    let source = br#"module {
+      func.func @add(%lhs: tensor<2xf32>, %rhs: tensor<2xf32>) -> tensor<2xf32> {
+        %sum = "stablehlo.add"(%lhs, %rhs) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
+        func.return %sum : tensor<2xf32>
+      }
+    }"#;
+    let parsed =
+        ParsedFile::parse_with_registry(source.as_slice(), DialectRegistry::core()).unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::core());
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    document.verify_semantics(DialectRegistry::core()).unwrap();
+    assert_eq!(document.statistics().operations, 4);
 }
 
 fn verify_test_attribute(spelling: &str) -> Result<(), &'static str> {
@@ -145,7 +244,8 @@ fn registered_value_verification_reaches_nested_values_once() {
         lower_generic("%0 = \"use\"() {tags = [#test.value<ok>, #test.value<ok>]} : () -> i32");
     let operation = document.root_operations()[0];
     let opaque = TypeValue::Opaque(Arc::from(b"!test.value<ok>".as_slice()));
-    let mut editor = document.edit(&DialectRegistry::EMPTY).unwrap();
+    let empty_registry = DialectRegistry::EMPTY;
+    let mut editor = document.edit(&empty_registry).unwrap();
     editor
         .replace_result_types(
             operation,

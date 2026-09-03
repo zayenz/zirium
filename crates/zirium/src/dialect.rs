@@ -225,6 +225,8 @@ pub struct AttributeDescriptor {
 pub enum DeclarativeRegistryError {
     UnknownOperation(String),
     DuplicateOperation(String),
+    EmptyOperation,
+    CoreOperation(String),
 }
 
 impl std::fmt::Display for DeclarativeRegistryError {
@@ -236,8 +238,19 @@ impl std::fmt::Display for DeclarativeRegistryError {
             Self::DuplicateOperation(name) => {
                 write!(formatter, "duplicate declarative operation: {name}")
             }
+            Self::EmptyOperation => write!(formatter, "operation name must not be empty"),
+            Self::CoreOperation(name) => write!(
+                formatter,
+                "operation shape conflicts with core operation: {name}"
+            ),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationShape {
+    FuncLike,
+    CallLike,
 }
 
 impl std::error::Error for DeclarativeRegistryError {}
@@ -246,6 +259,8 @@ pub struct DialectRegistry {
     operations: &'static [OperationDescriptor],
     types: &'static [TypeDescriptor],
     attributes: &'static [AttributeDescriptor],
+    operation_shapes: Option<Box<[(String, OperationShape)]>>,
+    module_alias: bool,
 }
 
 impl DialectRegistry {
@@ -260,6 +275,8 @@ impl DialectRegistry {
             operations,
             types,
             attributes,
+            operation_shapes: None,
+            module_alias: false,
         };
         let mut index = 0;
         while index < operations.len() {
@@ -398,6 +415,45 @@ impl DialectRegistry {
         self.operations.iter().map(|descriptor| descriptor.name)
     }
 
+    pub fn operation_shape(&self, name: &str) -> Option<OperationShape> {
+        self.operation_shapes
+            .as_deref()?
+            .iter()
+            .find_map(|(candidate, shape)| (candidate == name).then_some(*shape))
+    }
+
+    /// Builds an owned registry containing the core operations and arbitrary shaped operations.
+    pub fn with_operation_shapes(
+        operation_shapes: &[(&str, OperationShape)],
+    ) -> Result<Self, DeclarativeRegistryError> {
+        let mut shapes = Vec::with_capacity(operation_shapes.len());
+        for &(name, shape) in operation_shapes {
+            if name.is_empty() {
+                return Err(DeclarativeRegistryError::EmptyOperation);
+            }
+            if CORE_OPERATIONS
+                .iter()
+                .any(|descriptor| descriptor.name == name)
+                || name == "module"
+            {
+                return Err(DeclarativeRegistryError::CoreOperation(name.to_owned()));
+            }
+            if shapes.iter().any(|(candidate, _)| candidate == name) {
+                return Err(DeclarativeRegistryError::DuplicateOperation(
+                    name.to_owned(),
+                ));
+            }
+            shapes.push((name.to_owned(), shape));
+        }
+        Ok(Self {
+            operations: CORE_OPERATIONS,
+            types: &[],
+            attributes: &[],
+            operation_shapes: Some(shapes.into_boxed_slice()),
+            module_alias: true,
+        })
+    }
+
     pub fn type_descriptor(&self, name: &str) -> Option<&TypeDescriptor> {
         self.types.iter().find(|descriptor| descriptor.name == name)
     }
@@ -423,6 +479,19 @@ impl DialectRegistry {
 
     pub fn proving() -> &'static Self {
         &PROVING_REGISTRY
+    }
+
+    /// Returns the standard module and function operation set.
+    pub fn core() -> &'static Self {
+        &CORE_REGISTRY
+    }
+
+    pub(crate) fn custom_operation(&self, spelling: &str) -> Option<&OperationDescriptor> {
+        self.operation(spelling).or_else(|| {
+            (spelling == "module" && (self.module_alias || std::ptr::eq(self, &CORE_REGISTRY)))
+                .then(|| self.operation("builtin.module"))
+                .flatten()
+        })
     }
 
     /// Builds a callback-free registry set from the built-in declarative operation catalog.
@@ -457,6 +526,8 @@ impl DialectRegistry {
             operations,
             types: &[],
             attributes: &[],
+            operation_shapes: None,
+            module_alias: false,
         })
     }
 
@@ -479,6 +550,12 @@ impl DialectRegistry {
             for region in descriptor.regions {
                 hash = mix(hash, &[matches!(region.kind, RegionKind::Graph) as u8]);
                 hash = mix(hash, &[region.isolated_from_above as u8]);
+            }
+        }
+        if let Some(shapes) = &self.operation_shapes {
+            for (name, shape) in shapes.iter() {
+                hash = mix(hash, name.as_bytes());
+                hash = mix(hash, &[*shape as u8]);
             }
         }
         for descriptor in self.types {
@@ -525,15 +602,28 @@ fn symbol_after(spelling: &str, operation: &str) -> Option<String> {
     let tail = spelling.split_once(operation)?.1;
     let start = tail.find('@')?;
     let tail = &tail[start..];
-    let end = tail
-        .find(|character: char| character.is_ascii_whitespace() || "(),{}:".contains(character))
-        .unwrap_or(tail.len());
+    let end = if let Some(quoted) = tail.strip_prefix("@\"") {
+        let mut escaped = false;
+        quoted.char_indices().find_map(|(offset, character)| {
+            let closes = character == '"' && !escaped;
+            escaped = character == '\\' && !escaped;
+            if character != '\\' {
+                escaped = false;
+            }
+            closes.then_some(offset + 3)
+        })?
+    } else {
+        tail.find(|character: char| character.is_ascii_whitespace() || "(),{}:".contains(character))
+            .unwrap_or(tail.len())
+    };
     Some(tail[..end].to_owned())
 }
 
 fn lower_module(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLowering> {
     let mut attributes = Vec::new();
-    if let Some(symbol) = symbol_after(context.spelling(), "builtin.module") {
+    if let Some(symbol) = symbol_after(context.spelling(), "builtin.module")
+        .or_else(|| symbol_after(context.spelling(), "module"))
+    {
         attributes.push(("sym_name", symbol));
     }
     Some(RegisteredLowering {
@@ -553,6 +643,7 @@ fn function_signature(spelling: &str) -> Option<String> {
         .copied()
         .filter_map(|argument| argument.split_once(':').map(|(_, ty)| ty.trim()))
         .map(|ty| ty.split('{').next().unwrap_or(ty).trim())
+        .map(|ty| ty.split(" loc(").next().unwrap_or(ty).trim())
         .collect::<Vec<_>>()
         .join(", ");
     let tail = spelling[close + 1..].trim_start();
@@ -615,7 +706,23 @@ fn attribute_groups(value: &str) -> Option<String> {
 
 fn matching_delimiter(spelling: &str, open: usize, left: char, right: char) -> Option<usize> {
     let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
     for (offset, character) in spelling[open..].char_indices() {
+        if quoted {
+            if character == '"' && !escaped {
+                quoted = false;
+            }
+            escaped = character == '\\' && !escaped;
+            if character != '\\' {
+                escaped = false;
+            }
+            continue;
+        }
+        if character == '"' {
+            quoted = true;
+            continue;
+        }
         if character == left {
             depth += 1;
         } else if character == right {
@@ -629,10 +736,17 @@ fn matching_delimiter(spelling: &str, open: usize, left: char, right: char) -> O
 }
 
 fn lower_function(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLowering> {
-    let symbol = symbol_after(context.spelling(), "func.func")?;
+    lower_func_like("func.func", context)
+}
+
+fn lower_func_like(
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    let symbol = symbol_after(context.spelling(), operation)?;
     let signature = function_signature(context.spelling())?;
     let mut attributes = vec![("sym_name", symbol), ("function_type", signature)];
-    let tail = context.spelling().split_once("func.func")?.1.trim_start();
+    let tail = context.spelling().split_once(operation)?.1.trim_start();
     if let Some(visibility) = ["public", "private", "nested"]
         .into_iter()
         .find(|visibility| tail.starts_with(visibility))
@@ -667,7 +781,14 @@ fn lower_function(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredL
 }
 
 fn lower_call(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLowering> {
-    let callee = symbol_after(context.spelling(), "func.call")?;
+    lower_call_like("func.call", context)
+}
+
+fn lower_call_like(
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    let callee = symbol_after(context.spelling(), operation)?;
     let tail = context.spelling().rsplit_once(':')?.1.trim();
     let (inputs, results) = tail.split_once("->")?;
     let result_types = crate::semantic::split_registered_types(results);
@@ -677,6 +798,17 @@ fn lower_call(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLower
         function_type: format!("{} -> {}", inputs.trim(), results.trim()),
         attributes: vec![("callee", callee)],
     })
+}
+
+pub(crate) fn lower_operation_shape(
+    shape: OperationShape,
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    match shape {
+        OperationShape::FuncLike => lower_func_like(operation, context),
+        OperationShape::CallLike => lower_call_like(operation, context),
+    }
 }
 
 fn verify_arith_constant(document: &Document, operation: OperationId) -> Result<(), &'static str> {
@@ -1152,6 +1284,9 @@ static PROVING_OPERATIONS: &[OperationDescriptor] = &[
     CF_BR,
     CF_COND_BR,
 ];
+static CORE_OPERATIONS: &[OperationDescriptor] =
+    &[BUILTIN_MODULE, FUNC_FUNC, FUNC_RETURN, FUNC_CALL];
 static DECLARATIVE_OPERATION_SETS: [OnceLock<Box<[OperationDescriptor]>>; 256] =
     [const { OnceLock::new() }; 256];
 static PROVING_REGISTRY: DialectRegistry = DialectRegistry::new(PROVING_OPERATIONS, &[], &[]);
+static CORE_REGISTRY: DialectRegistry = DialectRegistry::new(CORE_OPERATIONS, &[], &[]);

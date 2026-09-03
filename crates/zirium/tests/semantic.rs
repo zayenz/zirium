@@ -40,6 +40,92 @@ fn shaped_affine_fixture(name: &str) -> Vec<u8> {
 }
 
 #[test]
+fn unknown_custom_operations_lower_with_exact_text_and_nested_regions() {
+    let source = b"vendor.outer @entry {\n  vendor.inner\n}".to_vec();
+    let parsed = ParsedFile::parse(source.clone()).unwrap();
+    let lowered = lower_proving_fixture_with_retention(
+        &parsed,
+        LoweringMode::BestEffort,
+        RetentionProfile::SemanticOnly,
+        &SharedRegistry,
+    );
+    assert!(!lowered.semantically_complete);
+    assert!(
+        lowered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unknown custom operation"))
+    );
+    let document = lowered.document.unwrap();
+    let outer = document.root_operations()[0];
+    assert_eq!(document.operation_name(outer), Some("vendor.outer"));
+    assert!(
+        document
+            .attributes(outer)
+            .unwrap()
+            .any(|(name, spelling)| name == "sym_name" && spelling == "@entry")
+    );
+    assert_eq!(document.operation_is_unparsed(outer), Some(true));
+    assert_eq!(
+        document.operation_unparsed_text(outer),
+        Some(source.as_slice())
+    );
+    let region = document.operation_regions(outer).unwrap()[0];
+    let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
+    let inner = document.block_operations(block).unwrap()[0];
+    assert_eq!(document.operation_name(inner), Some("vendor.inner"));
+    assert_eq!(document.operation_is_unparsed(inner), Some(true));
+
+    let ordinary = ParsedFile::parse(b"\"ordinary\"() : () -> ()".to_vec()).unwrap();
+    let ordinary = lower_proving_fixture(&ordinary, LoweringMode::Strict, &SharedRegistry)
+        .document
+        .unwrap();
+    let operation = ordinary.root_operations()[0];
+    assert_eq!(ordinary.operation_is_unparsed(operation), Some(false));
+    assert_eq!(ordinary.operation_unparsed_text(operation), None);
+
+    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    assert!(strict.document.is_none());
+}
+
+#[test]
+fn consecutive_unknown_custom_operations_preserve_result_prefix_text() {
+    let source = b"%result = vendor.first\nvendor.second".to_vec();
+    let parsed = ParsedFile::parse(source).unwrap();
+    let lowered = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let document = lowered.document.unwrap();
+    let operations = document.operations().collect::<Vec<_>>();
+    assert_eq!(operations.len(), 2);
+    assert_eq!(document.operation_name(operations[0]), Some("vendor.first"));
+    assert!(
+        document
+            .operation_unparsed_text(operations[0])
+            .unwrap()
+            .starts_with(b"%result = vendor.first")
+    );
+    assert_eq!(
+        document.operation_name(operations[1]),
+        Some("vendor.second")
+    );
+}
+
+#[test]
+fn unknown_custom_leading_symbol_stops_before_argument_list() {
+    let parsed =
+        ParsedFile::parse(b"vendor.func @entry(%x: i32) attributes {flag = true}".to_vec())
+            .unwrap();
+    let lowered = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let document = lowered.document.unwrap();
+    let operation = document.root_operations()[0];
+    assert!(
+        document
+            .attributes(operation)
+            .unwrap()
+            .any(|(name, spelling)| name == "sym_name" && spelling == "@entry")
+    );
+}
+
+#[test]
 fn semantic_attribute_depth_limit_uses_invalid_sentinel() {
     let nested = (0..12).fold("1".to_owned(), |value, depth| {
         if depth % 2 == 0 {

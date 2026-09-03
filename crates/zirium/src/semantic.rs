@@ -8,7 +8,12 @@ use std::{
     sync::{Mutex, OnceLock, RwLock, Weak},
 };
 
-use crate::{SyntaxKind, dialect::DialectRegistry, parser::ParsedFile, source::TextRange};
+use crate::{
+    SyntaxKind,
+    dialect::{DialectRegistry, OperationShape, lower_operation_shape},
+    parser::ParsedFile,
+    source::TextRange,
+};
 
 static NEXT_DOCUMENT_IDENTITY: OnceLock<Mutex<u128>> = OnceLock::new();
 static LIVE_DOCUMENT_IDENTITIES: OnceLock<Mutex<HashMap<u128, Weak<DocumentIdentity>>>> =
@@ -622,6 +627,7 @@ pub struct Operation {
     regions: List<RegionId>,
     location: Option<LocationId>,
     source_range: TextRange,
+    unparsed_text: Option<Arc<[u8]>>,
 }
 #[derive(Clone, Debug)]
 pub struct Region {
@@ -786,6 +792,12 @@ impl Document {
     }
     pub fn operation_source_range(&self, id: OperationId) -> Option<TextRange> {
         self.operation(id).map(|op| op.source_range)
+    }
+    pub fn operation_is_unparsed(&self, id: OperationId) -> Option<bool> {
+        Some(self.operation(id)?.unparsed_text.is_some())
+    }
+    pub fn operation_unparsed_text(&self, id: OperationId) -> Option<&[u8]> {
+        self.operation(id)?.unparsed_text.as_deref()
     }
     pub fn block_operations(&self, id: BlockId) -> Option<&[OperationId]> {
         self.block(id)
@@ -1030,6 +1042,12 @@ impl Document {
                     .sum()
             });
         let direct_owned_bytes = self.operations.capacity() * std::mem::size_of::<Operation>()
+            + self
+                .operations
+                .iter()
+                .filter_map(|operation| operation.unparsed_text.as_ref())
+                .map(|text| text.len())
+                .sum::<usize>()
             + self.operation_generations.capacity() * std::mem::size_of::<u32>()
             + self.operation_alive.capacity() * std::mem::size_of::<bool>()
             + self.regions.capacity() * std::mem::size_of::<Region>()
@@ -3318,6 +3336,7 @@ impl DocumentEditor<'_> {
             regions: self.working.region_lists.push(&[]),
             location: None,
             source_range: TextRange::new(0, 0).expect("empty source range is valid"),
+            unparsed_text: None,
         };
         if index == self.working.operations.len() {
             self.working.operations.push(operation);
@@ -4148,7 +4167,11 @@ fn lower_with_registry(
         for child in syntax.tree().children(block.id()).into_iter().flatten() {
             if matches!(
                 syntax.tree().kind(child),
-                Some(SyntaxKind::Operation | SyntaxKind::DialectOperation)
+                Some(
+                    SyntaxKind::Operation
+                        | SyntaxKind::DialectOperation
+                        | SyntaxKind::UnparsedCustomOperation
+                )
             ) {
                 parent_blocks.insert(child, block_ids[&block.id()]);
             }
@@ -4324,16 +4347,38 @@ fn lower_with_registry(
     let mut block_definitions = HashMap::<(BlockId, String), Vec<ValueId>>::new();
     let mut operation_result_types = Vec::new();
     let mut structurally_lowerable = true;
+    struct MatchedLowering {
+        name: String,
+        shape: Option<OperationShape>,
+        lowering: RegisteredLowering,
+    }
     let registered = ops
         .iter()
         .map(|op| {
             let range = op.tree().text_range(op.id())?;
             let spelling = text(source.bytes(), range);
-            let name = spelling
+            let operation_spelling = if op.results().next().is_some() {
+                spelling.split_once('=')?.1
+            } else {
+                spelling
+            };
+            let mnemonic = operation_spelling
                 .split_ascii_whitespace()
-                .find(|part| part.contains('.'))?
+                .next()?
                 .trim_matches('"');
-            let descriptor = registry.operation(name)?;
+            if let Some(shape) = registry.operation_shape(mnemonic) {
+                return lower_operation_shape(
+                    shape,
+                    mnemonic,
+                    &RegisteredLoweringContext { spelling },
+                )
+                .map(|lowering| MatchedLowering {
+                    name: mnemonic.to_owned(),
+                    shape: Some(shape),
+                    lowering,
+                });
+            }
+            let descriptor = registry.custom_operation(mnemonic)?;
             descriptor
                 .assembly
                 .and_then(|program| program.lower(&RegisteredLoweringContext { spelling }))
@@ -4342,12 +4387,17 @@ fn lower_with_registry(
                         .lower
                         .and_then(|lower| lower(&RegisteredLoweringContext { spelling }))
                 })
+                .map(|lowering| MatchedLowering {
+                    name: lowering.name.to_owned(),
+                    shape: None,
+                    lowering,
+                })
         })
         .collect::<Vec<_>>();
     for (i, op) in ops.iter().enumerate() {
         let output_types = registered[i]
             .as_ref()
-            .map(|lowered| lowered.result_types.clone())
+            .map(|matched| matched.lowering.result_types.clone())
             .unwrap_or_else(|| operation_output_types(*op, source.bytes()));
         let mut result_index = 0usize;
         for result in op.results() {
@@ -4416,7 +4466,32 @@ fn lower_with_registry(
     for block in &blocks {
         let id = block_ids[&block.id()];
         let mut tys = Vec::new();
-        for (argument, syntax_argument) in block.arguments().enumerate() {
+        let header_arguments = block
+            .arguments()
+            .next()
+            .is_none()
+            .then(|| block_regions.get(&id))
+            .flatten()
+            .and_then(|region| {
+                let syntax_region = &regions[region.index()];
+                (syntax_region.blocks().next()?.id() == block.id())
+                    .then(|| region_parents.get(&syntax_region.id()))
+                    .flatten()
+            })
+            .and_then(|operation| {
+                (registered[operation.index()]
+                    .as_ref()
+                    .is_some_and(|matched| {
+                        matched.shape == Some(OperationShape::FuncLike)
+                            || matched.name == "func.func"
+                    }))
+                .then_some(ops[operation.index()].arguments())
+            });
+        let syntax_arguments = header_arguments
+            .into_iter()
+            .flatten()
+            .chain(block.arguments());
+        for (argument, syntax_argument) in syntax_arguments.enumerate() {
             let spelling = text(
                 source.bytes(),
                 syntax_argument
@@ -4464,9 +4539,10 @@ fn lower_with_registry(
 
     for (i, op) in ops.iter().enumerate() {
         let range = op.tree().text_range(op.id()).unwrap();
+        let is_unparsed = op.tree().kind(op.id()) == Some(SyntaxKind::UnparsedCustomOperation);
         let name = registered[i]
             .as_ref()
-            .map(|lowered| lowered.name)
+            .map(|matched| matched.name.as_str())
             .or_else(|| operation_name(source.bytes(), range))
             .unwrap_or("<invalid>");
         let result_types = operation_result_types[i]
@@ -4494,7 +4570,7 @@ fn lower_with_registry(
             .unwrap_or(range);
         let function_spelling = registered[i]
             .as_ref()
-            .map(|lowered| lowered.function_type.as_str())
+            .map(|matched| matched.lowering.function_type.as_str())
             .unwrap_or_else(|| text(source.bytes(), function_range));
         let function_type = intern_type(
             function_spelling,
@@ -4538,10 +4614,29 @@ fn lower_with_registry(
             "attribute",
             &mut doc,
         );
-        if let Some(lowered) = &registered[i] {
+        if is_unparsed {
+            if let Some(symbol) = leading_symbol(text(source.bytes(), range)) {
+                let value = AttributeValue::Symbol(vec![symbol.to_owned()]);
+                let index = attrs.intern_value(value);
+                if index as usize == attribute_spellings.len() {
+                    attribute_spellings.push(format!("@{symbol}"));
+                }
+                attributes.push((
+                    strings.intern("sym_name"),
+                    AttributeId::new(index as usize, generation),
+                ));
+            }
+            push_diagnostic(
+                &mut doc,
+                range,
+                format!("unknown custom operation `{name}`"),
+            );
+        }
+        if let Some(matched) = &registered[i] {
+            let lowered = &matched.lowering;
             for (name, spelling) in &lowered.attributes {
                 let is_inherent = registry
-                    .operation(lowered.name)
+                    .operation(&matched.name)
                     .and_then(|descriptor| descriptor.assembly)
                     .and_then(|program| program.inherent_attribute())
                     == Some(*name);
@@ -4626,6 +4721,8 @@ fn lower_with_registry(
             regions: doc.region_lists.push(&owned_regions),
             location,
             source_range: range,
+            unparsed_text: is_unparsed
+                .then(|| Arc::from(&source.bytes()[range.start() as usize..range.end() as usize])),
         });
     }
 
@@ -7073,10 +7170,47 @@ fn push_diagnostic(doc: &mut Document, range: TextRange, message: String) -> Dia
 }
 
 fn operation_name(bytes: &[u8], range: TextRange) -> Option<&str> {
-    let text = bytes.get(range.start() as usize..range.end() as usize)?;
+    let mut text = bytes.get(range.start() as usize..range.end() as usize)?;
+    let first = text.iter().position(|byte| !byte.is_ascii_whitespace())?;
+    text = &text[first..];
+    if text.first() == Some(&b'%') {
+        let equal = text.iter().position(|byte| *byte == b'=')?;
+        text = &text[equal + 1..];
+        let first = text.iter().position(|byte| !byte.is_ascii_whitespace())?;
+        text = &text[first..];
+    }
+    if text.first() != Some(&b'"') {
+        return bare_operation_name(text);
+    }
     let start = text.iter().position(|b| *b == b'"')? + 1;
     let end = start + text[start..].iter().position(|b| *b == b'"')?;
     std::str::from_utf8(&text[start..end]).ok()
+}
+
+fn bare_operation_name(text: &[u8]) -> Option<&str> {
+    let start = text.iter().position(|byte| !byte.is_ascii_whitespace())?;
+    let end = text[start..]
+        .iter()
+        .position(|byte| byte.is_ascii_whitespace() || b"@({[".contains(byte))
+        .map_or(text.len(), |end| start + end);
+    std::str::from_utf8(&text[start..end]).ok()
+}
+
+fn leading_symbol(spelling: &str) -> Option<&str> {
+    let spelling = spelling.trim_start();
+    let operation = if spelling.starts_with('%') {
+        spelling.split_once('=')?.1
+    } else {
+        spelling
+    };
+    let mut parts = operation.split_ascii_whitespace();
+    parts.next()?;
+    let symbol = parts.next()?.strip_prefix('@')?;
+    let end = symbol
+        .bytes()
+        .position(|byte| b"#: ,()={}[]".contains(&byte))
+        .unwrap_or(symbol.len());
+    Some(&symbol[..end])
 }
 #[cfg(test)]
 mod tests {

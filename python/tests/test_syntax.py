@@ -31,6 +31,13 @@ def test_nested_attribute_limit_recovers_following_operation():
     assert parsed.operation_count == 2
 
 
+def test_pretty_custom_operations_survive_as_consecutive_syntax_nodes():
+    source = b"stablehlo.add %lhs, %rhs\nstablehlo.return %lhs\n"
+    parsed = zirium.parse_bytes(source)
+    assert parsed.original_bytes() == source
+    assert parsed.operation_count == 2
+
+
 def test_handles_keep_the_parse_alive():
     parsed = zirium.parse_bytes(VALID)
     root = parsed.root
@@ -51,6 +58,18 @@ def test_registry_selects_custom_syntax_and_is_owned_by_file():
     assert generic.diagnostics
 
 
+def test_core_registry_accepts_ordinary_and_nested_modules_only_when_selected():
+    source = b"module { module { } }"
+    parsed = zirium.parse_bytes(source, registry=zirium.DialectRegistry.core())
+    assert parsed.diagnostics == []
+    assert parsed.operation_count == 2
+
+    assert zirium.parse_bytes(source).diagnostics
+    assert zirium.parse_bytes(
+        source, registry=zirium.DialectRegistry.proving()
+    ).diagnostics
+
+
 def test_declarative_registry_rejects_unknown_and_duplicate_operations():
     with pytest.raises(ValueError, match="unknown declarative operation"):
         zirium.DialectRegistry.declarative(
@@ -58,6 +77,24 @@ def test_declarative_registry_rejects_unknown_and_duplicate_operations():
         )
     with pytest.raises(ValueError, match="duplicate declarative operation"):
         zirium.DialectRegistry.declarative(["arith.constant", "arith.constant"])
+
+
+def test_operation_shape_registry_validates_owned_per_mnemonic_mappings():
+    registry = zirium.DialectRegistry.with_operation_shapes(
+        {"vendor.function": zirium.OperationShape.FUNC_LIKE}
+    )
+    assert (
+        zirium.parse_text("vendor.function @decl()", registry=registry).diagnostics
+        == []
+    )
+    with pytest.raises(ValueError, match="must not be empty"):
+        zirium.DialectRegistry.with_operation_shapes(
+            {"": zirium.OperationShape.FUNC_LIKE}
+        )
+    with pytest.raises(ValueError, match="conflicts with core operation"):
+        zirium.DialectRegistry.with_operation_shapes(
+            {"func.func": zirium.OperationShape.FUNC_LIKE}
+        )
 
 
 def test_invalid_utf8_bytes_and_exact_original_output():

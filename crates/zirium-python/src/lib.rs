@@ -16,7 +16,7 @@ use std::{
 use zirium::lexer::TokenKind;
 use zirium::{
     NodeId, SyntaxKind,
-    dialect::DialectRegistry,
+    dialect::{DialectRegistry, OperationShape as CoreOperationShape},
     parser::{ParseFileError, ParseLimits, ParsedFile},
     printer::{DialectPrintMode, PrintLayout},
     semantic::{
@@ -54,14 +54,18 @@ fn range_tuple(range: Option<TextRange>) -> Option<(u32, u32)> {
 #[derive(Clone)]
 enum RegistryKind {
     Empty,
+    Core,
     Proving,
     Declarative(Arc<DialectRegistry>),
 }
 
+static EMPTY_REGISTRY: DialectRegistry = DialectRegistry::EMPTY;
+
 impl RegistryKind {
     fn registry(&self) -> &DialectRegistry {
         match self {
-            Self::Empty => &DialectRegistry::EMPTY,
+            Self::Empty => &EMPTY_REGISTRY,
+            Self::Core => DialectRegistry::core(),
             Self::Proving => DialectRegistry::proving(),
             Self::Declarative(registry) => registry,
         }
@@ -71,6 +75,25 @@ impl RegistryKind {
 #[pyclass(name = "DialectRegistry", frozen, module = "zirium._zirium")]
 struct DialectRegistryHandle {
     kind: RegistryKind,
+}
+
+#[pyclass(name = "OperationShape", frozen, module = "zirium._zirium")]
+#[derive(Clone)]
+struct OperationShape {
+    shape: CoreOperationShape,
+}
+
+#[pymethods]
+impl OperationShape {
+    #[classattr]
+    const FUNC_LIKE: Self = Self {
+        shape: CoreOperationShape::FuncLike,
+    };
+
+    #[classattr]
+    const CALL_LIKE: Self = Self {
+        shape: CoreOperationShape::CallLike,
+    };
 }
 
 #[pymethods]
@@ -90,9 +113,30 @@ impl DialectRegistryHandle {
     }
 
     #[staticmethod]
+    fn core() -> Self {
+        Self {
+            kind: RegistryKind::Core,
+        }
+    }
+
+    #[staticmethod]
     fn declarative(operations: Vec<String>) -> PyResult<Self> {
         let names = operations.iter().map(String::as_str).collect::<Vec<_>>();
         let registry = DialectRegistry::declarative(&names).map_err(py_error)?;
+        Ok(Self {
+            kind: RegistryKind::Declarative(Arc::new(registry)),
+        })
+    }
+
+    #[staticmethod]
+    fn with_operation_shapes(
+        operation_shapes: HashMap<String, PyRef<'_, OperationShape>>,
+    ) -> PyResult<Self> {
+        let owned = operation_shapes
+            .iter()
+            .map(|(name, shape)| (name.as_str(), shape.shape))
+            .collect::<Vec<_>>();
+        let registry = DialectRegistry::with_operation_shapes(&owned).map_err(py_error)?;
         Ok(Self {
             kind: RegistryKind::Declarative(Arc::new(registry)),
         })
@@ -1673,6 +1717,22 @@ impl SemanticOperation {
             .operation_source_range(self.id)
             .map(|range| (range.start(), range.end())))
     }
+    #[getter]
+    fn is_unparsed(&self) -> PyResult<bool> {
+        read_document(&self.state)?
+            .operation_is_unparsed(self.id)
+            .ok_or_else(|| stale("operation"))
+    }
+    #[getter]
+    fn unparsed_text(&self, py: Python<'_>) -> PyResult<Option<Py<PyBytes>>> {
+        let document = read_document(&self.state)?;
+        document
+            .operation(self.id)
+            .ok_or_else(|| stale("operation"))?;
+        Ok(document
+            .operation_unparsed_text(self.id)
+            .map(|bytes| PyBytes::new(py, bytes).into()))
+    }
     fn region_count(&self) -> PyResult<usize> {
         Ok(read_document(&self.state)?
             .operation_regions(self.id)
@@ -2331,6 +2391,7 @@ fn _zirium(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Operation>()?;
     module.add_class::<File>()?;
     module.add_class::<DialectRegistryHandle>()?;
+    module.add_class::<OperationShape>()?;
     module.add_class::<Document>()?;
     module.add_class::<OperationTable>()?;
     module.add_class::<LoweringResult>()?;

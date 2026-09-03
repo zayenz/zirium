@@ -32,6 +32,40 @@ def u32s(value: bytes) -> list[int]:
     return list(result)
 
 
+def test_unknown_custom_operations_expose_exact_text_and_nested_regions():
+    source = b"vendor.outer @entry {\n  vendor.inner\n}"
+    lowered = zirium.parse_bytes(source).lower_best_effort()
+    assert lowered.semantically_complete is False
+    assert any(
+        "unknown custom operation" in item.message for item in lowered.diagnostics
+    )
+    assert lowered.document is not None
+    outer = lowered.document.operation_table().operation(0)
+    assert outer.name == "vendor.outer"
+    assert outer.is_unparsed is True
+    assert outer.unparsed_text == source
+    assert outer.source_range == (0, len(source))
+    inner = outer.region(0).block(0).operation(0)
+    assert inner.name == "vendor.inner"
+    assert inner.is_unparsed is True
+
+    ordinary = zirium.parse_text('"ordinary"() : () -> ()').lower_strict().document
+    assert ordinary is not None
+    assert ordinary.operation_table().operation(0).unparsed_text is None
+
+
+def test_consecutive_pretty_custom_operations_remain_semantically_visible():
+    source = b"stablehlo.add %lhs, %rhs\nstablehlo.return %lhs\n"
+    lowered = zirium.parse_bytes(source).lower_best_effort()
+    assert lowered.document is not None
+    table = lowered.document.operation_table()
+    assert [table.operation(index).name for index in range(table.count)] == [
+        "stablehlo.add",
+        "stablehlo.return",
+    ]
+    assert all(table.operation(index).is_unparsed for index in range(table.count))
+
+
 def test_operation_table_dictionary_filter_columns_and_indices():
     document = (
         zirium.parse_text(
@@ -322,3 +356,54 @@ def test_declarative_subset_is_owned_and_used_end_to_end():
     assert callee is not None
     assert callee.name == "func.func"
     assert b"func.call @callee()" in document.custom_bytes()
+
+
+def test_core_registry_binds_function_arguments_in_generic_operations():
+    source = """module {
+      func.func @add(%lhs: tensor<2xf32>, %rhs: tensor<2xf32>) -> tensor<2xf32> {
+        %sum = "stablehlo.add"(%lhs, %rhs) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
+        func.return %sum : tensor<2xf32>
+      }
+    }"""
+    lowered = zirium.parse_text(
+        source, registry=zirium.DialectRegistry.core()
+    ).lower_strict()
+    document = lowered.document
+    assert document is not None, lowered.diagnostics
+    assert lowered.diagnostics == []
+    document.verify_semantics()
+
+    add = document.operation_table("stablehlo.add").operation(0)
+    assert add.operand(0).kind == "block_argument"
+    assert add.operand(1).kind == "block_argument"
+
+
+def test_registered_operation_shapes_lower_and_bind_function_arguments():
+    registry = zirium.DialectRegistry.with_operation_shapes(
+        {
+            "vendor.function": zirium.OperationShape.FUNC_LIKE,
+            "vendor.invoke": zirium.OperationShape.CALL_LIKE,
+        }
+    )
+    source = """module {
+      vendor.function @"quoted symbol"(%arg: i32 loc(unknown)) -> i32 attributes {tag = "body"} {
+        %result = vendor.invoke @"quoted symbol"(%arg) {tag = "call"} : (i32) -> i32
+        vendor.unregistered @other()
+      }
+      vendor.function @declaration()
+    }"""
+    lowered = zirium.parse_text(source, registry=registry).lower_best_effort()
+    document = lowered.document
+    assert document is not None
+    functions = document.operation_table("vendor.function")
+    assert functions.count == 2
+    function = functions.operation(0)
+    assert ("sym_name", '@"quoted symbol"') in function.attribute_snapshot()
+    assert function.region_count() == 1
+    call = document.operation_table("vendor.invoke").operation(0)
+    assert call.operand_count() == 1
+    assert call.operand(0).kind == "block_argument"
+    assert call.result_count() == 1
+    assert ("callee", '@"quoted symbol"') in call.attribute_snapshot()
+    unknown = document.operation_table("vendor.unregistered").operation(0)
+    assert unknown.is_unparsed
