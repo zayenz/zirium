@@ -1,6 +1,6 @@
 # Zirium
 
-Zirium 0.0.1 is an experimental release. The API may change without a
+Zirium 0.0.2 is an experimental release. The API may change without a
 migration path.
 
 Zirium is a Rust library for reading, inspecting, transforming, and writing textual MLIR. It also provides typed Python bindings. The parser keeps the original bytes, including comments, whitespace, malformed syntax, and invalid UTF-8. A separate semantic layer provides a compact representation for verification and editing.
@@ -19,8 +19,11 @@ dialect coverage, bytecode support, ODS/TableGen loading, or a stable API.
 
 - A byte-oriented lexer and lossless concrete syntax tree (CST).
 - Recovery from malformed input with ranged diagnostics and useful outer structure.
+- Standard `module` handling and caller-provided func-like and call-like operation shapes.
+- Diagnostic-bearing recovery of unknown custom operations, including nested regions.
 - Strict and best-effort lowering into a separate semantic document.
 - Operations, regions, blocks, SSA values, types, attributes, locations, symbols, and dominance queries.
+- Python inspection of exact type and attribute spellings, scalar attributes, and stable value identity.
 - Deterministic generic MLIR output and structural round-trip comparison.
 - Buffered semantic edits that commit atomically.
 - Conservative source-preserving output for documents lowered with hybrid retention.
@@ -61,8 +64,9 @@ Parsing and lowering are separate on purpose. A `File` owns the original bytes, 
 
 Zirium requires Rust 1.85 or newer. The Python package supports conventional
 CPython 3.11 through 3.14. Release artifacts are currently proven only for
-Linux x86_64 by CI; other platforms require a local source build with maturin
-and are not part of the platform promise.
+Linux x86_64 and macOS arm64 by CI; other platforms require a local source
+build with maturin and are not part of the platform promise. Wheels remain
+specific to each supported CPython version rather than using the stable ABI.
 
 The [getting-started guide](https://github.com/zayenz/zirium/blob/main/docs/getting-started.md) covers:
 

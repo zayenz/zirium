@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "zirium"
-version = "0.0.1"
+version = "0.0.2"
 description = "Lossless textual MLIR parsing and semantic processing"
 readme = "README.md"
 license = "MIT OR Apache-2.0"

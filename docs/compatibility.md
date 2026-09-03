@@ -1,12 +1,12 @@
 # Compatibility and local wheel checks
 
-Zirium 0.0.1 requires Rust 1.85 or newer and supports version-specific CPython
+Zirium 0.0.2 requires Rust 1.85 or newer and supports version-specific CPython
 extensions for conventional CPython 3.11 through 3.14. The release artifact
-promise is currently Linux x86_64 only, because that is the platform covered
-by the release workflow. macOS and Windows source builds may work, but are not
-supported release platforms until they have passing CI artifact lanes. The CI
-quality workflow is the release-artifact evidence for this promise. It
-does not use or claim the stable ABI (abi3 or abi3t). CPython 3.14
+promise covers Linux x86_64 and macOS arm64, because those platforms have
+passing quality and release workflow artifact lanes. Other platform source
+builds may work, but are not supported release platforms. The CI quality
+workflow is the release-artifact evidence for this promise. It does not use or
+claim the stable ABI (abi3 or abi3t). CPython 3.14
 free-threaded builds are experimental and are not part of the stable promise.
 
 Run the complete local Rust quality gate. The commands match the CI jobs:
@@ -64,11 +64,13 @@ Build a wheel for one selected interpreter, then install that exact wheel into
 a clean environment. The resulting filename contains a version-specific tag
 such as `cp314-cp314`; it must not contain `abi3` or `abi3t`. The CI quality
 workflow repeats this check for CPython 3.11, 3.12, 3.13, and 3.14 on Linux
-x86_64.
+x86_64 and macOS arm64.
 
 Wheel builds call maturin directly because its PEP 517 path does not run the
-Linux wheel audit. CI builds inside a manylinux2014 container and rejects a
-wheel without a manylinux tag. `uv build` remains suitable for the sdist.
+Linux wheel audit. Linux CI builds inside a manylinux2014 container and rejects
+a wheel without a manylinux tag. macOS CI requires a native arm64 runner and
+rejects a wheel without a macOS arm64 tag. `uv build` remains suitable for the
+sdist.
 
 ```sh
 rm -rf target/wheels

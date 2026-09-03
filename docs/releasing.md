@@ -40,8 +40,11 @@ cargo publish -p zirium --dry-run --locked
 cargo package -p zirium --list
 ```
 
-Review the generated crate under `target/package/`. Commit the final release
-changes and wait for the Quality workflow to pass on `main`.
+Review the generated crate under `target/package/`, the source-distribution
+archive, and a locally built version-specific wheel. Commit the final release
+changes, then wait for the Quality workflow to pass on the committed candidate
+before tagging it. Creating and pushing the tag, approving deployments, and
+publishing remain user-owned actions.
 
 ## Publish a version
 
@@ -58,7 +61,9 @@ not part of the public release history.
 The Release workflow checks that the tagged commit is on `main` and that the
 tag matches all package versions. It verifies the Rust package, builds and
 installs the source distribution, and builds separate manylinux wheels for
-CPython 3.11 through 3.14.
+CPython 3.11 through 3.14. It also builds separate macOS arm64 wheels for the
+same four conventional CPython versions. All wheels keep version-specific ABI
+tags; the release does not publish stable-ABI wheels.
 
 When these checks pass, open the workflow run, select **Review deployments**,
 select both environments, and approve. Each publishing job uploads its package

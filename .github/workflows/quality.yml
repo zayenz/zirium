@@ -78,6 +78,47 @@ jobs:
           name: wheel-cp${{ matrix.python-version }}-linux-x86_64
           path: dist/*.whl
 
+  macos-wheel:
+    name: macOS arm64 wheel CPython ${{ matrix.python-version }}
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - run: test "$(uname -m)" = arm64
+      - run: uv python install ${{ matrix.python-version }}
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          maturin-version: v1.15.0
+          target: aarch64-apple-darwin
+          args: >-
+            --release --locked
+            --interpreter python${{ matrix.python-version }} --out dist
+      - run: uvx --from twine==7.0.0 twine check dist/*.whl
+      - name: Check and install the wheel
+        shell: bash
+        run: |
+          set -eu
+          python_tag="cp${{ matrix.python-version }}"
+          python_tag="${python_tag/./}"
+          wheel=$(find dist -maxdepth 1 -name "zirium-*-${python_tag}-${python_tag}-*macosx*_arm64.whl" -print -quit)
+          test -n "$wheel"
+          case "$wheel" in
+            *abi3*) echo "unexpected stable-ABI wheel: $wheel" >&2; exit 1 ;;
+          esac
+          uv venv --python "${{ matrix.python-version }}" wheel-venv
+          uv pip install --python wheel-venv/bin/python "$wheel"
+          wheel-venv/bin/python -c \
+            'import zirium; d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.operation_table().count == 1; assert d.canonical_bytes()'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-cp${{ matrix.python-version }}-macos-arm64
+          path: dist/*.whl
+          if-no-files-found: error
+
   sdist:
     name: Source distribution
     runs-on: ubuntu-latest
