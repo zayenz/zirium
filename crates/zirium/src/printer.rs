@@ -724,7 +724,9 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         }
         let (Some(source), Some(range)) = (
             self.doc.source_bytes(),
-            self.doc.operation_source_range(operation),
+            self.doc
+                .operation_syntax_range(operation)
+                .map(|range| self.doc.trim_trailing_trivia(range)),
         ) else {
             return Ok(());
         };
@@ -735,6 +737,12 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             .map_or(source.len(), |i| end + i);
         let tail = String::from_utf8_lossy(&source[end..line_end]);
         if let Some(comment) = tail.find("//") {
+            if !tail.as_bytes()[..comment]
+                .iter()
+                .all(|byte| matches!(byte, b' ' | b'\t'))
+            {
+                return Ok(());
+            }
             self.sink.write_char(' ')?;
             self.sink.write_str(tail[comment..].trim_end())?;
         }

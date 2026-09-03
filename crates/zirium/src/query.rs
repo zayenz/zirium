@@ -6,22 +6,17 @@ use crate::{
     dialect::DialectRegistry,
     semantic::{
         AttributeSpec, AttributeValue, CfBrOp, CfCondBrOp, Document, FuncCallOp, OperationId,
-        Successor, ValueId, ValueReference,
+        Successor, UseSite, ValueId, ValueReference,
     },
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Query {
-    operation_name: String,
-    stages: Vec<Stage>,
-}
+pub mod lexer;
+pub mod parser;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Stage {
-    Closure,
-    SetAttr { name: String, value: String },
-    Count,
-    Root,
+pub struct Query {
+    predicate: parser::Predicate,
+    stages: Vec<parser::Stage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,121 +55,81 @@ impl std::error::Error for EvaluationError {}
 
 impl Query {
     pub fn parse(source: &str) -> Result<Self, QueryError> {
-        let prefix = "select(op(\"";
-        if !source.starts_with(prefix) {
-            let position = source
-                .bytes()
-                .zip(prefix.bytes())
-                .position(|(actual, expected)| actual != expected)
-                .unwrap_or(source.len().min(prefix.len()));
-            return Err(QueryError {
-                position,
-                message: "expected `select(op(\"name\"))`",
-            });
-        }
-        let rest = &source[prefix.len()..];
-        let Some(end) = rest.find('"') else {
-            return Err(QueryError {
-                position: source.len(),
-                message: "unterminated operation name",
-            });
-        };
-        if end == 0 {
-            return Err(QueryError {
-                position: prefix.len(),
-                message: "operation name must not be empty",
-            });
-        }
-        let operation_name = rest[..end].to_owned();
-        let suffix_start = prefix.len() + end + 1;
-        let suffix = &source[suffix_start..];
-        let Some(mut rest) = suffix.strip_prefix("))") else {
-            return Err(QueryError {
-                position: suffix_start,
-                message: "expected `))` after operation name",
-            });
-        };
-        let mut stages = Vec::new();
-        let mut kind = PipelineKind::Selection;
-        while !rest.is_empty() {
-            let Some(next) = rest.strip_prefix(" | ") else {
-                return Err(QueryError {
-                    position: source.len() - rest.len(),
-                    message: "expected ` | ` followed by a pipeline operation",
-                });
+        let lexed = lexer::lex(source);
+        let parsed = parser::parse(&lexed);
+        let lexical = lexed.diagnostics().first().map(|diagnostic| {
+            let message = match diagnostic.kind() {
+                lexer::DiagnosticKind::QueryTooLarge => "query exceeds the supported size",
+                lexer::DiagnosticKind::InvalidToken => "invalid token",
+                lexer::DiagnosticKind::InvalidEscape => "unsupported string escape",
+                lexer::DiagnosticKind::UnterminatedString => "unterminated string",
             };
-            let position = source.len() - next.len();
-            if let Some(after) = next.strip_prefix("closure") {
-                require_selection(kind, position, "closure requires a selection")?;
-                stages.push(Stage::Closure);
-                rest = after;
-            } else if let Some(after) = next.strip_prefix("count") {
-                require_selection(kind, position, "count requires a selection")?;
-                stages.push(Stage::Count);
-                kind = PipelineKind::Scalar;
-                rest = after;
-            } else if let Some(after) = next.strip_prefix("root") {
-                require_selection(kind, position, "root requires a selection")?;
-                stages.push(Stage::Root);
-                kind = PipelineKind::Root;
-                rest = after;
-            } else if let Some(after) = next.strip_prefix("set_attr(") {
-                require_selection(kind, position, "set_attr requires a selection")?;
-                let (name, after) = parse_string(after, source.len() - after.len())?;
-                let Some(after) = after.strip_prefix(", ") else {
-                    return Err(QueryError {
-                        position,
-                        message: "expected `, ` in set_attr",
-                    });
-                };
-                let (value, after) = parse_string(after, source.len() - after.len())?;
-                let Some(after) = after.strip_prefix(')') else {
-                    return Err(QueryError {
-                        position,
-                        message: "expected `)` after set_attr arguments",
-                    });
-                };
-                if !valid_attribute_name(&name) {
-                    return Err(QueryError {
-                        position,
-                        message: "attribute name must be a dotted ASCII identifier",
-                    });
-                }
-                if value.chars().any(char::is_control) {
-                    return Err(QueryError {
-                        position,
-                        message: "attribute string must not contain control characters",
-                    });
-                }
-                stages.push(Stage::SetAttr { name, value });
-                rest = after;
-            } else {
-                return Err(QueryError {
-                    position,
-                    message: "unknown pipeline operation",
-                });
-            }
+            (diagnostic.range(), message)
+        });
+        let syntactic = parsed
+            .diagnostics()
+            .first()
+            .map(|diagnostic| (diagnostic.range(), diagnostic.message()));
+        if let Some((range, message)) = [lexical, syntactic]
+            .into_iter()
+            .flatten()
+            .min_by_key(|(range, _)| range.start())
+        {
+            return Err(QueryError {
+                position: range.start() as usize,
+                message,
+            });
         }
-        Ok(Self {
-            operation_name,
-            stages,
-        })
+        let program = parsed
+            .into_program()
+            .expect("diagnostic-free query has a program");
+        let predicate = program.predicate().clone();
+        let stages = program.stages().to_vec();
+        Ok(Self { predicate, stages })
     }
 
-    pub fn operation_name(&self) -> &str {
-        &self.operation_name
+    pub fn operation_name(&self) -> Option<&str> {
+        match &self.predicate {
+            parser::Predicate::Op { name, .. } => Some(name),
+            _ => None,
+        }
     }
 
     pub fn evaluate(&self, document: &mut Document) -> Result<QueryOutput, EvaluationError> {
         let mut selected = document
             .operations()
-            .filter(|&operation| document.operation_name(operation) == Some(self.operation_name()))
+            .filter(|&operation| evaluate_predicate(&self.predicate, document, operation))
             .collect::<Vec<_>>();
         let mut output = QueryOutput::Selection(selected.clone());
         for stage in &self.stages {
             match stage {
-                Stage::Closure => selected = evaluate_closure(document, selected)?,
-                Stage::SetAttr { name, value } => {
+                parser::Stage::Closure { .. } => selected = evaluate_closure(document, selected)?,
+                parser::Stage::Defs { .. } => selected = evaluate_defs(document, &selected),
+                parser::Stage::Users { .. } => selected = evaluate_users(document, &selected),
+                parser::Stage::Parent { .. } => selected = evaluate_parent(document, &selected),
+                parser::Stage::Children { .. } => selected = evaluate_children(document, &selected),
+                parser::Stage::Union { predicate, .. } => {
+                    let mut combined = selected.into_iter().collect::<HashSet<_>>();
+                    combined.extend(matching_operations(document, predicate));
+                    selected = source_ordered(document, combined);
+                }
+                parser::Stage::Intersect { predicate, .. } => {
+                    let matching = matching_operations(document, predicate);
+                    let intersection = selected
+                        .into_iter()
+                        .filter(|operation| matching.contains(operation))
+                        .collect();
+                    selected = source_ordered(document, intersection);
+                }
+                parser::Stage::Except { predicate, .. } => {
+                    let matching = matching_operations(document, predicate);
+                    let difference = selected
+                        .into_iter()
+                        .filter(|operation| !matching.contains(operation))
+                        .collect();
+                    selected = source_ordered(document, difference);
+                }
+                parser::Stage::SetAttr { name, value, .. } => {
                     let registry = DialectRegistry::proving();
                     let mut editor = document.edit(registry).map_err(edit_error)?;
                     let spelling = quote_mlir_string(value);
@@ -192,8 +147,27 @@ impl Query {
                     }
                     editor.commit().map_err(edit_error)?;
                 }
-                Stage::Count => output = QueryOutput::Count(selected.len()),
-                Stage::Root => output = QueryOutput::Root,
+                parser::Stage::RemoveAttr { name, .. } => {
+                    let targets = selected
+                        .iter()
+                        .copied()
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .filter(|&operation| document.attribute_id(operation, name).is_some())
+                        .collect::<Vec<_>>();
+                    if !targets.is_empty() {
+                        let registry = DialectRegistry::proving();
+                        let mut editor = document.edit(registry).map_err(edit_error)?;
+                        for operation in targets {
+                            editor
+                                .remove_attribute(operation, name)
+                                .map_err(edit_error)?;
+                        }
+                        editor.commit().map_err(edit_error)?;
+                    }
+                }
+                parser::Stage::Count { .. } => output = QueryOutput::Count(selected.len()),
+                parser::Stage::Root { .. } => output = QueryOutput::Root,
             }
         }
         if matches!(output, QueryOutput::Selection(_)) {
@@ -203,72 +177,137 @@ impl Query {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum PipelineKind {
-    Selection,
-    Scalar,
-    Root,
+fn source_ordered(document: &Document, selected: HashSet<OperationId>) -> Vec<OperationId> {
+    document
+        .operations()
+        .filter(|operation| selected.contains(operation))
+        .collect()
 }
 
-fn require_selection(
-    kind: PipelineKind,
-    position: usize,
-    message: &'static str,
-) -> Result<(), QueryError> {
-    if kind == PipelineKind::Selection {
-        Ok(())
-    } else {
-        Err(QueryError { position, message })
+fn matching_operations(document: &Document, predicate: &parser::Predicate) -> HashSet<OperationId> {
+    document
+        .operations()
+        .filter(|&operation| evaluate_predicate(predicate, document, operation))
+        .collect()
+}
+
+fn evaluate_defs(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
+    let definitions = selected
+        .iter()
+        .flat_map(|&operation| document.operands(operation).unwrap_or(&[]))
+        .filter_map(|operand| match *operand {
+            ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => Some(operation),
+            ValueReference::Resolved(ValueId::BlockArgument { block, .. }) => document
+                .block(block)
+                .and_then(|block| document.region(block.parent_region()))
+                .map(|region| region.parent_operation()),
+            ValueReference::Invalid(_) => None,
+        })
+        .collect();
+    source_ordered(document, definitions)
+}
+
+fn evaluate_users(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
+    let users = selected
+        .iter()
+        .flat_map(|&operation| {
+            (0..document.result_types(operation).map_or(0, <[_]>::len) as u32).flat_map(
+                move |result| document.uses(ValueId::OperationResult { operation, result }),
+            )
+        })
+        .map(|site| match site {
+            UseSite::Operand { operation, .. } | UseSite::SuccessorArgument { operation, .. } => {
+                operation
+            }
+        })
+        .collect();
+    source_ordered(document, users)
+}
+
+fn evaluate_parent(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
+    let parents = selected
+        .iter()
+        .filter_map(|&operation| {
+            document
+                .operation(operation)?
+                .parent_block()
+                .and_then(|block| document.block(block))
+                .and_then(|block| document.region(block.parent_region()))
+                .map(|region| region.parent_operation())
+        })
+        .collect();
+    source_ordered(document, parents)
+}
+
+fn evaluate_children(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
+    let children = selected
+        .iter()
+        .flat_map(|&operation| document.operation_regions(operation).unwrap_or(&[]))
+        .flat_map(|&region| {
+            document
+                .region(region)
+                .and_then(|region| region.blocks(document))
+                .unwrap_or(&[])
+        })
+        .flat_map(|&block| document.block_operations(block).unwrap_or(&[]))
+        .copied()
+        .collect();
+    source_ordered(document, children)
+}
+
+fn evaluate_predicate(
+    predicate: &parser::Predicate,
+    document: &Document,
+    operation: OperationId,
+) -> bool {
+    match predicate {
+        parser::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
+        parser::Predicate::HasAttr { name, .. } => document
+            .attribute_entries(operation)
+            .is_some_and(|mut entries| entries.any(|(attribute, _)| attribute == name)),
+        parser::Predicate::Attr { name, value, .. } => document
+            .attribute_entries(operation)
+            .and_then(|mut entries| entries.find(|(attribute, _)| attribute == name))
+            .and_then(|(_, id)| document.attribute_value(id))
+            .is_some_and(|attribute| matches!(attribute, AttributeValue::String(spelling) if decode_mlir_string(spelling).as_deref() == Some(value))),
+        parser::Predicate::Not { predicate, .. } => !evaluate_predicate(predicate, document, operation),
+        parser::Predicate::And { predicates, .. } => predicates.iter().all(|predicate| evaluate_predicate(predicate, document, operation)),
+        parser::Predicate::Or { predicates, .. } => predicates.iter().any(|predicate| evaluate_predicate(predicate, document, operation)),
+        parser::Predicate::Group { predicate, .. } => evaluate_predicate(predicate, document, operation),
     }
 }
 
-fn parse_string(source: &str, position: usize) -> Result<(String, &str), QueryError> {
-    let Some(mut rest) = source.strip_prefix('"') else {
-        return Err(QueryError {
-            position,
-            message: "expected a quoted string",
-        });
-    };
-    let mut value = String::new();
-    while let Some(ch) = rest.chars().next() {
-        rest = &rest[ch.len_utf8()..];
-        match ch {
-            '"' => return Ok((value, rest)),
-            '\\' => {
-                let Some(escaped) = rest.chars().next() else {
-                    return Err(QueryError {
-                        position,
-                        message: "unterminated string escape",
-                    });
-                };
-                rest = &rest[escaped.len_utf8()..];
-                match escaped {
-                    '"' | '\\' => value.push(escaped),
-                    _ => {
-                        return Err(QueryError {
-                            position,
-                            message: "unsupported string escape",
-                        });
-                    }
-                }
-            }
-            _ => value.push(ch),
+fn decode_mlir_string(spelling: &str) -> Option<String> {
+    let inner = spelling.strip_prefix('"')?.strip_suffix('"')?;
+    let bytes = inner.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'\\' {
+            decoded.push(bytes[cursor]);
+            cursor += 1;
+            continue;
+        }
+        let escaped = *bytes.get(cursor + 1)?;
+        if matches!(escaped, b'\\' | b'"') {
+            decoded.push(escaped);
+            cursor += 2;
+        } else {
+            let low = *bytes.get(cursor + 2)?;
+            decoded.push((hex_digit(escaped)? << 4) | hex_digit(low)?);
+            cursor += 3;
         }
     }
-    Err(QueryError {
-        position,
-        message: "unterminated string",
-    })
+    String::from_utf8(decoded).ok()
 }
 
-fn valid_attribute_name(name: &str) -> bool {
-    name.split('.').all(|component| {
-        let mut chars = component.chars();
-        chars
-            .next()
-            .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
-            && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    })
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn quote_mlir_string(value: &str) -> String {
