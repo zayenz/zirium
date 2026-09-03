@@ -3,7 +3,10 @@ use std::{fmt, io};
 use zirium::{
     parser::ParsedFile,
     printer::{PrintError, PrintLayout},
-    semantic::{LoweringMode, SharedRegistry, lower_proving_fixture},
+    semantic::{
+        LoweringMode, RetentionProfile, SharedRegistry, lower_proving_fixture,
+        lower_proving_fixture_with_retention,
+    },
 };
 
 fn round_trip(path: &str) {
@@ -91,6 +94,39 @@ fn streams_to_fmt_and_io_sinks_deterministically() {
         .print_io(&mut buffered, PrintLayout::Pretty)
         .unwrap();
     assert!(!buffered.into_inner().unwrap().is_empty());
+}
+
+#[test]
+fn unchanged_preserving_output_keeps_trailing_metadata_byte_exact() {
+    let bytes = br##""work"() : () -> ()
+{-# dialect_resources: { payload: "quoted \"#-} marker" } #-}
+"##;
+    let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
+    let document = lower_proving_fixture_with_retention(
+        &parsed,
+        LoweringMode::Strict,
+        RetentionProfile::Hybrid,
+        &SharedRegistry,
+    )
+    .document
+    .unwrap();
+    assert_eq!(parsed.original_bytes(), bytes);
+    let mut original = Vec::new();
+    parsed.write_original(&mut original).unwrap();
+    assert_eq!(original, bytes);
+    assert_eq!(
+        document.preserving_bytes(PrintLayout::Pretty).unwrap(),
+        bytes
+    );
+    let mut canonical = Vec::new();
+    document
+        .print_io(&mut canonical, PrintLayout::Pretty)
+        .unwrap();
+    assert!(
+        !canonical
+            .windows(b"dialect_resources".len())
+            .any(|window| window == b"dialect_resources")
+    );
 }
 
 #[test]

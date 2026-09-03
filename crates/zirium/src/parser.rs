@@ -578,6 +578,7 @@ macro_rules! base_syntax_views {
 
 base_syntax_views!(
     File,
+    FileMetadata,
     AliasDefinition,
     Operation,
     DialectOperation,
@@ -1082,7 +1083,9 @@ fn produce_operation_events(
     while !parser.at(TokenKind::Eof) {
         let before = parser.position;
         parser.trivia()?;
-        if matches!(
+        if parser.at(TokenKind::FileMetadataBegin) {
+            parser.file_metadata()?;
+        } else if matches!(
             parser.current(),
             TokenKind::HashIdentifier | TokenKind::ExclamationIdentifier
         ) && parser.nth_nontrivia(1) == Some(TokenKind::Equal)
@@ -1508,6 +1511,23 @@ impl DialectParser<'_, '_> {
 const MAX_TYPE_DEPTH: usize = 64;
 
 impl Parser<'_> {
+    fn file_metadata(&mut self) -> Result<(), CompactError> {
+        let marker = self.builder.start();
+        self.bump()?;
+        while !self.at(TokenKind::FileMetadataEnd) && !self.at(TokenKind::Eof) {
+            self.bump()?;
+        }
+        let unterminated = self.at(TokenKind::Eof);
+        if unterminated {
+            self.diagnostic();
+        } else {
+            self.bump()?;
+        }
+        self.builder
+            .complete_with_error(marker, SyntaxKind::FileMetadata, unterminated)?;
+        Ok(())
+    }
+
     fn alias_definition(&mut self) -> Result<(), CompactError> {
         let marker = self.builder.start();
         let is_type = self.at(TokenKind::ExclamationIdentifier);

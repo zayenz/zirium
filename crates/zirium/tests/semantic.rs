@@ -1038,6 +1038,59 @@ fn location_aliases_encodings_fused_members_and_duplicate_values_recover_structu
 }
 
 #[test]
+fn forward_aliases_resolve_through_nested_locations() {
+    let bytes = br#"%0 = "test.forward"() {value = #later_attr} : () -> !later_type loc(fused[#later_loc, callsite(#later_loc at "caller"(#later_loc))])
+!later_type = type i32
+#later_attr = 7
+#later_loc = loc("resolved")
+"#;
+    let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
+    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.operations().next().unwrap();
+    assert!(matches!(
+        document
+            .result_types(operation)
+            .and_then(|values| values.first())
+            .and_then(|id| document.type_value(*id)),
+        Some(TypeValue::Integer { .. })
+    ));
+    let value = document.attribute_value(document.attribute_id(operation, "value").unwrap());
+    assert!(
+        matches!(value, Some(AttributeValue::Integer(_))),
+        "{value:?}"
+    );
+    assert!(
+        matches!(document.operation_location_value(operation), Some(Some(LocationValue::Fused { locations, .. })) if matches!(locations.first(), Some(LocationValue::Name { name, .. }) if name == "\"resolved\"") && matches!(locations.get(1), Some(LocationValue::CallSite { callee, caller }) if matches!(callee.as_ref(), LocationValue::Name { .. }) && matches!(caller.as_ref(), LocationValue::Name { child: Some(child), .. } if matches!(child.as_ref(), LocationValue::Name { .. }))))
+    );
+}
+
+#[test]
+fn unresolved_nested_forward_location_preserves_surrounding_operations() {
+    let bytes = br#""before"() : () -> ()
+"nested"() : () -> () loc(callsite(#missing at "caller"(#missing)))
+"after"() : () -> ()
+"#;
+    let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
+    let lowered = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    assert!(lowered.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("unresolved location alias `#missing`")
+    }));
+    let document = lowered.document.unwrap();
+    assert_eq!(document.operations().count(), 3);
+    let nested = document
+        .operations()
+        .find(|&id| document.operation_name(id) == Some("nested"))
+        .unwrap();
+    assert!(
+        matches!(document.operation_location_value(nested), Some(Some(LocationValue::CallSite { callee, caller })) if matches!(callee.as_ref(), LocationValue::Invalid(_)) && matches!(caller.as_ref(), LocationValue::Name { child: Some(child), .. } if matches!(child.as_ref(), LocationValue::Invalid(_))))
+    );
+}
+
+#[test]
 fn memref_parameters_resolve_aliases_and_retain_invalid_nested_values() {
     let parsed = ParsedFile::parse(fixture("memref-parameters-rework.mlir")).unwrap();
     let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);

@@ -2181,6 +2181,7 @@ kind_catalog!(
         OpaqueType,
         OpaqueTypeBody,
         Error,
+        FileMetadata,
     ]
 );
 

@@ -67,6 +67,7 @@ pub enum SyntaxKind {
     OpaqueType,
     OpaqueTypeBody,
     Error,
+    FileMetadata,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

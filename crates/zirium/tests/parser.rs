@@ -915,3 +915,48 @@ fn every_owned_node_has_a_borrowed_structural_view() {
         );
     }
 }
+
+#[test]
+fn trailing_file_metadata_is_one_opaque_lossless_node() {
+    for key in [
+        "dialect_resources",
+        "external_resources",
+        "future_resources",
+    ] {
+        let bytes = format!(
+            "\"work\"() : () -> ()\n{{-# {key}: {{ value: \"escaped \\\"#-}} marker\" }} #-}}\n"
+        )
+        .into_bytes();
+        let source = Source::new(bytes.clone()).unwrap();
+        let parsed = ParsedFile::parse(bytes.clone()).unwrap();
+        assert_eq!(parsed.syntax().file().operations().count(), 1);
+        assert_eq!(
+            parsed
+                .syntax()
+                .file()
+                .nodes(SyntaxKind::FileMetadata)
+                .count(),
+            1
+        );
+        assert_eq!(reconstruct(parsed.syntax().tree(), &source), bytes);
+        assert_eq!(parsed.original_bytes(), bytes);
+        parsed.syntax().tree().verify().unwrap();
+    }
+}
+
+#[test]
+fn unterminated_file_metadata_is_one_erroneous_node() {
+    let bytes = b"\"work\"() : () -> ()\n{-# dialect_resources: { value: 1 }";
+    let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
+    assert_eq!(parsed.syntax().file().operations().count(), 1);
+    assert_eq!(
+        parsed
+            .syntax()
+            .file()
+            .nodes(SyntaxKind::FileMetadata)
+            .count(),
+        1
+    );
+    assert_eq!(parsed.syntax().diagnostics().len(), 1);
+    parsed.syntax().tree().verify().unwrap();
+}

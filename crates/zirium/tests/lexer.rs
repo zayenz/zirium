@@ -58,6 +58,26 @@ bare_id %0 ^bb1 @name @"quoted" !dialect.ty #dialect.attr
 }
 
 #[test]
+fn metadata_end_marker_inside_an_escaped_string_is_not_a_delimiter() {
+    let bytes = br##"{-# dialect_resources: { payload: "quoted \"#-} text" } #-}"##;
+    let source = source(bytes);
+    let kinds = lex(&source)
+        .tokens()
+        .iter()
+        .map(|token| token.kind())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|&&kind| kind == TokenKind::FileMetadataEnd)
+            .count(),
+        1
+    );
+    assert!(kinds.contains(&TokenKind::String));
+    assert_lossless(bytes);
+}
+
+#[test]
 fn corpus_manifest_covers_the_owned_lexer_families() {
     let manifest = include_str!("../../../tests/corpus/mlir-22.1/manifest.toml");
     for family in [
