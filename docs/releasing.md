@@ -80,3 +80,16 @@ uv run --no-project --isolated --with zirium==0.0.1 python -c \
 ```
 
 Check the crates.io, docs.rs, and PyPI pages before announcing the release.
+
+## Retry after a workflow failure
+
+Keep published release tags unchanged. If the workflow needs a fix, commit it
+to `main`, then run the updated workflow against the existing tag:
+
+```sh
+gh workflow run release.yml --ref main -f tag=v0.0.1
+```
+
+The workflow builds the tagged source, not the current `main` checkout. The
+PyPI upload still requires approval. Use this path only when the version has
+not yet been uploaded to PyPI.
