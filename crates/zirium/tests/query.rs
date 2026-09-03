@@ -7,4 +7,8 @@ fn parses_operation_name_selection_and_reports_positions() {
     let error = Query::parse("select(op(arith.addi))").unwrap_err();
     assert!(error.position > 0);
     assert!(error.to_string().contains("expected"));
+
+    let closure = Query::parse("select(op(\"arith.addi\")) | closure").unwrap();
+    assert_eq!(closure.operation_name(), "arith.addi");
+    assert!(Query::parse("select(op(\"arith.addi\")) | other").is_err());
 }

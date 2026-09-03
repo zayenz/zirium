@@ -115,7 +115,9 @@ fn run() -> Result<(), String> {
             use std::io::Write;
             output.write_all(b"// -----\n").map_err(|e| e.to_string())?;
         }
-        let selected = query.evaluate(&document);
+        let selected = query
+            .evaluate(&document)
+            .map_err(|error| format!("could not evaluate {name}: {error}"))?;
         document
             .write_selection(&mut output, &selected, PrintLayout::Pretty, registry)
             .map_err(|error| format!("could not print {name}: {error}"))?;

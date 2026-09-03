@@ -48,6 +48,106 @@ fn stdin_selection_retains_shell_and_comments() {
 }
 
 #[test]
+fn closure_adds_shared_ssa_definition_once_with_comments() {
+    let output = run_stdin("select(op(\"arith.addi\")) | closure", INPUT);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.matches("arith.constant").count(), 1, "{text}");
+    assert_eq!(text.matches("// Initial value.").count(), 1, "{text}");
+    assert!(text.find("arith.constant").unwrap() < text.find("arith.addi").unwrap());
+    assert!(!text.contains("example.observe"));
+}
+
+#[test]
+fn closure_at_function_argument_retains_complete_function_scope() {
+    let input = "\"builtin.module\"() ({\n  \"func.func\"() ({\n  ^entry(%arg0: i32):\n    %sum = \"arith.addi\"(%arg0, %arg0) : (i32, i32) -> i32\n    \"func.return\"(%sum) : (i32) -> ()\n  }) : () -> ()\n  \"example.other\"() : () -> ()\n}) : () -> ()\n";
+    let output = run_stdin("select(op(\"arith.addi\")) | closure", input);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("\"func.func\""), "{text}");
+    assert!(text.contains("func.return %"), "{text}");
+    assert!(!text.contains("example.other"), "{text}");
+}
+
+#[test]
+fn closure_follows_recursive_symbol_once_without_sibling_symbols() {
+    let input = "module {\n  func.func @recursive() {\n    func.call @recursive() : () -> ()\n    func.return\n  }\n  func.func @unrelated() { func.return }\n  func.func @caller() {\n    func.call @recursive() : () -> ()\n    func.return\n  }\n}\n";
+    let output = run_stdin("select(op(\"func.call\")) | closure", input);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.matches("func.func @recursive").count(), 1, "{text}");
+    assert_eq!(text.matches("func.call @recursive").count(), 2, "{text}");
+    assert!(!text.contains("func.func @unrelated"), "{text}");
+}
+
+#[test]
+fn closure_retains_cyclic_cfg_once_for_conditional_and_unconditional_branches() {
+    let input = "module {\n  func.func @loop() {\n  ^entry:\n    cf.br ^loop\n  ^loop:\n    %condition = arith.constant 1 : i1\n    cf.cond_br %condition, ^loop, ^exit\n  ^exit:\n    func.return\n  }\n}\n";
+    let output = run_stdin("select(op(\"cf.cond_br\")) | closure", input);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.matches("func.func @loop").count(), 1, "{text}");
+    assert_eq!(text.matches("cf.br").count(), 1, "{text}");
+    assert_eq!(text.matches("cf.cond_br").count(), 1, "{text}");
+    assert_eq!(text.matches("arith.constant").count(), 1, "{text}");
+    assert_eq!(text.matches("func.return").count(), 1, "{text}");
+}
+
+#[test]
+fn closure_reports_unresolved_callee_from_strict_lowering() {
+    let input = "module {\n  func.func @caller() {\n    func.call @missing() : () -> ()\n    func.return\n  }\n}\n";
+    let output = run_stdin("select(op(\"func.call\")) | closure", input);
+    assert!(!output.status.success());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("could not resolve func.call callee `@missing`"),
+        "{diagnostic}"
+    );
+}
+
+#[test]
+fn closure_reports_invalid_successor_from_strict_lowering() {
+    let input = "module {\n  func.func @caller() {\n    cf.br ^missing\n  }\n}\n";
+    let output = run_stdin("select(op(\"cf.br\")) | closure", input);
+    assert!(!output.status.success());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("unresolved block `^missing`"),
+        "{diagnostic}"
+    );
+}
+
+#[test]
+fn closure_rejects_symbol_reference_on_unregistered_operation() {
+    let input = "\"example.def\"() {sym_name = \"callee\"} : () -> ()\n\"example.call\"() {callee = @callee} : () -> ()\n";
+    let output = run_stdin("select(op(\"example.call\")) | closure", input);
+    assert!(!output.status.success());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains(
+            "cannot determine reference semantics for unregistered operation `example.call`"
+        ),
+        "{diagnostic}"
+    );
+}
+
+#[test]
 fn short_program_file_flag_reads_query_with_final_newline() {
     let program = temporary_path("short-program", "zirium");
     fs::write(&program, "select(op(\"arith.addi\"))\n").unwrap();
