@@ -7,7 +7,7 @@ use zirium::{
     dialect::DialectRegistry,
     parser::ParsedFile,
     printer::PrintLayout,
-    query::Query,
+    query::{Query, QueryOutput},
     semantic::{LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention},
 };
 
@@ -55,9 +55,9 @@ fn run() -> Result<(), String> {
             .collect::<Result<Vec<_>, _>>()?
     };
     let registry = DialectRegistry::proving();
-    let stdout = io::stdout();
-    let mut output = stdout.lock();
-    for (index, (name, bytes)) in inputs.into_iter().enumerate() {
+    let mut answers = Vec::new();
+    let mut scalar_output = false;
+    for (name, bytes) in inputs {
         let (bytes, insertion) = normalize_module_shorthand(bytes);
         let parsed = ParsedFile::parse_with_registry(bytes, registry)
             .map_err(|error| format!("could not parse {name}: {error}"))?;
@@ -87,7 +87,7 @@ fn run() -> Result<(), String> {
             RetentionProfile::Hybrid,
             registry,
         );
-        let document = lowered.document.ok_or_else(|| {
+        let mut document = lowered.document.ok_or_else(|| {
             let details = lowered
                 .diagnostics
                 .iter()
@@ -111,16 +111,38 @@ fn run() -> Result<(), String> {
             };
             format!("could not lower {name}: {detail}")
         })?;
-        if index != 0 {
-            use std::io::Write;
+        let result = query
+            .evaluate(&mut document)
+            .map_err(|error| format!("could not evaluate {name}: {error}"))?;
+        let mut answer = Vec::new();
+        match result {
+            QueryOutput::Selection(selected) => document
+                .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
+                .map_err(|error| format!("could not print {name}: {error}"))?,
+            QueryOutput::Root => document
+                .write_selection(
+                    &mut answer,
+                    document.root_operations(),
+                    PrintLayout::Pretty,
+                    registry,
+                )
+                .map_err(|error| format!("could not print {name}: {error}"))?,
+            QueryOutput::Count(count) => {
+                use std::io::Write;
+                writeln!(answer, "{count}").map_err(|error| error.to_string())?;
+                scalar_output = true;
+            }
+        }
+        answers.push(answer);
+    }
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    use std::io::Write;
+    for (index, answer) in answers.into_iter().enumerate() {
+        if index != 0 && !scalar_output {
             output.write_all(b"// -----\n").map_err(|e| e.to_string())?;
         }
-        let selected = query
-            .evaluate(&document)
-            .map_err(|error| format!("could not evaluate {name}: {error}"))?;
-        document
-            .write_selection(&mut output, &selected, PrintLayout::Pretty, registry)
-            .map_err(|error| format!("could not print {name}: {error}"))?;
+        output.write_all(&answer).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

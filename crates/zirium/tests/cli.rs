@@ -63,6 +63,126 @@ fn closure_adds_shared_ssa_definition_once_with_comments() {
 }
 
 #[test]
+fn count_prints_one_scalar_line_per_input() {
+    let first = temporary_path("count-first", "mlir");
+    let second = temporary_path("count-second", "mlir");
+    fs::write(&first, INPUT).unwrap();
+    fs::write(&second, "module { func.return }\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("select(op(\"arith.addi\")) | count")
+        .arg(&first)
+        .arg(&second)
+        .output()
+        .unwrap();
+    let _ = fs::remove_file(first);
+    let _ = fs::remove_file(second);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "1\n0\n");
+}
+
+#[test]
+fn set_attr_keeps_the_changed_selection_and_comments() {
+    let output = run_stdin(
+        "select(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\")",
+        INPUT,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.matches("analysis.tag = \"hot\"").count(), 1, "{text}");
+    assert!(text.contains("// Double it."), "{text}");
+    assert!(text.contains("// selected"), "{text}");
+    assert!(!text.contains("arith.constant"), "{text}");
+    assert!(!text.contains("example.observe"), "{text}");
+}
+
+#[test]
+fn root_after_mutation_prints_the_validated_whole_document() {
+    let output = run_stdin(
+        "select(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\") | root",
+        INPUT,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("analysis.tag = \"hot\""), "{text}");
+    assert!(text.contains("arith.constant"), "{text}");
+    assert!(text.contains("example.observe"), "{text}");
+}
+
+#[test]
+fn set_attr_mutates_the_selection_at_its_pipeline_position() {
+    let output = run_stdin(
+        "select(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\") | closure | root",
+        INPUT,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.matches("analysis.tag = \"hot\"").count(), 1, "{text}");
+    let constant = text.find("arith.constant").unwrap();
+    let add = text.find("arith.addi").unwrap();
+    let tag = text.find("analysis.tag = \"hot\"").unwrap();
+    assert!(constant < add && add < tag, "{text}");
+}
+
+#[test]
+fn rejected_composition_produces_no_output() {
+    let output = run_stdin("select(op(\"arith.addi\")) | count | root", INPUT);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("root requires a selection"));
+}
+
+#[test]
+fn invalid_set_attr_text_produces_no_output() {
+    for query in [
+        "select(op(\"arith.addi\")) | set_attr(\"bad name\", \"hot\") | root",
+        "select(op(\"arith.addi\")) | set_attr(\"tag\", \"hot\nvalue\") | root",
+    ] {
+        let output = run_stdin(query, INPUT);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("query error"));
+    }
+}
+
+#[test]
+fn escaped_set_attr_root_output_is_parseable() {
+    let input = "module {\n  %c = arith.constant 7 : i32\n  %sum = arith.addi %c, %c : i32\n}\n";
+    let output = run_stdin(
+        r#"select(op("arith.addi")) | set_attr("analysis.tag", "say \"hi\" \\ path") | root"#,
+        input,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(r#"analysis.tag = "say \"hi\" \\ path""#));
+    let reparsed = run_stdin("select(op(\"builtin.module\"))", &text);
+    assert!(
+        reparsed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reparsed.stderr)
+    );
+}
+
+#[test]
 fn closure_at_function_argument_retains_complete_function_scope() {
     let input = "\"builtin.module\"() ({\n  \"func.func\"() ({\n  ^entry(%arg0: i32):\n    %sum = \"arith.addi\"(%arg0, %arg0) : (i32, i32) -> i32\n    \"func.return\"(%sum) : (i32) -> ()\n  }) : () -> ()\n  \"example.other\"() : () -> ()\n}) : () -> ()\n";
     let output = run_stdin("select(op(\"arith.addi\")) | closure", input);
