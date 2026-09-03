@@ -126,6 +126,28 @@ fn unknown_custom_leading_symbol_stops_before_argument_list() {
 }
 
 #[test]
+fn boolean_attributes_lower_with_exact_spelling() {
+    let parsed =
+        ParsedFile::parse(b"\"flags\"() {enabled = true, disabled = false} : () -> ()".to_vec())
+            .unwrap();
+    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let document = lowered.document.expect("strict boolean attributes");
+    let operation = document.root_operations()[0];
+
+    for (name, expected) in [("enabled", true), ("disabled", false)] {
+        let attribute = document.attribute_id(operation, name).unwrap();
+        assert_eq!(
+            document.attribute_value(attribute),
+            Some(&AttributeValue::Boolean(expected))
+        );
+        assert_eq!(
+            document.attribute_spelling_value(attribute),
+            Some(if expected { "true" } else { "false" })
+        );
+    }
+}
+
+#[test]
 fn semantic_attribute_depth_limit_uses_invalid_sentinel() {
     let nested = (0..12).fold("1".to_owned(), |value, depth| {
         if depth % 2 == 0 {

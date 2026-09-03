@@ -30,6 +30,7 @@ pub enum SyntaxKind {
     IndexType,
     IntegerAttribute,
     FloatAttribute,
+    BooleanAttribute,
     StringAttribute,
     TypeAttribute,
     AttributeAlias,

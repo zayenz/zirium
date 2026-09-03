@@ -605,6 +605,7 @@ base_syntax_views!(
     IndexType,
     IntegerAttribute,
     FloatAttribute,
+    BooleanAttribute,
     StringAttribute,
     TypeAttribute,
     AttributeAlias,
@@ -2532,6 +2533,9 @@ impl Parser<'_> {
                 self.bump()?;
                 self.builder.complete(marker, SyntaxKind::AttributeAlias)?;
                 Ok(true)
+            }
+            TokenKind::BareIdentifier if matches!(self.current_text(), "true" | "false") => {
+                self.leaf(SyntaxKind::BooleanAttribute)
             }
             TokenKind::LBracket => self.array_attribute(),
             TokenKind::LBrace => self.dictionary_attribute(),

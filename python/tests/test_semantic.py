@@ -378,6 +378,60 @@ def test_core_registry_binds_function_arguments_in_generic_operations():
     assert add.operand(1).kind == "block_argument"
 
 
+def test_attributes_and_values_expose_scalar_and_document_identity():
+    source = """module {
+      func.func @inspect(%arg: i32) {
+        %result = "vendor.make"() {text = "value", count = 42, ratio = 1.5, enabled = true, target = @callee, items = [1]} : () -> i32
+        "vendor.use"(%result, %arg, %missing) : (i32, i32, i32) -> ()
+      }
+    }"""
+    lowered = zirium.parse_text(
+        source, registry=zirium.DialectRegistry.core()
+    ).lower_best_effort()
+    document = lowered.document
+    assert document is not None
+    producer = document.operation_table("vendor.make").operation(0)
+    consumer = document.operation_table("vendor.use").operation(0)
+
+    assert producer.mnemonic == producer.name == "vendor.make"
+    expected = {
+        "text": ('"value"', "value", None, None, None, None),
+        "count": ("42", None, 42, None, None, None),
+        "ratio": ("1.5", None, None, 1.5, None, None),
+        "enabled": ("true", None, None, None, True, None),
+        "target": ("@callee", None, None, None, None, "callee"),
+    }
+    for name, values in expected.items():
+        attribute = producer.attribute_by_name(name)
+        assert attribute is not None
+        assert (
+            attribute.spelling,
+            attribute.string_value,
+            attribute.integer_value,
+            attribute.float_value,
+            attribute.boolean_value,
+            attribute.symbol_value,
+        ) == values
+    assert producer.attribute_by_name("missing") is None
+    items = producer.attribute_by_name("items")
+    assert items is not None
+    assert items.integer_value is None
+
+    result = producer.result(0)
+    argument = consumer.operand(1)
+    invalid = consumer.operand(2)
+    assert isinstance(result.key, int)
+    assert isinstance(argument.key, int)
+    assert result.key != argument.key
+    assert consumer.operand(0).key == result.key
+    assert result.defining_operation is not None
+    assert result.defining_operation.name == "vendor.make"
+    assert argument.defining_operation is None
+    assert invalid.valid is False
+    assert invalid.key is None
+    assert invalid.defining_operation is None
+
+
 def test_registered_operation_shapes_lower_and_bind_function_arguments():
     registry = zirium.DialectRegistry.with_operation_shapes(
         {

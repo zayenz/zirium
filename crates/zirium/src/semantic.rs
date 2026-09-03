@@ -258,6 +258,7 @@ pub enum MemRefLayout {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AttributeValue {
+    Boolean(bool),
     Integer(String),
     Float(String),
     String(String),
@@ -1217,6 +1218,21 @@ impl Document {
                     .ok_or(EditError::InvalidValue(value))
             }
         }
+    }
+
+    /// Returns a stable, document-local identity for a resolved value.
+    pub fn value_key(&self, value: ValueId) -> Option<u128> {
+        self.check_value(value).ok()?;
+        Some(match value {
+            ValueId::OperationResult { operation, result } => {
+                ((operation.generation as u128) << 65)
+                    | ((operation.index as u128) << 33)
+                    | ((result as u128) << 1)
+            }
+            ValueId::BlockArgument { block, argument } => {
+                ((block.index as u128) << 33) | ((argument as u128) << 1) | 1
+            }
+        })
     }
 
     pub fn checked_uses(&self, value: ValueId) -> Result<Vec<UseSite>, EditError> {
@@ -2854,7 +2870,8 @@ fn verify_attribute_value<'a>(
                 })?;
             }
         }
-        AttributeValue::Integer(_)
+        AttributeValue::Boolean(_)
+        | AttributeValue::Integer(_)
         | AttributeValue::Float(_)
         | AttributeValue::String(_)
         | AttributeValue::Symbol(_)
@@ -5224,6 +5241,7 @@ fn lower_memref_layout(
             | AttributeValue::Large(_)
             | AttributeValue::WideNumber(_)
             | AttributeValue::Type(_)
+            | AttributeValue::Boolean(_)
             | AttributeValue::Integer(_)
             | AttributeValue::Float(_)
             | AttributeValue::String(_)
@@ -5650,6 +5668,9 @@ fn resolve_attribute(
     stack: &mut Vec<String>,
 ) -> Result<AttributeValue, String> {
     let spelling = spelling.trim();
+    if spelling == "true" || spelling == "false" {
+        return Ok(AttributeValue::Boolean(spelling == "true"));
+    }
     if spelling.starts_with("dense_resource<") {
         return balanced_large_attribute(spelling, "dense_resource", LargeAttributeValue::Resource);
     }
@@ -6467,6 +6488,9 @@ fn lower_attribute_value_with_depth(
     depth: usize,
 ) -> AttributeValue {
     let spelling = spelling.trim();
+    if spelling == "true" || spelling == "false" {
+        return AttributeValue::Boolean(spelling == "true");
+    }
     if spelling == "unit" {
         return AttributeValue::Opaque(Arc::from(b"unit".as_slice()));
     }

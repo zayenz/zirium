@@ -1701,6 +1701,10 @@ impl SemanticOperation {
 #[pymethods]
 impl SemanticOperation {
     #[getter]
+    fn mnemonic(&self) -> PyResult<String> {
+        self.name()
+    }
+    #[getter]
     fn name(&self) -> PyResult<String> {
         read_document(&self.state)?
             .operation_name(self.id)
@@ -1824,6 +1828,19 @@ impl SemanticOperation {
             id,
             name: name.to_owned(),
         })
+    }
+    fn attribute_by_name(&self, name: &str) -> PyResult<Option<SemanticAttribute>> {
+        let document = read_document(&self.state)?;
+        document
+            .operation(self.id)
+            .ok_or_else(|| stale("operation"))?;
+        Ok(document
+            .attribute_id(self.id, name)
+            .map(|id| SemanticAttribute {
+                state: self.state.clone(),
+                id,
+                name: name.to_owned(),
+            }))
     }
     fn attribute_snapshot(&self) -> PyResult<Vec<(String, String)>> {
         Ok(read_document(&self.state)?
@@ -1969,6 +1986,25 @@ impl SemanticValue {
         }
     }
     #[getter]
+    fn key(&self) -> PyResult<Option<u128>> {
+        let ValueReference::Resolved(value) = self.value else {
+            return Ok(None);
+        };
+        Ok(read_document(&self.state)?.value_key(value))
+    }
+    #[getter]
+    fn defining_operation(&self) -> PyResult<Option<SemanticOperation>> {
+        let ValueReference::Resolved(value) = self.value else {
+            return Ok(None);
+        };
+        let document = read_document(&self.state)?;
+        document.check_value(value).map_err(edit_error)?;
+        let ValueId::OperationResult { operation, .. } = value else {
+            return Ok(None);
+        };
+        Ok(Some(SemanticOperation::new(self.state.clone(), operation)))
+    }
+    #[getter]
     fn type_value(&self) -> PyResult<Option<SemanticType>> {
         let document = read_document(&self.state)?;
         if let ValueReference::Resolved(value) = self.value {
@@ -2039,6 +2075,40 @@ struct SemanticAttribute {
     name: String,
 }
 
+fn decode_string_attribute(spelling: &str) -> Option<String> {
+    let inner = spelling.strip_prefix('"')?.strip_suffix('"')?;
+    let bytes = inner.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'\\' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        match *bytes.get(index)? {
+            b'"' => decoded.push(b'"'),
+            b'\\' => decoded.push(b'\\'),
+            b'n' => decoded.push(b'\n'),
+            b't' => decoded.push(b'\t'),
+            high if high.is_ascii_hexdigit() => {
+                let low = *bytes.get(index + 1)?;
+                if !low.is_ascii_hexdigit() {
+                    return None;
+                }
+                decoded.push(
+                    (high as char).to_digit(16)? as u8 * 16 + (low as char).to_digit(16)? as u8,
+                );
+                index += 1;
+            }
+            _ => return None,
+        }
+        index += 1;
+    }
+    String::from_utf8(decoded).ok()
+}
+
 #[pymethods]
 impl SemanticAttribute {
     #[getter]
@@ -2055,6 +2125,7 @@ impl SemanticAttribute {
                 AttributeValue::Large(LargeAttributeValue::Dense(_)) => "dense",
                 AttributeValue::Large(LargeAttributeValue::Sparse(_)) => "sparse",
                 AttributeValue::Large(LargeAttributeValue::Resource(_)) => "resource",
+                AttributeValue::Boolean(_) => "boolean",
                 AttributeValue::Integer(_) => "integer",
                 AttributeValue::Float(_) => "float",
                 AttributeValue::String(_) => "string",
@@ -2068,6 +2139,79 @@ impl SemanticAttribute {
                 AttributeValue::WideNumber(_) => "wide_number",
                 AttributeValue::Opaque(_) => "opaque",
                 AttributeValue::Invalid(_) => "invalid",
+            },
+        )
+    }
+    #[getter]
+    fn spelling(&self) -> PyResult<String> {
+        read_document(&self.state)?
+            .attribute_spelling_value(self.id)
+            .map(str::to_owned)
+            .ok_or_else(|| stale("attribute"))
+    }
+    #[getter]
+    fn string_value(&self) -> PyResult<Option<String>> {
+        Ok(
+            match read_document(&self.state)?
+                .attribute_value(self.id)
+                .ok_or_else(|| stale("attribute"))?
+            {
+                AttributeValue::String(value) => decode_string_attribute(value),
+                _ => None,
+            },
+        )
+    }
+    #[getter]
+    fn integer_value(&self) -> PyResult<Option<i128>> {
+        Ok(
+            match read_document(&self.state)?
+                .attribute_value(self.id)
+                .ok_or_else(|| stale("attribute"))?
+            {
+                AttributeValue::Integer(value) => value
+                    .split(':')
+                    .next()
+                    .and_then(|value| value.trim().parse().ok()),
+                _ => None,
+            },
+        )
+    }
+    #[getter]
+    fn float_value(&self) -> PyResult<Option<f64>> {
+        Ok(
+            match read_document(&self.state)?
+                .attribute_value(self.id)
+                .ok_or_else(|| stale("attribute"))?
+            {
+                AttributeValue::Float(value) => value
+                    .split(':')
+                    .next()
+                    .and_then(|value| value.trim().parse().ok()),
+                _ => None,
+            },
+        )
+    }
+    #[getter]
+    fn boolean_value(&self) -> PyResult<Option<bool>> {
+        Ok(
+            match read_document(&self.state)?
+                .attribute_value(self.id)
+                .ok_or_else(|| stale("attribute"))?
+            {
+                AttributeValue::Boolean(value) => Some(*value),
+                _ => None,
+            },
+        )
+    }
+    #[getter]
+    fn symbol_value(&self) -> PyResult<Option<String>> {
+        Ok(
+            match read_document(&self.state)?
+                .attribute_value(self.id)
+                .ok_or_else(|| stale("attribute"))?
+            {
+                AttributeValue::Symbol(path) => Some(path.join("::")),
+                _ => None,
             },
         )
     }
@@ -2144,6 +2288,7 @@ kind_catalog!(
         IndexType,
         IntegerAttribute,
         FloatAttribute,
+        BooleanAttribute,
         StringAttribute,
         TypeAttribute,
         AttributeAlias,

@@ -1165,6 +1165,9 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
     }
     fn attribute(&mut self, value: &AttributeValue) -> fmt::Result {
         match value {
+            AttributeValue::Boolean(value) => {
+                self.sink.write_str(if *value { "true" } else { "false" })
+            }
             AttributeValue::Integer(v) | AttributeValue::Float(v) | AttributeValue::String(v) => {
                 self.sink.write_str(v)
             }
