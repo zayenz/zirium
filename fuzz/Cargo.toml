@@ -24,3 +24,10 @@ path = "fuzz_targets/parser.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "semantic_lowering"
+path = "fuzz_targets/semantic_lowering.rs"
+test = false
+doc = false
+bench = false

@@ -1,6 +1,7 @@
 /target/
 /fuzz/target/
 /fuzz/Cargo.lock
-/fuzz/corpus/
+/fuzz/corpus/*
+!/fuzz/corpus/semantic_lowering/
 /.venv/
 /python/zirium/*.so

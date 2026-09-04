@@ -797,7 +797,20 @@ fn lower_with_registry(
         let successors = op
             .successors()
             .map(|successor| {
-                let range = successor.tree().text_range(successor.id()).unwrap();
+                let Some(range) = successor.tree().text_range(successor.id()) else {
+                    let range = op
+                        .tree()
+                        .text_range(op.id())
+                        .unwrap_or_else(|| TextRange::at(source.len()));
+                    let diagnostic =
+                        push_diagnostic(&mut doc, range, "malformed successor".to_owned());
+                    return Successor {
+                        block: BlockId::new(usize::MAX, generation),
+                        invalid: Some(diagnostic),
+                        generation,
+                        arguments: doc.values.push(&[]),
+                    };
+                };
                 let spelling = text(source.bytes(), range);
                 let label = first_identifier(spelling, b'^').unwrap_or_default();
                 let block = parent_region
@@ -819,17 +832,23 @@ fn lower_with_registry(
                 let arguments = successor
                     .arguments()
                     .map(|argument| {
-                        let range = argument.tree().text_range(argument.id()).unwrap();
-                        resolve_value(
-                            text(source.bytes(), range),
-                            range,
-                            parent_region,
-                            doc.operations[i].parent,
-                            &region_definitions,
-                            &block_definitions,
-                            &region_outer,
-                            &mut doc,
-                        )
+                        match argument.tree().text_range(argument.id()) {
+                            Some(range) => resolve_value(
+                                text(source.bytes(), range),
+                                range,
+                                parent_region,
+                                doc.operations[i].parent,
+                                &region_definitions,
+                                &block_definitions,
+                                &region_outer,
+                                &mut doc,
+                            ),
+                            None => ValueReference::Invalid(push_diagnostic(
+                                &mut doc,
+                                range,
+                                "malformed successor argument".to_owned(),
+                            )),
+                        }
                     })
                     .collect::<Vec<_>>();
                 let expected = invalid.map_or_else(
