@@ -24,7 +24,7 @@ Recorded on Apple M1 Max / Darwin 25.5.0, target `aarch64-apple-darwin`, release
 | nested-depth-64 | 194 | 65 | 64 | 1,208 | 6,625 | 83 | 625 | 10,072 | 3,336 |
 | nested-depth-256 | 770 | 257 | 256 | 3,084 | 37,917 | 417 | 1,209 | 40,216 | 13,320 |
 
-Traversal now reads the kind, error flag, and token span from every visited node and black-boxes an accumulated checksum. Its median therefore rises with visited nodes (about 0.2 ms for 131,073 dense nodes and 0.1 ms for 65,537 trivia nodes), correcting the former `count()` measurement that release builds reduced to constant time. Exact retained and peak-live bytes grow linearly with generated event, node, and token counts. The nested cases remain linear and use no input-controlled recursion.
+Traversal reads the kind, error flag, and token span from every visited node and black-boxes an accumulated checksum. Its median rises with the number of visited nodes (about 0.2 ms for 131,073 dense nodes and 0.1 ms for 65,537 trivia nodes). Exact retained and peak-live bytes grow linearly with generated event, node, and token counts. Compaction accumulates descendant errors on the open-node stack, and each finish event propagates its error flag to its parent in constant work. Nested input uses no input-controlled recursion. The nested timing rows are reference measurements, not a claim about current scaling.
 
 ## Decision and follow-up rule
 

@@ -287,7 +287,7 @@ impl SyntaxTree {
                         local_error: false,
                         subtree_error: false,
                     });
-                    stack.push(nodes.len() - 1);
+                    stack.push((nodes.len() - 1, false));
                 }
                 Event::Start { .. } => return Err(CompactError::InvalidForwardParent),
                 Event::Token(i) => {
@@ -308,15 +308,18 @@ impl SyntaxTree {
                     stored.push(token);
                 }
                 Event::Finish { local_error } => {
-                    let i = stack.pop().ok_or(CompactError::UnexpectedFinish)?;
+                    let (i, descendant_error) =
+                        stack.pop().ok_or(CompactError::UnexpectedFinish)?;
                     nodes[i].token_count =
                         u32::try_from(stored.len() - nodes[i].first_token as usize)
                             .map_err(|_| CompactError::RepresentationTooLarge)?;
                     nodes[i].subtree_end = u32::try_from(nodes.len())
                         .map_err(|_| CompactError::RepresentationTooLarge)?;
                     nodes[i].local_error = local_error;
-                    nodes[i].subtree_error =
-                        local_error || nodes[i + 1..].iter().any(|n| n.subtree_error);
+                    nodes[i].subtree_error = local_error || descendant_error;
+                    if let Some((_, parent_descendant_error)) = stack.last_mut() {
+                        *parent_descendant_error |= nodes[i].subtree_error;
+                    }
                 }
             }
             Ok(())
