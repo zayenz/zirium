@@ -4838,7 +4838,7 @@ fn lower_with_registry(
         });
     }
 
-    let mut labels_by_region = HashMap::<RegionId, HashMap<String, BlockId>>::new();
+    let mut labels_by_region = HashMap::<RegionId, HashMap<String, Option<BlockId>>>::new();
     for (i, block) in blocks.iter().enumerate() {
         let parent = block_regions[&block_ids[&block.id()]];
         let label = block.label().and_then(|label| {
@@ -4846,10 +4846,17 @@ fn lower_with_registry(
                 text(source.bytes(), syntax.tree().text_range(label).unwrap()),
                 b'^',
             )?;
-            labels_by_region
-                .entry(parent)
-                .or_default()
-                .insert(name.clone(), BlockId::new(i, generation));
+            let labels = labels_by_region.entry(parent).or_default();
+            if labels.contains_key(&name) {
+                push_diagnostic(
+                    &mut doc,
+                    syntax.tree().text_range(label).unwrap(),
+                    format!("duplicate block label `^{name}` in region"),
+                );
+                labels.insert(name.clone(), None);
+            } else {
+                labels.insert(name.clone(), Some(BlockId::new(i, generation)));
+            }
             Some(strings.intern(&name))
         });
         let operations = syntax
@@ -4893,7 +4900,8 @@ fn lower_with_registry(
                 let block = parent_region
                     .and_then(|region| labels_by_region.get(&region))
                     .and_then(|labels| labels.get(&label))
-                    .copied();
+                    .copied()
+                    .flatten();
                 let (block, invalid) = match block {
                     Some(block) => (block, None),
                     None => {

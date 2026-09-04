@@ -752,6 +752,54 @@ fn generic_complete_adversarial_semantics_are_diagnosed_without_losing_ownership
 }
 
 #[test]
+fn duplicate_block_labels_are_diagnosed_and_leave_successors_unresolved() {
+    let source = br#""test.region"() ({
+  ^entry:
+    "test.jump"() [^same] : () -> ()
+  ^same:
+    "test.return"() : () -> ()
+  ^same:
+    "test.return"() : () -> ()
+}) : () -> ()"#;
+    let parsed = ParsedFile::parse(source.to_vec()).unwrap();
+
+    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    assert!(strict.document.is_none());
+    assert!(
+        strict
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message == "duplicate block label `^same` in region" })
+    );
+
+    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let document = best.document.unwrap();
+    let jump = document
+        .operations()
+        .find(|&operation| document.operation_name(operation) == Some("test.jump"))
+        .unwrap();
+    let successor = document.successors(jump).unwrap()[0];
+    assert!(document.block_label(successor.block).is_none());
+    document.validate().unwrap();
+}
+
+#[test]
+fn block_labels_are_scoped_to_their_region() {
+    let source = br#""test.regions"() ({
+  ^same:
+    "test.return"() : () -> ()
+}, {
+  ^same:
+    "test.return"() : () -> ()
+}) : () -> ()"#;
+    let parsed = ParsedFile::parse(source.to_vec()).unwrap();
+    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    lowered.document.unwrap().validate().unwrap();
+}
+
+#[test]
 fn core_values_are_structural_interned_sorted_and_retained() {
     let document = {
         let parsed = ParsedFile::parse(fixture("core-values.mlir")).unwrap();
