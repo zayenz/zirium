@@ -22,6 +22,39 @@ static LIVE_DOCUMENT_IDENTITIES: OnceLock<Mutex<HashMap<u128, Weak<DocumentIdent
 #[derive(Debug)]
 struct DocumentIdentity(u128);
 
+#[derive(Debug)]
+struct AliasExpansionState {
+    limit: usize,
+    active: HashSet<String>,
+}
+
+impl AliasExpansionState {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            active: HashSet::new(),
+        }
+    }
+
+    fn enter(&mut self, alias: &str, family: &str) -> Result<(), String> {
+        if self.active.contains(alias) {
+            return Err(format!("cyclic {family} alias `{alias}`"));
+        }
+        if self.active.len() >= self.limit {
+            return Err(format!(
+                "alias expansion depth exceeds limit of {}",
+                self.limit
+            ));
+        }
+        self.active.insert(alias.to_owned());
+        Ok(())
+    }
+
+    fn exit(&mut self, alias: &str) {
+        self.active.remove(alias);
+    }
+}
+
 impl Drop for DocumentIdentity {
     fn drop(&mut self) {
         if let Some(live) = LIVE_DOCUMENT_IDENTITIES.get() {
@@ -684,6 +717,7 @@ pub struct Document {
     revision: u64,
     analyses: AnalysisStore,
     attribute_depth_limit: usize,
+    alias_expansion_depth_limit: usize,
 }
 
 impl Document {
@@ -4306,6 +4340,7 @@ fn lower_with_registry(
         revision: 0,
         analyses: AnalysisStore::default(),
         attribute_depth_limit: file.max_attribute_depth(),
+        alias_expansion_depth_limit: file.max_alias_expansion_depth(),
     };
     for (name, range) in duplicate_aliases {
         push_diagnostic(
@@ -4670,12 +4705,13 @@ fn lower_with_registry(
                     doc.complete = false;
                     continue;
                 }
+                let mut expansion = AliasExpansionState::new(doc.alias_expansion_depth_limit);
                 let semantic = lower_attribute_value(
                     spelling,
                     range,
                     &type_aliases,
                     &attribute_aliases,
-                    &mut Vec::new(),
+                    &mut expansion,
                     &mut doc,
                 );
                 let index = attrs.intern_value(semantic);
@@ -4711,12 +4747,13 @@ fn lower_with_registry(
                 source.bytes(),
                 location.tree().text_range(location.id()).unwrap(),
             );
+            let mut expansion = AliasExpansionState::new(doc.alias_expansion_depth_limit);
             let value = lower_location_value(
                 spelling,
                 location.tree().text_range(location.id()).unwrap(),
                 &type_aliases,
                 &attribute_aliases,
-                &mut Vec::new(),
+                &mut expansion,
                 &mut doc,
             );
             let index = locations.intern_value(value);
@@ -5021,12 +5058,13 @@ fn lower_type_value(
     attribute_aliases: &HashMap<String, (String, TextRange)>,
     doc: &mut Document,
 ) -> TypeValue {
+    let mut expansion = AliasExpansionState::new(doc.alias_expansion_depth_limit);
     lower_type_value_with_stack(
         spelling,
         range,
         type_aliases,
         attribute_aliases,
-        &mut Vec::new(),
+        &mut expansion,
         doc,
     )
 }
@@ -5036,20 +5074,15 @@ fn lower_type_value_with_stack(
     range: TextRange,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
-    alias_stack: &mut Vec<String>,
+    alias_stack: &mut AliasExpansionState,
     doc: &mut Document,
 ) -> TypeValue {
     let spelling = spelling.trim();
     if let Some((target, _)) = type_aliases.get(spelling) {
-        if alias_stack.iter().any(|alias| alias == spelling) {
-            return TypeValue::Invalid(push_diagnostic(
-                doc,
-                range,
-                format!("cyclic type alias `{spelling}`"),
-            ));
-        }
         if target != spelling {
-            alias_stack.push(spelling.to_owned());
+            if let Err(message) = alias_stack.enter(spelling, "type") {
+                return TypeValue::Invalid(push_diagnostic(doc, range, message));
+            }
             let value = lower_type_value_with_stack(
                 target,
                 range,
@@ -5058,13 +5091,12 @@ fn lower_type_value_with_stack(
                 alias_stack,
                 doc,
             );
-            alias_stack.pop();
+            alias_stack.exit(spelling);
             return value;
         }
     }
     if !is_composite_type(spelling) {
-        if let Ok(value) = resolve_type(spelling, type_aliases, attribute_aliases, &mut Vec::new())
-        {
+        if let Ok(value) = resolve_type(spelling, type_aliases, attribute_aliases, alias_stack) {
             return value;
         }
     }
@@ -5164,7 +5196,7 @@ fn lower_type_value_with_stack(
                                 range,
                                 type_aliases,
                                 attribute_aliases,
-                                &mut Vec::new(),
+                                alias_stack,
                                 doc,
                             ))
                         }),
@@ -5182,7 +5214,14 @@ fn lower_type_value_with_stack(
                         dimensions,
                         element,
                         layout: parts.get(1).map(|value| {
-                            lower_memref_layout(value, range, type_aliases, attribute_aliases, doc)
+                            lower_memref_layout(
+                                value,
+                                range,
+                                type_aliases,
+                                attribute_aliases,
+                                alias_stack,
+                                doc,
+                            )
                         }),
                         memory_space: parts.get(2).map(|value| {
                             Box::new(lower_memref_memory_space(
@@ -5190,6 +5229,7 @@ fn lower_type_value_with_stack(
                                 range,
                                 type_aliases,
                                 attribute_aliases,
+                                alias_stack,
                                 doc,
                             ))
                         }),
@@ -5198,7 +5238,7 @@ fn lower_type_value_with_stack(
             }
         }
     }
-    let message = match resolve_type(spelling, type_aliases, attribute_aliases, &mut Vec::new()) {
+    let message = match resolve_type(spelling, type_aliases, attribute_aliases, alias_stack) {
         Err(message) => message,
         Ok(_) => format!("unsupported or malformed type `{spelling}`"),
     };
@@ -5210,6 +5250,7 @@ fn lower_memref_layout(
     range: TextRange,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
+    expansion: &mut AliasExpansionState,
     doc: &mut Document,
 ) -> MemRefLayout {
     if spelling.trim().starts_with("affine_map<") {
@@ -5224,7 +5265,7 @@ fn lower_memref_layout(
         };
     }
     if let Some(affine_spelling) =
-        match resolve_affine_alias(spelling.trim(), attribute_aliases, &mut Vec::new()) {
+        match resolve_affine_alias(spelling.trim(), attribute_aliases, expansion) {
             Ok(value) => value,
             Err(message) => return MemRefLayout::Invalid(push_diagnostic(doc, range, message)),
         }
@@ -5255,13 +5296,14 @@ fn lower_memref_layout(
             )),
         };
     }
-    match resolve_memref_layout(spelling, type_aliases, attribute_aliases) {
+    match resolve_memref_layout(spelling, type_aliases, attribute_aliases, expansion) {
         Ok(MemRefLayout::Opaque { spelling, .. }) => {
             let parameters = lower_memref_alias_parameters(
                 &spelling,
                 range,
                 type_aliases,
                 attribute_aliases,
+                expansion,
                 doc,
             );
             MemRefLayout::Opaque {
@@ -5280,6 +5322,7 @@ fn lower_memref_layout(
                         range,
                         type_aliases,
                         attribute_aliases,
+                        expansion,
                         doc,
                     ),
                 }
@@ -5293,43 +5336,41 @@ fn lower_memref_layout(
 fn resolve_affine_alias<'a>(
     spelling: &'a str,
     attribute_aliases: &'a HashMap<String, (String, TextRange)>,
-    stack: &mut Vec<String>,
+    stack: &mut AliasExpansionState,
 ) -> Result<Option<&'a str>, String> {
     let spelling = spelling.trim();
     if !spelling.starts_with('#') || spelling.contains('<') {
         return Ok(None);
     }
-    if stack.iter().any(|name| name == spelling) {
-        return Err(format!("cyclic attribute alias `{spelling}`"));
-    }
     let Some((target, _)) = attribute_aliases.get(spelling) else {
         return Ok(None);
     };
-    if target.trim().starts_with('!') {
-        return Err(format!(
+    stack.enter(spelling, "attribute")?;
+    let result = if target.trim().starts_with('!') {
+        Err(format!(
             "alias `{spelling}` has type kind, expected attribute"
-        ));
-    }
-    if target.trim().starts_with("affine_map<") || target.trim().starts_with("affine_set<") {
-        return Ok(Some(target.trim()));
-    }
-    if target.trim().starts_with('#') {
-        stack.push(spelling.to_owned());
-        let result = resolve_affine_alias(target, attribute_aliases, stack);
-        stack.pop();
-        return result;
-    }
-    Ok(None)
+        ))
+    } else if target.trim().starts_with("affine_map<") || target.trim().starts_with("affine_set<") {
+        Ok(Some(target.trim()))
+    } else if target.trim().starts_with('#') {
+        resolve_affine_alias(target, attribute_aliases, stack)
+    } else {
+        Ok(None)
+    };
+    stack.exit(spelling);
+    result
 }
 
 fn resolve_memref_layout(
     spelling: &str,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
+    expansion: &mut AliasExpansionState,
 ) -> Result<MemRefLayout, String> {
     let spelling = spelling.trim();
     if spelling.starts_with("strided<") || spelling.starts_with("affine_map<") {
-        if let Some(message) = first_invalid_memref_alias(spelling, type_aliases, attribute_aliases)
+        if let Some(message) =
+            first_invalid_memref_alias(spelling, type_aliases, attribute_aliases, expansion)
         {
             return Err(message);
         }
@@ -5338,7 +5379,7 @@ fn resolve_memref_layout(
             parameters: Vec::new(),
         });
     }
-    resolve_attribute(spelling, type_aliases, attribute_aliases, &mut Vec::new())
+    resolve_attribute(spelling, type_aliases, attribute_aliases, expansion)
         .and_then(|value| match value {
             AttributeValue::Type(_) => Err("type value has wrong kind".into()),
             value => Ok(MemRefLayout::Attribute(Box::new(value))),
@@ -5359,6 +5400,7 @@ fn lower_memref_alias_parameters(
     range: TextRange,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
+    expansion: &mut AliasExpansionState,
     doc: &mut Document,
 ) -> Vec<AttributeValue> {
     alias_spellings(spelling)
@@ -5376,7 +5418,7 @@ fn lower_memref_alias_parameters(
                     range,
                     type_aliases,
                     attribute_aliases,
-                    &mut Vec::new(),
+                    expansion,
                     doc,
                 )
             };
@@ -5397,6 +5439,7 @@ fn first_invalid_memref_alias(
     spelling: &str,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
+    expansion: &mut AliasExpansionState,
 ) -> Option<String> {
     alias_spellings(spelling).into_iter().find_map(|alias| {
         if alias.starts_with('!') {
@@ -5404,7 +5447,7 @@ fn first_invalid_memref_alias(
                 "alias `{alias}` has type kind, expected memref layout"
             ));
         }
-        match resolve_attribute(&alias, type_aliases, attribute_aliases, &mut Vec::new()) {
+        match resolve_attribute(&alias, type_aliases, attribute_aliases, expansion) {
             Ok(AttributeValue::Type(_)) => Some(format!(
                 "memref layout alias `{alias}` has type kind, expected attribute"
             )),
@@ -5443,6 +5486,7 @@ fn lower_memref_memory_space(
     range: TextRange,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
+    expansion: &mut AliasExpansionState,
     doc: &mut Document,
 ) -> AttributeValue {
     if spelling.trim().starts_with('!') {
@@ -5460,7 +5504,7 @@ fn lower_memref_memory_space(
         range,
         type_aliases,
         attribute_aliases,
-        &mut Vec::new(),
+        expansion,
         doc,
     );
     if matches!(value, AttributeValue::Type(_)) {
@@ -5481,6 +5525,7 @@ fn resolve_memref_memory_space(
     spelling: &str,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
+    expansion: &mut AliasExpansionState,
 ) -> Result<AttributeValue, String> {
     if spelling.trim().starts_with('!') {
         return Err(format!(
@@ -5488,22 +5533,22 @@ fn resolve_memref_memory_space(
             spelling.trim()
         ));
     }
-    resolve_attribute(spelling, type_aliases, attribute_aliases, &mut Vec::new()).and_then(
-        |value| match value {
+    resolve_attribute(spelling, type_aliases, attribute_aliases, expansion).and_then(|value| {
+        match value {
             AttributeValue::Type(_) => Err(format!(
                 "memref memory space `{}` has type kind, expected attribute",
                 spelling.trim()
             )),
             value => Ok(value),
-        },
-    )
+        }
+    })
 }
 
 fn resolve_type(
     spelling: &str,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
-    stack: &mut Vec<String>,
+    stack: &mut AliasExpansionState,
 ) -> Result<TypeValue, String> {
     let spelling = spelling.trim();
     if spelling.starts_with('!') && !spelling.contains('<') {
@@ -5516,12 +5561,9 @@ fn resolve_type(
         let Some((target, _)) = type_aliases.get(spelling) else {
             return Err(format!("unresolved type alias `{spelling}`"));
         };
-        if stack.iter().any(|name| name == spelling) {
-            return Err(format!("cyclic type alias `{spelling}`"));
-        }
-        stack.push(spelling.to_owned());
+        stack.enter(spelling, "type")?;
         let result = resolve_type(target, type_aliases, attribute_aliases, stack);
-        stack.pop();
+        stack.exit(spelling);
         return result;
     }
     if spelling == "index" {
@@ -5612,7 +5654,7 @@ fn resolve_type(
                             encoding,
                             type_aliases,
                             attribute_aliases,
-                            &mut Vec::new(),
+                            stack,
                         )?)),
                         None => None,
                     },
@@ -5631,13 +5673,20 @@ fn resolve_type(
                     element,
                     layout: parts
                         .get(1)
-                        .map(|value| resolve_memref_layout(value, type_aliases, attribute_aliases))
+                        .map(|value| {
+                            resolve_memref_layout(value, type_aliases, attribute_aliases, stack)
+                        })
                         .transpose()?,
                     memory_space: parts
                         .get(2)
                         .map(|value| {
-                            resolve_memref_memory_space(value, type_aliases, attribute_aliases)
-                                .map(Box::new)
+                            resolve_memref_memory_space(
+                                value,
+                                type_aliases,
+                                attribute_aliases,
+                                stack,
+                            )
+                            .map(Box::new)
                         })
                         .transpose()?,
                 },
@@ -5665,7 +5714,7 @@ fn resolve_attribute(
     spelling: &str,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
-    stack: &mut Vec<String>,
+    stack: &mut AliasExpansionState,
 ) -> Result<AttributeValue, String> {
     let spelling = spelling.trim();
     if spelling == "true" || spelling == "false" {
@@ -5690,12 +5739,9 @@ fn resolve_attribute(
         let Some((target, _)) = attribute_aliases.get(spelling) else {
             return Err(format!("unresolved attribute alias `{spelling}`"));
         };
-        if stack.iter().any(|name| name == spelling) {
-            return Err(format!("cyclic attribute alias `{spelling}`"));
-        }
-        stack.push(spelling.to_owned());
+        stack.enter(spelling, "attribute")?;
         let result = resolve_attribute(target, type_aliases, attribute_aliases, stack);
-        stack.pop();
+        stack.exit(spelling);
         return result;
     }
     if spelling.starts_with('@') {
@@ -5738,7 +5784,7 @@ fn resolve_attribute(
             .map(AttributeValue::Location)
             .ok_or_else(|| "invalid semantic location".into());
     }
-    if let Ok(ty) = resolve_type(spelling, type_aliases, attribute_aliases, &mut Vec::new()) {
+    if let Ok(ty) = resolve_type(spelling, type_aliases, attribute_aliases, stack) {
         return Ok(AttributeValue::Type(ty));
     }
     let literal = spelling.split(':').next().unwrap_or(spelling).trim();
@@ -5784,7 +5830,13 @@ fn balanced_large_attribute(
         return Err(format!("malformed {prefix} payload suffix"));
     };
     if suffix.is_empty()
-        || resolve_type(suffix, &HashMap::new(), &HashMap::new(), &mut Vec::new()).is_err()
+        || resolve_type(
+            suffix,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut AliasExpansionState::new(64),
+        )
+        .is_err()
     {
         return Err(format!("malformed {prefix} payload suffix"));
     }
@@ -5858,7 +5910,7 @@ fn lower_location_value(
     range: TextRange,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
-    stack: &mut Vec<String>,
+    stack: &mut AliasExpansionState,
     doc: &mut Document,
 ) -> LocationValue {
     let invalid = |doc: &mut Document, message: String| {
@@ -5867,9 +5919,6 @@ fn lower_location_value(
     let spelling = spelling.trim();
     if spelling.starts_with('#') {
         let alias = spelling.to_owned();
-        if stack.iter().any(|name| name == &alias) {
-            return invalid(doc, format!("cyclic location alias `{alias}`"));
-        }
         let Some((target, _)) = attribute_aliases.get(&alias) else {
             let message = if type_aliases.contains_key(&format!("!{}", &alias[1..])) {
                 format!("alias `{alias}` has type kind, expected location")
@@ -5878,7 +5927,9 @@ fn lower_location_value(
             };
             return invalid(doc, message);
         };
-        stack.push(alias);
+        if let Err(message) = stack.enter(&alias, "location") {
+            return invalid(doc, message);
+        }
         let wrapped;
         let target = if target.starts_with("loc(") {
             target.as_str()
@@ -5888,7 +5939,7 @@ fn lower_location_value(
         };
         let result =
             lower_location_value(target, range, type_aliases, attribute_aliases, stack, doc);
-        stack.pop();
+        stack.exit(&alias);
         return result;
     }
     let Some(inner) = spelling
@@ -5951,7 +6002,7 @@ fn lower_location_detail(
     range: TextRange,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
-    stack: &mut Vec<String>,
+    stack: &mut AliasExpansionState,
     doc: &mut Document,
 ) -> LocationValue {
     let spelling = spelling.trim();
@@ -6428,12 +6479,13 @@ fn lower_dictionary(
                     "malformed attribute value".into(),
                 ))
             } else {
+                let mut expansion = AliasExpansionState::new(doc.alias_expansion_depth_limit);
                 lower_attribute_value(
                     value_spelling,
                     attribute_range,
                     type_aliases,
                     attribute_aliases,
-                    &mut Vec::new(),
+                    &mut expansion,
                     doc,
                 )
             };
@@ -6464,7 +6516,7 @@ fn lower_attribute_value(
     range: TextRange,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
-    stack: &mut Vec<String>,
+    stack: &mut AliasExpansionState,
     doc: &mut Document,
 ) -> AttributeValue {
     lower_attribute_value_with_depth(
@@ -6483,7 +6535,7 @@ fn lower_attribute_value_with_depth(
     range: TextRange,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
-    stack: &mut Vec<String>,
+    stack: &mut AliasExpansionState,
     doc: &mut Document,
     depth: usize,
 ) -> AttributeValue {
@@ -6495,11 +6547,12 @@ fn lower_attribute_value_with_depth(
         return AttributeValue::Opaque(Arc::from(b"unit".as_slice()));
     }
     if let Some(inner) = angle_inner(spelling, "type") {
-        return AttributeValue::Type(lower_type_value(
+        return AttributeValue::Type(lower_type_value_with_stack(
             inner,
             range,
             type_aliases,
             attribute_aliases,
+            stack,
             doc,
         ));
     }
@@ -6507,7 +6560,7 @@ fn lower_attribute_value_with_depth(
         return lower_affine_attribute(spelling, range, doc);
     }
     if spelling.starts_with('#') && !spelling.contains('<') {
-        match resolve_affine_alias(spelling, attribute_aliases, &mut Vec::new()) {
+        match resolve_affine_alias(spelling, attribute_aliases, stack) {
             Ok(Some(target)) => return lower_affine_attribute(target, range, doc),
             Err(message) => {
                 return AttributeValue::Invalid(push_diagnostic(doc, range, message));
@@ -6613,11 +6666,12 @@ fn lower_attribute_value_with_depth(
         || spelling.starts_with("tuple<")
         || spelling.contains("->")
     {
-        return AttributeValue::Type(lower_type_value(
+        return AttributeValue::Type(lower_type_value_with_stack(
             spelling,
             range,
             type_aliases,
             attribute_aliases,
+            stack,
             doc,
         ));
     }

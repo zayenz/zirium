@@ -11,6 +11,8 @@ API remains experimental, and this release makes no ABI stability guarantee.
   diagnostic-bearing semantic operations.
 - Expose richer Python inspection, including exact type and attribute
   spellings, scalar attributes, and stable value identity.
+- Bound recursive alias expansion across type, attribute, affine, memref, and
+  location aliases. Rust and Python callers can select the limit.
 - Publish version-specific wheels for CPython 3.11 through 3.14 on Linux x86_64
   and macOS arm64. ABI3 remains out of scope.
 

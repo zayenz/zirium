@@ -804,6 +804,87 @@ fn aliases_diagnose_cycles_duplicates_wrong_kinds_and_unresolved_names() {
 }
 
 #[test]
+fn alias_expansion_limit_applies_to_each_alias_family() {
+    let cases = [
+        "!a = type !b\n!b = type i32\n%r = \"type.alias\"() : () -> !a",
+        "#a = #b\n#b = 1\n\"attribute.alias\"() {value = #a} : () -> ()",
+        "#a = #b\n#b = affine_map<(d0) -> (d0)>\n%r = \"affine.alias\"() : () -> memref<4xi32, #a>",
+        "#a = #b\n#b = loc(\"file\":1:1)\n\"location.alias\"() : () -> () loc(#a)",
+    ];
+    for source in cases {
+        let parsed = ParsedFile::parse_with_limits(
+            source.as_bytes().to_vec(),
+            ParseLimits {
+                max_alias_expansion_depth: 1,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+        assert!(strict.document.is_none(), "{source}");
+        assert!(
+            strict
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == "alias expansion depth exceeds limit of 1"),
+            "{source}: {:?}",
+            strict.diagnostics
+        );
+        let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+        let document = best.document.unwrap();
+        assert!(!document.is_semantically_complete(), "{source}");
+        document.validate().unwrap();
+    }
+}
+
+#[test]
+fn nested_alias_expansion_uses_the_shared_budget() {
+    let source =
+        b"!a = type tensor<1xi32, #b>\n#b = #c\n#c = 1\n%r = \"nested.alias\"() : () -> !a";
+    let parsed = ParsedFile::parse_with_limits(
+        source.as_slice(),
+        ParseLimits {
+            max_alias_expansion_depth: 2,
+            ..ParseLimits::default()
+        },
+    )
+    .unwrap();
+    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    assert!(lowered.document.is_none());
+    assert!(
+        lowered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "alias expansion depth exceeds limit of 2")
+    );
+}
+
+#[test]
+fn default_alias_expansion_limit_is_64() {
+    let aliases = (0..65)
+        .map(|index| {
+            let target = if index == 64 {
+                "i32".to_owned()
+            } else {
+                format!("!a{}", index + 1)
+            };
+            format!("!a{index} = type {target}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let source = format!("{aliases}\n%r = \"default.alias\"() : () -> !a0");
+    let parsed = ParsedFile::parse(source.into_bytes()).unwrap();
+    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    assert!(lowered.document.is_none());
+    assert!(
+        lowered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "alias expansion depth exceeds limit of 64")
+    );
+}
+
+#[test]
 fn direct_composite_type_alias_cycle_preserves_nested_shape() {
     let source = b"!a = type tuple<!a>\n%r = \"cycle.direct\"() : () -> !a";
     let parsed = ParsedFile::parse(source.as_slice()).unwrap();

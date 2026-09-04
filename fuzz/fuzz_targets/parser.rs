@@ -10,6 +10,7 @@ fuzz_target!(|data: &[u8]| {
         max_payload_bytes: 512,
         max_numeric_literal_bytes: 32,
         max_attribute_depth: 8,
+        max_alias_expansion_depth: 8,
     }) {
         Ok(parsed) => {
             let tree = parsed.syntax().tree();

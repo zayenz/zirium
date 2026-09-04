@@ -2429,6 +2429,7 @@ fn parse_limits(
     max_payload_bytes: Option<usize>,
     max_numeric_literal_bytes: Option<usize>,
     max_attribute_depth: Option<usize>,
+    max_alias_expansion_depth: Option<usize>,
 ) -> ParseLimits {
     let defaults = ParseLimits::default();
     ParseLimits {
@@ -2439,10 +2440,12 @@ fn parse_limits(
         max_numeric_literal_bytes: max_numeric_literal_bytes
             .unwrap_or(defaults.max_numeric_literal_bytes),
         max_attribute_depth: max_attribute_depth.unwrap_or(defaults.max_attribute_depth),
+        max_alias_expansion_depth: max_alias_expansion_depth
+            .unwrap_or(defaults.max_alias_expansion_depth),
     }
 }
 
-#[pyfunction(signature = (data, *, registry=None, max_file_bytes=None, max_tokens=None, max_delimiter_depth=None, max_payload_bytes=None, max_numeric_literal_bytes=None, max_attribute_depth=None))]
+#[pyfunction(signature = (data, *, registry=None, max_file_bytes=None, max_tokens=None, max_delimiter_depth=None, max_payload_bytes=None, max_numeric_literal_bytes=None, max_attribute_depth=None, max_alias_expansion_depth=None))]
 #[allow(clippy::too_many_arguments)]
 fn parse_bytes(
     data: &Bound<'_, PyBytes>,
@@ -2453,6 +2456,7 @@ fn parse_bytes(
     max_payload_bytes: Option<usize>,
     max_numeric_literal_bytes: Option<usize>,
     max_attribute_depth: Option<usize>,
+    max_alias_expansion_depth: Option<usize>,
     py: Python<'_>,
 ) -> PyResult<File> {
     let bytes = data.as_bytes().to_vec();
@@ -2463,12 +2467,13 @@ fn parse_bytes(
         max_payload_bytes,
         max_numeric_literal_bytes,
         max_attribute_depth,
+        max_alias_expansion_depth,
     );
     let registry = registry.map_or(RegistryKind::Empty, |registry| registry.kind.clone());
     py.detach(move || parsed(bytes, limits, registry))
 }
 
-#[pyfunction(signature = (text, *, registry=None, max_file_bytes=None, max_tokens=None, max_delimiter_depth=None, max_payload_bytes=None, max_numeric_literal_bytes=None, max_attribute_depth=None))]
+#[pyfunction(signature = (text, *, registry=None, max_file_bytes=None, max_tokens=None, max_delimiter_depth=None, max_payload_bytes=None, max_numeric_literal_bytes=None, max_attribute_depth=None, max_alias_expansion_depth=None))]
 #[allow(clippy::too_many_arguments)]
 fn parse_text(
     text: &str,
@@ -2479,6 +2484,7 @@ fn parse_text(
     max_payload_bytes: Option<usize>,
     max_numeric_literal_bytes: Option<usize>,
     max_attribute_depth: Option<usize>,
+    max_alias_expansion_depth: Option<usize>,
     py: Python<'_>,
 ) -> PyResult<File> {
     let bytes = text.as_bytes().to_vec();
@@ -2489,12 +2495,13 @@ fn parse_text(
         max_payload_bytes,
         max_numeric_literal_bytes,
         max_attribute_depth,
+        max_alias_expansion_depth,
     );
     let registry = registry.map_or(RegistryKind::Empty, |registry| registry.kind.clone());
     py.detach(move || parsed(bytes, limits, registry))
 }
 
-#[pyfunction(signature = (path, *, registry=None, max_file_bytes=None, max_tokens=None, max_delimiter_depth=None, max_payload_bytes=None, max_numeric_literal_bytes=None, max_attribute_depth=None))]
+#[pyfunction(signature = (path, *, registry=None, max_file_bytes=None, max_tokens=None, max_delimiter_depth=None, max_payload_bytes=None, max_numeric_literal_bytes=None, max_attribute_depth=None, max_alias_expansion_depth=None))]
 #[allow(clippy::too_many_arguments)]
 fn parse_file(
     path: PathBuf,
@@ -2505,6 +2512,7 @@ fn parse_file(
     max_payload_bytes: Option<usize>,
     max_numeric_literal_bytes: Option<usize>,
     max_attribute_depth: Option<usize>,
+    max_alias_expansion_depth: Option<usize>,
     py: Python<'_>,
 ) -> PyResult<File> {
     let limits = parse_limits(
@@ -2514,6 +2522,7 @@ fn parse_file(
         max_payload_bytes,
         max_numeric_literal_bytes,
         max_attribute_depth,
+        max_alias_expansion_depth,
     );
     let registry = registry.map_or(RegistryKind::Empty, |registry| registry.kind.clone());
     py.detach(move || {

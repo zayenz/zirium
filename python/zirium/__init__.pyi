@@ -430,6 +430,7 @@ def parse_bytes(
     max_payload_bytes: int | None = None,
     max_numeric_literal_bytes: int | None = None,
     max_attribute_depth: int | None = None,
+    max_alias_expansion_depth: int | None = None,
 ) -> File: ...
 def parse_text(
     text: str,
@@ -441,6 +442,7 @@ def parse_text(
     max_payload_bytes: int | None = None,
     max_numeric_literal_bytes: int | None = None,
     max_attribute_depth: int | None = None,
+    max_alias_expansion_depth: int | None = None,
 ) -> File: ...
 def parse_file(
     path: _Path,
@@ -452,4 +454,5 @@ def parse_file(
     max_payload_bytes: int | None = None,
     max_numeric_literal_bytes: int | None = None,
     max_attribute_depth: int | None = None,
+    max_alias_expansion_depth: int | None = None,
 ) -> File: ...

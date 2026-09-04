@@ -54,6 +54,29 @@ def test_unknown_custom_operations_expose_exact_text_and_nested_regions():
     assert ordinary.operation_table().operation(0).unparsed_text is None
 
 
+def test_alias_expansion_limit_is_configurable_and_defaults_to_64():
+    source = "\n".join(
+        [f"!a{i} = type !a{i + 1}" for i in range(65)]
+        + ["!a65 = type i32", '%r = "alias.limit"() : () -> !a0']
+    )
+    default = zirium.parse_text(source).lower_strict()
+    assert default.document is None
+    assert any(
+        item.message == "alias expansion depth exceeds limit of 64"
+        for item in default.diagnostics
+    )
+
+    selected = zirium.parse_bytes(
+        b'!a = type !b\n!b = type i32\n%r = "alias.limit"() : () -> !a',
+        max_alias_expansion_depth=1,
+    ).lower_best_effort()
+    assert selected.document is not None
+    assert any(
+        item.message == "alias expansion depth exceeds limit of 1"
+        for item in selected.diagnostics
+    )
+
+
 def test_consecutive_pretty_custom_operations_remain_semantically_visible():
     source = b"stablehlo.add %lhs, %rhs\nstablehlo.return %lhs\n"
     lowered = zirium.parse_bytes(source).lower_best_effort()

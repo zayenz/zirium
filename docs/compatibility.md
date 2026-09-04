@@ -94,6 +94,10 @@ uvx twine check target/sdist/*
 ```
 ## Resource limits
 
-Rust callers can use `ParsedFile::parse_with_limits` with `ParseLimits`. Python's `parse_bytes`, `parse_text`, and `parse_file` accept the same limits as keyword-only arguments: `max_file_bytes`, `max_tokens`, `max_delimiter_depth`, `max_payload_bytes`, `max_numeric_literal_bytes`, and `max_attribute_depth`. Existing calls keep their current defaults.
+Rust callers can use `ParsedFile::parse_with_limits` with `ParseLimits`. Python's `parse_bytes`, `parse_text`, and `parse_file` accept the same limits as keyword-only arguments: `max_file_bytes`, `max_tokens`, `max_delimiter_depth`, `max_payload_bytes`, `max_numeric_literal_bytes`, `max_attribute_depth`, and `max_alias_expansion_depth`. Existing calls keep their current defaults.
 
 Exceeding `max_file_bytes` rejects the input before lexing (`ParseFileError::ResourceLimit` in Rust and `ResourceLimitError` in Python). Other syntax limits produce a lossless parsed file with diagnostics. Attribute-depth exhaustion during lowering produces an invalid attribute sentinel: strict lowering has no document, while best-effort lowering returns a document only when it remains structurally valid.
+The alias expansion limit defaults to 64 and covers type, attribute, affine,
+memref, and location aliases through one shared budget. Exhaustion produces an
+invalid semantic value and the diagnostic `alias expansion depth exceeds limit
+of 64`, with the effective limit substituted.

@@ -317,10 +317,15 @@ parsed = zirium.parse_file(
     max_payload_bytes=16 * 1024 * 1024,
     max_numeric_literal_bytes=4096,
     max_attribute_depth=64,
+    max_alias_expansion_depth=64,
 )
 ```
 
 Exceeding `max_file_bytes` raises `ResourceLimitError` before lexing. Other syntax limits return a lossless parsed file with diagnostics where recovery is possible. Rust callers configure the same boundaries with `ParseLimits` and `ParsedFile::parse_with_limits`.
+Alias expansion uses a shared budget across type, attribute, affine, memref, and
+location aliases. When an alias chain reaches `max_alias_expansion_depth`,
+lowering reports `alias expansion depth exceeds limit of 64`, with the selected
+limit in place of 64. The default is 64.
 
 ## Where to go next
 

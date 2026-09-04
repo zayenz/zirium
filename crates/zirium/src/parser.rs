@@ -39,6 +39,7 @@ pub struct ParsedFile {
     lexer_diagnostics: Vec<LexDiagnostic>,
     syntax: ParsedSyntax,
     max_attribute_depth: usize,
+    max_alias_expansion_depth: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +50,7 @@ pub struct ParseLimits {
     pub max_payload_bytes: usize,
     pub max_numeric_literal_bytes: usize,
     pub max_attribute_depth: usize,
+    pub max_alias_expansion_depth: usize,
 }
 
 impl Default for ParseLimits {
@@ -62,6 +64,7 @@ impl Default for ParseLimits {
             max_payload_bytes: parser.max_payload_bytes,
             max_numeric_literal_bytes: parser.max_numeric_literal_bytes,
             max_attribute_depth: 64,
+            max_alias_expansion_depth: 64,
         }
     }
 }
@@ -120,6 +123,7 @@ impl ParsedFile {
             lexer_diagnostics,
             syntax,
             max_attribute_depth: limits.max_attribute_depth,
+            max_alias_expansion_depth: limits.max_alias_expansion_depth,
         })
     }
     pub fn source(&self) -> &Source {
@@ -133,6 +137,9 @@ impl ParsedFile {
     }
     pub fn max_attribute_depth(&self) -> usize {
         self.max_attribute_depth
+    }
+    pub fn max_alias_expansion_depth(&self) -> usize {
+        self.max_alias_expansion_depth
     }
     pub fn original_bytes(&self) -> &[u8] {
         self.source.bytes()
