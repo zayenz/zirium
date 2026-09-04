@@ -227,6 +227,23 @@ def test_indexed_and_packed_traversal_is_ordered_and_linear():
         assert list(memoryview(offsets).cast("I")) == [0, 0, 0]
 
 
+def test_syntax_node_downcasts_generic_registered_and_unrelated_nodes():
+    generic = zirium.parse_bytes(VALID)
+    generic_node = generic.node(
+        next(iter(memoryview(generic.root.child_indices()).cast("I")))
+    )
+    assert generic_node.kind == "Operation"
+    assert generic_node.as_operation() is not None
+
+    registered = zirium.parse_text("module { }", registry=zirium.DialectRegistry.core())
+    registered_node = registered.node(
+        next(iter(memoryview(registered.root.child_indices()).cast("I")))
+    )
+    assert registered_node.kind == "DialectOperation"
+    assert registered_node.as_operation() is not None
+    assert registered.root.as_operation() is None
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -294,9 +311,11 @@ def test_runtime_and_stub_expose_only_indexed_bulk_syntax_surface():
     assert removed_node.isdisjoint(dir(zirium.SyntaxNode))
     assert removed_operation.isdisjoint(dir(zirium.Operation))
     stub = (Path(zirium.__file__).with_name("__init__.pyi")).read_text()
+    assert zirium.SyntaxOperationTable is not None
+    assert "SyntaxOperationTable" in vars(zirium)["__all__"]
+    assert "class SyntaxOperationTable:" in stub
     for name in (
         "SyntaxTable",
-        "SyntaxOperationTable",
         "node_count",
         "token_count",
         "syntax_table",

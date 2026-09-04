@@ -206,7 +206,11 @@ impl SyntaxNode {
         PyBytes::new(py, bytes)
     }
     fn as_operation(&self) -> Option<Operation> {
-        (self.tree().kind(self.id) == Some(SyntaxKind::Operation)).then(|| Operation {
+        matches!(
+            self.tree().kind(self.id),
+            Some(SyntaxKind::Operation | SyntaxKind::DialectOperation)
+        )
+        .then(|| Operation {
             file: self.file.clone(),
             id: self.id,
         })

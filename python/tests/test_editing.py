@@ -208,11 +208,15 @@ def test_buffering_holds_no_document_lock_across_python_execution():
 
 
 def test_bounded_operation_and_attribute_specs_snapshot_existing_values():
-    doc = document()
-    make = doc.operation_table("vendor.make").operation(0)
-    ty = make.result_type(0)
-    tag = zirium.AttributeSpecHandle(make.attribute(0), "copied_tag")
-    spec = zirium.OperationSpec("vendor.copy", [], [ty], ty, [tag])
+    doc = generic_document(
+        '!fn = type () -> (i32)\n%f = "fn"() : () -> !fn\n'
+        '%v = "value"() {tag = #vendor.tag<"x">} : () -> i32'
+    )
+    function_type = doc.operation_table("fn").operation(0).result_type(0)
+    value = doc.operation_table("value").operation(0)
+    result_type = value.result_type(0)
+    tag = zirium.AttributeSpecHandle(value.attribute(0), "copied_tag")
+    spec = zirium.OperationSpec("vendor.copy", [], [result_type], function_type, [tag])
 
     with doc.edit() as edit:
         edit.insert_root(1, spec)
@@ -267,15 +271,23 @@ def test_fixed_result_types_attrs_properties_and_pool_compaction():
     doc = generic_document('%a = "a"() : () -> i32\n%b = "b"() : () -> i64')
     first, second = operations(doc)
     result = first.result(0)
-    with doc.edit() as edit:
+    original = doc.canonical_bytes()
+    with (
+        pytest.raises(
+            zirium.SemanticVerificationError,
+            match="result types do not match the stored function type outputs",
+        ),
+        doc.edit() as edit,
+    ):
         edit.replace_result_types(
             first, [second.result_type(i) for i in range(second.result_count())]
         )
     assert first.result(0).valid
-    assert first.result_type(0).spelling == "i64"
+    assert first.result_type(0).spelling == "i32"
     result_type = result.type_value
     assert result_type is not None
-    assert result_type.spelling == "i64"
+    assert result_type.spelling == "i32"
+    assert doc.canonical_bytes() == original
 
     properties_doc = generic_document(PROPERTIES_SOURCE)
     operation = properties_doc.operation_table("test.properties").operation(0)
