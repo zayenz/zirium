@@ -120,6 +120,60 @@ fn byte_text_edits_reparse_without_mutating_the_original() {
     edited.syntax().tree().verify().unwrap();
 }
 
+#[test]
+fn text_edits_reuse_the_original_file_size_limit() {
+    let bytes = b"\"old\"() : () -> ()";
+    let original = ParsedFile::parse_with_limits(
+        bytes.as_slice(),
+        ParseLimits {
+            max_file_bytes: bytes.len(),
+            ..ParseLimits::default()
+        },
+    )
+    .unwrap();
+
+    let error = original
+        .apply_text_edits(&[TextEdit {
+            range: TextRange::new(1, 4).unwrap(),
+            replacement: Arc::from(b"longer".as_slice()),
+        }])
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        zirium::parser::ApplyTextEditsError::Parse(ParseFileError::ResourceLimit(_))
+    ));
+    assert_eq!(original.original_bytes(), bytes);
+}
+
+#[test]
+fn successful_text_edits_reuse_the_original_token_limit() {
+    let bytes = b"\"old\"() : () -> ()";
+    let original = ParsedFile::parse_with_limits(
+        bytes.as_slice(),
+        ParseLimits {
+            max_tokens: 1,
+            ..ParseLimits::default()
+        },
+    )
+    .unwrap();
+    let edited = original
+        .apply_text_edits(&[TextEdit {
+            range: TextRange::new(1, 4).unwrap(),
+            replacement: Arc::from(b"new".as_slice()),
+        }])
+        .unwrap();
+
+    assert!(
+        edited
+            .lexer_diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind() == zirium::lexer::DiagnosticKind::TokenLimit)
+    );
+    assert_eq!(original.original_bytes(), bytes);
+    assert_eq!(edited.original_bytes(), b"\"new\"() : () -> ()");
+}
+
 fn core_corpus(name: &str) -> Vec<u8> {
     fs::read(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

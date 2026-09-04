@@ -38,8 +38,7 @@ pub struct ParsedFile {
     source: Source,
     lexer_diagnostics: Vec<LexDiagnostic>,
     syntax: ParsedSyntax,
-    max_attribute_depth: usize,
-    max_alias_expansion_depth: usize,
+    limits: ParseLimits,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,8 +121,7 @@ impl ParsedFile {
             source,
             lexer_diagnostics,
             syntax,
-            max_attribute_depth: limits.max_attribute_depth,
-            max_alias_expansion_depth: limits.max_alias_expansion_depth,
+            limits,
         })
     }
     pub fn source(&self) -> &Source {
@@ -136,10 +134,10 @@ impl ParsedFile {
         &self.syntax
     }
     pub fn max_attribute_depth(&self) -> usize {
-        self.max_attribute_depth
+        self.limits.max_attribute_depth
     }
     pub fn max_alias_expansion_depth(&self) -> usize {
-        self.max_alias_expansion_depth
+        self.limits.max_alias_expansion_depth
     }
     pub fn original_bytes(&self) -> &[u8] {
         self.source.bytes()
@@ -191,7 +189,8 @@ impl ParsedFile {
             cursor = end;
         }
         bytes.extend_from_slice(&self.original_bytes()[cursor..]);
-        Self::parse_with_registry(bytes, registry).map_err(ApplyTextEditsError::Parse)
+        Self::parse_with_limits_and_registry(bytes, self.limits, registry)
+            .map_err(ApplyTextEditsError::Parse)
     }
 }
 
@@ -209,7 +208,9 @@ fn checked_text_edit_output_size(
 
 #[cfg(test)]
 mod text_edit_size_tests {
-    use super::checked_text_edit_output_size;
+    use super::{ParseLimits, ParsedFile, TextEdit, checked_text_edit_output_size};
+    use crate::source::TextRange;
+    use std::sync::Arc;
 
     #[test]
     fn overflowing_replacement_total_is_rejected() {
@@ -217,6 +218,31 @@ mod text_edit_size_tests {
             checked_text_edit_output_size(0, [(0, usize::MAX), (0, 1)]),
             None
         );
+    }
+
+    #[test]
+    fn reparsed_file_retains_every_parse_limit() {
+        let limits = ParseLimits {
+            max_file_bytes: 128,
+            max_tokens: 32,
+            max_delimiter_depth: 7,
+            max_payload_bytes: 11,
+            max_numeric_literal_bytes: 13,
+            max_attribute_depth: 17,
+            max_alias_expansion_depth: 19,
+        };
+        let original =
+            ParsedFile::parse_with_limits(b"\"old\"() : () -> ()".as_slice(), limits).unwrap();
+        let edited = original
+            .apply_text_edits(&[TextEdit {
+                range: TextRange::new(1, 4).unwrap(),
+                replacement: Arc::from(b"new".as_slice()),
+            }])
+            .unwrap();
+
+        assert_eq!(edited.limits, limits);
+        assert_eq!(original.original_bytes(), b"\"old\"() : () -> ()");
+        assert_eq!(edited.original_bytes(), b"\"new\"() : () -> ()");
     }
 }
 
