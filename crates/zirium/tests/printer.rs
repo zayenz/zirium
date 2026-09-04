@@ -97,6 +97,21 @@ fn streams_to_fmt_and_io_sinks_deterministically() {
 }
 
 #[test]
+fn escaped_generic_operation_names_survive_canonical_printing() {
+    let source = r#""vendor.\22quoted"() : () -> ()"#;
+    let document = strict_document(source);
+    assert_eq!(
+        document.operation_name(document.root_operations()[0]),
+        Some(r"vendor.\22quoted")
+    );
+    let mut printed = String::new();
+    document.print(&mut printed, PrintLayout::Compact).unwrap();
+    assert_eq!(printed, source);
+    let reparsed = strict_document(&printed);
+    assert!(document.structurally_eq(&reparsed));
+}
+
+#[test]
 fn unchanged_preserving_output_keeps_trailing_metadata_byte_exact() {
     let bytes = br##""work"() : () -> ()
 {-# dialect_resources: { payload: "quoted \"#-} marker" } #-}

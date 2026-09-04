@@ -817,6 +817,122 @@ impl<'a> OperationSyntax<'a> {
     pub fn tree(self) -> &'a SyntaxTree {
         self.tree
     }
+    /// Returns the token range of the operation mnemonic.
+    pub fn mnemonic_range(self) -> Option<TextRange> {
+        let tokens = self.tree.tokens(self.id)?;
+        let mut index = tokens.iter().position(|token| !is_trivia(token.kind()))?;
+        if tokens[index].kind() == TokenKind::PercentIdentifier {
+            index = tokens
+                .iter()
+                .position(|token| token.kind() == TokenKind::Equal)?
+                + 1;
+            index += tokens[index..]
+                .iter()
+                .position(|token| !is_trivia(token.kind()))?;
+        }
+        matches!(
+            tokens[index].kind(),
+            TokenKind::BareIdentifier | TokenKind::String
+        )
+        .then(|| tokens[index].range())
+    }
+    /// Returns a leading symbol token from the operation header, if present.
+    pub fn leading_symbol_range(self) -> Option<TextRange> {
+        let mnemonic = self.mnemonic_range()?;
+        let operation_end = self.tree.text_range(self.id)?.end();
+        let header_end = self
+            .tree
+            .children(self.id)
+            .into_iter()
+            .flatten()
+            .filter(|child| {
+                matches!(
+                    self.tree.kind(*child),
+                    Some(SyntaxKind::AttributeDict | SyntaxKind::Region)
+                )
+            })
+            .filter_map(|child| self.tree.text_range(child).map(|range| range.start()))
+            .min()
+            .unwrap_or(operation_end);
+        self.tree.tokens(self.id)?.iter().find_map(|token| {
+            (token.range().start() >= mnemonic.end()
+                && token.range().end() <= header_end
+                && token.kind() == TokenKind::AtIdentifier)
+                .then(|| token.range())
+        })
+    }
+    /// Returns the optional visibility keyword immediately before a leading symbol.
+    pub fn visibility_range(self) -> Option<TextRange> {
+        let mnemonic = self.mnemonic_range()?;
+        let symbol = self.leading_symbol_range()?;
+        self.tree.tokens(self.id)?.iter().find_map(|token| {
+            (token.range().start() >= mnemonic.end()
+                && token.range().end() <= symbol.start()
+                && token.kind() == TokenKind::BareIdentifier)
+                .then(|| token.range())
+        })
+    }
+    pub fn argument_list_range(self) -> Option<TextRange> {
+        child_of_kind(self.tree, self.id, SyntaxKind::BlockArgumentList)
+            .and_then(|id| self.tree.text_range(id))
+    }
+    pub fn function_type_range(self) -> Option<TextRange> {
+        child_of_kind(self.tree, self.id, SyntaxKind::FunctionType)
+            .and_then(|id| self.tree.text_range(id))
+    }
+    /// Returns the result portion of a func-like signature, including its arrow.
+    pub fn function_result_range(self, source: &[u8]) -> Option<TextRange> {
+        let arguments = self.argument_list_range()?;
+        let tokens = self.tree.tokens(self.id)?;
+        let boundary = self
+            .tree
+            .children(self.id)?
+            .filter_map(|child| {
+                let range = self.tree.text_range(child)?;
+                match self.tree.kind(child) {
+                    Some(SyntaxKind::Region) => Some(range.start()),
+                    Some(SyntaxKind::AttributeDict)
+                        if tokens
+                            .iter()
+                            .rev()
+                            .find(|token| {
+                                token.range().end() <= range.start() && !is_trivia(token.kind())
+                            })
+                            .and_then(|token| {
+                                source.get(
+                                    token.range().start() as usize..token.range().end() as usize,
+                                )
+                            })
+                            == Some(b"attributes") =>
+                    {
+                        Some(range.start())
+                    }
+                    _ => None,
+                }
+            })
+            .min()
+            .unwrap_or(self.tree.text_range(self.id)?.end());
+        let arrow = tokens.iter().find(|token| {
+            token.range().start() >= arguments.end()
+                && token.range().end() <= boundary
+                && token.kind() == TokenKind::Arrow
+        })?;
+        let mut last = tokens.iter().rev().find(|token| {
+            token.range().start() >= arrow.range().start()
+                && token.range().end() <= boundary
+                && !is_trivia(token.kind())
+        })?;
+        if source.get(last.range().start() as usize..last.range().end() as usize)
+            == Some(b"attributes")
+        {
+            last = tokens.iter().rev().find(|token| {
+                token.range().start() >= arrow.range().start()
+                    && token.range().end() <= last.range().start()
+                    && !is_trivia(token.kind())
+            })?;
+        }
+        TextRange::new(arrow.range().start(), last.range().end())
+    }
     pub fn components(self) -> impl Iterator<Item = OperationComponentSyntax<'a>> {
         self.tree
             .children(self.id)
@@ -920,6 +1036,13 @@ borrowed_view!(SuccessorArgumentsSyntax);
 borrowed_view!(PropertyDictSyntax);
 borrowed_view!(AttributeDictSyntax);
 borrowed_view!(TrailingLocationSyntax);
+
+impl BlockArgumentSyntax<'_> {
+    pub fn attribute_range(self) -> Option<TextRange> {
+        child_of_kind(self.tree, self.id, SyntaxKind::AttributeDict)
+            .and_then(|id| self.tree.text_range(id))
+    }
+}
 
 impl<'a> SuccessorArgumentsSyntax<'a> {
     pub fn arguments(self) -> impl Iterator<Item = BlockArgumentSyntax<'a>> {

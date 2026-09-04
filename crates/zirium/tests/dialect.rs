@@ -98,6 +98,64 @@ fn owned_operation_shapes_lower_neutral_func_and_call_forms() {
 }
 
 #[test]
+fn shaped_operations_use_header_syntax_boundaries() {
+    let registry = DialectRegistry::with_operation_shapes(&[
+        ("vendor.function", OperationShape::FuncLike),
+        ("vendor.invoke", OperationShape::CallLike),
+    ])
+    .unwrap();
+    let source = br#"module {
+      vendor.function @callee(%arg: i32 {tag = {nested = "quoted } value"}, unit = true}) -> (i32 {tag = {nested = "quoted } comma, value"}}, tensor<2xi32> {other = "x,y"})
+      %result.0 = vendor.invoke @callee() : () -> i32
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    let document = lowered
+        .document
+        .unwrap_or_else(|| panic!("lowering failed: {:?}", lowered.diagnostics));
+    let function = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("vendor.function"))
+        .unwrap();
+    let argument_attributes = document.attribute_id(function, "arg_attrs").unwrap();
+    assert_eq!(
+        document.attribute_spelling_value(argument_attributes),
+        Some(r#"[{tag = {nested = "quoted } value"}, unit = true}]"#)
+    );
+    let function_type = document.attribute_id(function, "function_type").unwrap();
+    assert_eq!(
+        document.attribute_spelling_value(function_type),
+        Some("(i32) -> (i32, tensor<2xi32>)")
+    );
+    let result_attributes = document.attribute_id(function, "res_attrs").unwrap();
+    assert_eq!(
+        document.attribute_spelling_value(result_attributes),
+        Some(r#"[{tag = {nested = "quoted } comma, value"}}, {other = "x,y"}]"#)
+    );
+    let call = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("vendor.invoke"))
+        .unwrap();
+    assert_eq!(document.result_types(call).unwrap().len(), 1);
+}
+
+#[test]
+fn unnamed_module_does_not_adopt_a_nested_function_symbol() {
+    let parsed = ParsedFile::parse_with_registry(
+        b"module { func.func @nested() }".as_slice(),
+        DialectRegistry::core(),
+    )
+    .unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::core())
+            .document
+            .unwrap();
+    let module = document.root_operations()[0];
+    assert_eq!(document.operation_name(module), Some("builtin.module"));
+    assert!(document.attribute_id(module, "sym_name").is_none());
+}
+
+#[test]
 fn core_registry_accepts_module_alias_without_changing_other_registries() {
     assert_eq!(
         DialectRegistry::core()

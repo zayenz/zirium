@@ -376,11 +376,42 @@ pub struct LoweringResult {
 /// Read-only CST input for a registered lowerer.
 pub struct RegisteredLoweringContext<'a> {
     spelling: &'a str,
+    mnemonic: &'a str,
+    leading_symbol: Option<&'a str>,
+    visibility: Option<&'a str>,
+    arguments: Vec<RegisteredArgument<'a>>,
+    function_results: Option<&'a str>,
+    function_type: Option<&'a str>,
+}
+
+pub struct RegisteredArgument<'a> {
+    spelling: &'a str,
+    attributes: Option<&'a str>,
 }
 
 impl<'a> RegisteredLoweringContext<'a> {
     pub fn spelling(&self) -> &'a str {
         self.spelling
+    }
+    pub fn mnemonic(&self) -> &'a str {
+        self.mnemonic
+    }
+    pub fn leading_symbol(&self) -> Option<&'a str> {
+        self.leading_symbol
+    }
+    pub fn visibility(&self) -> Option<&'a str> {
+        self.visibility
+    }
+    pub fn arguments(&self) -> impl Iterator<Item = (&'a str, Option<&'a str>)> + '_ {
+        self.arguments
+            .iter()
+            .map(|argument| (argument.spelling, argument.attributes))
+    }
+    pub fn function_results(&self) -> Option<&'a str> {
+        self.function_results
+    }
+    pub fn function_type(&self) -> Option<&'a str> {
+        self.function_type
     }
 }
 
@@ -4409,36 +4440,56 @@ fn lower_with_registry(
         .map(|op| {
             let range = op.tree().text_range(op.id())?;
             let spelling = text(source.bytes(), range);
-            let operation_spelling = if op.results().next().is_some() {
-                spelling.split_once('=')?.1
-            } else {
-                spelling
+            let mnemonic_spelling = text(source.bytes(), op.mnemonic_range()?);
+            let mnemonic = mnemonic_spelling
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .unwrap_or(mnemonic_spelling);
+            let context = RegisteredLoweringContext {
+                spelling,
+                mnemonic,
+                leading_symbol: op
+                    .leading_symbol_range()
+                    .map(|range| text(source.bytes(), range)),
+                visibility: op
+                    .visibility_range()
+                    .map(|range| text(source.bytes(), range)),
+                arguments: op
+                    .arguments()
+                    .map(|argument| RegisteredArgument {
+                        spelling: text(
+                            source.bytes(),
+                            argument.tree().text_range(argument.id()).unwrap(),
+                        ),
+                        attributes: argument
+                            .attribute_range()
+                            .map(|range| text(source.bytes(), range)),
+                    })
+                    .collect(),
+                function_results: op
+                    .function_result_range(source.bytes())
+                    .map(|range| text(source.bytes(), range)),
+                function_type: op
+                    .function_type_range()
+                    .map(|range| text(source.bytes(), range)),
             };
-            let mnemonic = operation_spelling
-                .split_ascii_whitespace()
-                .next()?
-                .trim_matches('"');
+            if op.tree().kind(op.id()) == Some(SyntaxKind::Operation) {
+                return None;
+            }
             if let Some(shape) = registry.operation_shape(mnemonic) {
-                return lower_operation_shape(
-                    shape,
-                    mnemonic,
-                    &RegisteredLoweringContext { spelling },
-                )
-                .map(|lowering| MatchedLowering {
-                    name: mnemonic.to_owned(),
-                    shape: Some(shape),
-                    lowering,
+                return lower_operation_shape(shape, mnemonic, &context).map(|lowering| {
+                    MatchedLowering {
+                        name: mnemonic.to_owned(),
+                        shape: Some(shape),
+                        lowering,
+                    }
                 });
             }
             let descriptor = registry.custom_operation(mnemonic)?;
             descriptor
                 .assembly
-                .and_then(|program| program.lower(&RegisteredLoweringContext { spelling }))
-                .or_else(|| {
-                    descriptor
-                        .lower
-                        .and_then(|lower| lower(&RegisteredLoweringContext { spelling }))
-                })
+                .and_then(|program| program.lower(&context))
+                .or_else(|| descriptor.lower.and_then(|lower| lower(&context)))
                 .map(|lowering| MatchedLowering {
                     name: lowering.name.to_owned(),
                     shape: None,
@@ -4592,10 +4643,17 @@ fn lower_with_registry(
     for (i, op) in ops.iter().enumerate() {
         let range = op.tree().text_range(op.id()).unwrap();
         let is_unparsed = op.tree().kind(op.id()) == Some(SyntaxKind::UnparsedCustomOperation);
+        let parsed_name = op.mnemonic_range().map(|mnemonic| {
+            let spelling = text(source.bytes(), mnemonic);
+            spelling
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .unwrap_or(spelling)
+        });
         let name = registered[i]
             .as_ref()
             .map(|matched| matched.name.as_str())
-            .or_else(|| operation_name(source.bytes(), range))
+            .or(parsed_name)
             .unwrap_or("<invalid>");
         let result_types = operation_result_types[i]
             .iter()
@@ -7245,33 +7303,6 @@ fn push_diagnostic(doc: &mut Document, range: TextRange, message: String) -> Dia
     doc.diagnostics.push(SemanticDiagnostic { range, message });
     doc.complete = false;
     id
-}
-
-fn operation_name(bytes: &[u8], range: TextRange) -> Option<&str> {
-    let mut text = bytes.get(range.start() as usize..range.end() as usize)?;
-    let first = text.iter().position(|byte| !byte.is_ascii_whitespace())?;
-    text = &text[first..];
-    if text.first() == Some(&b'%') {
-        let equal = text.iter().position(|byte| *byte == b'=')?;
-        text = &text[equal + 1..];
-        let first = text.iter().position(|byte| !byte.is_ascii_whitespace())?;
-        text = &text[first..];
-    }
-    if text.first() != Some(&b'"') {
-        return bare_operation_name(text);
-    }
-    let start = text.iter().position(|b| *b == b'"')? + 1;
-    let end = start + text[start..].iter().position(|b| *b == b'"')?;
-    std::str::from_utf8(&text[start..end]).ok()
-}
-
-fn bare_operation_name(text: &[u8]) -> Option<&str> {
-    let start = text.iter().position(|byte| !byte.is_ascii_whitespace())?;
-    let end = text[start..]
-        .iter()
-        .position(|byte| byte.is_ascii_whitespace() || b"@({[".contains(byte))
-        .map_or(text.len(), |end| start + end);
-    std::str::from_utf8(&text[start..end]).ok()
 }
 
 fn leading_symbol(spelling: &str) -> Option<&str> {

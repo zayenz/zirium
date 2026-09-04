@@ -599,33 +599,10 @@ fn lower_arith_constant(context: &RegisteredLoweringContext<'_>) -> Option<Regis
     })
 }
 
-fn symbol_after(spelling: &str, operation: &str) -> Option<String> {
-    let tail = spelling.split_once(operation)?.1;
-    let start = tail.find('@')?;
-    let tail = &tail[start..];
-    let end = if let Some(quoted) = tail.strip_prefix("@\"") {
-        let mut escaped = false;
-        quoted.char_indices().find_map(|(offset, character)| {
-            let closes = character == '"' && !escaped;
-            escaped = character == '\\' && !escaped;
-            if character != '\\' {
-                escaped = false;
-            }
-            closes.then_some(offset + 3)
-        })?
-    } else {
-        tail.find(|character: char| character.is_ascii_whitespace() || "(),{}:".contains(character))
-            .unwrap_or(tail.len())
-    };
-    Some(tail[..end].to_owned())
-}
-
 fn lower_module(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLowering> {
     let mut attributes = Vec::new();
-    if let Some(symbol) = symbol_after(context.spelling(), "builtin.module")
-        .or_else(|| symbol_after(context.spelling(), "module"))
-    {
-        attributes.push(("sym_name", symbol));
+    if let Some(symbol) = context.leading_symbol() {
+        attributes.push(("sym_name", symbol.to_owned()));
     }
     Some(RegisteredLowering {
         name: "builtin.module",
@@ -635,20 +612,26 @@ fn lower_module(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLow
     })
 }
 
-fn function_signature(spelling: &str) -> Option<String> {
-    let symbol = spelling.find('@')?;
-    let open = spelling[symbol..].find('(')? + symbol;
-    let close = matching_delimiter(spelling, open, '(', ')')?;
-    let inputs = split_top_level(spelling[open + 1..close].trim())
-        .iter()
-        .copied()
-        .filter_map(|argument| argument.split_once(':').map(|(_, ty)| ty.trim()))
-        .map(|ty| ty.split('{').next().unwrap_or(ty).trim())
-        .map(|ty| ty.split(" loc(").next().unwrap_or(ty).trim())
-        .collect::<Vec<_>>()
+fn argument_type<'a>(spelling: &'a str, attributes: Option<&str>) -> Option<&'a str> {
+    let (_, ty) = spelling.split_once(':')?;
+    let end = attributes
+        .and_then(|attributes| spelling.rfind(attributes))
+        .or_else(|| {
+            ty.find(" loc(")
+                .map(|offset| spelling.len() - ty.len() + offset)
+        })
+        .unwrap_or(spelling.len());
+    Some(spelling[spelling.len() - ty.len()..end].trim())
+}
+
+fn function_signature(context: &RegisteredLoweringContext<'_>) -> Option<String> {
+    let inputs = context
+        .arguments()
+        .map(|(argument, attributes)| argument_type(argument, attributes))
+        .collect::<Option<Vec<_>>>()?
         .join(", ");
-    let tail = spelling[close + 1..].trim_start();
-    let results = if let Some(tail) = tail.strip_prefix("->") {
+    let results = if let Some(tail) = context.function_results() {
+        let tail = tail.strip_prefix("->")?.trim_start();
         let tail = tail.trim_start();
         let raw = if tail.starts_with('(') {
             let end = matching_delimiter(tail, 0, '(', ')')?;
@@ -660,11 +643,11 @@ fn function_signature(spelling: &str) -> Option<String> {
             let inner = &raw[1..raw.len() - 1];
             let types = split_top_level(inner)
                 .iter()
-                .map(|result| result.split('{').next().unwrap_or(result).trim())
+                .map(|result| strip_top_level_attribute(result).trim())
                 .collect::<Vec<_>>();
             format!("({})", types.join(", "))
         } else {
-            raw.to_owned()
+            strip_top_level_attribute(raw).trim().to_owned()
         }
     } else {
         "()".to_owned()
@@ -676,12 +659,25 @@ fn split_top_level(value: &str) -> Vec<&str> {
     let mut result = Vec::new();
     let mut start = 0;
     let mut depth = 0i32;
-    for (index, byte) in value.bytes().enumerate() {
-        match byte {
-            b'(' | b'[' | b'{' | b'<' => depth += 1,
-            b')' | b']' | b'}' => depth -= 1,
-            b'>' if depth > 0 => depth -= 1,
-            b',' if depth == 0 => {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if quoted {
+            if character == '"' && !escaped {
+                quoted = false;
+            }
+            escaped = character == '\\' && !escaped;
+            if character != '\\' {
+                escaped = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => quoted = true,
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '>' if depth > 0 => depth -= 1,
+            ',' if depth == 0 => {
                 result.push(value[start..index].trim());
                 start = index + 1;
             }
@@ -694,15 +690,50 @@ fn split_top_level(value: &str) -> Vec<&str> {
     result
 }
 
-fn attribute_groups(value: &str) -> Option<String> {
-    let groups = value
-        .match_indices('{')
-        .filter_map(|(start, _)| {
-            let end = matching_delimiter(value, start, '{', '}')?;
-            Some(value[start..=end].to_owned())
-        })
+fn attribute_groups<'a>(groups: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    let groups = groups
+        .into_iter()
+        .flatten()
+        .map(str::to_owned)
         .collect::<Vec<_>>();
     (!groups.is_empty()).then(|| format!("[{}]", groups.join(", ")))
+}
+
+fn strip_top_level_attribute(value: &str) -> &str {
+    top_level_attribute(value)
+        .map(|(start, _)| &value[..start])
+        .unwrap_or(value)
+}
+
+fn top_level_attribute(value: &str) -> Option<(usize, &str)> {
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if quoted {
+            if character == '"' && !escaped {
+                quoted = false;
+            }
+            escaped = character == '\\' && !escaped;
+            if character != '\\' {
+                escaped = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => quoted = true,
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' => depth = depth.saturating_sub(1),
+            '{' if depth == 0 => {
+                let end = matching_delimiter(value, index, '{', '}')?;
+                return Some((index, &value[index..=end]));
+            }
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn matching_delimiter(spelling: &str, open: usize, left: char, right: char) -> Option<usize> {
@@ -741,35 +772,29 @@ fn lower_function(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredL
 }
 
 fn lower_func_like(
-    operation: &str,
+    _operation: &str,
     context: &RegisteredLoweringContext<'_>,
 ) -> Option<RegisteredLowering> {
-    let symbol = symbol_after(context.spelling(), operation)?;
-    let signature = function_signature(context.spelling())?;
+    let symbol = context.leading_symbol()?.to_owned();
+    let signature = function_signature(context)?;
     let mut attributes = vec![("sym_name", symbol), ("function_type", signature)];
-    let tail = context.spelling().split_once(operation)?.1.trim_start();
-    if let Some(visibility) = ["public", "private", "nested"]
-        .into_iter()
-        .find(|visibility| tail.starts_with(visibility))
-    {
+    if let Some(visibility @ ("public" | "private" | "nested")) = context.visibility() {
         attributes.push(("sym_visibility", format!("\"{visibility}\"")));
     }
-    let at = context.spelling().find('@')?;
-    let open = context.spelling()[at..].find('(')? + at;
-    let close = matching_delimiter(context.spelling(), open, '(', ')')?;
-    if let Some(groups) = attribute_groups(&context.spelling()[open + 1..close]) {
+    if let Some(groups) = attribute_groups(context.arguments().map(|(_, attributes)| attributes)) {
         attributes.push(("arg_attrs", groups));
     }
-    if let Some(arrow) = context.spelling()[close..].find("->") {
-        let results = &context.spelling()[close + arrow + 2..];
-        let results = results.trim_start();
-        let results = if results.starts_with('(') {
-            let end = matching_delimiter(results, 0, '(', ')')?;
-            &results[..=end]
-        } else {
-            results.split_whitespace().next().unwrap_or(results)
-        };
-        if let Some(groups) = attribute_groups(results) {
+    if let Some(results) = context.function_results() {
+        let results = results.strip_prefix("->")?.trim();
+        let groups = split_top_level(
+            results
+                .strip_prefix('(')
+                .and_then(|value| value.strip_suffix(')'))
+                .unwrap_or(results),
+        )
+        .into_iter()
+        .map(|result| top_level_attribute(result).map(|(_, group)| group));
+        if let Some(groups) = attribute_groups(groups) {
             attributes.push(("res_attrs", groups));
         }
     }
@@ -786,11 +811,11 @@ fn lower_call(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLower
 }
 
 fn lower_call_like(
-    operation: &str,
+    _operation: &str,
     context: &RegisteredLoweringContext<'_>,
 ) -> Option<RegisteredLowering> {
-    let callee = symbol_after(context.spelling(), operation)?;
-    let tail = context.spelling().rsplit_once(':')?.1.trim();
+    let callee = context.leading_symbol()?.to_owned();
+    let tail = context.function_type()?;
     let (inputs, results) = tail.split_once("->")?;
     let result_types = crate::semantic::split_registered_types(results);
     Some(RegisteredLowering {

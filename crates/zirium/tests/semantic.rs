@@ -110,6 +110,21 @@ fn consecutive_unknown_custom_operations_preserve_result_prefix_text() {
 }
 
 #[test]
+fn generic_mnemonic_range_survives_dotted_results_and_escapes() {
+    let source = br#"%result.0 = "vendor.\22quoted"() : () -> i32"#;
+    let parsed = ParsedFile::parse(source.as_slice()).unwrap();
+    let document = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
+        .document
+        .unwrap();
+    let operation = document.root_operations()[0];
+    assert_eq!(
+        document.operation_name(operation),
+        Some(r"vendor.\22quoted")
+    );
+    assert_eq!(document.result_types(operation).unwrap().len(), 1);
+}
+
+#[test]
 fn stablehlo_reduce_clauses_remain_part_of_the_recovered_operation() {
     let source = br#"stablehlo.reduce(%input init: %init) applies stablehlo.add across dimensions = [0]
 %result = stablehlo.reduce(%input init: %init) across dimensions = [0] reducer(%lhs: tensor<f32>, %rhs: tensor<f32>) {
