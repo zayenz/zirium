@@ -1,9 +1,10 @@
 use std::{fs, path::PathBuf};
 use zirium::{
+    dialect::DialectRegistry,
     parser::{ParseLimits, ParsedFile},
     semantic::{
-        LargeAttributeValue, LoweringMode, RetentionProfile, SharedRegistry, ValueId,
-        ValueReference, lower_proving_fixture, lower_proving_fixture_with_retention,
+        LargeAttributeValue, LoweringMode, RetentionProfile, ValueId, ValueReference,
+        lower_with_dialect_registry, lower_with_dialect_registry_and_retention,
     },
 };
 
@@ -43,11 +44,11 @@ fn shaped_affine_fixture(name: &str) -> Vec<u8> {
 fn unknown_custom_operations_lower_with_exact_text_and_nested_regions() {
     let source = b"vendor.outer @entry {\n  vendor.inner\n}".to_vec();
     let parsed = ParsedFile::parse(source.clone()).unwrap();
-    let lowered = lower_proving_fixture_with_retention(
+    let lowered = lower_with_dialect_registry_and_retention(
         &parsed,
         LoweringMode::BestEffort,
         RetentionProfile::SemanticOnly,
-        &SharedRegistry,
+        &DialectRegistry::EMPTY,
     );
     assert!(!lowered.semantically_complete);
     assert!(
@@ -77,14 +78,16 @@ fn unknown_custom_operations_lower_with_exact_text_and_nested_regions() {
     assert_eq!(document.operation_is_unparsed(inner), Some(true));
 
     let ordinary = ParsedFile::parse(b"\"ordinary\"() : () -> ()".to_vec()).unwrap();
-    let ordinary = lower_proving_fixture(&ordinary, LoweringMode::Strict, &SharedRegistry)
-        .document
-        .unwrap();
+    let ordinary =
+        lower_with_dialect_registry(&ordinary, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     let operation = ordinary.root_operations()[0];
     assert_eq!(ordinary.operation_is_unparsed(operation), Some(false));
     assert_eq!(ordinary.operation_unparsed_text(operation), None);
 
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
 }
 
@@ -92,7 +95,8 @@ fn unknown_custom_operations_lower_with_exact_text_and_nested_regions() {
 fn consecutive_unknown_custom_operations_preserve_result_prefix_text() {
     let source = b"%result = vendor.first\nvendor.second".to_vec();
     let parsed = ParsedFile::parse(source).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = lowered.document.unwrap();
     let operations = document.operations().collect::<Vec<_>>();
     assert_eq!(operations.len(), 2);
@@ -113,9 +117,10 @@ fn consecutive_unknown_custom_operations_preserve_result_prefix_text() {
 fn generic_mnemonic_range_survives_dotted_results_and_escapes() {
     let source = br#"%result.0 = "vendor.\22quoted"() : () -> i32"#;
     let parsed = ParsedFile::parse(source.as_slice()).unwrap();
-    let document = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
-        .document
-        .unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     let operation = document.root_operations()[0];
     assert_eq!(
         document.operation_name(operation),
@@ -132,7 +137,8 @@ fn stablehlo_reduce_clauses_remain_part_of_the_recovered_operation() {
 }
 "#;
     let parsed = ParsedFile::parse(source.to_vec()).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = lowered.document.unwrap();
 
     assert_eq!(document.root_operations().len(), 2);
@@ -167,7 +173,8 @@ fn unknown_custom_leading_symbol_stops_before_argument_list() {
     let parsed =
         ParsedFile::parse(b"vendor.func @entry(%x: i32) attributes {flag = true}".to_vec())
             .unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = lowered.document.unwrap();
     let operation = document.root_operations()[0];
     assert!(
@@ -183,7 +190,8 @@ fn boolean_attributes_lower_with_exact_spelling() {
     let parsed =
         ParsedFile::parse(b"\"flags\"() {enabled = true, disabled = false} : () -> ()".to_vec())
             .unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     let document = lowered.document.expect("strict boolean attributes");
     let operation = document.root_operations()[0];
 
@@ -219,7 +227,8 @@ fn semantic_attribute_depth_limit_uses_invalid_sentinel() {
     )
     .unwrap();
 
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(
         strict
@@ -228,7 +237,8 @@ fn semantic_attribute_depth_limit_uses_invalid_sentinel() {
             .any(|diagnostic| diagnostic.message.contains("attribute nesting depth limit"))
     );
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.expect("best-effort document");
     document.validate().unwrap();
     let operation = document.operations().next().unwrap();
@@ -247,7 +257,8 @@ fn semantic_attribute_depth_limit_uses_invalid_sentinel() {
 #[test]
 fn affine_maps_sets_aliases_and_nested_values_lower_and_intern() {
     let parsed = ParsedFile::parse(shaped_affine_fixture("semantic-valid.mlir")).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     let document = lowered.document.unwrap();
     document.validate().unwrap();
@@ -324,7 +335,8 @@ fn affine_maps_sets_aliases_and_nested_values_lower_and_intern() {
 #[test]
 fn malformed_affine_values_preserve_shape_with_nested_invalid_sentinels() {
     let parsed = ParsedFile::parse(shaped_affine_fixture("semantic-malformed.mlir")).unwrap();
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     for expected in ["arity", "operator", "constraint", "operand"] {
         assert!(
@@ -337,7 +349,8 @@ fn malformed_affine_values_preserve_shape_with_nested_invalid_sentinels() {
         );
     }
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     assert!(!document.is_semantically_complete());
     document.validate().unwrap();
@@ -366,7 +379,8 @@ fn malformed_affine_values_preserve_shape_with_nested_invalid_sentinels() {
 #[test]
 fn affine_incomplete_literals_and_transitive_aliases_are_safe_and_diagnosed() {
     let parsed = ParsedFile::parse(shaped_affine_fixture("semantic-edge.mlir")).unwrap();
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     for expected in [
         "malformed affine dimension arity",
@@ -385,7 +399,8 @@ fn affine_incomplete_literals_and_transitive_aliases_are_safe_and_diagnosed() {
         );
     }
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     document.validate().unwrap();
     let operation = document
@@ -438,7 +453,8 @@ fn affine_incomplete_literals_and_transitive_aliases_are_safe_and_diagnosed() {
 fn valid_and_forward_references_lower_to_direct_result_identity() {
     for name in ["valid.mlir", "forward.mlir"] {
         let parsed = ParsedFile::parse(fixture(name)).unwrap();
-        let result = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+        let result =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
         assert!(
             result.diagnostics.is_empty(),
             "{name}: {:?}",
@@ -477,11 +493,10 @@ fn valid_and_forward_references_lower_to_direct_result_identity() {
             (0, 0)
         );
         assert!(stats.local_strings > 0 && stats.local_types > 0 && stats.local_attributes > 0);
-        assert_eq!(SharedRegistry.statistics(), Default::default());
-
-        let other = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
-            .document
-            .unwrap();
+        let other =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+                .document
+                .unwrap();
         assert!(other.operation(operations[0]).is_none());
     }
 }
@@ -489,7 +504,8 @@ fn valid_and_forward_references_lower_to_direct_result_identity() {
 #[test]
 fn unresolved_reference_obeys_strict_and_best_effort_contract() {
     let parsed = ParsedFile::parse(fixture("unresolved.mlir")).unwrap();
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert_eq!(strict.diagnostics.len(), 1);
     assert!(
@@ -497,7 +513,8 @@ fn unresolved_reference_obeys_strict_and_best_effort_contract() {
             .message
             .contains("unresolved SSA value `%missing`")
     );
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     assert!(!best.semantically_complete);
     let document = best.document.unwrap();
     document.validate().unwrap();
@@ -516,7 +533,7 @@ fn unresolved_reference_obeys_strict_and_best_effort_contract() {
 fn document_owns_semantic_storage_after_source_is_dropped() {
     let document = {
         let parsed = ParsedFile::parse(fixture("valid.mlir")).unwrap();
-        lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
             .document
             .unwrap()
     };
@@ -530,13 +547,13 @@ fn document_owns_semantic_storage_after_source_is_dropped() {
 fn checked_entity_apis_reject_foreign_document_and_operation_ids() {
     let first = {
         let parsed = ParsedFile::parse(fixture("valid.mlir")).unwrap();
-        lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
             .document
             .unwrap()
     };
     let second = {
         let parsed = ParsedFile::parse(fixture("valid.mlir")).unwrap();
-        lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
             .document
             .unwrap()
     };
@@ -558,7 +575,8 @@ fn checked_entity_apis_reject_foreign_document_and_operation_ids() {
 #[test]
 fn complete_generic_surface_lowers_with_owned_identity() {
     let parsed = ParsedFile::parse(generic_complete_fixture("valid.mlir")).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     let document = lowered.document.unwrap();
     document.validate().unwrap();
@@ -647,7 +665,8 @@ fn complete_generic_surface_lowers_with_owned_identity() {
 #[test]
 fn generic_complete_malformed_inputs_have_component_diagnostics() {
     let parsed = ParsedFile::parse(generic_complete_fixture("malformed.mlir")).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     assert!(lowered.document.is_some());
     let messages = lowered
         .diagnostics
@@ -662,7 +681,8 @@ fn generic_complete_malformed_inputs_have_component_diagnostics() {
     }
 
     let parsed = ParsedFile::parse(generic_complete_fixture("unresolved.mlir")).unwrap();
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(strict.diagnostics.iter().any(|diagnostic| {
         diagnostic
@@ -675,7 +695,8 @@ fn generic_complete_malformed_inputs_have_component_diagnostics() {
             .iter()
             .any(|diagnostic| diagnostic.message.contains("unresolved block `^missing`"))
     );
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     assert!(!document.is_semantically_complete());
     document.validate().unwrap();
@@ -690,7 +711,8 @@ fn generic_complete_adversarial_semantics_are_diagnosed_without_losing_ownership
         ("cross-region.mlir", "unresolved block `^to`"),
     ] {
         let parsed = ParsedFile::parse(generic_complete_fixture(name)).unwrap();
-        let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+        let strict =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
         assert!(
             strict.document.is_none(),
             "{name}: {:?}",
@@ -704,14 +726,16 @@ fn generic_complete_adversarial_semantics_are_diagnosed_without_losing_ownership
             "{name}: {:?}",
             strict.diagnostics
         );
-        let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+        let best =
+            lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
         let document = best.document.unwrap();
         assert!(!document.is_semantically_complete());
         document.validate().unwrap();
     }
 
     let parsed = ParsedFile::parse(generic_complete_fixture("cross-region.mlir")).unwrap();
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     let jump = document
         .operations()
@@ -723,12 +747,14 @@ fn generic_complete_adversarial_semantics_are_diagnosed_without_losing_ownership
     document.validate().unwrap();
 
     let parsed = ParsedFile::parse(generic_complete_fixture("repeated-scoped.mlir")).unwrap();
-    let result = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let result =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     result.document.unwrap().validate().unwrap();
 
     let parsed = ParsedFile::parse(generic_complete_fixture("malformed.mlir")).unwrap();
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     assert!(best.document.is_some());
     assert!(
         best.diagnostics
@@ -739,14 +765,16 @@ fn generic_complete_adversarial_semantics_are_diagnosed_without_losing_ownership
 
     let parsed =
         ParsedFile::parse(generic_complete_fixture("duplicate-block-arguments.mlir")).unwrap();
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(strict.diagnostics.iter().any(|diagnostic| {
         diagnostic
             .message
             .contains("duplicate block argument `%same`")
     }));
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     assert!(best.document.is_some());
     best.document.unwrap().validate().unwrap();
 }
@@ -763,7 +791,8 @@ fn duplicate_block_labels_are_diagnosed_and_leave_successors_unresolved() {
 }) : () -> ()"#;
     let parsed = ParsedFile::parse(source.to_vec()).unwrap();
 
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(
         strict
@@ -772,7 +801,8 @@ fn duplicate_block_labels_are_diagnosed_and_leave_successors_unresolved() {
             .any(|diagnostic| { diagnostic.message == "duplicate block label `^same` in region" })
     );
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     let jump = document
         .operations()
@@ -793,7 +823,8 @@ fn block_labels_are_scoped_to_their_region() {
     "test.return"() : () -> ()
 }) : () -> ()"#;
     let parsed = ParsedFile::parse(source.to_vec()).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
 
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     lowered.document.unwrap().validate().unwrap();
@@ -803,7 +834,8 @@ fn block_labels_are_scoped_to_their_region() {
 fn core_values_are_structural_interned_sorted_and_retained() {
     let document = {
         let parsed = ParsedFile::parse(fixture("core-values.mlir")).unwrap();
-        let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+        let lowered =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
         assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
         lowered.document.unwrap()
     };
@@ -849,7 +881,8 @@ fn aliases_diagnose_cycles_duplicates_wrong_kinds_and_unresolved_names() {
         ("%r = \"x\"() : () -> !missing", "unresolved type alias"),
     ] {
         let parsed = ParsedFile::parse(source.as_bytes()).unwrap();
-        let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+        let strict =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
         assert!(strict.document.is_none(), "{source}");
         assert!(
             strict
@@ -859,7 +892,8 @@ fn aliases_diagnose_cycles_duplicates_wrong_kinds_and_unresolved_names() {
             "{source}: {:?}",
             strict.diagnostics
         );
-        let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+        let best =
+            lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
         let document = best.document.unwrap();
         assert!(!document.is_semantically_complete());
         document.validate().unwrap();
@@ -883,7 +917,8 @@ fn alias_expansion_limit_applies_to_each_alias_family() {
             },
         )
         .unwrap();
-        let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+        let strict =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
         assert!(strict.document.is_none(), "{source}");
         assert!(
             strict
@@ -893,7 +928,8 @@ fn alias_expansion_limit_applies_to_each_alias_family() {
             "{source}: {:?}",
             strict.diagnostics
         );
-        let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+        let best =
+            lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
         let document = best.document.unwrap();
         assert!(!document.is_semantically_complete(), "{source}");
         document.validate().unwrap();
@@ -912,7 +948,8 @@ fn nested_alias_expansion_uses_the_shared_budget() {
         },
     )
     .unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(lowered.document.is_none());
     assert!(
         lowered
@@ -937,7 +974,8 @@ fn default_alias_expansion_limit_is_64() {
         .join("\n");
     let source = format!("{aliases}\n%r = \"default.alias\"() : () -> !a0");
     let parsed = ParsedFile::parse(source.into_bytes()).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(lowered.document.is_none());
     assert!(
         lowered
@@ -952,7 +990,8 @@ fn direct_composite_type_alias_cycle_preserves_nested_shape() {
     let source = b"!a = type tuple<!a>\n%r = \"cycle.direct\"() : () -> !a";
     let parsed = ParsedFile::parse(source.as_slice()).unwrap();
 
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(
         strict
@@ -961,7 +1000,8 @@ fn direct_composite_type_alias_cycle_preserves_nested_shape() {
             .any(|diagnostic| diagnostic.message.contains("cyclic type alias `!a`"))
     );
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     document.validate().unwrap();
     let operation = document.operations().next().unwrap();
@@ -978,7 +1018,8 @@ fn indirect_composite_type_alias_cycle_preserves_nested_shape() {
     let source = b"!a = type !b\n!b = type tuple<!c>\n!c = type tensor<1x!a>\n%r = \"cycle.indirect\"() : () -> !a";
     let parsed = ParsedFile::parse(source.as_slice()).unwrap();
 
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(
         strict
@@ -987,7 +1028,8 @@ fn indirect_composite_type_alias_cycle_preserves_nested_shape() {
             .any(|diagnostic| diagnostic.message.contains("cyclic type alias `!a`"))
     );
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     document.validate().unwrap();
     let operation = document.operations().next().unwrap();
@@ -1009,7 +1051,8 @@ fn direct_function_type_alias_cycle_preserves_function_shape() {
     let source = b"!a = type (!a) -> (!a)\n%r = \"cycle.function.direct\"() : () -> !a";
     let parsed = ParsedFile::parse(source.as_slice()).unwrap();
 
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(
         strict
@@ -1018,7 +1061,8 @@ fn direct_function_type_alias_cycle_preserves_function_shape() {
             .any(|diagnostic| diagnostic.message.contains("cyclic type alias `!a`"))
     );
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     document.validate().unwrap();
     let operation = document.operations().next().unwrap();
@@ -1039,7 +1083,8 @@ fn indirect_function_type_alias_cycle_preserves_function_shape() {
         b"!a = type !b\n!b = type (!a) -> (!a)\n%r = \"cycle.function.indirect\"() : () -> !a";
     let parsed = ParsedFile::parse(source.as_slice()).unwrap();
 
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(
         strict
@@ -1048,7 +1093,8 @@ fn indirect_function_type_alias_cycle_preserves_function_shape() {
             .any(|diagnostic| diagnostic.message.contains("cyclic type alias `!a`"))
     );
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     document.validate().unwrap();
     let operation = document.operations().next().unwrap();
@@ -1066,9 +1112,11 @@ fn indirect_function_type_alias_cycle_preserves_function_shape() {
 #[test]
 fn owned_scalar_shapes_locations_and_nested_best_effort_values_are_structural() {
     let parsed = ParsedFile::parse(fixture("core-values-adversarial.mlir")).unwrap();
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     document.validate().unwrap();
     assert!(!document.is_semantically_complete());
@@ -1148,7 +1196,8 @@ fn owned_scalar_shapes_locations_and_nested_best_effort_values_are_structural() 
 #[test]
 fn location_aliases_encodings_fused_members_and_duplicate_values_recover_structurally() {
     let parsed = ParsedFile::parse(fixture("location-aggregate-rework.mlir")).unwrap();
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     for expected in [
         "unresolved location alias",
@@ -1167,7 +1216,8 @@ fn location_aliases_encodings_fused_members_and_duplicate_values_recover_structu
         );
     }
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     document.validate().unwrap();
     let find = |name| {
@@ -1249,7 +1299,8 @@ fn forward_aliases_resolve_through_nested_locations() {
 #later_loc = loc("resolved")
 "#;
     let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     let document = lowered.document.unwrap();
     let operation = document.operations().next().unwrap();
@@ -1277,7 +1328,8 @@ fn unresolved_nested_forward_location_preserves_surrounding_operations() {
 "after"() : () -> ()
 "#;
     let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     assert!(lowered.diagnostics.iter().any(|diagnostic| {
         diagnostic
             .message
@@ -1297,7 +1349,8 @@ fn unresolved_nested_forward_location_preserves_surrounding_operations() {
 #[test]
 fn memref_parameters_resolve_aliases_and_retain_invalid_nested_values() {
     let parsed = ParsedFile::parse(fixture("memref-parameters-rework.mlir")).unwrap();
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(
         strict
@@ -1312,7 +1365,8 @@ fn memref_parameters_resolve_aliases_and_retain_invalid_nested_values() {
             .any(|diagnostic| diagnostic.message.contains("memory space"))
     );
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     let document = best.document.unwrap();
     document.validate().unwrap();
     let find = |name| {
@@ -1356,11 +1410,11 @@ fn large_values_are_blob_backed_and_retention_profiles_are_exact() {
         RetentionProfile::SemanticOnly,
         RetentionProfile::Hybrid,
     ] {
-        let lowered = lower_proving_fixture_with_retention(
+        let lowered = lower_with_dialect_registry_and_retention(
             &parsed,
             LoweringMode::Strict,
             profile,
-            &SharedRegistry,
+            &DialectRegistry::EMPTY,
         );
         assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
         let document = lowered.document.unwrap();
@@ -1424,11 +1478,11 @@ fn retained_source_and_syntax_are_shared_and_outlive_either_owner() {
     let bytes = b"\"known\"() : () -> ()".as_slice();
     let parsed = ParsedFile::parse(bytes).unwrap();
     let exact_cst_bytes = parsed.syntax().tree().exact_retained_bytes();
-    let document = lower_proving_fixture_with_retention(
+    let document = lower_with_dialect_registry_and_retention(
         &parsed,
         LoweringMode::Strict,
         RetentionProfile::Hybrid,
-        &SharedRegistry,
+        &DialectRegistry::EMPTY,
     )
     .document
     .unwrap();
@@ -1449,11 +1503,11 @@ fn retained_source_and_syntax_are_shared_and_outlive_either_owner() {
     assert!(!document.statistics().cst_storage_shared);
 
     let parsed = ParsedFile::parse(bytes).unwrap();
-    let document = lower_proving_fixture_with_retention(
+    let document = lower_with_dialect_registry_and_retention(
         &parsed,
         LoweringMode::Strict,
         RetentionProfile::Hybrid,
-        &SharedRegistry,
+        &DialectRegistry::EMPTY,
     )
     .document
     .unwrap();
@@ -1466,11 +1520,13 @@ fn retained_source_and_syntax_are_shared_and_outlive_either_owner() {
 fn malformed_large_values_follow_the_shared_recovery_contract() {
     let bytes = include_bytes!("../../../tests/corpus/mlir-22.1/payload-opaque/malformed.mlir");
     let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
-    let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let strict =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert!(!strict.diagnostics.is_empty());
 
-    let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let best =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
     assert!(!best.semantically_complete);
     let document = best.document.unwrap();
     assert!(!document.is_semantically_complete());
@@ -1493,7 +1549,8 @@ fn each_owned_payload_family_recovers_as_an_invalid_sentinel() {
     ] {
         let source = format!("\"bad\"() {{value = {value}}} : () -> ()");
         let parsed = ParsedFile::parse(source.into_bytes()).unwrap();
-        let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+        let strict =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
         assert!(
             strict.document.is_none(),
             "{value}: {:?}",
@@ -1501,7 +1558,8 @@ fn each_owned_payload_family_recovers_as_an_invalid_sentinel() {
         );
         assert!(!strict.diagnostics.is_empty(), "{value}");
 
-        let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+        let best =
+            lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
         let document = best.document.unwrap();
         assert!(!document.is_semantically_complete(), "{value}");
         document.validate().unwrap();
@@ -1522,9 +1580,10 @@ fn each_owned_payload_family_recovers_as_an_invalid_sentinel() {
 fn opaque_payload_preserves_exact_quoted_body_bytes() {
     let source = include_bytes!("../../../tests/corpus/mlir-22.1/payload-opaque/valid.mlir");
     let parsed = ParsedFile::parse(source.as_slice()).unwrap();
-    let document = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
-        .document
-        .unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     let operation = document.operations().next().unwrap();
     let value = document
         .attribute_value(document.attribute_id(operation, "opaque").unwrap())
@@ -1554,12 +1613,14 @@ fn wide_number_grammar_rejects_empty_or_unprefixed_hex_payloads() {
     for value in ["0x : i128", "0xgg : i128", "abcdef : i128", "0x12 : nope"] {
         let source = format!("\"wide\"() {{value = {value}}} : () -> ()");
         let parsed = ParsedFile::parse(source.into_bytes()).unwrap();
-        let strict = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+        let strict =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
         assert!(strict.document.is_none(), "{value}");
         assert!(strict.diagnostics.iter().any(|diagnostic| {
             diagnostic.message.contains("unsupported") || diagnostic.message.contains("malformed")
         }));
-        let best = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+        let best =
+            lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
         let document = best.document.unwrap();
         assert!(matches!(
             document.attribute_value(

@@ -364,10 +364,11 @@ mod syntax;
 
 pub use custom::DialectParser;
 use custom::shaped_operation;
+#[doc(hidden)]
+pub use grammar::parse_brace_fixture;
 use grammar::{Parser, close_for};
 pub use grammar::{
-    parse_brace_fixture, parse_generic_operations, parse_generic_operations_with_limits,
-    parse_operations_with_registry,
+    parse_generic_operations, parse_generic_operations_with_limits, parse_operations_with_registry,
 };
 use syntax::is_trivia;
 pub use syntax::{

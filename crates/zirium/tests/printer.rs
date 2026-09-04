@@ -1,11 +1,12 @@
 use std::{fmt, io};
 
 use zirium::{
+    dialect::DialectRegistry,
     parser::ParsedFile,
     printer::{PrintError, PrintLayout},
     semantic::{
-        LoweringMode, RetentionProfile, SharedRegistry, lower_proving_fixture,
-        lower_proving_fixture_with_retention,
+        LoweringMode, RetentionProfile, lower_with_dialect_registry,
+        lower_with_dialect_registry_and_retention,
     },
 };
 
@@ -17,14 +18,15 @@ fn round_trip(path: &str) {
     )
     .unwrap();
     let parsed = ParsedFile::parse(bytes).unwrap();
-    let first = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
+    let first = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
         .document
         .unwrap_or_else(|| panic!("{path} did not lower strictly"));
     let mut printed = Vec::new();
     first.print_io(&mut printed, PrintLayout::Pretty).unwrap();
     let text = String::from_utf8(printed).unwrap();
     let reparsed = ParsedFile::parse(text.as_bytes()).unwrap();
-    let relowered = lower_proving_fixture(&reparsed, LoweringMode::Strict, &SharedRegistry);
+    let relowered =
+        lower_with_dialect_registry(&reparsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     let second = relowered.document.unwrap_or_else(|| {
         let ranges: Vec<_> = relowered
             .diagnostics
@@ -69,9 +71,10 @@ fn streams_to_fmt_and_io_sinks_deterministically() {
         include_bytes!("../../../tests/corpus/mlir-22.1/generic-complete/valid.mlir").as_slice(),
     )
     .unwrap();
-    let document = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
-        .document
-        .unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     let mut string = String::new();
     document.print(&mut string, PrintLayout::Compact).unwrap();
     let mut bytes = Vec::new();
@@ -117,11 +120,11 @@ fn unchanged_preserving_output_keeps_trailing_metadata_byte_exact() {
 {-# dialect_resources: { payload: "quoted \"#-} marker" } #-}
 "##;
     let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
-    let document = lower_proving_fixture_with_retention(
+    let document = lower_with_dialect_registry_and_retention(
         &parsed,
         LoweringMode::Strict,
         RetentionProfile::Hybrid,
-        &SharedRegistry,
+        &DialectRegistry::EMPTY,
     )
     .document
     .unwrap();
@@ -151,9 +154,10 @@ fn incomplete_documents_fail_before_the_first_sink_write() {
             .as_slice(),
     )
     .unwrap();
-    let document = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry)
-        .document
-        .unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     let mut sink = String::from("unchanged");
     assert!(matches!(
         document.print(&mut sink, PrintLayout::Pretty),
@@ -164,7 +168,8 @@ fn incomplete_documents_fail_before_the_first_sink_write() {
 
 fn strict_document(source: &str) -> zirium::semantic::Document {
     let parsed = ParsedFile::parse(std::sync::Arc::<[u8]>::from(source.as_bytes())).unwrap();
-    let lowered = lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry);
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     lowered.document.unwrap_or_else(|| {
         panic!(
             "source did not lower strictly: {:?}: {source}",

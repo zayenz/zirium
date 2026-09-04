@@ -1,10 +1,9 @@
 use std::time::Instant;
 
 use zirium::{
+    dialect::DialectRegistry,
     parser::ParsedFile,
-    semantic::{
-        LoweringMode, RetentionProfile, SharedRegistry, lower_proving_fixture_with_retention,
-    },
+    semantic::{LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention},
 };
 
 fn source(elements: usize) -> Vec<u8> {
@@ -60,11 +59,11 @@ fn measure(elements: usize, profile: RetentionProfile) -> Measurement {
     let source_len = bytes.len();
     let parsed = ParsedFile::parse(bytes).expect("benchmark input parses");
     let started = Instant::now();
-    let result = lower_proving_fixture_with_retention(
+    let result = lower_with_dialect_registry_and_retention(
         &parsed,
         LoweringMode::Strict,
         profile,
-        &SharedRegistry,
+        &DialectRegistry::EMPTY,
     );
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let document = result.document.expect("benchmark input lowers");

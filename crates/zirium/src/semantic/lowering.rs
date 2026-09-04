@@ -37,23 +37,6 @@ impl<T: Clone + Eq + std::hash::Hash> Interner<T> {
     }
 }
 
-pub fn lower_proving_fixture(
-    file: &ParsedFile,
-    mode: LoweringMode,
-    _registry: &SharedRegistry,
-) -> LoweringResult {
-    lower_proving_fixture_with_retention(file, mode, RetentionProfile::SemanticOnly, _registry)
-}
-
-pub fn lower_proving_fixture_with_retention(
-    file: &ParsedFile,
-    mode: LoweringMode,
-    retention_profile: RetentionProfile,
-    _registry: &SharedRegistry,
-) -> LoweringResult {
-    lower_with_registry(file, mode, retention_profile, &DialectRegistry::EMPTY)
-}
-
 pub fn lower_with_dialect_registry(
     file: &ParsedFile,
     mode: LoweringMode,

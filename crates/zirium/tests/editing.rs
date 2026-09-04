@@ -6,8 +6,8 @@ use zirium::{
     printer::PrintLayout,
     semantic::{
         AttributeSpec, EditError, InsertionPoint, LoweringMode, OperationSpec, RetentionProfile,
-        SemanticVerificationError, SharedRegistry, TypeSpec, TypeValue, ValueId,
-        lower_proving_fixture, lower_proving_fixture_with_retention, lower_with_dialect_registry,
+        SemanticVerificationError, TypeSpec, TypeValue, ValueId, lower_with_dialect_registry,
+        lower_with_dialect_registry_and_retention,
     },
 };
 
@@ -34,9 +34,14 @@ static REJECTING_VALUE_REGISTRY: DialectRegistry =
 
 fn hybrid(source: &[u8], mode: LoweringMode) -> zirium::semantic::Document {
     let parsed = ParsedFile::parse(Arc::<[u8]>::from(source)).unwrap();
-    lower_proving_fixture_with_retention(&parsed, mode, RetentionProfile::Hybrid, &SharedRegistry)
-        .document
-        .unwrap()
+    lower_with_dialect_registry_and_retention(
+        &parsed,
+        mode,
+        RetentionProfile::Hybrid,
+        &DialectRegistry::EMPTY,
+    )
+    .document
+    .unwrap()
 }
 
 fn registered(source: &str) -> zirium::semantic::Document {
@@ -67,14 +72,14 @@ fn registered_best_effort(source: &str) -> zirium::semantic::Document {
 
 fn generic(source: &str) -> zirium::semantic::Document {
     let parsed = ParsedFile::parse(source.as_bytes()).unwrap();
-    lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
+    lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
         .document
         .unwrap()
 }
 
 fn generic_best_effort(source: &str) -> zirium::semantic::Document {
     let parsed = ParsedFile::parse(source.as_bytes()).unwrap();
-    lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry)
+    lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY)
         .document
         .unwrap()
 }
@@ -218,9 +223,10 @@ fn result_type_edits_widen_preservation_to_the_enclosing_block() {
     let output = document.preserving_bytes(PrintLayout::Pretty).unwrap();
     let reparsed = ParsedFile::parse(output).unwrap();
     reparsed.syntax().tree().verify().unwrap();
-    let relowered = lower_proving_fixture(&reparsed, LoweringMode::Strict, &SharedRegistry)
-        .document
-        .unwrap();
+    let relowered =
+        lower_with_dialect_registry(&reparsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     assert!(document.structurally_eq(&relowered));
 }
 
@@ -434,9 +440,10 @@ fn attributes_properties_foreign_values_and_incomplete_documents_are_bounded() {
     ));
 
     let parsed = ParsedFile::parse(b"%x = \"bad\"(%missing) : (i32) -> i32".as_slice()).unwrap();
-    let mut incomplete = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry)
-        .document
-        .unwrap();
+    let mut incomplete =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     assert!(matches!(
         incomplete.edit(DialectRegistry::proving()),
         Err(EditError::IncompleteDocument)
@@ -1408,11 +1415,11 @@ fn stale_invalid_and_foreign_handles_have_distinct_edit_errors() {
 #[test]
 fn hybrid_edits_invalidate_syntax_retention_before_commit() {
     let parsed = ParsedFile::parse(b"\"original\"() : () -> ()".as_slice()).unwrap();
-    let mut document = lower_proving_fixture_with_retention(
+    let mut document = lower_with_dialect_registry_and_retention(
         &parsed,
         LoweringMode::Strict,
         RetentionProfile::Hybrid,
-        &SharedRegistry,
+        &DialectRegistry::EMPTY,
     )
     .document
     .unwrap();

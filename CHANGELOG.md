@@ -13,6 +13,9 @@ API remains experimental, and this release makes no ABI stability guarantee.
   spellings, scalar attributes, and stable value identity.
 - Bound recursive alias expansion across type, attribute, affine, memref, and
   location aliases. Rust and Python callers can select the limit.
+- Make `lower_with_dialect_registry` and
+  `lower_with_dialect_registry_and_retention` the Rust lowering entry points.
+  Remove the no-op shared registry and fixture lowering helpers.
 - Publish version-specific wheels for CPython 3.11 through 3.14 on Linux x86_64
   and macOS arm64. ABI3 remains out of scope.
 

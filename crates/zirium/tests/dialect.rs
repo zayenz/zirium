@@ -15,7 +15,7 @@ use zirium::{
     semantic::{
         ArithAddiOp, ArithConstantOp, AttributeValue, BuiltinModuleOp, CfBrOp, CfCondBrOp,
         FuncCallOp, FuncFuncOp, FuncReturnOp, LoweringMode, SemanticVerificationError,
-        lower_proving_fixture, lower_with_dialect_registry,
+        lower_with_dialect_registry,
     },
 };
 
@@ -267,11 +267,8 @@ fn lower_registered(source: &str) -> zirium::semantic::Document {
 
 fn lower_generic(source: &str) -> zirium::semantic::Document {
     let parsed = ParsedFile::parse(source.as_bytes()).unwrap();
-    let lowered = lower_proving_fixture(
-        &parsed,
-        LoweringMode::Strict,
-        &zirium::semantic::SharedRegistry,
-    );
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     lowered
         .document
         .unwrap_or_else(|| panic!("generic lowering failed: {:?}", lowered.diagnostics))
@@ -361,13 +358,9 @@ fn floating_constant_lowers_verifies_and_round_trips_in_both_print_modes() {
             lower_registered(&text)
         } else {
             let parsed = ParsedFile::parse(Arc::<[u8]>::from(text.as_bytes())).unwrap();
-            lower_proving_fixture(
-                &parsed,
-                LoweringMode::Strict,
-                &zirium::semantic::SharedRegistry,
-            )
-            .document
-            .unwrap()
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+                .document
+                .unwrap()
         };
         assert!(document.structurally_eq(&reparsed), "{text}");
     }
@@ -428,13 +421,10 @@ fn registered_verifier_rejects_wrong_constant_value_kind() {
 #[test]
 fn constant_wrapper_requires_the_registered_value_attribute() {
     let parsed = ParsedFile::parse(b"%c = \"arith.constant\"() : () -> i32".as_slice()).unwrap();
-    let document = lower_proving_fixture(
-        &parsed,
-        LoweringMode::Strict,
-        &zirium::semantic::SharedRegistry,
-    )
-    .document
-    .unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     assert!(ArithConstantOp::cast(&document, document.root_operations()[0]).is_none());
 }
 
@@ -461,13 +451,10 @@ fn generic_constants_lower_but_strict_verification_rejects_kind_mismatches() {
         "%c = \"arith.constant\"() {value = 1} : () -> f32",
     ] {
         let parsed = ParsedFile::parse(Arc::<[u8]>::from(source.as_bytes())).unwrap();
-        let document = lower_proving_fixture(
-            &parsed,
-            LoweringMode::Strict,
-            &zirium::semantic::SharedRegistry,
-        )
-        .document
-        .unwrap();
+        let document =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+                .document
+                .unwrap();
         assert!(matches!(
             document.verify_semantics(DialectRegistry::proving()),
             Err(SemanticVerificationError::Operation { .. })
@@ -490,10 +477,10 @@ fn generic_only_and_prefer_custom_round_trip() {
         .unwrap();
     assert!(generic.contains("\"arith.constant\"()"));
     let generic_parsed = ParsedFile::parse(Arc::<[u8]>::from(generic.as_bytes())).unwrap();
-    let generic_document = lower_proving_fixture(
+    let generic_document = lower_with_dialect_registry(
         &generic_parsed,
         LoweringMode::Strict,
-        &zirium::semantic::SharedRegistry,
+        &DialectRegistry::EMPTY,
     )
     .document
     .unwrap();
@@ -513,13 +500,10 @@ fn generic_only_and_prefer_custom_round_trip() {
     assert!(original.structurally_eq(&custom_document));
 
     let fallback = ParsedFile::parse(b"\"unknown.op\"() : () -> ()".as_slice()).unwrap();
-    let fallback = lower_proving_fixture(
-        &fallback,
-        LoweringMode::Strict,
-        &zirium::semantic::SharedRegistry,
-    )
-    .document
-    .unwrap();
+    let fallback =
+        lower_with_dialect_registry(&fallback, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     let mut fallback_text = String::new();
     fallback
         .print_with_registry(
@@ -847,13 +831,10 @@ fn generic_fallback_remains_available_for_each_declarative_operation() {
 "func.return"() : () -> ()
 "cf.br"() : () -> ()"#;
     let parsed = ParsedFile::parse(Arc::<[u8]>::from(source.as_bytes())).unwrap();
-    let document = lower_proving_fixture(
-        &parsed,
-        LoweringMode::Strict,
-        &zirium::semantic::SharedRegistry,
-    )
-    .document
-    .unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     let mut text = String::new();
     document
         .print_with_registry(
@@ -864,13 +845,10 @@ fn generic_fallback_remains_available_for_each_declarative_operation() {
         )
         .unwrap();
     let reparsed = ParsedFile::parse(Arc::<[u8]>::from(text.as_bytes())).unwrap();
-    let redocument = lower_proving_fixture(
-        &reparsed,
-        LoweringMode::Strict,
-        &zirium::semantic::SharedRegistry,
-    )
-    .document
-    .unwrap();
+    let redocument =
+        lower_with_dialect_registry(&reparsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
     assert!(document.structurally_eq(&redocument));
 }
 
@@ -1037,11 +1015,7 @@ fn complete_proving_dialect_fixture_verifies_and_round_trips_both_modes() {
         let lowered = if mode == DialectPrintMode::PreferCustom {
             lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving())
         } else {
-            lower_proving_fixture(
-                &parsed,
-                LoweringMode::Strict,
-                &zirium::semantic::SharedRegistry,
-            )
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
         };
         let round_trip = lowered
             .document

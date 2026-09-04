@@ -1792,7 +1792,8 @@ fn is_close(kind: TokenKind) -> bool {
     )
 }
 
-/// Parses a deliberately tiny balanced-brace fixture grammar.
+/// Test support for constructing a balanced-brace fixture tree.
+#[doc(hidden)]
 pub fn parse_brace_fixture(lexed: &Lexed) -> Result<SyntaxTree, CompactError> {
     let mut builder = EventBuilder::new();
     let root = builder.start();

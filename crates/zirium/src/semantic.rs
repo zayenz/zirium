@@ -20,10 +20,7 @@ mod lowering;
 mod values;
 mod verify;
 
-pub use lowering::{
-    lower_proving_fixture, lower_proving_fixture_with_retention, lower_with_dialect_registry,
-    lower_with_dialect_registry_and_retention,
-};
+pub use lowering::{lower_with_dialect_registry, lower_with_dialect_registry_and_retention};
 pub(crate) use values::split_registered_types;
 pub(crate) use verify::{
     verify_builtin_module, verify_cf_br, verify_cf_cond_br, verify_func_call, verify_func_func,
@@ -433,21 +430,6 @@ pub struct DocumentStatistics {
     pub use_index_entries: usize,
     pub symbol_index_entries: usize,
     pub dominance_index_entries: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SharedRegistryStatistics {
-    pub strings: usize,
-    pub types: usize,
-    pub attributes: usize,
-}
-
-#[derive(Debug, Default)]
-pub struct SharedRegistry;
-impl SharedRegistry {
-    pub fn statistics(&self) -> SharedRegistryStatistics {
-        SharedRegistryStatistics::default()
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1942,7 +1924,7 @@ mod tests {
     }
     fn lower(bytes: &[u8]) -> Document {
         let parsed = ParsedFile::parse(bytes.to_vec()).unwrap();
-        lower_proving_fixture(&parsed, LoweringMode::Strict, &SharedRegistry)
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
             .document
             .unwrap()
     }
