@@ -75,6 +75,9 @@ The [getting-started guide](https://github.com/zayenz/zirium/blob/main/docs/gett
 - parsing, lowering, verifying, and writing MLIR;
 - choosing a retention profile and output mode.
 
+The [CLI examples](https://github.com/zayenz/zirium/blob/main/docs/cli-examples.md)
+show how to query and edit small MLIR files with the `zirium` command.
+
 For the shortest check from a fresh checkout:
 
 ```sh
