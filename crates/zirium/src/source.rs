@@ -1,3 +1,8 @@
+//! Owned source bytes and checked byte ranges.
+//!
+//! Offsets use `u32`, which keeps syntax storage compact and limits one source
+//! buffer to `u32::MAX` bytes.
+
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 

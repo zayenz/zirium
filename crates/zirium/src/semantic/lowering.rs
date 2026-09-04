@@ -37,6 +37,14 @@ impl<T: Clone + Eq + std::hash::Hash> Interner<T> {
     }
 }
 
+/// Lowers a parsed file into semantic-only storage.
+///
+/// [`LoweringMode::Strict`] returns `None` in [`LoweringResult::document`] when
+/// semantic resolution is incomplete. [`LoweringMode::BestEffort`] returns a
+/// document with invalid sentinels when recovery is possible. In both modes,
+/// inspect [`LoweringResult::diagnostics`].
+///
+/// The registry must match the one used to parse registered custom syntax.
 pub fn lower_with_dialect_registry(
     file: &ParsedFile,
     mode: LoweringMode,
@@ -48,6 +56,12 @@ pub fn lower_with_dialect_registry(
 /// Lowers parsed syntax with explicit recovery, retention, and dialect behavior.
 ///
 /// Inspect [`LoweringResult::diagnostics`] even when a document is returned.
+/// [`RetentionProfile::Hybrid`] is required for source-preserving output after
+/// semantic edits. [`RetentionProfile::SyntaxOnly`] retains syntax for
+/// inspection but does not retain semantic-to-syntax mappings.
+///
+/// The registry must match the one used during parsing. A mismatched registry
+/// can leave custom operations unlowered or apply the wrong verifier contract.
 pub fn lower_with_dialect_registry_and_retention(
     file: &ParsedFile,
     mode: LoweringMode,

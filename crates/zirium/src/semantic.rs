@@ -1,4 +1,9 @@
-//! Narrow semantic IR and lowering for Zirium's generic proving fixture.
+//! Mutable semantic IR, lowering, verification, analyses, and transactions.
+//!
+//! Lowering creates a [`Document`] separate from the lossless parser CST.
+//! Documents use generation-checked handles and expose edits through
+//! [`DocumentEditor`]. A transaction works on a private copy and changes its
+//! document only when [`DocumentEditor::commit`] succeeds.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -120,6 +125,10 @@ macro_rules! id_type {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// A generation-checked operation handle owned by one [`Document`].
+///
+/// Erasing an operation makes its handle stale. Passing a handle to another
+/// document produces a foreign-handle error in checked and editing APIs.
 pub struct OperationId {
     index: u32,
     generation: u32,
@@ -348,6 +357,10 @@ pub struct SemanticDiagnostic {
     pub message: String,
 }
 
+/// The document and diagnostics produced by one lowering attempt.
+///
+/// Strict lowering leaves `document` empty when `semantically_complete` is
+/// false. Best-effort lowering can return an incomplete document for inspection.
 #[derive(Debug)]
 pub struct LoweringResult {
     pub document: Option<Document>,
@@ -675,6 +688,11 @@ pub struct Block {
     operations: List<OperationId>,
 }
 
+/// Mutable semantic storage with generation-checked public handles.
+///
+/// Query methods return `None` for stale or foreign handles unless a checked
+/// variant is available. Use [`Self::edit`] for atomic changes rather than
+/// attempting to construct arena records directly.
 #[derive(Clone, Debug)]
 pub struct Document {
     generation: u128,
@@ -1783,7 +1801,12 @@ impl std::error::Error for EditError {
     }
 }
 
-/// A private-copy transaction. Dropping it or returning an error never changes the document.
+/// A private-copy transaction for one semantic document.
+///
+/// Dropping the editor leaves the original unchanged. [`Self::commit`] first
+/// validates structure and registered semantics, then replaces the original in
+/// one step. Handles to unchanged operations remain valid; handles to erased
+/// operations become stale.
 pub struct DocumentEditor<'a> {
     original: &'a mut Document,
     working: Document,

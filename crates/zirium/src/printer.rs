@@ -18,6 +18,7 @@ use crate::semantic::{
 };
 use crate::{SyntaxKind, source::TextRange};
 
+/// Whitespace policy for generated semantic output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PrintLayout {
     Compact,
@@ -25,6 +26,7 @@ pub enum PrintLayout {
     Pretty,
 }
 
+/// Chooses generic MLIR or registered custom syntax where available.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DialectPrintMode {
     #[default]
@@ -32,6 +34,7 @@ pub enum DialectPrintMode {
     PreferCustom,
 }
 
+/// Failure while printing a semantic document.
 #[derive(Debug)]
 pub enum PrintError {
     IncompleteDocument,
@@ -40,6 +43,7 @@ pub enum PrintError {
     Io(io::Error),
 }
 
+/// Failure while combining retained source with generated replacements.
 #[derive(Debug)]
 pub enum PreserveError {
     NotHybrid,
@@ -104,6 +108,12 @@ impl std::error::Error for PrintError {
 }
 
 impl Document {
+    /// Writes deterministic generic MLIR to a [`fmt::Write`] sink.
+    ///
+    /// # Errors
+    ///
+    /// Rejects incomplete or structurally invalid documents and forwards sink
+    /// formatting errors.
     pub fn print<W: fmt::Write>(
         &self,
         sink: &mut W,
@@ -120,6 +130,11 @@ impl Document {
         .document()
         .map_err(PrintError::Format)
     }
+    /// Alias for [`Self::print`] that names the canonical-output contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::print`].
     pub fn print_canonical<W: fmt::Write>(
         &self,
         sink: &mut W,
@@ -127,11 +142,26 @@ impl Document {
     ) -> Result<(), PrintError> {
         self.print(sink, layout)
     }
+    /// Returns deterministic generic MLIR as bytes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects incomplete or structurally invalid documents.
     pub fn canonical_bytes(&self, layout: PrintLayout) -> Result<Vec<u8>, PrintError> {
         let mut bytes = Vec::new();
         self.write_canonical(&mut bytes, layout)?;
         Ok(bytes)
     }
+    /// Writes semantic output with optional registered custom syntax.
+    ///
+    /// In [`DialectPrintMode::PreferCustom`], a registered operation uses its
+    /// built-in assembly printer or callback when that printer succeeds, and
+    /// falls back to generic syntax otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Rejects incomplete or structurally invalid documents and forwards sink
+    /// formatting errors.
     pub fn print_with_registry<W: fmt::Write>(
         &self,
         sink: &mut W,
@@ -165,6 +195,11 @@ impl Document {
         result.map_err(PrintError::Format)
     }
     /// Writes deterministic generic MLIR derived entirely from semantic storage.
+    ///
+    /// # Errors
+    ///
+    /// Rejects incomplete or structurally invalid documents and forwards I/O
+    /// errors from the sink.
     pub fn write_canonical<W: io::Write>(
         &self,
         sink: &mut W,
@@ -172,6 +207,11 @@ impl Document {
     ) -> Result<(), PrintError> {
         self.print_io(sink, layout)
     }
+    /// Writes deterministic generic MLIR to a newly created file.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, formatting, file creation, write, or flush errors.
     pub fn print_to_file(
         &self,
         path: impl AsRef<Path>,
@@ -186,6 +226,11 @@ impl Document {
         )
     }
 
+    /// Writes semantic output with optional custom syntax to a new file.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, formatting, file creation, write, or flush errors.
     pub fn print_with_registry_to_file(
         &self,
         path: impl AsRef<Path>,
@@ -224,6 +269,16 @@ impl Document {
         self.validate().map_err(PrintError::InvalidDocument)
     }
 
+    /// Returns source-preserving output as bytes.
+    ///
+    /// Unchanged ranges are copied from retained source. Dirty operations and
+    /// blocks are regenerated using generic syntax.
+    ///
+    /// # Errors
+    ///
+    /// Requires a complete, valid [`RetentionProfile::Hybrid`](crate::semantic::RetentionProfile::Hybrid)
+    /// document with syntax mappings for every generated replacement. Replacing
+    /// a range containing unknown custom syntax also fails.
     pub fn preserving_bytes(&self, layout: PrintLayout) -> Result<Vec<u8>, PreserveError> {
         let plan = self.preserving_plan(layout)?;
         let source = self.source_bytes().ok_or(PreserveError::NotHybrid)?;
@@ -337,6 +392,11 @@ impl Document {
     /// Retains unchanged source bytes and regenerates edited regions.
     ///
     /// This mode requires [`crate::semantic::RetentionProfile::Hybrid`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the planning errors described by [`Self::preserving_bytes`] or an
+    /// I/O error from the sink. Planning completes before the first write.
     pub fn write_preserving<W: io::Write>(
         &self,
         sink: &mut W,
@@ -346,6 +406,12 @@ impl Document {
         self.write_preserving_plan(sink, layout, &plan)
     }
 
+    /// Writes source-preserving output to a newly created file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the planning errors described by [`Self::preserving_bytes`] or a
+    /// file creation or write error.
     pub fn write_preserving_to_file(
         &self,
         path: impl AsRef<Path>,

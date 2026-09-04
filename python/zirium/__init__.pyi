@@ -1,3 +1,5 @@
+"""Lossless MLIR syntax and mutable semantic documents backed by Zirium."""
+
 from collections.abc import Mapping
 from os import PathLike
 from types import TracebackType
@@ -36,6 +38,8 @@ class OperationShape:
     CALL_LIKE: OperationShape
 
 class DialectRegistry:
+    """Dialect syntax and semantic rules retained through parse and lower."""
+
     @staticmethod
     def empty() -> DialectRegistry: ...
     @staticmethod
@@ -128,6 +132,8 @@ class SyntaxOperationTable:
     def region_nodes(self) -> bytes: ...
 
 class File:
+    """Owning lossless parse result with syntax diagnostics and lowering entry points."""
+
     @property
     def root(self) -> SyntaxNode: ...
     @property
@@ -220,6 +226,8 @@ class OperationTable:
     def operation(self, index: int) -> SemanticOperation: ...
 
 class Document:
+    """Mutable semantic document with generation-checked handles and atomic edits."""
+
     @property
     def semantically_complete(self) -> bool: ...
     @property
@@ -264,6 +272,8 @@ class OperationSpec:
     ) -> None: ...
 
 class SemanticEdit:
+    """Buffered transaction that commits when its context exits normally."""
+
     def __enter__(self) -> Self: ...
     def __exit__(
         self,

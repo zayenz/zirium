@@ -19,25 +19,53 @@
 //! [`semantic::Document::verify_semantics`] additionally runs registered
 //! dialect schemas and verifiers.
 //!
+//! This example edits a hybrid document, commits the transaction, writes
+//! source-preserving output, and then shows what happens to an erased handle:
+//!
 //! ```
 //! use zirium::{
 //!     dialect::DialectRegistry,
 //!     parser::ParsedFile,
 //!     printer::PrintLayout,
-//!     semantic::{LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention},
+//!     semantic::{
+//!         AttributeSpec, AttributeValue, EditError, LoweringMode, RetentionProfile,
+//!         lower_with_dialect_registry_and_retention,
+//!     },
 //! };
 //!
-//! let parsed = ParsedFile::parse(b"\"example\"() : () -> ()".as_slice())?;
+//! let source = b"\"keep\"() : () -> ()\n\"edit\"() : () -> ()\n";
+//! let parsed = ParsedFile::parse(source.as_slice())?;
+//! let registry = DialectRegistry::EMPTY;
 //! let lowered = lower_with_dialect_registry_and_retention(
 //!     &parsed,
 //!     LoweringMode::Strict,
-//!     RetentionProfile::SemanticOnly,
-//!     &DialectRegistry::EMPTY,
+//!     RetentionProfile::Hybrid,
+//!     &registry,
 //! );
-//! let document = lowered.document.expect("strict lowering succeeded");
-//! document.validate_structure()?;
-//! let bytes = document.canonical_bytes(PrintLayout::Pretty)?;
-//! assert!(!bytes.is_empty());
+//! let mut document = lowered.document.expect("strict lowering succeeds");
+//! document.verify_semantics(&registry)?;
+//! let edited = document.root_operations()[1];
+//!
+//! let mut transaction = document.edit(&registry)?;
+//! transaction.set_attribute(
+//!     edited,
+//!     AttributeSpec {
+//!         name: "tag".into(),
+//!         spelling: "\"checked\"".into(),
+//!         value: AttributeValue::String("\"checked\"".into()),
+//!     },
+//! )?;
+//! transaction.commit()?;
+//! let output = document.preserving_bytes(PrintLayout::Pretty)?;
+//! assert!(String::from_utf8(output)?.contains("tag = \"checked\""));
+//!
+//! let mut transaction = document.edit(&registry)?;
+//! transaction.erase(edited)?;
+//! transaction.commit()?;
+//! assert!(matches!(
+//!     document.check_operation(edited),
+//!     Err(EditError::StaleOperation(_))
+//! ));
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 

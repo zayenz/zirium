@@ -292,17 +292,48 @@ Canonical output normalizes formatting and names. It is intended for determinist
 Preserving output requires hybrid retention:
 
 ```python
+parsed = zirium.parse_text('''\
+"template"() {tag = "new"} : () -> ()
+"target"() {tag = "old"} : () -> ()
+''')
 result = parsed.lower_strict("hybrid")
 assert result.document is not None, result.diagnostics
 document = result.document
+table = document.operation_table()
+template = table.operation(0)
+target = table.operation(1)
+replacement = template.attribute_by_name("tag")
+assert replacement is not None
 
 with document.edit() as edit:
-    edit.compact_pools()
+    edit.set_attribute(target, zirium.AttributeSpecHandle(replacement))
 
-document.write_preserving("preserved.mlir")
+preserved = document.preserving_bytes()
+assert preserved.count(b'tag = "new"') == 2
+
+with document.edit() as edit:
+    edit.erase(template)
+
+try:
+    template.name
+except zirium.StaleHandleError:
+    pass
+else:
+    raise AssertionError("an erased operation handle remains usable")
 ```
 
-An edit context buffers commands and commits them atomically when the context exits. If validation fails or the body raises an exception, the original document remains unchanged. Unedited source ranges are copied directly; dirty operations or blocks are regenerated.
+An edit context buffers commands and commits them atomically when the context
+exits normally. If validation fails or the body raises an exception, the
+original document remains unchanged. Handles for surviving operations keep
+their identity across commits. Erased operation handles raise
+`StaleHandleError` when used. A handle from another document raises
+`ForeignHandleError`.
+
+Source-preserving output remains available after edits that can map back to an
+existing operation or block, such as the attribute replacement above. It copies
+unedited ranges directly and regenerates dirty ranges. Inserting or erasing an
+operation changes the semantic structure without a source range, so the
+document becomes semantic-only and preserving output is no longer available.
 
 ## Resource limits
 

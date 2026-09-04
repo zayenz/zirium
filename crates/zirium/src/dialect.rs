@@ -8,21 +8,35 @@ use crate::{
     semantic::{Document, OperationId, RegisteredLowering, RegisteredLoweringContext},
 };
 
+/// Parses one registered custom operation from the current dialect parser.
 pub type OperationParser = fn(&mut DialectParser<'_, '_>) -> Result<(), crate::CompactError>;
+/// Converts the registered operation's CST view into arena-independent data.
 pub type OperationLowerer = fn(&RegisteredLoweringContext<'_>) -> Option<RegisteredLowering>;
+/// Checks one registered semantic operation.
 pub type OperationVerifier = fn(&Document, OperationId) -> Result<(), &'static str>;
+/// Renders one registered operation in custom assembly syntax.
 pub type OperationPrinter = fn(&Document, OperationId) -> Option<String>;
+/// Recognizes the spelling of one registered type or attribute value.
 pub type ValueParser = fn(&str) -> bool;
+/// Produces the semantic spelling for one registered type or attribute value.
 pub type ValueLowerer = fn(&str) -> Option<String>;
+/// Checks one registered type or attribute spelling.
 pub type ValueVerifier = fn(&str) -> Result<(), &'static str>;
+/// Renders one registered type or attribute spelling.
 pub type ValuePrinter = fn(&str) -> Option<String>;
 
+/// Region semantics used by structural verification and dominance analysis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegionKind {
     Ssacfg,
     Graph,
 }
 
+/// Symbol behavior for one operation descriptor.
+///
+/// `symbol_table` marks a scope owner, `defines_symbol` reads the operation's
+/// registered symbol attribute, and `uses_symbols` enables unresolved-reference
+/// diagnostics for that operation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SymbolDescriptor {
     pub defines_symbol: bool,
@@ -30,6 +44,7 @@ pub struct SymbolDescriptor {
     pub uses_symbols: bool,
 }
 
+/// Semantic behavior for one region owned by a registered operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RegionDescriptor {
     pub kind: RegionKind,
@@ -45,6 +60,10 @@ impl Default for RegionDescriptor {
     }
 }
 
+/// Operand, result, and required-attribute constraints for an operation.
+///
+/// [`Document::verify_semantics`](crate::semantic::Document::verify_semantics)
+/// checks this schema before running the descriptor's verifier callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OperationSchema {
     pub operands: OperandCount,
@@ -76,6 +95,21 @@ impl OperandCount {
     }
 }
 
+/// A built-in custom assembly implementation.
+///
+/// [`DialectRegistry::new`] enforces the following descriptor contract. Symbol
+/// flags are shown as `defines_symbol / symbol_table / uses_symbols`.
+///
+/// | Variant | Operation | Operands / results | Required attributes | Regions | Symbol flags |
+/// | --- | --- | --- | --- | --- | --- |
+/// | `Module` | `builtin.module` | 0 / 0 | none | one isolated `Ssacfg` | true / true / false |
+/// | `Function` | `func.func` | 0 / 0 | `sym_name`, `function_type` | one isolated `Ssacfg` | true / false / false |
+/// | `Call` | `func.call` | variadic / variadic | `callee` | none | false / false / true |
+/// | `ConditionalBranch` | `cf.cond_br` | variadic / 0 | none | none | false / false / false |
+/// | `TypedAttribute` | `arith.constant` | 0 / 1 | `value` | none | false / false / false |
+/// | `BinaryOperands` | `arith.addi` | 2 / 1 | none | none | false / false / false |
+/// | `OptionalTypedOperands` | `func.return` | variadic / 0 | none | none | false / false / false |
+/// | `TypedSuccessor` | `cf.br` | 0 / 0 | none | none | false / false / false |
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssemblyProgram {
     Module,
@@ -191,20 +225,45 @@ const fn same_names(left: &[&str], right: &[&str]) -> bool {
     true
 }
 
+/// Static registration for one custom operation.
+///
+/// `name` is the exact bare operation spelling and must not be empty. Either
+/// `assembly` or `parse` must provide syntax handling. When `assembly` is set,
+/// it controls parsing and supplies the first lowering and printing attempt;
+/// `lower` and `print` remain fallbacks when that program returns `None`.
+///
+/// A built-in `assembly` variant only works with its fixed name and required
+/// [`OperationSchema`], region descriptors, and symbol descriptor. Passing an
+/// inconsistent descriptor to [`DialectRegistry::new`] panics.
 #[derive(Clone, Copy)]
 pub struct OperationDescriptor {
+    /// Exact bare operation name used for lookup.
     pub name: &'static str,
+    /// CST kind assigned by the custom parser.
     pub syntax_kind: SyntaxKind,
+    /// Handwritten syntax callback used when `assembly` is `None`.
     pub parse: Option<OperationParser>,
+    /// Handwritten lowering callback.
     pub lower: Option<OperationLowerer>,
+    /// Additional semantic verifier run after schema checks.
     pub verify: Option<OperationVerifier>,
+    /// Custom printer callback used in [`DialectPrintMode::PreferCustom`](crate::printer::DialectPrintMode::PreferCustom).
     pub print: Option<OperationPrinter>,
+    /// Built-in parse, lower, verify, and print program.
     pub assembly: Option<AssemblyProgram>,
+    /// Operand, result, and required-attribute contract.
     pub schema: OperationSchema,
+    /// One descriptor for each region the operation may own.
     pub regions: &'static [RegionDescriptor],
+    /// Symbol-table, definition, and use behavior.
     pub symbols: SymbolDescriptor,
 }
 
+/// Static registration for one dialect type.
+///
+/// `name` is the lookup prefix, including `!`. Values remain opaque through
+/// parsing and lowering. Semantic verification passes the complete textual
+/// spelling to `verify`; an absent verifier accepts the value.
 pub struct TypeDescriptor {
     pub name: &'static str,
     pub parse: Option<ValueParser>,
@@ -213,6 +272,11 @@ pub struct TypeDescriptor {
     pub print: Option<ValuePrinter>,
 }
 
+/// Static registration for one dialect attribute.
+///
+/// `name` is the lookup prefix, including `#`. Values remain opaque through
+/// parsing and lowering. Semantic verification passes the complete textual
+/// spelling to `verify`; an absent verifier accepts the value.
 pub struct AttributeDescriptor {
     pub name: &'static str,
     pub parse: Option<ValueParser>,
@@ -255,6 +319,11 @@ pub enum OperationShape {
 
 impl std::error::Error for DeclarativeRegistryError {}
 
+/// A fixed collection of operation, type, and attribute descriptors.
+///
+/// Use [`Self::EMPTY`] for generic quoted syntax, [`Self::core`] or
+/// [`Self::proving`] for the built-in sets, and [`Self::new`] for static custom
+/// descriptors.
 pub struct DialectRegistry {
     operations: &'static [OperationDescriptor],
     types: &'static [TypeDescriptor],
@@ -264,8 +333,28 @@ pub struct DialectRegistry {
 }
 
 impl DialectRegistry {
+    /// A registry with no custom syntax or semantic callbacks.
     pub const EMPTY: Self = Self::new(&[], &[], &[]);
 
+    /// Creates a registry over `'static` descriptor slices.
+    ///
+    /// The operation name is the exact bare syntax spelling. Every operation
+    /// supplies either `assembly` or `parse`. A descriptor using a built-in
+    /// [`AssemblyProgram`] also uses that program's fixed operation name,
+    /// operand/result counts, required attributes, region metadata, and symbol
+    /// metadata. The [`OperationDescriptor`] documentation records how optional
+    /// callbacks interact with an assembly program.
+    ///
+    /// Type and attribute descriptors do not have constructor-time invariants.
+    /// Their names are lookup prefixes. Values remain opaque, and an absent
+    /// verifier accepts them.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an operation name is empty, an operation provides neither
+    /// built-in nor handwritten syntax handling, a built-in assembly program is
+    /// attached to another operation name, or its schema, region descriptors,
+    /// or symbol descriptor differ from that program's required contract.
     pub const fn new(
         operations: &'static [OperationDescriptor],
         types: &'static [TypeDescriptor],
@@ -424,6 +513,10 @@ impl DialectRegistry {
 
     /// Builds an owned registry containing the core operations plus caller-named operations
     /// assigned supported [`OperationShape`] variants.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty or duplicate names and names reserved by the core registry.
     pub fn with_operation_shapes(
         operation_shapes: &[(&str, OperationShape)],
     ) -> Result<Self, DeclarativeRegistryError> {
@@ -478,6 +571,7 @@ impl DialectRegistry {
             .unwrap_or_default()
     }
 
+    /// Returns the fixed registry used by the dialect proving corpus.
     pub fn proving() -> &'static Self {
         &PROVING_REGISTRY
     }
@@ -498,6 +592,10 @@ impl DialectRegistry {
     /// Builds a callback-free registry set from the built-in declarative operation catalog.
     ///
     /// Iteration follows the fixed proving-catalog order, independent of input order.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unknown or duplicate operation names.
     pub fn declarative(operation_names: &[&str]) -> Result<Self, DeclarativeRegistryError> {
         let mut selected = 0_u8;
         for &name in operation_names {

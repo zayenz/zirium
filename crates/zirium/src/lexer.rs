@@ -1,3 +1,8 @@
+//! Lossless tokenization for textual MLIR.
+//!
+//! [`lex`] and [`lex_with_limits`] retain every source byte through token ranges.
+//! Malformed input produces [`Diagnostic`] values instead of stopping the scan.
+
 use crate::source::{Source, TextRange};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,10 +144,21 @@ impl Lexed {
     }
 }
 
+/// Tokenizes a source with the default [`LexerLimits`].
+///
+/// Scanning always returns a token tape ending in [`TokenKind::Eof`]. Problems
+/// such as an unterminated token or an exceeded limit appear in
+/// [`Lexed::diagnostics`].
 pub fn lex(source: &Source) -> Lexed {
     lex_with_limits(source, LexerLimits::default())
 }
 
+/// Tokenizes a source with explicit file and token limits.
+///
+/// Exceeding `max_file_bytes` adds a [`DiagnosticKind::FileLimit`] diagnostic
+/// and continues normal tokenization. Reaching `max_tokens` records the
+/// remaining input as one [`TokenKind::Invalid`] token, adds a
+/// [`DiagnosticKind::TokenLimit`] diagnostic, and stops scanning.
 pub fn lex_with_limits(source: &Source, limits: LexerLimits) -> Lexed {
     let bytes = source.bytes();
     let mut lexer = Lexer {

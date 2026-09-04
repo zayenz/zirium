@@ -1,5 +1,6 @@
 use super::*;
 
+/// Compact lossless CST storage and parser diagnostics for one file.
 #[derive(Debug)]
 pub struct ParsedSyntax {
     pub(super) tree: std::sync::Arc<SyntaxTree>,

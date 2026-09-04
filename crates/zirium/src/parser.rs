@@ -1,3 +1,10 @@
+//! Owning parse results, resource limits, text edits, and typed CST views.
+//!
+//! Parsing is lossless and diagnostic-driven. A successful [`ParsedFile`] may
+//! still contain lexer or syntax diagnostics, so consumers inspect both before
+//! assuming that the input is well formed. Fatal errors are reserved for source
+//! size and compact-tree construction failures.
+
 use crate::{
     dialect::{DialectRegistry, OperationDescriptor, OperationShape},
     lexer::{Diagnostic as LexDiagnostic, Lexed, LexerLimits, TokenKind, lex_with_limits},
@@ -7,12 +14,17 @@ use crate::{
     source::{Source, SourceError, TextRange},
 };
 
+/// One replacement in the original source byte coordinate space.
+///
+/// Edit ranges may be empty for insertion. [`ParsedFile::apply_text_edits`]
+/// sorts edits by range before applying them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextEdit {
     pub range: TextRange,
     pub replacement: std::sync::Arc<[u8]>,
 }
 
+/// A range-level error in a batch of source edits.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TextEditError {
     OutOfBounds(TextRange),
@@ -33,6 +45,9 @@ impl std::fmt::Display for TextEditError {
 impl std::error::Error for TextEditError {}
 
 /// An immutable, owning parse result.
+///
+/// This value keeps the input bytes, lexer diagnostics, parser diagnostics,
+/// and compact CST together. Syntax errors do not make construction fail.
 #[derive(Debug)]
 pub struct ParsedFile {
     source: Source,
@@ -41,6 +56,10 @@ pub struct ParsedFile {
     limits: ParseLimits,
 }
 
+/// Resource limits shared by parsing and later semantic lowering.
+///
+/// Lexer limits take effect during [`ParsedFile`] construction. Attribute and
+/// alias depth limits take effect when the file is lowered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParseLimits {
     pub max_file_bytes: usize,
@@ -69,22 +88,58 @@ impl Default for ParseLimits {
 }
 
 impl ParsedFile {
-    /// Parses and owns the input bytes using default limits and no custom dialect syntax.
+    /// Parses and owns bytes using default limits and generic operation syntax.
+    ///
+    /// The result remains available for malformed MLIR; inspect
+    /// [`Self::lexer_diagnostics`] and [`ParsedSyntax::diagnostics`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source exceeds the file-size limit, cannot use
+    /// compact offsets, or cannot be represented as a compact syntax tree.
     pub fn parse(bytes: impl Into<std::sync::Arc<[u8]>>) -> Result<Self, ParseFileError> {
         Self::parse_with_limits_and_registry(bytes, ParseLimits::default(), &DialectRegistry::EMPTY)
     }
+    /// Parses bytes with caller-supplied resource limits and generic syntax.
+    ///
+    /// The same limits are retained for [`Self::apply_text_edits`] and semantic
+    /// lowering. Recoverable lexer and syntax problems appear as diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns the fatal errors described by [`Self::parse`].
     pub fn parse_with_limits(
         bytes: impl Into<std::sync::Arc<[u8]>>,
         limits: ParseLimits,
     ) -> Result<Self, ParseFileError> {
         Self::parse_with_limits_and_registry(bytes, limits, &DialectRegistry::EMPTY)
     }
+    /// Parses bytes with default limits and registered custom operation syntax.
+    ///
+    /// Pass the same registry to semantic lowering, verification, and custom
+    /// printing so every stage uses the same dialect contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns the fatal errors described by [`Self::parse`].
     pub fn parse_with_registry(
         bytes: impl Into<std::sync::Arc<[u8]>>,
         registry: &DialectRegistry,
     ) -> Result<Self, ParseFileError> {
         Self::parse_with_limits_and_registry(bytes, ParseLimits::default(), registry)
     }
+    /// Parses bytes with explicit limits and a dialect registry.
+    ///
+    /// A successful result is lossless even when it contains diagnostics.
+    /// Registered parse callbacks may add syntax errors but do not replace the
+    /// generic recovery model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseFileError::ResourceLimit`] when `max_file_bytes` is
+    /// exceeded, [`ParseFileError::Source`] when compact source offsets cannot
+    /// represent the input, or [`ParseFileError::Syntax`] when CST compaction
+    /// rejects the event stream.
     pub fn parse_with_limits_and_registry(
         bytes: impl Into<std::sync::Arc<[u8]>>,
         limits: ParseLimits,
@@ -146,9 +201,22 @@ impl ParsedFile {
         sink.write_all(self.original_bytes())
     }
     /// Applies non-overlapping byte-range edits and reparses the complete result.
+    ///
+    /// Ranges refer to this file's original bytes. The returned file preserves
+    /// this file's complete [`ParseLimits`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an out-of-bounds or overlapping range, an
+    /// unrepresentable output length, or a fatal error while reparsing.
     pub fn apply_text_edits(&self, edits: &[TextEdit]) -> Result<Self, ApplyTextEditsError> {
         self.apply_text_edits_with_registry(edits, &DialectRegistry::EMPTY)
     }
+    /// Applies text edits and reparses with explicit custom syntax.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::apply_text_edits`].
     pub fn apply_text_edits_with_registry(
         &self,
         edits: &[TextEdit],
@@ -246,6 +314,7 @@ mod text_edit_size_tests {
     }
 }
 
+/// Failure while validating or reparsing a batch of source edits.
 #[derive(Debug)]
 pub enum ApplyTextEditsError {
     Edit(TextEditError),
@@ -273,6 +342,10 @@ impl std::error::Error for ApplyTextEditsError {
     }
 }
 
+/// Fatal failure while constructing an owning parse result.
+///
+/// Recoverable lexer and grammar problems are diagnostics on [`ParsedFile`],
+/// not variants of this error.
 #[derive(Debug)]
 pub enum ParseFileError {
     Source(SourceError),

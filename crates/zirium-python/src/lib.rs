@@ -121,6 +121,11 @@ fn parse_limits(
 
 #[pyfunction(signature = (data, *, registry=None, max_file_bytes=None, max_tokens=None, max_delimiter_depth=None, max_payload_bytes=None, max_numeric_literal_bytes=None, max_attribute_depth=None, max_alias_expansion_depth=None))]
 #[allow(clippy::too_many_arguments)]
+/// Parses arbitrary bytes into a lossless syntax file.
+///
+/// Recoverable syntax problems appear in `File.diagnostics`. Exceeding the file
+/// limit raises `ResourceLimitError`; other fatal construction errors raise
+/// `ValueError`.
 fn parse_bytes(
     data: &Bound<'_, PyBytes>,
     registry: Option<&DialectRegistryHandle>,
@@ -149,6 +154,11 @@ fn parse_bytes(
 
 #[pyfunction(signature = (text, *, registry=None, max_file_bytes=None, max_tokens=None, max_delimiter_depth=None, max_payload_bytes=None, max_numeric_literal_bytes=None, max_attribute_depth=None, max_alias_expansion_depth=None))]
 #[allow(clippy::too_many_arguments)]
+/// Encodes a string as UTF-8 and parses it into a lossless syntax file.
+///
+/// Recoverable syntax problems appear in `File.diagnostics`. Exceeding the file
+/// limit raises `ResourceLimitError`; other fatal construction errors raise
+/// `ValueError`.
 fn parse_text(
     text: &str,
     registry: Option<&DialectRegistryHandle>,
@@ -177,6 +187,11 @@ fn parse_text(
 
 #[pyfunction(signature = (path, *, registry=None, max_file_bytes=None, max_tokens=None, max_delimiter_depth=None, max_payload_bytes=None, max_numeric_literal_bytes=None, max_attribute_depth=None, max_alias_expansion_depth=None))]
 #[allow(clippy::too_many_arguments)]
+/// Reads and parses a path into a lossless syntax file.
+///
+/// I/O failures raise `OSError`. Exceeding the file limit raises
+/// `ResourceLimitError`; recoverable syntax problems appear in
+/// `File.diagnostics`.
 fn parse_file(
     path: PathBuf,
     registry: Option<&DialectRegistryHandle>,
@@ -211,6 +226,7 @@ fn parse_file(
 }
 
 #[pymodule(gil_used = false)]
+/// Lossless MLIR syntax and mutable semantic documents backed by Zirium.
 fn _zirium(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Diagnostic>()?;
     module.add_class::<SyntaxTable>()?;

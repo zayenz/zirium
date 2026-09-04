@@ -1,6 +1,13 @@
 use super::*;
 
 impl Document {
+    /// Checks arena references, ownership, parent links, values, and retention data.
+    ///
+    /// This check does not run dialect schemas or callbacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ValidationError`] found in semantic storage.
     pub fn validate_structure(&self) -> Result<(), ValidationError> {
         let valid_op = |id: OperationId| self.valid_operation(id);
         if self.operation_generations.len() != self.operations.len()
@@ -337,12 +344,20 @@ impl Document {
         Ok(())
     }
 
-    /// Compatibility alias for callers predating the explicit structural name.
+    /// Alias for [`Self::validate_structure`].
     pub fn validate(&self) -> Result<(), ValidationError> {
         self.validate_structure()
     }
 
-    /// Runs structural checks followed by registered operation schemas and verifiers.
+    /// Runs structural checks followed by registered schemas and verifiers.
+    ///
+    /// Unregistered operations remain valid generic operations. Registered type
+    /// and attribute verifiers run for matching opaque values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structural error, rejects invalid sentinels, or reports the
+    /// first schema or registered verifier failure.
     pub fn verify_semantics(
         &self,
         registry: &DialectRegistry,

@@ -1,9 +1,18 @@
 use super::*;
 
 impl Document {
-    /// Starts an atomic edit against a private copy of a complete, valid document.
+    /// Starts an atomic edit against a private copy of a complete,
+    /// structurally valid document.
     ///
     /// Changes become visible only when [`DocumentEditor::commit`] succeeds.
+    /// Registered schemas and semantic verifiers run only at commit, using the
+    /// supplied registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EditError::IncompleteDocument`] for best-effort documents with
+    /// invalid sentinels, or [`EditError::Structural`] when the starting document
+    /// fails structural validation.
     pub fn edit<'a>(
         &'a mut self,
         registry: &'a DialectRegistry,
@@ -21,10 +30,18 @@ impl Document {
 }
 
 impl DocumentEditor<'_> {
+    /// Returns the transaction's current read-only working copy.
     pub fn document(&self) -> &Document {
         &self.working
     }
 
+    /// Inserts a regionless operation at a root or block position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale or foreign insertion block, an out-of-range
+    /// position, or an invalid operand handle. Operations with owned regions are
+    /// not expressible through [`OperationSpec`].
     pub fn insert(
         &mut self,
         point: InsertionPoint,
@@ -109,6 +126,12 @@ impl DocumentEditor<'_> {
         Ok(id)
     }
 
+    /// Removes a regionless operation that has no live uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the handle is stale or foreign, the operation owns
+    /// regions, or one of its results still has a use.
     pub fn erase(&mut self, operation: OperationId) -> Result<(), EditError> {
         let op = self
             .working
@@ -140,6 +163,12 @@ impl DocumentEditor<'_> {
         Ok(())
     }
 
+    /// Replaces one operand with a value from the same document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale, foreign, or invalid handles, an out-of-range
+    /// operand index, or an incompatible value type.
     pub fn rewire_operand(
         &mut self,
         operation: OperationId,
@@ -179,6 +208,11 @@ impl DocumentEditor<'_> {
     }
 
     /// Replaces every indexed operand and successor-argument use of `from`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either value is stale, invalid, or foreign, or when
+    /// their semantic types differ.
     pub fn replace_all_uses(&mut self, from: ValueId, to: ValueId) -> Result<usize, EditError> {
         self.require_value(from)?;
         self.require_value(to)?;
@@ -438,6 +472,12 @@ impl DocumentEditor<'_> {
     }
 
     /// Verifies the working copy, then atomically installs it in the original document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EditError::Structural`] or [`EditError::Semantic`] when the
+    /// working copy violates the document or registry contract. The original
+    /// document remains unchanged on failure.
     pub fn commit(mut self) -> Result<(), EditError> {
         self.working
             .validate_structure()

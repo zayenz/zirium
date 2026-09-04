@@ -1,4 +1,4 @@
-"""Immutable syntax bindings for Zirium."""
+"""Lossless MLIR syntax and mutable semantic documents backed by Zirium."""
 
 from ._zirium import (  # ty: ignore[unresolved-import]
     AttributeSpecHandle,

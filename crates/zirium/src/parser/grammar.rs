@@ -5,6 +5,10 @@ pub fn parse_generic_operations(lexed: &Lexed) -> Result<ParsedSyntax, CompactEr
     parse_generic_operations_with_limits(lexed, ParserLimits::default())
 }
 
+/// Builds a lossless generic-operation CST with explicit parser limits.
+///
+/// Recoverable grammar problems appear in [`ParsedSyntax::diagnostics`].
+/// [`CompactError`] is reserved for event or compact-tree invariants.
 pub fn parse_generic_operations_with_limits(
     lexed: &Lexed,
     limits: ParserLimits,
@@ -12,6 +16,16 @@ pub fn parse_generic_operations_with_limits(
     parse_operations_with_registry(lexed, &[], &DialectRegistry::EMPTY, limits)
 }
 
+/// Builds a lossless CST with registered custom operation syntax.
+///
+/// `source` must be the byte buffer used to create `lexed`; registered parsers
+/// inspect it through token ranges. Recoverable syntax problems appear in the
+/// returned diagnostics.
+///
+/// # Errors
+///
+/// Returns [`CompactError`] when the parser cannot maintain its event or
+/// compact-tree invariants.
 pub fn parse_operations_with_registry(
     lexed: &Lexed,
     source: &[u8],

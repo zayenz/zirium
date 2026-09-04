@@ -1,6 +1,36 @@
 # Processing benchmark evidence
 
-## Parser construction and string identity
+## Current baseline and decision
+
+The current parser uses direct event-to-CST compaction. These figures are the
+baseline for parser planning. The older full-pipeline tables below remain only
+as historical evidence.
+
+| fixture | median | throughput | peak live allocation | retained CST |
+| --- | ---: | ---: | ---: | ---: |
+| primary 10 MiB | 16.623 ms | 601.587 MiB/s | 31.79 MiB | 7.66 MiB |
+| primary 100 MiB | 181.661 ms | 550.476 MiB/s | 325.88 MiB | 72.58 MiB |
+| block-rich 10 MiB | 142.671 ms | 70.091 MiB/s | 269.85 MiB | 77.05 MiB |
+| primary 500 MiB | 941.563 ms | 531.032 MiB/s | 1,869.39 MiB | 410.91 MiB |
+
+Keep the event parser and flat CST. Syntax density drives the expensive case;
+raw byte scanning and nesting do not. Direct compaction removes a full event
+vector without narrowing the public event contract. The token copy and
+token-index bitmap stay because they enforce arbitrary token-event ordering,
+duplicate and omission checks, source order, and root coverage.
+
+Keep source ranges in parser tokens and typed syntax. Parser-level string IDs
+cost more memory than they save for the measured workloads, and registered
+operation lookup does not dominate event production. Purpose-specific identity
+tables belong in consumers that can show a benefit from their own access
+patterns.
+
+Python packed tables fill their final `bytes` allocations directly and remain
+close to the equivalent native payload builders. Comparisons with a bare native
+walk still exceed the three-times follow-up threshold for some shapes, so
+reducing repeated syntax walks remains useful follow-up work.
+
+## Historical parser construction and string-identity study
 
 The ignored crate-internal test separates lexing, grammar event production, CST compaction, and structural verification without adding a public profiling API. Run it in release mode with one test thread:
 
@@ -87,7 +117,7 @@ PYTHONPATH=python python3 python/benchmarks/processing_benchmark.py --smoke
 PYTHONPATH=python python3 python/benchmarks/processing_benchmark.py --size-mib 10 --runs 3
 ```
 
-## Packed Python syntax table
+## Historical packed Python syntax table measurement
 
 The base-045 measurement used the same deterministic 10 MiB primary fixture,
 seed, release profile, one warm-up, and three measured runs as the processing
@@ -112,12 +142,12 @@ guarantees.
 
 `--depth` is required for nested fixtures and rejected for other shapes. The generator raises the parser delimiter limit to cover the selected depth; padding still makes every fixture exactly the requested byte count. Release smoke checks covered primary, block-rich, trivia, payload, and nested depths 8, 64, and 256.
 
-## Post-evaluation parser baseline
+## Current parser baseline details
 
-This is the parser baseline after the base-042 direct-compaction change. It was
-recorded on the same Apple M1 Max class of machine as the earlier results:
-64 GiB RAM, Darwin 25.5.0, `aarch64-apple-darwin`, release profile, and rustc
-1.97.1. Each row is the median of three measured runs after one untimed warm-up.
+The current parser baseline uses direct compaction. The measurement machine is
+an Apple M1 Max with 64 GiB RAM, Darwin 25.5.0, `aarch64-apple-darwin`, release
+profile, and rustc 1.97.1. Each row reports the median of three measured runs
+after one untimed warm-up.
 Peak allocation is incremental process-scoped live allocation above the stage
 baseline. Retained bytes are `SyntaxTree::exact_retained_bytes()` and exclude
 the separately owned source. Token and node rates are derived from the exact
@@ -139,6 +169,8 @@ test thresholds or public performance guarantees.
 | payload 100 MiB | 88.757 | 1,126.677 | 100.00 | 0.0004 | 0.0003 | 0.00008 |
 | trivia 100 MiB | 98.427 | 1,015.981 | 162.67 | 32.00 | 28.409 | 0.00004 |
 
+### Historical comparison with base-039
+
 The 100 MiB primary result is the direct comparison with base-039. Median
 latency fell from 234.975 ms to 181.661 ms (22.7%), and peak live allocation
 fell from 406.04 MiB to 325.88 MiB (19.7%). The resulting CST contains
@@ -155,6 +187,8 @@ nodes/s. Compared with the base-039 direct 500 MiB result of 1.235528 s and
 It also remains consistent with the earlier base-039 projection of 1.184 s and
 2,030.3 MiB peak.
 
+### Current interpretation
+
 The remaining parser cost is syntax density, not raw byte scanning or nesting.
 At 10 MiB the block-rich fixture is about 8.6 times slower than primary and
 retains about ten times as many CST bytes, while its token rate remains close
@@ -166,8 +200,7 @@ not support a more invasive representation change. Future parser work should
 first isolate per-token grammar/event overhead on syntax-dense input rather
 than replace the representation wholesale.
 
-Reproduce this post-evaluation matrix with the existing temporary-fixture
-harness:
+Reproduce the current matrix with the temporary-fixture harness:
 
 ```sh
 cargo build --release -p zirium --example processing_benchmark
@@ -187,7 +220,7 @@ Every generated fixture is exact-size, deterministic with seed
 `0x5a495249554d0028`, stored at a process-specific path in the system temporary
 directory, and removed after the run.
 
-## Primary matrix
+## Historical full-pipeline matrix
 
 All fixture byte counts were exact: 1,048,576; 10,485,760; 26,214,400; 52,428,800; 78,643,200; and 104,857,600. Cells contain median milliseconds / peak live MiB.
 
@@ -207,7 +240,7 @@ The operation counts were 2,062; 20,603; 51,504; 103,006; 154,508; and 206,009. 
 
 Earlier canonical and editor figures (for example 100 MiB at 11.635 s and 46.875 s) were pre-linear-validation baselines. The table replaces them with current reruns after structural validation became linear; those old figures must not be used for current projections.
 
-## Projection and direct 500 MiB result
+## Historical projection and first 500 MiB result
 
 The report fits only 1, 10, 25, and 50 MiB. It checks predictions against held-out 75 and 100 MiB measurements, requiring at most 10% error for both latency and peak allocation. It separately checks the 25–50, 50–75, and 75–100 per-MiB slopes, requiring every slope to remain within 10% of their median. The existing 10 MiB latency signal floor is 5 ms. A projection must pass every check. Assumptions are the same fixture mix, allocator, hardware, release build, and no paging cliff beyond 100 MiB.
 
@@ -224,7 +257,7 @@ The documented machine completed the bounded direct command, so these values are
 
 Canonical and editor stages were intentionally excluded from the 500 MiB command.
 
-## Nested and block-rich evidence
+## Historical nested and block-rich evidence
 
 Each nested fixture was exactly 10,485,760 bytes. Padding sits inside the deepest region and does not change the requested nesting depth.
 
@@ -236,7 +269,7 @@ Each nested fixture was exactly 10,485,760 bytes. Padding sits inside the deepes
 
 The bounded 10 MiB block-rich run produced 414,349 operations, 69,059 regions, 207,175 blocks, and 2,486,096 dominance-index entries. Parse was 232.784 ms, lower 1,018.031 ms, full verification 354.030 ms, and dominance-index construction 144.366 ms. Their peak live allocations were 357.57, 483.78, 87.08, and 134.13 MiB respectively. This extends dense CFG coverage beyond the earlier 1 MiB point without creating a shape/size cross-product.
 
-## Python boundary evidence
+## Historical Python boundary evidence
 
 Recorded with CPython 3.14.6 on macOS arm64 at exactly 10,485,760 input bytes, one warm-up, and three measured runs:
 
