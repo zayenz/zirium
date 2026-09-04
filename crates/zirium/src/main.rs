@@ -5,6 +5,7 @@ use std::{
 
 use zirium::{
     dialect::DialectRegistry,
+    parser::ParseDiagnosticKind,
     parser::ParsedFile,
     printer::PrintLayout,
     query::{Query, QueryOutput},
@@ -61,7 +62,15 @@ fn run() -> Result<(), String> {
         let (bytes, insertion) = normalize_module_shorthand(bytes);
         let parsed = ParsedFile::parse_with_registry(bytes, registry)
             .map_err(|error| format!("could not parse {name}: {error}"))?;
-        if !parsed.lexer_diagnostics().is_empty() || !parsed.syntax().diagnostics().is_empty() {
+        let recovered_unknown_custom =
+            parsed.lexer_diagnostics().is_empty()
+                && !parsed.syntax().diagnostics().is_empty()
+                && parsed.syntax().diagnostics().iter().all(|diagnostic| {
+                    diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation
+                });
+        if !parsed.lexer_diagnostics().is_empty()
+            || (!parsed.syntax().diagnostics().is_empty() && !recovered_unknown_custom)
+        {
             let mut diagnostics = Vec::new();
             diagnostics.extend(parsed.lexer_diagnostics().iter().map(|diagnostic| {
                 let range = original_range(
@@ -83,7 +92,11 @@ fn run() -> Result<(), String> {
         }
         let lowered = lower_with_dialect_registry_and_retention(
             &parsed,
-            LoweringMode::Strict,
+            if recovered_unknown_custom {
+                LoweringMode::BestEffort
+            } else {
+                LoweringMode::Strict
+            },
             RetentionProfile::Hybrid,
             registry,
         );
@@ -112,21 +125,28 @@ fn run() -> Result<(), String> {
             format!("could not lower {name}: {detail}")
         })?;
         let result = query
-            .evaluate(&mut document)
+            .evaluate(&mut document, registry)
             .map_err(|error| format!("could not evaluate {name}: {error}"))?;
         let mut answer = Vec::new();
         match result {
             QueryOutput::Selection(selected) => document
                 .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
                 .map_err(|error| format!("could not print {name}: {error}"))?,
-            QueryOutput::Root => document
-                .write_selection(
-                    &mut answer,
-                    document.root_operations(),
-                    PrintLayout::Pretty,
-                    registry,
-                )
-                .map_err(|error| format!("could not print {name}: {error}"))?,
+            QueryOutput::Root => {
+                if !document.is_semantically_complete() {
+                    return Err(format!(
+                        "could not print {name}: cannot print an incomplete semantic document"
+                    ));
+                }
+                document
+                    .write_selection(
+                        &mut answer,
+                        document.root_operations(),
+                        PrintLayout::Pretty,
+                        registry,
+                    )
+                    .map_err(|error| format!("could not print {name}: {error}"))?
+            }
             QueryOutput::Count(count) => {
                 use std::io::Write;
                 writeln!(answer, "{count}").map_err(|error| error.to_string())?;

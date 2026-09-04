@@ -709,3 +709,129 @@ fn lowering_failure_reports_identity_and_original_range() {
         "{diagnostic}"
     );
 }
+
+#[test]
+fn arbitrary_generic_dialect_operations_support_structural_queries_and_edits() {
+    let input = "\"builtin.module\"() ({\n  \"vendor.container\"() ({\n    \"vendor.compute\"() {tag = \"hot\", remove = \"yes\"} : () -> ()\n  }) : () -> ()\n}) : () -> ()\n";
+
+    for (query, expected) in [
+        (r#"select(attr("tag", "hot")) | count"#, "1\n"),
+        (r#"select(op("vendor.compute")) | parent | count"#, "1\n"),
+        (
+            r#"select(op("vendor.container")) | children | count"#,
+            "1\n",
+        ),
+    ] {
+        let output = run_stdin(query, input);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+
+    let edited = run_stdin(
+        r#"select(op("vendor.compute")) | set_attr("added", "value") | remove_attr("remove")"#,
+        input,
+    );
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    let text = String::from_utf8(edited.stdout).unwrap();
+    assert!(text.contains("added = \"value\""), "{text}");
+    assert!(!text.contains("remove ="), "{text}");
+}
+
+#[test]
+fn bounded_unknown_custom_operation_supports_name_count_ownership_and_exact_selection() {
+    let input = "module {\n  vendor.compute strangely<balanced>(payload)\n}\n";
+    let count = run_stdin(r#"select(op("vendor.compute")) | count"#, input);
+    assert!(
+        count.status.success(),
+        "{}",
+        String::from_utf8_lossy(&count.stderr)
+    );
+    assert_eq!(count.stdout, b"1\n");
+
+    let parent_count = run_stdin(r#"select(op("vendor.compute")) | parent | count"#, input);
+    assert!(parent_count.status.success());
+    assert_eq!(parent_count.stdout, b"1\n");
+
+    let child_count = run_stdin(r#"select(op("builtin.module")) | children | count"#, input);
+    assert!(child_count.status.success());
+    assert_eq!(child_count.stdout, b"1\n");
+
+    let selected = run_stdin(r#"select(op("vendor.compute"))"#, input);
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(selected.stdout).unwrap(),
+        "builtin.module {\n  vendor.compute strangely<balanced>(payload)\n\n}\n"
+    );
+}
+
+#[test]
+fn unknown_custom_recovery_rejects_malformed_neighbors_closure_and_edits() {
+    let malformed = run_stdin(
+        r#"select(op("vendor.compute"))"#,
+        "module { vendor.compute strangely<unclosed(payload) }\n",
+    );
+    assert!(!malformed.status.success());
+    assert!(malformed.stdout.is_empty());
+
+    let input = "module { vendor.compute strangely<balanced>(payload) }\n";
+    let closure = run_stdin(r#"select(op("vendor.compute")) | closure"#, input);
+    assert!(!closure.status.success());
+    assert!(closure.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&closure.stderr).contains(
+        "cannot determine reference semantics for unregistered operation `vendor.compute`"
+    ));
+
+    let edit = run_stdin(
+        r#"select(op("vendor.compute")) | set_attr("tag", "value")"#,
+        input,
+    );
+    assert!(!edit.status.success());
+    assert!(edit.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&edit.stderr).contains("edit failed"));
+}
+
+#[test]
+fn mutation_before_unknown_closure_failure_emits_no_stdout() {
+    let input = "module {\n  \"vendor.known\"() : () -> ()\n  vendor.unknown opaque<payload>\n}\n";
+    let output = run_stdin(
+        r#"select(op("vendor.known")) | set_attr("tag", "value") | union(op("vendor.unknown")) | closure"#,
+        input,
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn recovered_unknown_sibling_does_not_block_empty_or_understood_selections() {
+    let input = "module {\n  \"vendor.known\"() : () -> ()\n  vendor.unknown opaque<payload>\n}\n";
+
+    let empty = run_stdin(r#"select(op("vendor.missing"))"#, input);
+    assert!(
+        empty.status.success(),
+        "{}",
+        String::from_utf8_lossy(&empty.stderr)
+    );
+    assert!(empty.stdout.is_empty());
+
+    let understood = run_stdin(r#"select(op("vendor.known"))"#, input);
+    assert!(
+        understood.status.success(),
+        "{}",
+        String::from_utf8_lossy(&understood.stderr)
+    );
+    let text = String::from_utf8(understood.stdout).unwrap();
+    assert!(text.contains("vendor.known"), "{text}");
+    assert!(!text.contains("vendor.unknown"), "{text}");
+}

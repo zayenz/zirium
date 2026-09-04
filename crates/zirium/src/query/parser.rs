@@ -232,11 +232,21 @@ impl Parser<'_> {
                 self.synchronize(&[TokenKind::Pipe, TokenKind::Eof]);
                 continue;
             };
-            let required_selection = match name.as_str() {
-                "closure" | "defs" | "users" | "parent" | "children" | "union" | "intersect"
-                | "except" | "set_attr" | "remove_attr" | "count" | "root" => true,
-                _ => false,
-            };
+            let required_selection = matches!(
+                name.as_str(),
+                "closure"
+                    | "defs"
+                    | "users"
+                    | "parent"
+                    | "children"
+                    | "union"
+                    | "intersect"
+                    | "except"
+                    | "set_attr"
+                    | "remove_attr"
+                    | "count"
+                    | "root"
+            );
             if required_selection && kind != PipelineKind::Selection {
                 let message = match name.as_str() {
                     "closure" => "closure requires a selection",

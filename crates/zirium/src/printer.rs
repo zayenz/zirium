@@ -117,9 +117,6 @@ impl Document {
         layout: PrintLayout,
         registry: &DialectRegistry,
     ) -> Result<(), PrintError> {
-        if !self.is_semantically_complete() {
-            return Err(PrintError::IncompleteDocument);
-        }
         let mut selected = selected.iter().copied().collect::<HashSet<_>>();
         let mut worklist = selected.iter().copied().collect::<Vec<_>>();
         while let Some(operation) = worklist.pop() {
@@ -757,15 +754,13 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             .filter(|&op| self.retained(op))
             .collect::<Vec<_>>();
         let has_roots = !roots.is_empty();
-        let mut index = 0;
-        for operation in roots {
+        for (index, operation) in roots.into_iter().enumerate() {
             if index != 0 {
                 self.newline(0)?;
             }
             self.selected_comment(operation, 0)?;
             self.operation(operation, 0)?;
             self.selected_trailing_comment(operation)?;
-            index += 1;
         }
         if self.layout == PrintLayout::Pretty && has_roots {
             self.sink.write_char('\n')?;
@@ -773,6 +768,11 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         Ok(())
     }
     fn operation(&mut self, id: OperationId, indent: usize) -> fmt::Result {
+        if self.selected.is_some_and(|selected| selected.contains(&id)) {
+            if let Some(source) = self.doc.operation_unparsed_text(id) {
+                return self.sink.write_str(&String::from_utf8_lossy(source));
+            }
+        }
         let results = self.doc.result_types(id).ok_or(fmt::Error)?;
         for result in 0..results.len() {
             if result != 0 {

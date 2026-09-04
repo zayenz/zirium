@@ -95,7 +95,11 @@ impl Query {
         }
     }
 
-    pub fn evaluate(&self, document: &mut Document) -> Result<QueryOutput, EvaluationError> {
+    pub fn evaluate(
+        &self,
+        document: &mut Document,
+        registry: &DialectRegistry,
+    ) -> Result<QueryOutput, EvaluationError> {
         let mut selected = document
             .operations()
             .filter(|&operation| evaluate_predicate(&self.predicate, document, operation))
@@ -103,7 +107,9 @@ impl Query {
         let mut output = QueryOutput::Selection(selected.clone());
         for stage in &self.stages {
             match stage {
-                parser::Stage::Closure { .. } => selected = evaluate_closure(document, selected)?,
+                parser::Stage::Closure { .. } => {
+                    selected = evaluate_closure(document, selected, registry)?
+                }
                 parser::Stage::Defs { .. } => selected = evaluate_defs(document, &selected),
                 parser::Stage::Users { .. } => selected = evaluate_users(document, &selected),
                 parser::Stage::Parent { .. } => selected = evaluate_parent(document, &selected),
@@ -130,7 +136,6 @@ impl Query {
                     selected = source_ordered(document, difference);
                 }
                 parser::Stage::SetAttr { name, value, .. } => {
-                    let registry = DialectRegistry::proving();
                     let mut editor = document.edit(registry).map_err(edit_error)?;
                     let spelling = quote_mlir_string(value);
                     for operation in selected.iter().copied().collect::<HashSet<_>>() {
@@ -156,7 +161,6 @@ impl Query {
                         .filter(|&operation| document.attribute_id(operation, name).is_some())
                         .collect::<Vec<_>>();
                     if !targets.is_empty() {
-                        let registry = DialectRegistry::proving();
                         let mut editor = document.edit(registry).map_err(edit_error)?;
                         for operation in targets {
                             editor
@@ -323,8 +327,8 @@ fn edit_error(error: impl fmt::Display) -> EvaluationError {
 fn evaluate_closure(
     document: &Document,
     seeds: Vec<OperationId>,
+    registry: &DialectRegistry,
 ) -> Result<Vec<OperationId>, EvaluationError> {
-    let registry = DialectRegistry::proving();
     let mut selected = seeds.iter().copied().collect::<HashSet<_>>();
     let mut worklist = seeds;
     while let Some(operation) = worklist.pop() {
@@ -369,21 +373,18 @@ fn evaluate_closure(
                 retain_successor_region(document, successor, name, &mut selected, &mut worklist)?;
             }
         }
-        if !document.successors(operation).unwrap_or(&[]).is_empty() {
-            if name != "cf.br" && name != "cf.cond_br" {
-                return Err(EvaluationError {
-                    message: format!(
-                        "closure does not yet support successor references on `{name}`"
-                    ),
-                });
-            }
+        if !document.successors(operation).unwrap_or(&[]).is_empty()
+            && name != "cf.br"
+            && name != "cf.cond_br"
+        {
+            return Err(EvaluationError {
+                message: format!("closure does not yet support successor references on `{name}`"),
+            });
         }
-        if registry.symbols(name).uses_symbols {
-            if name != "func.call" {
-                return Err(EvaluationError {
-                    message: format!("closure does not yet support symbol references on `{name}`"),
-                });
-            }
+        if registry.symbols(name).uses_symbols && name != "func.call" {
+            return Err(EvaluationError {
+                message: format!("closure does not yet support symbol references on `{name}`"),
+            });
         }
         for operand in document.operands(operation).unwrap_or(&[]) {
             match *operand {

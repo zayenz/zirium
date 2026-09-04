@@ -63,7 +63,10 @@ impl Document {
                     return Err(ValidationError::InvalidRetention);
                 }
                 node_ranges.insert(range);
-                if tree.kind(node) == Some(crate::SyntaxKind::Operation) {
+                if matches!(
+                    tree.kind(node),
+                    Some(crate::SyntaxKind::Operation | crate::SyntaxKind::DialectOperation)
+                ) {
                     operation_ranges.insert(range);
                 }
             }
