@@ -110,6 +110,44 @@ fn consecutive_unknown_custom_operations_preserve_result_prefix_text() {
 }
 
 #[test]
+fn stablehlo_reduce_clauses_remain_part_of_the_recovered_operation() {
+    let source = br#"stablehlo.reduce(%input init: %init) applies stablehlo.add across dimensions = [0]
+%result = stablehlo.reduce(%input init: %init) across dimensions = [0] reducer(%lhs: tensor<f32>, %rhs: tensor<f32>) {
+  stablehlo.add %lhs, %rhs
+}
+"#;
+    let parsed = ParsedFile::parse(source.to_vec()).unwrap();
+    let lowered = lower_proving_fixture(&parsed, LoweringMode::BestEffort, &SharedRegistry);
+    let document = lowered.document.unwrap();
+
+    assert_eq!(document.root_operations().len(), 2);
+    assert!(
+        document
+            .root_operations()
+            .iter()
+            .all(|&operation| document.operation_name(operation) == Some("stablehlo.reduce"))
+    );
+    assert_eq!(
+        document.operation_regions(document.root_operations()[0]),
+        Some(&[][..])
+    );
+
+    let second = document.root_operations()[1];
+    let region = document.operation_regions(second).unwrap()[0];
+    let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
+    let nested = document.block_operations(block).unwrap();
+    assert_eq!(nested.len(), 1);
+    assert_eq!(document.operation_name(nested[0]), Some("stablehlo.add"));
+    for invented in ["applies", "across", "reducer"] {
+        assert!(
+            document
+                .operations()
+                .all(|operation| document.operation_name(operation) != Some(invented))
+        );
+    }
+}
+
+#[test]
 fn unknown_custom_leading_symbol_stops_before_argument_list() {
     let parsed =
         ParsedFile::parse(b"vendor.func @entry(%x: i32) attributes {flag = true}".to_vec())

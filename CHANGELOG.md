@@ -2,8 +2,8 @@
 
 ## 0.0.2
 
-Zirium 0.0.2 improves best-effort inspection of real-world textual MLIR while
-keeping the API experimental and without an ABI stability promise.
+Zirium 0.0.2 improves best-effort inspection of real-world textual MLIR. The
+API remains experimental, and this release makes no ABI stability guarantee.
 
 - Handle standard `module` syntax and caller-provided func-like and call-like
   operation shapes.

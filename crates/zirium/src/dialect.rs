@@ -422,7 +422,8 @@ impl DialectRegistry {
             .find_map(|(candidate, shape)| (candidate == name).then_some(*shape))
     }
 
-    /// Builds an owned registry containing the core operations and arbitrary shaped operations.
+    /// Builds an owned registry containing the core operations plus caller-named operations
+    /// assigned supported [`OperationShape`] variants.
     pub fn with_operation_shapes(
         operation_shapes: &[(&str, OperationShape)],
     ) -> Result<Self, DeclarativeRegistryError> {

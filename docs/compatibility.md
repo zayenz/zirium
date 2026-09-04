@@ -1,13 +1,11 @@
 # Compatibility and local wheel checks
 
 Zirium 0.0.2 requires Rust 1.85 or newer and supports version-specific CPython
-extensions for conventional CPython 3.11 through 3.14. The release artifact
-promise covers Linux x86_64 and macOS arm64, because those platforms have
-passing quality and release workflow artifact lanes. Other platform source
-builds may work, but are not supported release platforms. The CI quality
-workflow is the release-artifact evidence for this promise. It does not use or
-claim the stable ABI (abi3 or abi3t). CPython 3.14
-free-threaded builds are experimental and are not part of the stable promise.
+extensions for conventional CPython 3.11 through 3.14. Published wheels support
+Linux x86_64 and macOS arm64, and the CI quality workflow checks both platforms.
+Source builds may work elsewhere, but other platforms are unsupported. This
+release does not use `abi3` or `abi3t`. CPython 3.14 free-threaded builds remain
+experimental and unsupported.
 
 Run the complete local Rust quality gate. The commands match the CI jobs:
 

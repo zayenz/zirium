@@ -2964,7 +2964,8 @@ impl Parser<'_> {
                     || self.is_generic_operation_start()
                     || (self.position > start
                         && ((current == TokenKind::BareIdentifier
-                            && self.bare_custom_operation_start())
+                            && self.bare_custom_operation_start()
+                            && (line_boundary || self.current_text().contains('.')))
                             || (current == TokenKind::PercentIdentifier
                                 && self.result_custom_operation_start()))
                         && (line_boundary || completed_payload))
@@ -2974,6 +2975,9 @@ impl Parser<'_> {
                         && self.nth_nontrivia(1) == Some(TokenKind::PercentIdentifier)))
             {
                 break;
+            }
+            if stack.is_empty() && completed_payload && !is_trivia(current) {
+                completed_payload = false;
             }
             if stack.last() == Some(&current) {
                 stack.pop();
