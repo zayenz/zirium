@@ -2167,7 +2167,77 @@ impl Document {
                 })?;
             }
         }
+        self.verify_unregistered_function_types(registry)?;
+        self.verify_successor_argument_types()?;
         self.verify_registered_structure(registry)?;
+        Ok(())
+    }
+
+    fn verify_unregistered_function_types(
+        &self,
+        registry: &DialectRegistry,
+    ) -> Result<(), SemanticVerificationError> {
+        for operation in self.operations() {
+            let Some(name) = self.operation_name(operation) else {
+                continue;
+            };
+            if registry.operation(name).is_some() {
+                continue;
+            }
+            let Some(TypeValue::Function { inputs, results }) = self
+                .function_type(operation)
+                .and_then(|function_type| self.type_value(function_type))
+            else {
+                return Err(SemanticVerificationError::Operation {
+                    operation,
+                    message: "stored function type is not a function type",
+                });
+            };
+            let operands = self.operands(operation).unwrap_or(&[]);
+            if operands.len() != inputs.len()
+                || operands
+                    .iter()
+                    .zip(inputs)
+                    .any(|(operand, expected)| self.value_type_value(*operand) != Some(expected))
+            {
+                return Err(SemanticVerificationError::Operation {
+                    operation,
+                    message: "operand types do not match the stored function type inputs",
+                });
+            }
+            let result_types = self.result_types(operation).unwrap_or(&[]);
+            if result_types.len() != results.len()
+                || result_types
+                    .iter()
+                    .zip(results)
+                    .any(|(result, expected)| self.type_value(*result) != Some(expected))
+            {
+                return Err(SemanticVerificationError::Operation {
+                    operation,
+                    message: "result types do not match the stored function type outputs",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_successor_argument_types(&self) -> Result<(), SemanticVerificationError> {
+        for operation in self.operations() {
+            for successor in self.successors(operation).unwrap_or(&[]) {
+                let arguments = self.successor_arguments(*successor).unwrap_or(&[]);
+                let expected = self.block_argument_types(successor.block).unwrap_or(&[]);
+                if arguments.len() != expected.len()
+                    || arguments.iter().zip(expected).any(|(argument, expected)| {
+                        self.value_type_value(*argument) != self.type_value(*expected)
+                    })
+                {
+                    return Err(SemanticVerificationError::Operation {
+                        operation,
+                        message: "successor argument types do not match the target block arguments",
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -3476,6 +3546,26 @@ impl DocumentEditor<'_> {
         let target = values
             .get_mut(operand)
             .ok_or(EditError::InvalidOperandIndex)?;
+        if self
+            .working
+            .operation_name(operation)
+            .is_some_and(|name| self.registry.operation(name).is_none())
+        {
+            let expected = self
+                .working
+                .function_type(operation)
+                .and_then(|function_type| self.working.type_value(function_type))
+                .and_then(|function_type| match function_type {
+                    TypeValue::Function { inputs, .. } => inputs.get(operand),
+                    _ => None,
+                });
+            let actual = self
+                .working
+                .value_type_value(ValueReference::Resolved(value));
+            if expected.is_none() || actual != expected {
+                return Err(EditError::TypeMismatch);
+            }
+        }
         *target = ValueReference::Resolved(value);
         self.mark_block_dirty_for(operation);
         self.working.operations[operation.index()].operands = self.working.values.push(&values);
@@ -3665,6 +3755,17 @@ impl DocumentEditor<'_> {
         let target = arguments
             .get_mut(argument_index)
             .ok_or(EditError::InvalidSuccessorArgumentIndex)?;
+        let expected = self
+            .working
+            .block_argument_types(old_successor.block)
+            .and_then(|types| types.get(argument_index))
+            .and_then(|type_id| self.working.type_value(*type_id));
+        let actual = self
+            .working
+            .value_type_value(ValueReference::Resolved(value));
+        if expected.is_none() || actual != expected {
+            return Err(EditError::TypeMismatch);
+        }
         *target = ValueReference::Resolved(value);
         self.mark_block_dirty_for(operation);
         let arguments = self.working.values.push(&arguments);
@@ -7427,6 +7528,91 @@ mod tests {
             .document
             .unwrap()
     }
+
+    #[test]
+    fn successor_rewiring_rejects_a_missing_target_type_slot() {
+        let mut document = lower(
+            br#""outer"() ({
+^entry(%value: i32):
+  "branch"() [^target : (%value : i32)] : () -> ()
+^target(%argument: i32):
+  "sink"() : () -> ()
+}) : () -> ()"#,
+        );
+        let outer = document.root_operations()[0];
+        let blocks = document
+            .region(document.operation_regions(outer).unwrap()[0])
+            .unwrap()
+            .blocks(&document)
+            .unwrap()
+            .to_vec();
+        let branch = document.block_operations(blocks[0]).unwrap()[0];
+        let value = ValueId::BlockArgument {
+            block: blocks[0],
+            argument: 0,
+        };
+        let registry = DialectRegistry::EMPTY;
+        let mut editor = document.edit(&registry).unwrap();
+        editor.working.blocks[blocks[1].index()].argument_types =
+            editor.working.types_lists.push(&[]);
+        assert_eq!(
+            editor.rewire_successor_argument(branch, 0, 0, value),
+            Err(EditError::TypeMismatch)
+        );
+    }
+
+    #[test]
+    fn commit_checks_successor_types_after_bulk_use_replacement() {
+        let mut document = lower(
+            br#""outer"() ({
+^entry:
+  %from = "from"() : () -> i64
+  %to = "to"() : () -> i64
+  "branch"() [^target : (%from : i64)] : () -> ()
+^target(%argument: i64):
+  "sink"() : () -> ()
+}) : () -> ()"#,
+        );
+        let operations = document.operations().collect::<Vec<_>>();
+        let from = document
+            .operation(operations[1])
+            .unwrap()
+            .result(operations[1], 0)
+            .unwrap();
+        let to = document
+            .operation(operations[2])
+            .unwrap()
+            .result(operations[2], 0)
+            .unwrap();
+        let outer = document.root_operations()[0];
+        let target = document
+            .region(document.operation_regions(outer).unwrap()[0])
+            .unwrap()
+            .blocks(&document)
+            .unwrap()[1];
+        let revision = document.revision();
+        let registry = DialectRegistry::EMPTY;
+        let mut editor = document.edit(&registry).unwrap();
+        let i32_type = editor.intern_type_spec(&TypeSpec {
+            spelling: "i32".into(),
+            value: TypeValue::Integer {
+                width: 32,
+                signedness: None,
+            },
+        });
+        editor.working.blocks[target.index()].argument_types =
+            editor.working.types_lists.push(&[i32_type]);
+        assert_eq!(editor.replace_all_uses(from, to).unwrap(), 1);
+        assert!(matches!(
+            editor.commit(),
+            Err(EditError::Semantic(SemanticVerificationError::Operation {
+                message,
+                ..
+            })) if message == "successor argument types do not match the target block arguments"
+        ));
+        assert_eq!(document.revision(), revision);
+    }
+
     #[test]
     fn validator_rejects_stale_ids_and_relationships() {
         let bytes = include_bytes!("../../../tests/corpus/mlir-22.1/semantic-proving/valid.mlir");

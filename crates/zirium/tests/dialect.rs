@@ -14,8 +14,8 @@ use zirium::{
     printer::{DialectPrintMode, PrintLayout},
     semantic::{
         ArithAddiOp, ArithConstantOp, AttributeValue, BuiltinModuleOp, CfBrOp, CfCondBrOp,
-        FuncCallOp, FuncFuncOp, FuncReturnOp, LoweringMode, SemanticVerificationError, TypeSpec,
-        TypeValue, lower_proving_fixture, lower_with_dialect_registry,
+        FuncCallOp, FuncFuncOp, FuncReturnOp, LoweringMode, SemanticVerificationError,
+        lower_proving_fixture, lower_with_dialect_registry,
     },
 };
 
@@ -298,22 +298,9 @@ fn registered_value_verifiers_reject_opaque_values() {
 fn registered_value_verification_reaches_nested_values_once() {
     TYPE_VERIFICATIONS.store(0, Ordering::Relaxed);
     ATTRIBUTE_VERIFICATIONS.store(0, Ordering::Relaxed);
-    let mut document =
-        lower_generic("%0 = \"use\"() {tags = [#test.value<ok>, #test.value<ok>]} : () -> i32");
-    let operation = document.root_operations()[0];
-    let opaque = TypeValue::Opaque(Arc::from(b"!test.value<ok>".as_slice()));
-    let empty_registry = DialectRegistry::EMPTY;
-    let mut editor = document.edit(&empty_registry).unwrap();
-    editor
-        .replace_result_types(
-            operation,
-            &[TypeSpec {
-                spelling: "tuple<!test.value<ok>, !test.value<ok>>".into(),
-                value: TypeValue::Tuple(vec![opaque.clone(), opaque]),
-            }],
-        )
-        .unwrap();
-    editor.commit().unwrap();
+    let document = lower_generic(
+        "%0 = \"use\"() {tags = [#test.value<ok>, #test.value<ok>]} : () -> tuple<!test.value<ok>, !test.value<ok>>",
+    );
     document.verify_semantics(&COUNTING_VALUE_REGISTRY).unwrap();
     assert_eq!(TYPE_VERIFICATIONS.load(Ordering::Relaxed), 1);
     assert_eq!(ATTRIBUTE_VERIFICATIONS.load(Ordering::Relaxed), 1);

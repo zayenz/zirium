@@ -89,6 +89,16 @@ fn i32_type() -> TypeSpec {
     }
 }
 
+fn i64_type() -> TypeSpec {
+    TypeSpec {
+        spelling: "i64".into(),
+        value: TypeValue::Integer {
+            width: 64,
+            signedness: None,
+        },
+    }
+}
+
 fn empty_function_type() -> TypeSpec {
     TypeSpec {
         spelling: "() -> ()".into(),
@@ -497,6 +507,163 @@ fn replace_all_uses_rejects_type_changes_and_indexes_successor_arguments() {
     let mut editor = document.edit(DialectRegistry::proving()).unwrap();
     assert_eq!(
         editor.replace_all_uses(from, to),
+        Err(EditError::TypeMismatch)
+    );
+}
+
+#[test]
+fn generic_operand_rewiring_enforces_the_stored_input_type() {
+    let mut document = generic(
+        "%a = \"a\"() : () -> i32\n%b = \"b\"() : () -> i64\n%c = \"c\"() : () -> i32\n\"use\"(%a) : (i32) -> ()",
+    );
+    let operations = document.operations().collect::<Vec<_>>();
+    let original = document.operands(operations[3]).unwrap()[0];
+    let incompatible = document
+        .operation(operations[1])
+        .unwrap()
+        .result(operations[1], 0)
+        .unwrap();
+    let compatible = document
+        .operation(operations[2])
+        .unwrap()
+        .result(operations[2], 0)
+        .unwrap();
+    let empty_registry = DialectRegistry::EMPTY;
+
+    let mut editor = document.edit(&empty_registry).unwrap();
+    assert_eq!(
+        editor.rewire_operand(operations[3], 0, incompatible),
+        Err(EditError::TypeMismatch)
+    );
+    assert_eq!(
+        editor.document().operands(operations[3]).unwrap()[0],
+        original
+    );
+    drop(editor);
+    assert_eq!(document.operands(operations[3]).unwrap()[0], original);
+
+    let mut editor = document.edit(&empty_registry).unwrap();
+    editor.rewire_operand(operations[3], 0, compatible).unwrap();
+    editor.commit().unwrap();
+    assert_eq!(
+        document.operands(operations[3]).unwrap()[0],
+        zirium::semantic::ValueReference::Resolved(compatible)
+    );
+}
+
+#[test]
+fn generic_result_type_edits_must_match_the_stored_output_type() {
+    let mut document = generic("%value = \"make\"() : () -> i32");
+    let operation = document.root_operations()[0];
+    let original_type = document.result_types(operation).unwrap()[0];
+    let original_revision = document.revision();
+    let empty_registry = DialectRegistry::EMPTY;
+
+    let mut editor = document.edit(&empty_registry).unwrap();
+    editor
+        .replace_result_types(operation, &[i64_type()])
+        .unwrap();
+    assert!(matches!(
+        editor.commit(),
+        Err(EditError::Semantic(SemanticVerificationError::Operation {
+            message,
+            ..
+        })) if message == "result types do not match the stored function type outputs"
+    ));
+    assert_eq!(document.result_types(operation).unwrap()[0], original_type);
+    assert_eq!(document.revision(), original_revision);
+
+    let mut editor = document.edit(&empty_registry).unwrap();
+    editor
+        .replace_result_types(operation, &[i32_type()])
+        .unwrap();
+    editor.commit().unwrap();
+}
+
+#[test]
+fn successor_argument_rewiring_enforces_the_target_block_argument_type() {
+    let mut document = generic(
+        r#""outer"() ({
+^entry(%good: i32, %bad: i64):
+  "branch"() [^target : (%good : i32)] : () -> ()
+^target(%argument: i32):
+  "sink"(%argument) : (i32) -> ()
+}) : () -> ()"#,
+    );
+    let outer = document.root_operations()[0];
+    let blocks = document
+        .region(document.operation_regions(outer).unwrap()[0])
+        .unwrap()
+        .blocks(&document)
+        .unwrap()
+        .to_vec();
+    let branch = document.block_operations(blocks[0]).unwrap()[0];
+    let original = document
+        .successor_arguments(document.successors(branch).unwrap()[0])
+        .unwrap()[0];
+    let incompatible = ValueId::BlockArgument {
+        block: blocks[0],
+        argument: 1,
+    };
+    let compatible = ValueId::BlockArgument {
+        block: blocks[0],
+        argument: 0,
+    };
+    let empty_registry = DialectRegistry::EMPTY;
+
+    let mut editor = document.edit(&empty_registry).unwrap();
+    assert_eq!(
+        editor.rewire_successor_argument(branch, 0, 0, incompatible),
+        Err(EditError::TypeMismatch)
+    );
+    assert_eq!(
+        editor
+            .document()
+            .successor_arguments(editor.document().successors(branch).unwrap()[0])
+            .unwrap()[0],
+        original
+    );
+    drop(editor);
+    assert_eq!(
+        document
+            .successor_arguments(document.successors(branch).unwrap()[0])
+            .unwrap()[0],
+        original
+    );
+
+    let mut editor = document.edit(&empty_registry).unwrap();
+    editor
+        .rewire_successor_argument(branch, 0, 0, compatible)
+        .unwrap();
+    editor.commit().unwrap();
+}
+
+#[test]
+fn direct_rewiring_rejects_missing_expected_type_slots() {
+    let mut document = generic("%value = \"make\"() : () -> i32");
+    let operation = document.root_operations()[0];
+    let value = document
+        .operation(operation)
+        .unwrap()
+        .result(operation, 0)
+        .unwrap();
+    let empty_registry = DialectRegistry::EMPTY;
+    let mut editor = document.edit(&empty_registry).unwrap();
+    let inserted = editor
+        .insert(
+            InsertionPoint::Root(1),
+            OperationSpec {
+                name: "use".into(),
+                operands: vec![value],
+                result_types: vec![],
+                function_type: empty_function_type(),
+                attributes: vec![],
+                properties: vec![],
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        editor.rewire_operand(inserted, 0, value),
         Err(EditError::TypeMismatch)
     );
 }
