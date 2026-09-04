@@ -4,4 +4,3 @@
 /fuzz/corpus/
 /.venv/
 /python/zirium/*.so
-/uv.lock

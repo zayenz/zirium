@@ -15,7 +15,9 @@ cargo +1.85 test --workspace --all-targets --all-features
 cargo +1.85 clippy --workspace --all-targets --all-features -- -D warnings
 cargo +stable test --workspace --all-targets --all-features
 cargo +stable clippy --workspace --all-targets --all-features -- -D warnings
+cargo +stable test --doc --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo +stable doc --workspace --all-features --no-deps
+cargo +stable package -p zirium --locked
 ```
 
 ## CPython compatibility
@@ -27,9 +29,7 @@ when necessary.
 ```sh
 for version in 3.11 3.12 3.13 3.14; do
   env_dir="target/python-$version"
-  uv venv --python "$version" --clear "$env_dir"
-  uv pip install --python "$env_dir/bin/python" maturin pytest ruff ty
-  VIRTUAL_ENV="$env_dir" "$env_dir/bin/maturin" develop --uv
+  UV_PROJECT_ENVIRONMENT="$env_dir" uv sync --locked --python "$version"
   "$env_dir/bin/ruff" format --check python
   "$env_dir/bin/ruff" check python
   "$env_dir/bin/ty" check python
@@ -42,9 +42,7 @@ interpreter and select it explicitly:
 
 ```sh
 uv python install 3.14t
-uv venv --python 3.14t --clear target/python-3.14t
-uv pip install --python target/python-3.14t/bin/python maturin pytest ruff ty
-VIRTUAL_ENV=target/python-3.14t target/python-3.14t/bin/maturin develop --uv
+UV_PROJECT_ENVIRONMENT=target/python-3.14t uv sync --locked --python 3.14t
 target/python-3.14t/bin/ruff format --check python
 target/python-3.14t/bin/ruff check python
 target/python-3.14t/bin/ty check python
@@ -72,8 +70,8 @@ sdist.
 
 ```sh
 rm -rf target/wheels
-uv run --isolated --python 3.14 --with maturin==1.15.0 \
-  maturin build --release --locked --compatibility pypi \
+uv sync --locked --python 3.14
+uv run --locked --no-sync maturin build --release --locked --compatibility pypi \
   --interpreter python --out target/wheels
 wheel=$(find target/wheels -name 'zirium-*.whl' -print -quit)
 case "$wheel" in
@@ -90,7 +88,7 @@ check that version's wheel. Build an sdist and validate it with:
 
 ```sh
 uv build --sdist --python 3.14 --out-dir target/sdist --clear
-uvx twine check target/sdist/*
+uv run --locked --no-sync twine check target/sdist/*
 ```
 ## Resource limits
 

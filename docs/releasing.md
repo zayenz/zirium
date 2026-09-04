@@ -4,8 +4,10 @@ Zirium publishes one Rust crate and one Python package. The internal
 `zirium-python` crate is only a build component and must remain marked with
 `publish = false`.
 
-Pushing a version tag starts the Release workflow. After its package checks
-pass, approve the `crates-io` and `pypi` deployments to publish both packages.
+Pushing a version tag starts the Release workflow. The workflow resolves the
+tag to one commit, runs the full Quality workflow against that commit, and
+publishes only the checked artifacts. After the checks pass, approve the
+`crates-io` and `pypi` deployments to publish both packages.
 
 ## Prepare the registries and repository
 
@@ -32,8 +34,7 @@ Choose the new version and update these files:
 
 Keep the three package versions identical and refresh `Cargo.lock` after
 changing them. Run the local quality checks described in the
-[compatibility guide](compatibility.md), then check the package that Cargo
-would upload:
+[compatibility guide](compatibility.md), then inspect the package contents:
 
 ```sh
 cargo publish -p zirium --dry-run --locked
@@ -58,12 +59,14 @@ git push origin v0.0.2
 Do not use `git push --tags`. This repository may contain local tags that are
 not part of the public release history.
 
-The Release workflow checks that the tagged commit is on `main` and that the
-tag matches all package versions. It verifies the Rust package, builds and
-installs the source distribution, and builds separate manylinux wheels for
-CPython 3.11 through 3.14. It also builds separate macOS arm64 wheels for the
-same four conventional CPython versions. All wheels keep version-specific ABI
-tags; the release does not publish stable-ABI wheels.
+The Release workflow checks that the tag resolves to a commit on `main` and
+that the tag matches all package versions. It calls the full Quality workflow
+with that exact commit. Quality checks the Rust package, builds and installs
+one source distribution, and builds separate manylinux wheels for CPython 3.11
+through 3.14. It also builds separate macOS arm64 wheels for the same four
+conventional CPython versions. The PyPI publication job uses those artifacts
+directly. All wheels keep version-specific ABI tags; the release does not
+publish stable-ABI wheels.
 
 When these checks pass, open the workflow run, select **Review deployments**,
 select both environments, and approve. Each publishing job uploads its package

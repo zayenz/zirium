@@ -1,5 +1,3 @@
-#![allow(unexpected_cfgs)]
-
 use pyo3::{
     create_exception,
     exceptions::{PyException, PyIOError, PyIndexError, PyRuntimeError, PyValueError},

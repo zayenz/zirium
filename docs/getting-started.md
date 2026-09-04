@@ -109,15 +109,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Build the Python package
 
-Create a virtual environment and install the local extension:
+Create the locked development environment and install the local extension:
 
 ```sh
-uv venv --python 3.13 .venv
-uv pip install --python .venv/bin/python maturin pytest ruff ty
-VIRTUAL_ENV=.venv .venv/bin/maturin develop --uv
+uv sync --locked --python 3.13
 ```
 
-Replace `3.13` with another supported CPython version when needed. Confirm that the extension imports:
+`uv.lock` fixes the versions of maturin, pytest, Ruff, Twine, and ty. Replace
+`3.13` with another supported CPython version when needed. Confirm that the
+extension imports:
 
 ```sh
 .venv/bin/python -c 'import zirium; print("zirium imported")'
@@ -140,16 +140,16 @@ PY
 Format the Python code with:
 
 ```sh
-.venv/bin/ruff format python
+uv run --locked --no-sync ruff format python
 ```
 
 Run the checks with:
 
 ```sh
-.venv/bin/ruff format --check python
-.venv/bin/ruff check python
-.venv/bin/ty check python
-.venv/bin/pytest
+uv run --locked --no-sync ruff format --check python
+uv run --locked --no-sync ruff check python
+uv run --locked --no-sync ty check python
+uv run --locked --no-sync pytest
 ```
 
 ## Parse syntax without lowering

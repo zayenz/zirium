@@ -17,3 +17,6 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.27", features = ["extension-module"] }
 zirium = { path = "../zirium" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(python_linked_test)"] }

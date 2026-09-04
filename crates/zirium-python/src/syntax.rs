@@ -763,7 +763,6 @@ fn syntax_kind_from_name(name: &str) -> Option<SyntaxKind> {
 // PyO3's extension-module mode intentionally does not link libpython. The
 // focused embedded-Python test opts in with `--cfg python_linked_test` and
 // explicit libpython linker flags; ordinary extension builds remain unchanged.
-#[allow(unexpected_cfgs)]
 #[cfg(all(test, python_linked_test))]
 mod packed_syntax_operation_tests {
     use super::*;
