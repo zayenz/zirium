@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::Write,
+    io::{ErrorKind, Write},
     process::{Command, Stdio},
 };
 
@@ -14,12 +14,9 @@ fn run_stdin(query: &str, input: &str) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    if let Err(error) = child.stdin.take().unwrap().write_all(input.as_bytes()) {
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe, "{error}");
+    }
     child.wait_with_output().unwrap()
 }
 
