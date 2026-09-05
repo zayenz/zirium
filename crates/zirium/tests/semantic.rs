@@ -239,6 +239,98 @@ fn builtin_dense_arrays_lower_as_typed_scalar_sequences() {
 }
 
 #[test]
+fn dense_arrays_accept_hexadecimal_literals_and_comments() {
+    let source = b"\"test\"() {ints = array<i64: 0x1>, f32s = array<f32: 0x7FC00000>, f64s = array<f64: 0x7FF0000000000000>, commented = array<i64: 1, // comment\n2>} : () -> ()";
+    let parsed = ParsedFile::parse(source.as_slice()).unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.root_operations()[0];
+
+    for (name, expected) in [
+        ("ints", AttributeValue::Integer("0x1".into())),
+        ("f32s", AttributeValue::Float("0x7FC00000".into())),
+        ("f64s", AttributeValue::Float("0x7FF0000000000000".into())),
+    ] {
+        let attribute = document.attribute_id(operation, name).unwrap();
+        assert!(matches!(
+            document.attribute_value(attribute),
+            Some(AttributeValue::DenseArray { elements, .. }) if elements == &[expected]
+        ));
+    }
+    let commented = document.attribute_id(operation, "commented").unwrap();
+    assert!(matches!(
+        document.attribute_value(commented),
+        Some(AttributeValue::DenseArray { elements, .. })
+            if elements == &[
+                AttributeValue::Integer("1".into()),
+                AttributeValue::Integer("2".into()),
+            ]
+    ));
+    let mut original = Vec::new();
+    parsed.write_original(&mut original).unwrap();
+    assert_eq!(original, source);
+
+    for source in [
+        b"\"bad\"() {a = array<i8: 0x100>} : () -> ()".as_slice(),
+        b"\"bad\"() {a = array<f32: 0x100000000>} : () -> ()".as_slice(),
+    ] {
+        let oversized = ParsedFile::parse(source).unwrap();
+        assert!(
+            lower_with_dialect_registry(&oversized, LoweringMode::Strict, &DialectRegistry::EMPTY)
+                .document
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn dense_integer_arrays_enforce_declared_width_boundaries() {
+    let valid = ParsedFile::parse(
+        b"\"width.samples\"() {bytes = array<i8: -100, 200>, shorts = array<i16: -30000, 60000>, words = array<i32: -2000000000, 4000000000>, longs = array<i64: -9000000000000000000, 18000000000000000000>} : () -> ()".to_vec(),
+    )
+    .unwrap();
+    let lowered =
+        lower_with_dialect_registry(&valid, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.root_operations()[0];
+    let shorts = document.attribute_id(operation, "shorts").unwrap();
+    assert_eq!(
+        document.attribute_spelling_value(shorts),
+        Some("array<i16: -30000, 60000>")
+    );
+    assert!(matches!(
+        document.attribute_value(shorts),
+        Some(AttributeValue::DenseArray { elements, .. })
+            if matches!(elements.as_slice(), [
+                AttributeValue::Integer(a),
+                AttributeValue::Integer(b),
+            ] if a == "-30000" && b == "60000")
+    ));
+
+    for source in [
+        "\"too.wide\"() {a = array<i8: 300>} : () -> ()",
+        "\"too.wide\"() {a = array<i16: -40000>} : () -> ()",
+        "\"too.wide\"() {a = array<i32: 5000000000>} : () -> ()",
+        "\"too.wide\"() {a = array<i64: 19000000000000000000>} : () -> ()",
+    ] {
+        let parsed = ParsedFile::parse(source.as_bytes().to_vec()).unwrap();
+        let strict =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+        assert!(strict.document.is_none(), "{source}");
+        assert!(!strict.diagnostics.is_empty(), "{source}");
+
+        let best =
+            lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
+        assert!(best.document.is_some(), "{source}");
+        assert!(!best.semantically_complete, "{source}");
+        assert!(!best.diagnostics.is_empty(), "{source}");
+    }
+}
+
+#[test]
 fn semantic_attribute_depth_limit_uses_invalid_sentinel() {
     let nested = (0..12).fold("1".to_owned(), |value, depth| {
         if depth % 2 == 0 {

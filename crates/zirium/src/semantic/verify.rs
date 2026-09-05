@@ -1290,8 +1290,25 @@ fn verify_attribute_value<'a>(
                 verify_attribute_value(value, registry, types, attributes)?;
             }
         }
-        AttributeValue::DenseArray { elements, .. } => {
+        AttributeValue::DenseArray {
+            element_type,
+            elements,
+        } => {
             for value in elements {
+                let valid = match (element_type.as_str(), value) {
+                    ("i1", AttributeValue::Boolean(_)) => true,
+                    ("i8" | "i16" | "i32" | "i64", AttributeValue::Integer(literal)) => {
+                        dense_integer_literal_is_valid(element_type, literal)
+                    }
+                    ("f32" | "f64", AttributeValue::Float(_)) => true,
+                    _ => false,
+                };
+                if !valid {
+                    return Err(SemanticVerificationError::Attribute {
+                        spelling: element_type.clone(),
+                        message: "dense array element does not match its declared type",
+                    });
+                }
                 verify_attribute_value(value, registry, types, attributes)?;
             }
         }

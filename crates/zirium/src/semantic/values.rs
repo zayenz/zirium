@@ -1674,6 +1674,7 @@ fn lower_attribute_value_with_depth(
 }
 
 fn parse_dense_array(inner: &str) -> Result<(String, Vec<AttributeValue>), String> {
+    let inner = without_line_comments(inner);
     let (element_type, payload) = match inner.split_once(':') {
         Some((ty, values)) => (ty.trim(), Some(values)),
         None => (inner.trim(), None),
@@ -1704,14 +1705,14 @@ fn parse_dense_array(inner: &str) -> Result<(String, Vec<AttributeValue>), Strin
                     }
                 }
             } else if element_type.starts_with('i') {
-                if item.parse::<i128>().is_err() {
+                if !dense_integer_literal_is_valid(element_type, item) {
                     return Err(format!(
                         "dense array element `{item}` does not match `{element_type}`"
                     ));
                 }
                 AttributeValue::Integer(compact(item))
             } else {
-                if item.parse::<f64>().is_err() {
+                if !dense_float_literal_is_valid(element_type, item) {
                     return Err(format!(
                         "dense array element `{item}` does not match `{element_type}`"
                     ));
@@ -1722,6 +1723,44 @@ fn parse_dense_array(inner: &str) -> Result<(String, Vec<AttributeValue>), Strin
         }
     }
     Ok((element_type.to_owned(), elements))
+}
+
+fn without_line_comments(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub(super) fn dense_integer_literal_is_valid(element_type: &str, literal: &str) -> bool {
+    let width = match element_type {
+        "i8" => 8,
+        "i16" => 16,
+        "i32" => 32,
+        "i64" => 64,
+        _ => return false,
+    };
+    if let Some(digits) = literal.strip_prefix("0x") {
+        return u128::from_str_radix(digits, 16).is_ok_and(|value| value < (1u128 << width));
+    }
+    literal.parse::<i128>().is_ok_and(|value| {
+        let signed_min = -(1i128 << (width - 1));
+        let unsigned_max = (1i128 << width) - 1;
+        (signed_min..=unsigned_max).contains(&value)
+    })
+}
+
+fn dense_float_literal_is_valid(element_type: &str, literal: &str) -> bool {
+    if let Some(digits) = literal.strip_prefix("0x") {
+        let width = match element_type {
+            "f32" => 32,
+            "f64" => 64,
+            _ => return false,
+        };
+        return u128::from_str_radix(digits, 16).is_ok_and(|value| value < (1u128 << width));
+    }
+    literal.parse::<f64>().is_ok()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

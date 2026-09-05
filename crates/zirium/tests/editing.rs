@@ -211,7 +211,7 @@ fn preserving_output_replaces_only_a_dirty_operation() {
 #[test]
 fn unrelated_edit_preserves_builtin_dense_array_attribute() {
     let mut document = hybrid(
-        b"\"test\"() {dimensions = array<i64: 1>} : () -> ()",
+        b"\"test\"() {dimensions = array<i64: 0x1, // comment\n2>, bits = array<f64: 0x7FF0000000000000>} : () -> ()",
         LoweringMode::Strict,
     );
     let operation = document.root_operations()[0];
@@ -229,11 +229,42 @@ fn unrelated_edit_preserves_builtin_dense_array_attribute() {
         .unwrap();
     editor.commit().unwrap();
     let output = document.preserving_bytes(PrintLayout::Compact).unwrap();
+    let output = String::from_utf8(output).unwrap();
     assert!(
-        String::from_utf8(output)
-            .unwrap()
-            .contains("dimensions = array<i64: 1>")
+        output.contains("dimensions = array<i64: 0x1, 2>"),
+        "{output}"
     );
+    assert!(
+        output.contains("bits = array<f64: 0x7FF0000000000000>"),
+        "{output}"
+    );
+}
+
+#[test]
+fn editor_rejects_out_of_range_dense_integer_elements() {
+    let mut document = generic("\"test\"() : () -> ()");
+    let operation = document.root_operations()[0];
+    let registry = DialectRegistry::EMPTY;
+    let mut editor = document.edit(&registry).unwrap();
+    editor
+        .set_attribute(
+            operation,
+            AttributeSpec {
+                name: "values".into(),
+                spelling: "array<i8: 256>".into(),
+                value: zirium::semantic::AttributeValue::DenseArray {
+                    element_type: "i8".into(),
+                    elements: vec![zirium::semantic::AttributeValue::Integer("256".into())],
+                },
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        editor.commit(),
+        Err(EditError::Semantic(
+            SemanticVerificationError::Attribute { .. }
+        ))
+    ));
 }
 
 #[test]
