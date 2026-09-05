@@ -49,6 +49,8 @@ pub struct SymbolDescriptor {
 pub struct RegionDescriptor {
     pub kind: RegionKind,
     pub isolated_from_above: bool,
+    /// Whether every block in this region must end with a registered terminator.
+    pub requires_terminator: bool,
 }
 
 impl Default for RegionDescriptor {
@@ -56,6 +58,7 @@ impl Default for RegionDescriptor {
         Self {
             kind: RegionKind::Ssacfg,
             isolated_from_above: false,
+            requires_terminator: false,
         }
     }
 }
@@ -257,6 +260,8 @@ pub struct OperationDescriptor {
     pub regions: &'static [RegionDescriptor],
     /// Symbol-table, definition, and use behavior.
     pub symbols: SymbolDescriptor,
+    /// Whether this operation must be the final operation in its block.
+    pub is_terminator: bool,
 }
 
 /// Static registration for one dialect type.
@@ -392,9 +397,11 @@ impl DialectRegistry {
                                 && operations[index].regions.len() == 1
                                 && matches!(operations[index].regions[0].kind, RegionKind::Ssacfg)
                                 && operations[index].regions[0].isolated_from_above
+                                && !operations[index].regions[0].requires_terminator
                                 && operations[index].symbols.defines_symbol
                                 && operations[index].symbols.symbol_table
-                                && !operations[index].symbols.uses_symbols,
+                                && !operations[index].symbols.uses_symbols
+                                && !operations[index].is_terminator,
                             "module schema is inconsistent"
                         );
                     }
@@ -409,9 +416,11 @@ impl DialectRegistry {
                                 && operations[index].regions.len() == 1
                                 && matches!(operations[index].regions[0].kind, RegionKind::Ssacfg)
                                 && operations[index].regions[0].isolated_from_above
+                                && operations[index].regions[0].requires_terminator
                                 && operations[index].symbols.defines_symbol
                                 && !operations[index].symbols.symbol_table
-                                && !operations[index].symbols.uses_symbols,
+                                && !operations[index].symbols.uses_symbols
+                                && !operations[index].is_terminator,
                             "function schema is inconsistent"
                         );
                     }
@@ -423,7 +432,8 @@ impl DialectRegistry {
                                 && operations[index].regions.is_empty()
                                 && operations[index].symbols.uses_symbols
                                 && !operations[index].symbols.defines_symbol
-                                && !operations[index].symbols.symbol_table,
+                                && !operations[index].symbols.symbol_table
+                                && !operations[index].is_terminator,
                             "call schema is inconsistent"
                         );
                     }
@@ -435,7 +445,8 @@ impl DialectRegistry {
                                 && operations[index].regions.is_empty()
                                 && !operations[index].symbols.defines_symbol
                                 && !operations[index].symbols.symbol_table
-                                && !operations[index].symbols.uses_symbols,
+                                && !operations[index].symbols.uses_symbols
+                                && operations[index].is_terminator,
                             "conditional branch schema is inconsistent"
                         );
                     }
@@ -447,7 +458,8 @@ impl DialectRegistry {
                                 && operations[index].regions.is_empty()
                                 && !operations[index].symbols.defines_symbol
                                 && !operations[index].symbols.symbol_table
-                                && !operations[index].symbols.uses_symbols,
+                                && !operations[index].symbols.uses_symbols
+                                && !operations[index].is_terminator,
                             "typed attribute schema is inconsistent"
                         );
                     }
@@ -459,7 +471,8 @@ impl DialectRegistry {
                                 && operations[index].regions.is_empty()
                                 && !operations[index].symbols.defines_symbol
                                 && !operations[index].symbols.symbol_table
-                                && !operations[index].symbols.uses_symbols,
+                                && !operations[index].symbols.uses_symbols
+                                && !operations[index].is_terminator,
                             "binary operand schema is inconsistent"
                         );
                     }
@@ -471,7 +484,8 @@ impl DialectRegistry {
                                 && operations[index].regions.is_empty()
                                 && !operations[index].symbols.defines_symbol
                                 && !operations[index].symbols.symbol_table
-                                && !operations[index].symbols.uses_symbols,
+                                && !operations[index].symbols.uses_symbols
+                                && operations[index].is_terminator,
                             "optional operand schema is inconsistent"
                         );
                     }
@@ -483,7 +497,8 @@ impl DialectRegistry {
                                 && operations[index].regions.is_empty()
                                 && !operations[index].symbols.defines_symbol
                                 && !operations[index].symbols.symbol_table
-                                && !operations[index].symbols.uses_symbols,
+                                && !operations[index].symbols.uses_symbols
+                                && operations[index].is_terminator,
                             "successor schema is inconsistent"
                         );
                     }
@@ -1256,10 +1271,12 @@ fn print_cond_branch(document: &Document, operation: OperationId) -> Option<Stri
 static MODULE_REGIONS: &[RegionDescriptor] = &[RegionDescriptor {
     kind: RegionKind::Ssacfg,
     isolated_from_above: true,
+    requires_terminator: false,
 }];
 static FUNCTION_REGIONS: &[RegionDescriptor] = &[RegionDescriptor {
     kind: RegionKind::Ssacfg,
     isolated_from_above: true,
+    requires_terminator: true,
 }];
 
 static BUILTIN_MODULE: OperationDescriptor = OperationDescriptor {
@@ -1281,6 +1298,7 @@ static BUILTIN_MODULE: OperationDescriptor = OperationDescriptor {
         symbol_table: true,
         uses_symbols: false,
     },
+    is_terminator: false,
 };
 
 static FUNC_FUNC: OperationDescriptor = OperationDescriptor {
@@ -1302,6 +1320,7 @@ static FUNC_FUNC: OperationDescriptor = OperationDescriptor {
         symbol_table: false,
         uses_symbols: false,
     },
+    is_terminator: false,
 };
 
 static FUNC_CALL: OperationDescriptor = OperationDescriptor {
@@ -1323,6 +1342,7 @@ static FUNC_CALL: OperationDescriptor = OperationDescriptor {
         symbol_table: false,
         uses_symbols: true,
     },
+    is_terminator: false,
 };
 
 static CF_COND_BR: OperationDescriptor = OperationDescriptor {
@@ -1344,6 +1364,7 @@ static CF_COND_BR: OperationDescriptor = OperationDescriptor {
         symbol_table: false,
         uses_symbols: false,
     },
+    is_terminator: true,
 };
 
 static ARITH_CONSTANT: OperationDescriptor = OperationDescriptor {
@@ -1365,6 +1386,7 @@ static ARITH_CONSTANT: OperationDescriptor = OperationDescriptor {
         symbol_table: false,
         uses_symbols: false,
     },
+    is_terminator: false,
 };
 
 static ARITH_ADDI: OperationDescriptor = OperationDescriptor {
@@ -1386,6 +1408,7 @@ static ARITH_ADDI: OperationDescriptor = OperationDescriptor {
         symbol_table: false,
         uses_symbols: false,
     },
+    is_terminator: false,
 };
 static FUNC_RETURN: OperationDescriptor = OperationDescriptor {
     name: "func.return",
@@ -1406,6 +1429,7 @@ static FUNC_RETURN: OperationDescriptor = OperationDescriptor {
         symbol_table: false,
         uses_symbols: false,
     },
+    is_terminator: true,
 };
 static CF_BR: OperationDescriptor = OperationDescriptor {
     name: "cf.br",
@@ -1426,6 +1450,7 @@ static CF_BR: OperationDescriptor = OperationDescriptor {
         symbol_table: false,
         uses_symbols: false,
     },
+    is_terminator: true,
 };
 static PROVING_OPERATIONS: &[OperationDescriptor] = &[
     BUILTIN_MODULE,

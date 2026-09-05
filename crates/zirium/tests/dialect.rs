@@ -521,7 +521,58 @@ fn unregistered_metadata_defaults_are_conservative() {
     let registry = DialectRegistry::proving();
     assert_eq!(registry.region("unknown.op", 0).kind, RegionKind::Ssacfg);
     assert!(!registry.region("unknown.op", 0).isolated_from_above);
+    assert!(!registry.region("unknown.op", 0).requires_terminator);
     assert_eq!(registry.symbols("unknown.op"), Default::default());
+}
+
+#[test]
+fn registered_function_termination_metadata_is_explicit() {
+    let registry = DialectRegistry::proving();
+    assert!(registry.region("func.func", 0).requires_terminator);
+    assert!(!registry.region("builtin.module", 0).requires_terminator);
+    for name in ["func.return", "cf.br", "cf.cond_br"] {
+        assert!(registry.operation(name).unwrap().is_terminator, "{name}");
+    }
+    assert!(!registry.operation("func.call").unwrap().is_terminator);
+}
+
+#[test]
+fn registered_function_blocks_require_a_final_terminator() {
+    for (source, expected) in [
+        (
+            "builtin.module { func.func @unfinished(%flag: i1) { \"test.observe\"(%flag) : (i1) -> () \"test.record\"() : () -> () } }",
+            "function block must end with a registered terminator",
+        ),
+        (
+            "builtin.module { func.func @misordered() { cf.br ^done \"test.after_branch\"() : () -> () ^done: func.return } }",
+            "terminator must be the final operation in its block",
+        ),
+        (
+            "builtin.module { func.func @vacant() { } }",
+            "function block must end with a registered terminator",
+        ),
+    ] {
+        let document = lower_registered(source);
+        assert!(matches!(
+            document.verify_semantics(DialectRegistry::proving()),
+            Err(SemanticVerificationError::Operation { message, .. }) if message == expected
+        ));
+    }
+
+    let valid = lower_registered(
+        r#"builtin.module {
+  func.func @valid(%condition: i1) {
+    cf.cond_br %condition, ^left, ^right
+  ^left:
+    cf.br ^exit
+  ^right:
+    cf.br ^exit
+  ^exit:
+    func.return
+  }
+}"#,
+    );
+    valid.verify_semantics(DialectRegistry::proving()).unwrap();
 }
 
 #[test]
@@ -541,6 +592,7 @@ fn registration_rejects_a_program_with_an_inconsistent_schema() {
         },
         regions: &[],
         symbols: SymbolDescriptor::default(),
+        is_terminator: false,
     };
     let operations = Box::leak(Box::new([operation]));
     assert!(std::panic::catch_unwind(|| DialectRegistry::new(operations, &[], &[])).is_err());
@@ -560,6 +612,7 @@ fn registration_rejects_a_program_with_an_inconsistent_schema() {
         },
         regions: &[],
         symbols: SymbolDescriptor::default(),
+        is_terminator: false,
     };
     let operations = Box::leak(Box::new([wrong_identity]));
     assert!(std::panic::catch_unwind(|| DialectRegistry::new(operations, &[], &[])).is_err());
@@ -621,6 +674,7 @@ fn registration_rejects_inconsistent_required_attribute_lists() {
             },
             regions: &[],
             symbols: SymbolDescriptor::default(),
+            is_terminator: false,
         }]));
         assert!(
             std::panic::catch_unwind(|| DialectRegistry::new(operations, &[], &[])).is_err(),
@@ -1298,12 +1352,14 @@ fn module_and_function_registration_checks_all_metadata() {
         regions: &[zirium::dialect::RegionDescriptor {
             kind: RegionKind::Graph,
             isolated_from_above: false,
+            requires_terminator: false,
         }],
         symbols: SymbolDescriptor {
             defines_symbol: true,
             symbol_table: false,
             uses_symbols: true,
         },
+        is_terminator: false,
     };
     let operations = Box::leak(Box::new([operation]));
     assert!(std::panic::catch_unwind(|| DialectRegistry::new(operations, &[], &[])).is_err());
@@ -1314,10 +1370,12 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
     static VALID_REGION: &[RegionDescriptor] = &[RegionDescriptor {
         kind: RegionKind::Ssacfg,
         isolated_from_above: true,
+        requires_terminator: false,
     }];
     static WRONG_REGION: &[RegionDescriptor] = &[RegionDescriptor {
         kind: RegionKind::Graph,
         isolated_from_above: false,
+        requires_terminator: false,
     }];
 
     let cases = [
@@ -1451,6 +1509,7 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
             schema,
             regions,
             symbols,
+            is_terminator: false,
         }]));
         assert!(
             std::panic::catch_unwind(|| DialectRegistry::new(operations, &[], &[])).is_err(),

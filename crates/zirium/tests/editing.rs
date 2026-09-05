@@ -360,6 +360,48 @@ fn failed_commit_and_dropped_transaction_leave_original_untouched() {
 }
 
 #[test]
+fn failed_function_terminator_edits_are_atomic() {
+    let mut document = registered("builtin.module { func.func @f() { func.return } }");
+    let function = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("func.func"))
+        .unwrap();
+    let block = document
+        .region(document.operation_regions(function).unwrap()[0])
+        .unwrap()
+        .blocks(&document)
+        .unwrap()[0];
+    let terminator = document.block_operations(block).unwrap()[0];
+    let revision = document.revision();
+
+    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    editor.erase(terminator).unwrap();
+    assert!(matches!(
+        editor.commit(),
+        Err(EditError::Semantic(SemanticVerificationError::Operation { message, .. }))
+            if message == "function block must end with a registered terminator"
+    ));
+    assert_eq!(document.revision(), revision);
+    assert_eq!(document.block_operations(block).unwrap(), &[terminator]);
+
+    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    editor
+        .insert(
+            InsertionPoint::Block { block, index: 1 },
+            unknown_spec("test.after"),
+        )
+        .unwrap();
+    assert!(matches!(
+        editor.commit(),
+        Err(EditError::Semantic(SemanticVerificationError::Operation { message, .. }))
+            if message == "terminator must be the final operation in its block"
+    ));
+    assert_eq!(document.revision(), revision);
+    assert_eq!(document.block_operations(block).unwrap(), &[terminator]);
+    validate(&document);
+}
+
+#[test]
 fn fixed_result_type_edit_preserves_result_identity() {
     let mut document = generic("%x = \"unknown.value\"() : () -> i32");
     let operation = document.root_operations()[0];
@@ -1121,8 +1163,10 @@ fn dominance_index_preserves_graph_and_unregistered_ssacfg_registry_semantics() 
         regions: &[zirium::dialect::RegionDescriptor {
             kind: zirium::dialect::RegionKind::Graph,
             isolated_from_above: false,
+            requires_terminator: false,
         }],
         symbols: Default::default(),
+        is_terminator: false,
     }]));
     let graph_registry = zirium::dialect::DialectRegistry::new(operations, &[], &[]);
     let document = generic_best_effort(

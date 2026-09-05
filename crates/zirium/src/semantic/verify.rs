@@ -522,6 +522,51 @@ impl Document {
             let descriptor = registry.operation(name).filter(|_| {
                 name != "func.func" || self.attribute_id(operation, "function_type").is_some()
             });
+            if let Some(descriptor) = descriptor {
+                for (region_index, region) in self
+                    .operation_regions(operation)
+                    .unwrap_or(&[])
+                    .iter()
+                    .enumerate()
+                {
+                    let requires_terminator = descriptor
+                        .regions
+                        .get(region_index)
+                        .is_some_and(|region| region.requires_terminator);
+                    let blocks = self
+                        .region(*region)
+                        .and_then(|region| region.blocks(self))
+                        .unwrap_or(&[]);
+                    for block in blocks {
+                        let operations = self.block_operations(*block).unwrap_or(&[]);
+                        for child in operations.iter().take(operations.len().saturating_sub(1)) {
+                            let is_terminator = self
+                                .operation_name(*child)
+                                .and_then(|name| registry.operation(name))
+                                .is_some_and(|descriptor| descriptor.is_terminator);
+                            if is_terminator {
+                                return Err(SemanticVerificationError::Operation {
+                                    operation: *child,
+                                    message: "terminator must be the final operation in its block",
+                                });
+                            }
+                        }
+                        if requires_terminator {
+                            let final_operation = operations.last().copied();
+                            let has_terminator = final_operation
+                                .and_then(|operation| self.operation_name(operation))
+                                .and_then(|name| registry.operation(name))
+                                .is_some_and(|descriptor| descriptor.is_terminator);
+                            if !has_terminator {
+                                return Err(SemanticVerificationError::Operation {
+                                    operation: final_operation.unwrap_or(operation),
+                                    message: "function block must end with a registered terminator",
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             if descriptor.is_some_and(|descriptor| descriptor.symbols.symbol_table) {
                 let mut names = HashMap::new();
                 for child in self.direct_operations_in_operation_regions(operation) {
