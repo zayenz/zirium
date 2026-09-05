@@ -288,6 +288,7 @@ base_syntax_views!(
     TypeAlias,
     SymbolReference,
     ArrayAttribute,
+    DenseArrayAttribute,
     DictionaryAttribute,
     LocationAttribute,
     UnknownLocation,

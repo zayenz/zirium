@@ -383,6 +383,7 @@ fn lower_memref_layout(
             | AttributeValue::String(_)
             | AttributeValue::Symbol(_)
             | AttributeValue::Array(_)
+            | AttributeValue::DenseArray { .. }
             | AttributeValue::Dictionary(_)
             | AttributeValue::Location(_) => MemRefLayout::Invalid(push_diagnostic(
                 doc,
@@ -823,6 +824,13 @@ fn resolve_attribute(
     }
     if spelling.starts_with("sparse<") {
         return balanced_large_attribute(spelling, "sparse", LargeAttributeValue::Sparse);
+    }
+    if let Some(inner) = angle_inner(spelling, "array") {
+        let (element_type, elements) = parse_dense_array(inner)?;
+        return Ok(AttributeValue::DenseArray {
+            element_type,
+            elements,
+        });
     }
     if spelling.starts_with('#') && !spelling.contains('<') {
         let other = format!("!{}", &spelling[1..]);
@@ -1514,6 +1522,22 @@ fn lower_attribute_value_with_depth(
     if spelling == "unit" {
         return AttributeValue::Opaque(Arc::from(b"unit".as_slice()));
     }
+    if let Some(inner) = angle_inner(spelling, "array") {
+        if depth >= doc.attribute_depth_limit {
+            return AttributeValue::Invalid(push_diagnostic(
+                doc,
+                range,
+                "attribute nesting depth limit exceeded".into(),
+            ));
+        }
+        return match parse_dense_array(inner) {
+            Ok((element_type, elements)) => AttributeValue::DenseArray {
+                element_type,
+                elements,
+            },
+            Err(message) => AttributeValue::Invalid(push_diagnostic(doc, range, message)),
+        };
+    }
     if let Some(inner) = angle_inner(spelling, "type") {
         return AttributeValue::Type(lower_type_value_with_stack(
             inner,
@@ -1647,6 +1671,57 @@ fn lower_attribute_value_with_depth(
         Ok(value) => value,
         Err(message) => AttributeValue::Invalid(push_diagnostic(doc, range, message)),
     }
+}
+
+fn parse_dense_array(inner: &str) -> Result<(String, Vec<AttributeValue>), String> {
+    let (element_type, payload) = match inner.split_once(':') {
+        Some((ty, values)) => (ty.trim(), Some(values)),
+        None => (inner.trim(), None),
+    };
+    if !matches!(
+        element_type,
+        "i1" | "i8" | "i16" | "i32" | "i64" | "f32" | "f64"
+    ) {
+        return Err(format!(
+            "unsupported dense array element type `{element_type}`"
+        ));
+    }
+    let mut elements = Vec::new();
+    if let Some(payload) = payload {
+        if payload.trim().is_empty() || payload.trim_end().ends_with(',') {
+            return Err("malformed dense array payload".into());
+        }
+        for item in payload.split(',') {
+            let item = item.trim();
+            let value = if element_type == "i1" {
+                match item {
+                    "true" => AttributeValue::Boolean(true),
+                    "false" => AttributeValue::Boolean(false),
+                    _ => {
+                        return Err(format!(
+                            "dense array element `{item}` does not match `{element_type}`"
+                        ));
+                    }
+                }
+            } else if element_type.starts_with('i') {
+                if item.parse::<i128>().is_err() {
+                    return Err(format!(
+                        "dense array element `{item}` does not match `{element_type}`"
+                    ));
+                }
+                AttributeValue::Integer(compact(item))
+            } else {
+                if item.parse::<f64>().is_err() {
+                    return Err(format!(
+                        "dense array element `{item}` does not match `{element_type}`"
+                    ));
+                }
+                AttributeValue::Float(compact(item))
+            };
+            elements.push(value);
+        }
+    }
+    Ok((element_type.to_owned(), elements))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

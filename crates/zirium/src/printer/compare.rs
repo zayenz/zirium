@@ -518,6 +518,16 @@ fn equal_attributes(
         (AttributeValue::Array(l), AttributeValue::Array(r)) => {
             equal_attribute_values(left_doc, right_doc, l, r, maps)
         }
+        (
+            AttributeValue::DenseArray {
+                element_type: lt,
+                elements: le,
+            },
+            AttributeValue::DenseArray {
+                element_type: rt,
+                elements: re,
+            },
+        ) => lt == rt && equal_attribute_values(left_doc, right_doc, le, re, maps),
         (AttributeValue::Dictionary(l), AttributeValue::Dictionary(r)) => {
             l.len() == r.len()
                 && l.iter().zip(r).all(|((lk, lv), (rk, rv))| {

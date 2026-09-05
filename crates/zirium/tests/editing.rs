@@ -209,6 +209,34 @@ fn preserving_output_replaces_only_a_dirty_operation() {
 }
 
 #[test]
+fn unrelated_edit_preserves_builtin_dense_array_attribute() {
+    let mut document = hybrid(
+        b"\"test\"() {dimensions = array<i64: 1>} : () -> ()",
+        LoweringMode::Strict,
+    );
+    let operation = document.root_operations()[0];
+    let registry = DialectRegistry::EMPTY;
+    let mut editor = document.edit(&registry).unwrap();
+    editor
+        .set_attribute(
+            operation,
+            AttributeSpec {
+                name: "tag".into(),
+                spelling: "\"new\"".into(),
+                value: zirium::semantic::AttributeValue::String("\"new\"".into()),
+            },
+        )
+        .unwrap();
+    editor.commit().unwrap();
+    let output = document.preserving_bytes(PrintLayout::Compact).unwrap();
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .contains("dimensions = array<i64: 1>")
+    );
+}
+
+#[test]
 fn result_type_edits_widen_preservation_to_the_enclosing_block() {
     let source = b"\"outer\"() ({\n  %x = \"make\"() : () -> i32\n  \"use\"(%x) : (i32) -> ()\n}) : () -> ()";
     let mut document = hybrid(source, LoweringMode::Strict);

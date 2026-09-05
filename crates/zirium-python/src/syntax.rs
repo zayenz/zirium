@@ -646,6 +646,7 @@ kind_catalog!(
         TypeAlias,
         SymbolReference,
         ArrayAttribute,
+        DenseArrayAttribute,
         DictionaryAttribute,
         LocationAttribute,
         UnknownLocation,

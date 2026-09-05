@@ -66,6 +66,25 @@ fn accumulated_semantic_corpus_round_trips_structurally() {
 }
 
 #[test]
+fn builtin_dense_arrays_print_canonically_and_reparse_typed() {
+    let parsed =
+        ParsedFile::parse(b"\"test\"() {dimensions = array<i64: 1, -2>} : () -> ()".to_vec())
+            .unwrap();
+    let first = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+        .document
+        .unwrap();
+    let mut printed = String::new();
+    first.print(&mut printed, PrintLayout::Compact).unwrap();
+    assert!(printed.contains("array<i64: 1, -2>"), "{printed}");
+    let reparsed = ParsedFile::parse(printed.as_bytes()).unwrap();
+    let second =
+        lower_with_dialect_registry(&reparsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
+    assert!(first.structurally_eq(&second));
+}
+
+#[test]
 fn streams_to_fmt_and_io_sinks_deterministically() {
     let parsed = ParsedFile::parse(
         include_bytes!("../../../tests/corpus/mlir-22.1/generic-complete/valid.mlir").as_slice(),

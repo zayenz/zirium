@@ -76,6 +76,30 @@ fn boolean_predicates_select_names_and_decoded_string_attributes() {
 }
 
 #[test]
+fn builtin_dense_array_attributes_support_queries_and_ownership() {
+    let input = "module {\n  \"stablehlo.reduce\"() ({\n    \"stablehlo.add\"() : () -> ()\n  }) {dimensions = array<i64: 1>} : () -> ()\n}\n";
+    for (query, expected) in [
+        (
+            r#"select(op("stablehlo.reduce") and has_attr("dimensions")) | count"#,
+            "1\n",
+        ),
+        (r#"select(op("stablehlo.add")) | parent | count"#, "1\n"),
+        (
+            r#"select(op("stablehlo.reduce")) | children | count"#,
+            "1\n",
+        ),
+    ] {
+        let output = run_stdin(query, input);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+}
+
+#[test]
 fn malformed_predicates_produce_no_output() {
     for query in [
         r#"select(attr("tag" "value"))"#,

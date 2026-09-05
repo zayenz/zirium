@@ -1245,6 +1245,11 @@ fn verify_attribute_value<'a>(
                 verify_attribute_value(value, registry, types, attributes)?;
             }
         }
+        AttributeValue::DenseArray { elements, .. } => {
+            for value in elements {
+                verify_attribute_value(value, registry, types, attributes)?;
+            }
+        }
         AttributeValue::Dictionary(values) => {
             for (_, value) in values {
                 verify_attribute_value(value, registry, types, attributes)?;
@@ -1351,6 +1356,9 @@ pub(super) fn valid_attribute_value(document: &Document, value: &AttributeValue)
     match value {
         AttributeValue::Type(value) => valid_type_value(document, value),
         AttributeValue::Array(values) => values
+            .iter()
+            .all(|value| valid_attribute_value(document, value)),
+        AttributeValue::DenseArray { elements, .. } => elements
             .iter()
             .all(|value| valid_attribute_value(document, value)),
         AttributeValue::Dictionary(values) => values

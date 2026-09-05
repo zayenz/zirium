@@ -83,6 +83,52 @@ fn nested_attribute_depth_limit_recovers_following_operation_losslessly() {
 }
 
 #[test]
+fn builtin_dense_arrays_have_distinct_syntax_and_recover_from_trailing_commas() {
+    let valid = ParsedFile::parse(b"\"dense.samples\"() {empty = array<i16>, ints = array<i32: 7, -11>, floats = array<f64: 0.25, -4.0>, flags = array<i1: false, true, false>} : () -> ()".to_vec()).unwrap();
+    assert!(
+        valid.syntax().diagnostics().is_empty(),
+        "{:?}",
+        valid.syntax().diagnostics()
+    );
+    assert_eq!(
+        valid
+            .syntax()
+            .file()
+            .nodes(SyntaxKind::DenseArrayAttribute)
+            .count(),
+        4
+    );
+
+    let malformed = ParsedFile::parse(
+        b"\"broken.dense\"() {values = array<i16: 4, >} : () -> ()\n\"still.here\"() : () -> ()"
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(!malformed.syntax().diagnostics().is_empty());
+    assert_eq!(malformed.syntax().file().operations().count(), 2);
+    malformed.syntax().tree().verify().unwrap();
+}
+
+#[test]
+fn builtin_dense_array_payload_limit_includes_empty_and_trailing_trivia() {
+    for dense_array in ["array<              i64>", "array<i64: 1              >"] {
+        let source =
+            format!("\"bounded\"() {{a = {dense_array}}} : () -> ()\n\"after\"() : () -> ()");
+        let parsed = ParsedFile::parse_with_limits(
+            source.into_bytes(),
+            ParseLimits {
+                max_payload_bytes: 8,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        assert!(!parsed.syntax().diagnostics().is_empty());
+        assert_eq!(parsed.syntax().file().operations().count(), 2);
+        parsed.syntax().tree().verify().unwrap();
+    }
+}
+
+#[test]
 fn nested_location_depth_limit_recovers_following_operation_losslessly() {
     let nested = "(".repeat(32) + "unknown" + &")".repeat(32);
     let bytes = format!("\"deep\"() : () -> () loc({nested})\n\"after\"() : () -> ()").into_bytes();

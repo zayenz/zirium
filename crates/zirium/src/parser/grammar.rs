@@ -1075,6 +1075,9 @@ impl Parser<'_> {
             TokenKind::BareIdentifier if matches!(self.current_text(), "true" | "false") => {
                 self.leaf(SyntaxKind::BooleanAttribute)
             }
+            TokenKind::BareIdentifier if self.current_text() == "array" => {
+                self.dense_array_attribute()
+            }
             TokenKind::LBracket => self.array_attribute(),
             TokenKind::LBrace => self.dictionary_attribute(),
             TokenKind::Loc => self.location_attribute(),
@@ -1314,6 +1317,92 @@ impl Parser<'_> {
         self.nesting_depth -= 1;
         self.builder
             .complete_with_error(marker, SyntaxKind::ArrayAttribute, !good)?;
+        Ok(good)
+    }
+
+    fn dense_array_attribute(&mut self) -> Result<bool, CompactError> {
+        let marker = self.builder.start();
+        self.bump()?;
+        self.trivia()?;
+        if !self.enter_attribute_container(TokenKind::Less, TokenKind::Greater)? {
+            self.builder
+                .complete_with_error(marker, SyntaxKind::DenseArrayAttribute, true)?;
+            return Ok(false);
+        }
+        let mut good = self.expect(TokenKind::Less)?;
+        let payload_start = self.tokens[self.position.saturating_sub(1)].range().end();
+        self.trivia()?;
+        good &= matches!(self.current(), TokenKind::IntType | TokenKind::FloatType)
+            && matches!(
+                self.current_text(),
+                "i1" | "i8" | "i16" | "i32" | "i64" | "f32" | "f64"
+            );
+        if matches!(self.current(), TokenKind::IntType | TokenKind::FloatType) {
+            self.bump()?;
+        } else {
+            self.error_token()?;
+        }
+        self.trivia()?;
+        if self.at(TokenKind::Colon) {
+            self.bump()?;
+            self.trivia()?;
+            let mut need_value = true;
+            while !self.at(TokenKind::Greater) && !self.at(TokenKind::Eof) {
+                if self.tokens[self.position]
+                    .range()
+                    .end()
+                    .saturating_sub(payload_start) as usize
+                    > self.limits.max_payload_bytes
+                {
+                    self.diagnostic();
+                    good = false;
+                }
+                let value_good = match self.current() {
+                    TokenKind::Plus
+                    | TokenKind::Minus
+                    | TokenKind::Integer
+                    | TokenKind::WideInteger
+                    | TokenKind::Float => self.numeric_attribute()?,
+                    TokenKind::BareIdentifier
+                        if matches!(self.current_text(), "true" | "false") =>
+                    {
+                        self.leaf(SyntaxKind::BooleanAttribute)?
+                    }
+                    _ => {
+                        self.error_token()?;
+                        false
+                    }
+                };
+                good &= value_good;
+                need_value = false;
+                self.trivia()?;
+                if self.at(TokenKind::Comma) {
+                    self.bump()?;
+                    self.trivia()?;
+                    need_value = true;
+                } else if !self.at(TokenKind::Greater) {
+                    good = false;
+                    self.diagnostic();
+                }
+            }
+            if need_value {
+                good = false;
+                self.diagnostic();
+            }
+        }
+        if self.tokens[self.position]
+            .range()
+            .start()
+            .saturating_sub(payload_start) as usize
+            > self.limits.max_payload_bytes
+        {
+            self.diagnostic();
+            good = false;
+        }
+        good &= self.expect(TokenKind::Greater)?;
+        self.nesting_depth -= 1;
+        self.builder
+            .complete_with_error(marker, SyntaxKind::DenseArrayAttribute, !good)?;
         Ok(good)
     }
 

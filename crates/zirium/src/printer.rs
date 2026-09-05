@@ -1372,6 +1372,22 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                 }
                 self.sink.write_char(']')
             }
+            AttributeValue::DenseArray {
+                element_type,
+                elements,
+            } => {
+                write!(self.sink, "array<{element_type}")?;
+                if !elements.is_empty() {
+                    self.sink.write_str(": ")?;
+                    for (index, value) in elements.iter().enumerate() {
+                        if index != 0 {
+                            self.sink.write_str(", ")?;
+                        }
+                        self.attribute(value)?;
+                    }
+                }
+                self.sink.write_char('>')
+            }
             AttributeValue::Dictionary(values) => {
                 self.sink.write_char('{')?;
                 for (index, (name, value)) in values.iter().enumerate() {

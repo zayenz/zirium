@@ -37,6 +37,7 @@ pub enum SyntaxKind {
     TypeAlias,
     SymbolReference,
     ArrayAttribute,
+    DenseArrayAttribute,
     DictionaryAttribute,
     LocationAttribute,
     UnknownLocation,

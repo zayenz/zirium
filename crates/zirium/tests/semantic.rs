@@ -209,6 +209,36 @@ fn boolean_attributes_lower_with_exact_spelling() {
 }
 
 #[test]
+fn builtin_dense_arrays_lower_as_typed_scalar_sequences() {
+    let parsed = ParsedFile::parse(b"\"stablehlo.test\"() {empty = array<i64>, dimensions = array<i64: 1, -2>, scales = array<f32: 1.0, -2.5>, flags = array<i1: true, false>} : () -> ()".to_vec()).unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.root_operations()[0];
+    let dimensions = document.attribute_id(operation, "dimensions").unwrap();
+    assert!(
+        matches!(document.attribute_value(dimensions), Some(AttributeValue::DenseArray { element_type, elements }) if element_type == "i64" && matches!(elements.as_slice(), [AttributeValue::Integer(a), AttributeValue::Integer(b)] if a == "1" && b == "-2"))
+    );
+    let flags = document.attribute_id(operation, "flags").unwrap();
+    assert!(
+        matches!(document.attribute_value(flags), Some(AttributeValue::DenseArray { element_type, elements }) if element_type == "i1" && elements == &[AttributeValue::Boolean(true), AttributeValue::Boolean(false)])
+    );
+
+    for source in [
+        "\"bad\"() {a = array<i7: 1>} : () -> ()",
+        "\"bad\"() {a = array<i64: 1.0>} : () -> ()",
+    ] {
+        let parsed = ParsedFile::parse(source.as_bytes().to_vec()).unwrap();
+        assert!(
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+                .document
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn semantic_attribute_depth_limit_uses_invalid_sentinel() {
     let nested = (0..12).fold("1".to_owned(), |value, depth| {
         if depth % 2 == 0 {

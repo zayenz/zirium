@@ -987,6 +987,7 @@ impl SemanticAttribute {
                 AttributeValue::Type(_) => "type",
                 AttributeValue::Symbol(_) => "symbol",
                 AttributeValue::Array(_) => "array",
+                AttributeValue::DenseArray { .. } => "array",
                 AttributeValue::Dictionary(_) => "dictionary",
                 AttributeValue::Location(_) => "location",
                 AttributeValue::AffineMap(_) => "affine_map",

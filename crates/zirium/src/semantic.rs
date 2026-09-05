@@ -289,6 +289,10 @@ pub enum AttributeValue {
     Type(TypeValue),
     Symbol(Vec<String>),
     Array(Vec<AttributeValue>),
+    DenseArray {
+        element_type: String,
+        elements: Vec<AttributeValue>,
+    },
     Dictionary(Vec<(String, AttributeValue)>),
     Location(LocationValue),
     AffineMap(AffineMapId),
