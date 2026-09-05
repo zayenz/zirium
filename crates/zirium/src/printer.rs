@@ -1232,7 +1232,9 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                 self.sink.write_str(" >")
             }
             TypeValue::Function { inputs, results } => {
-                self.type_list(inputs)?;
+                self.sink.write_char('(')?;
+                self.types(inputs)?;
+                self.sink.write_char(')')?;
                 self.sink.write_str(" -> ")?;
                 self.type_list(results)
             }

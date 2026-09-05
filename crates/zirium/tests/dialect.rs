@@ -939,7 +939,7 @@ fn declarative_return_and_branch_check_enclosing_types() {
         )
         .unwrap();
     assert!(
-        generic.contains("\"func.return\"(%v2) : i32 -> ()"),
+        generic.contains("\"func.return\"(%v2) : (i32) -> ()"),
         "{generic}"
     );
     let generic_document = lower_registered(&generic);

@@ -303,6 +303,34 @@ fn root_after_mutation_prints_the_validated_whole_document() {
 }
 
 #[test]
+fn generic_single_operand_edit_prints_a_parseable_function_type() {
+    let input =
+        "%item = \"sample.create\"() : () -> i64\n\"sample.forward\"(%item) : (i64) -> ()\n";
+    let edited = run_stdin(
+        r#"select(op("sample.forward")) | set_attr("roundtrip.marker", "present") | root"#,
+        input,
+    );
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    let printed = String::from_utf8(edited.stdout).unwrap();
+    assert!(
+        printed.contains("roundtrip.marker = \"present\""),
+        "{printed}"
+    );
+
+    let reparsed = run_stdin(r#"select(op("sample.forward")) | count"#, &printed);
+    assert!(
+        reparsed.status.success(),
+        "{printed}\n{}",
+        String::from_utf8_lossy(&reparsed.stderr)
+    );
+    assert_eq!(reparsed.stdout, b"1\n", "{printed}");
+}
+
+#[test]
 fn set_attr_mutates_the_selection_at_its_pipeline_position() {
     let output = run_stdin(
         "select(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\") | closure | root",
