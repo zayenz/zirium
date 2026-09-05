@@ -469,9 +469,11 @@ fn lower_with_registry(
     }
 
     let mut block_argument_types = Vec::new();
+    let mut block_argument_names = Vec::new();
     for block in &blocks {
         let id = block_ids[&block.id()];
         let mut tys = Vec::new();
+        let mut names = Vec::new();
         let header_arguments = block
             .arguments()
             .next()
@@ -506,6 +508,7 @@ fn lower_with_registry(
                     .unwrap(),
             );
             let name = first_identifier(spelling, b'%').unwrap_or_default();
+            names.push(strings.intern(&name));
             let ty = argument_type(spelling);
             let ty_id = intern_type(
                 ty,
@@ -541,6 +544,7 @@ fn lower_with_registry(
             }
         }
         block_argument_types.push(tys);
+        block_argument_names.push(names);
     }
 
     for (i, op) in ops.iter().enumerate() {
@@ -772,6 +776,7 @@ fn lower_with_registry(
         doc.blocks.push(Block {
             parent,
             label,
+            argument_names: block_argument_names[i].clone(),
             argument_types: doc.types_lists.push(&block_argument_types[i]),
             operations: doc.operation_lists.push(&operations),
         });

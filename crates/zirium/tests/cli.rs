@@ -646,6 +646,83 @@ fn selected_root_retains_owned_contents_and_comments() {
 }
 
 #[test]
+fn selected_function_with_argument_can_be_queried_again() {
+    let input = "module { func.func @identity(%arg: i32) -> i32 { func.return %arg : i32 } }\n";
+    let selected = run_stdin(r#"select(op("func.func"))"#, input);
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    let printed = String::from_utf8(selected.stdout).unwrap();
+    let reparsed = run_stdin(r#"select(op("func.func")) | count"#, &printed);
+    assert!(
+        reparsed.status.success(),
+        "{printed}\n{}",
+        String::from_utf8_lossy(&reparsed.stderr)
+    );
+    assert_eq!(reparsed.stdout, b"1\n", "{printed}");
+}
+
+#[test]
+fn selected_unknown_operation_preserves_enclosing_argument_names() {
+    let input = "module {\n  func.func @pipeline(%source: i64) {\n    mystery.observe %source : i64\n    func.return\n  }\n}\n";
+    let selected = run_stdin(r#"select(op("mystery.observe"))"#, input);
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    let printed = String::from_utf8(selected.stdout).unwrap();
+    assert!(
+        printed.contains("func.func @pipeline(%source: i64)"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("mystery.observe %source : i64"),
+        "{printed}"
+    );
+
+    for (query, expected) in [
+        (
+            r#"select(op("mystery.observe")) | count"#,
+            b"1\n".as_slice(),
+        ),
+        (
+            r#"select(op("mystery.observe")) | parent | count"#,
+            b"1\n".as_slice(),
+        ),
+        (
+            r#"select(op("func.func")) | children | count"#,
+            b"1\n".as_slice(),
+        ),
+    ] {
+        let reparsed = run_stdin(query, &printed);
+        assert!(
+            reparsed.status.success(),
+            "{printed}\n{}",
+            String::from_utf8_lossy(&reparsed.stderr)
+        );
+        assert_eq!(reparsed.stdout, expected, "{printed}");
+    }
+}
+
+#[test]
+fn selected_unknown_operation_does_not_rewrite_attribute_strings() {
+    let input = "module {\n  func.func @f(%arg: i32) attributes {note = \"%v0\"} {\n    vendor.use %arg : i32\n  }\n}\n";
+    let selected = run_stdin(r#"select(op("vendor.use"))"#, input);
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    let printed = String::from_utf8(selected.stdout).unwrap();
+    assert!(printed.contains("func.func @f(%arg: i32)"), "{printed}");
+    assert!(printed.contains("note = \"%v0\""), "{printed}");
+    assert!(printed.contains("vendor.use %arg : i32"), "{printed}");
+}
+
+#[test]
 fn inline_nested_operation_does_not_steal_parent_comment() {
     let input = "module {\n  // Nested function.\n  func.func @inner() { func.return }\n}\n";
     let output = run_stdin("select(op(\"builtin.module\"))", input);

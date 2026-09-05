@@ -1110,6 +1110,59 @@ fn zero_result_functions_and_unit_no_inline_use_the_registered_forms() {
 }
 
 #[test]
+fn function_with_argument_prints_and_reparses_with_its_binding() {
+    let document = lower_registered(
+        "builtin.module { func.func @identity(%arg: i32) -> i32 { func.return %arg : i32 } }",
+    );
+    let mut text = String::new();
+    document
+        .print_with_registry(
+            &mut text,
+            PrintLayout::Compact,
+            DialectPrintMode::PreferCustom,
+            DialectRegistry::proving(),
+        )
+        .unwrap();
+
+    let reparsed = lower_registered(&text);
+    reparsed
+        .verify_semantics(DialectRegistry::proving())
+        .unwrap();
+    let function = reparsed
+        .operations()
+        .find(|&operation| FuncFuncOp::cast(&reparsed, operation).is_some())
+        .unwrap();
+    let signature = reparsed.attribute_id(function, "function_type").unwrap();
+    assert_eq!(
+        reparsed.attribute_spelling_value(signature),
+        Some("(i32) -> i32"),
+        "{text}"
+    );
+    let entry = reparsed
+        .operation_regions(function)
+        .and_then(|regions| regions.first())
+        .and_then(|region| reparsed.region(*region))
+        .and_then(|region| region.blocks(&reparsed))
+        .and_then(|blocks| blocks.first())
+        .copied()
+        .unwrap();
+    let returned = reparsed
+        .operations()
+        .find_map(|operation| FuncReturnOp::cast(&reparsed, operation))
+        .unwrap();
+    assert_eq!(
+        returned.operands().unwrap(),
+        &[zirium::semantic::ValueReference::Resolved(
+            zirium::semantic::ValueId::BlockArgument {
+                block: entry,
+                argument: 0,
+            },
+        )],
+        "{text}"
+    );
+}
+
+#[test]
 fn conditional_branch_weights_require_two_nonnegative_i32_values() {
     let source = include_str!("../../../tests/corpus/mlir-22.1/proving-dialects/valid.mlir");
     for weights in [

@@ -1151,10 +1151,39 @@ fn print_function(document: &Document, operation: OperationId) -> Option<String>
     let signature = document
         .attributes(operation)?
         .find_map(|(name, value)| (name == "function_type").then_some(value))?;
-    let signature = signature
+    let mut signature = signature
         .strip_prefix("type<")
         .and_then(|value| value.strip_suffix('>'))
-        .unwrap_or(signature);
+        .unwrap_or(signature)
+        .to_owned();
+    if let Some(entry) = document
+        .operation_regions(operation)?
+        .first()
+        .and_then(|region| document.region(*region))
+        .and_then(|region| region.blocks(document))
+        .and_then(|blocks| blocks.first())
+    {
+        let arguments = document
+            .block_argument_types(*entry)?
+            .iter()
+            .enumerate()
+            .map(|(argument, ty)| {
+                Some(format!(
+                    "{}: {}",
+                    document.value_spelling(crate::semantic::ValueReference::Resolved(
+                        crate::semantic::ValueId::BlockArgument {
+                            block: *entry,
+                            argument: argument as u32,
+                        },
+                    ))?,
+                    document.type_spelling(*ty)?,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?
+            .join(", ");
+        let inputs_end = matching_delimiter(&signature, 0, '(', ')')?;
+        signature = format!("({arguments}){}", &signature[inputs_end + 1..]);
+    }
     let no_inline = document
         .attribute_id(operation, "no_inline")
         .and_then(|id| document.attribute_value(id))

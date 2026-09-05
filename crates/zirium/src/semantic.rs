@@ -684,6 +684,7 @@ pub struct Region {
 pub struct Block {
     parent: RegionId,
     label: Option<u32>,
+    argument_names: Vec<u32>,
     argument_types: List<TypeId>,
     operations: List<OperationId>,
 }
@@ -817,6 +818,10 @@ impl Document {
     pub fn block_argument_types(&self, id: BlockId) -> Option<&[TypeId]> {
         self.block(id)
             .and_then(|block| self.types_lists.get(block.argument_types))
+    }
+    pub(crate) fn block_argument_name(&self, id: BlockId, argument: usize) -> Option<&str> {
+        let name = *self.block(id)?.argument_names.get(argument)?;
+        self.strings.get(name as usize).map(String::as_str)
     }
     pub fn block_label(&self, id: BlockId) -> Option<Option<&str>> {
         let block = self.block(id)?;

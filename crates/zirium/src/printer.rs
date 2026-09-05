@@ -41,6 +41,7 @@ pub enum PrintError {
     InvalidDocument(ValidationError),
     Format(fmt::Error),
     Io(io::Error),
+    UnsafeSelection(String),
 }
 
 /// Failure while combining retained source with generated replacements.
@@ -93,6 +94,7 @@ impl fmt::Display for PrintError {
             Self::InvalidDocument(error) => write!(f, "cannot print invalid document: {error}"),
             Self::Format(e) => e.fmt(f),
             Self::Io(e) => e.fmt(f),
+            Self::UnsafeSelection(message) => f.write_str(message),
         }
     }
 }
@@ -102,7 +104,7 @@ impl std::error::Error for PrintError {
             Self::InvalidDocument(error) => Some(error),
             Self::Format(error) => Some(error),
             Self::Io(error) => Some(error),
-            Self::IncompleteDocument => None,
+            Self::IncompleteDocument | Self::UnsafeSelection(_) => None,
         }
     }
 }
@@ -134,13 +136,119 @@ impl Document {
                 }
             }
         }
+        let value_names = self.selection_value_names(&selected)?;
         let mut adapter = IoAdapter { sink, error: None };
         let result =
-            Printer::new_selection(self, &mut adapter, layout, registry, &selected).document();
+            Printer::new_selection(self, &mut adapter, layout, registry, &selected, value_names)
+                .document();
         if let Some(error) = adapter.error {
             return Err(PrintError::Io(error));
         }
         result.map_err(PrintError::Format)
+    }
+
+    fn selection_value_names(
+        &self,
+        selected: &HashSet<OperationId>,
+    ) -> Result<HashMap<ValueId, String>, PrintError> {
+        let mut opaque_names = HashSet::new();
+        for &operation in selected {
+            let Some(text) = self.operation_unparsed_text(operation) else {
+                continue;
+            };
+            let source = crate::source::Source::new(text.to_vec()).map_err(|_| {
+                PrintError::UnsafeSelection(
+                    "cannot inspect selected opaque operation SSA names".to_owned(),
+                )
+            })?;
+            for token in crate::lexer::lex(&source).tokens() {
+                if token.kind() == TokenKind::PercentIdentifier {
+                    opaque_names.insert(
+                        String::from_utf8_lossy(source.slice(token.range()).unwrap()).into_owned(),
+                    );
+                }
+            }
+        }
+
+        let mut preserved = HashMap::<ValueId, String>::new();
+        for &operation in selected {
+            if self.operation_unparsed_text(operation).is_none() {
+                continue;
+            }
+            let mut parent = self
+                .operation(operation)
+                .and_then(|operation| operation.parent_block());
+            while let Some(block) = parent {
+                for argument in 0..self.block_argument_types(block).map_or(0, <[_]>::len) {
+                    let Some(name) = self.block_argument_name(block, argument) else {
+                        return Err(PrintError::UnsafeSelection(
+                            "cannot preserve an enclosing block argument name for selected opaque syntax"
+                                .to_owned(),
+                        ));
+                    };
+                    let spelling = format!("%{name}");
+                    if opaque_names.contains(&spelling) {
+                        let value = ValueId::BlockArgument {
+                            block,
+                            argument: argument as u32,
+                        };
+                        preserved.insert(value, spelling);
+                    }
+                }
+                let owner = self
+                    .block(block)
+                    .and_then(|block| self.region(block.parent_region()))
+                    .map(|region| region.parent_operation());
+                parent = owner
+                    .and_then(|owner| self.operation(owner))
+                    .and_then(|owner| owner.parent_block());
+            }
+        }
+
+        let mut names = HashMap::new();
+        let mut next = 0;
+        let mut allocate = |value, names: &mut HashMap<ValueId, String>| loop {
+            let spelling = format!("%v{next}");
+            next += 1;
+            if !opaque_names.contains(&spelling) {
+                names.insert(value, spelling);
+                break;
+            }
+        };
+        for operation in self.operations() {
+            for result in 0..self.result_types(operation).map_or(0, <[_]>::len) {
+                allocate(
+                    ValueId::OperationResult {
+                        operation,
+                        result: result as u32,
+                    },
+                    &mut names,
+                );
+            }
+        }
+        for operation in self.operations() {
+            for &region in self.operation_regions(operation).unwrap_or(&[]) {
+                for &block in self
+                    .region(region)
+                    .and_then(|region| region.blocks(self))
+                    .unwrap_or(&[])
+                {
+                    for argument in 0..self.block_argument_types(block).map_or(0, <[_]>::len) {
+                        allocate(
+                            ValueId::BlockArgument {
+                                block,
+                                argument: argument as u32,
+                            },
+                            &mut names,
+                        );
+                    }
+                }
+            }
+        }
+        for (value, spelling) in preserved {
+            names.insert(value, spelling);
+        }
+        Ok(names)
     }
 
     /// Writes deterministic generic MLIR to a [`fmt::Write`] sink.
@@ -568,7 +676,7 @@ struct Printer<'a, W> {
     doc: &'a Document,
     sink: &'a mut W,
     layout: PrintLayout,
-    values: HashMap<ValueId, usize>,
+    values: HashMap<ValueId, String>,
     blocks: HashMap<BlockId, usize>,
     mode: DialectPrintMode,
     registry: &'a DialectRegistry,
@@ -590,7 +698,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                         operation,
                         result: result as u32,
                     },
-                    next_value,
+                    format!("%v{next_value}"),
                 );
                 next_value += 1;
             }
@@ -611,7 +719,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                                 block,
                                 argument: argument as u32,
                             },
-                            next_value,
+                            format!("%v{next_value}"),
                         );
                         next_value += 1;
                     }
@@ -635,9 +743,11 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         layout: PrintLayout,
         registry: &'a DialectRegistry,
         selected: &'a HashSet<OperationId>,
+        values: HashMap<ValueId, String>,
     ) -> Self {
         let mut printer = Self::new(doc, sink, layout, DialectPrintMode::PreferCustom, registry);
         printer.selected = Some(selected);
+        printer.values = values;
         printer
     }
     fn retained(&self, operation: OperationId) -> bool {
@@ -663,6 +773,39 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                             })
                     })
         })
+    }
+    fn rewrite_custom_value_names(&self, custom: String) -> String {
+        let replacements = self
+            .values
+            .iter()
+            .filter_map(|(&value, spelling)| {
+                let canonical = self.doc.value_spelling(ValueReference::Resolved(value))?;
+                (canonical != *spelling).then_some((canonical, spelling.as_str()))
+            })
+            .collect::<HashMap<_, _>>();
+        if replacements.is_empty() {
+            return custom;
+        }
+        let source = crate::source::Source::new(custom.as_bytes().to_vec())
+            .expect("a Rust string fits in Zirium source storage");
+        let mut rewritten = String::with_capacity(custom.len());
+        let mut cursor = 0;
+        for token in crate::lexer::lex(&source).tokens() {
+            if token.kind() == TokenKind::Eof {
+                break;
+            }
+            let range = token.range().as_range();
+            rewritten.push_str(&custom[cursor..range.start]);
+            let spelling = &custom[range.clone()];
+            if token.kind() == TokenKind::PercentIdentifier {
+                rewritten.push_str(replacements.get(spelling).copied().unwrap_or(spelling));
+            } else {
+                rewritten.push_str(spelling);
+            }
+            cursor = range.end;
+        }
+        rewritten.push_str(&custom[cursor..]);
+        rewritten
     }
     fn selected_comment(&mut self, operation: OperationId, indent: usize) -> fmt::Result {
         let Some(selected) = self.selected else {
@@ -787,7 +930,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             self.sink.write_str(" = ")?;
         }
         if self.mode == DialectPrintMode::PreferCustom {
-            if let Some(custom) = self
+            if let Some(mut custom) = self
                 .doc
                 .operation_name(id)
                 .and_then(|name| self.registry.operation(name))
@@ -798,6 +941,9 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                         .or_else(|| descriptor.print.and_then(|print| print(self.doc, id)))
                 })
             {
+                if self.selected.is_some() {
+                    custom = self.rewrite_custom_value_names(custom);
+                }
                 self.sink.write_str(&custom)?;
                 let assembly = self
                     .doc
@@ -813,7 +959,11 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                 ) {
                     let regions = self.doc.operation_regions(id).ok_or(fmt::Error)?;
                     if let Some(region) = regions.first() {
-                        return self.region(*region, indent);
+                        return self.region(
+                            *region,
+                            indent,
+                            assembly == Some(crate::dialect::AssemblyProgram::Function),
+                        );
                     }
                 }
                 return Ok(());
@@ -858,7 +1008,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                 if index != 0 {
                     self.sink.write_str(", ")?;
                 }
-                self.region(region, indent)?;
+                self.region(region, indent, false)?;
             }
             self.sink.write_char(')')?;
         }
@@ -930,7 +1080,12 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         }
         Ok(())
     }
-    fn region(&mut self, id: crate::semantic::RegionId, indent: usize) -> fmt::Result {
+    fn region(
+        &mut self,
+        id: crate::semantic::RegionId,
+        indent: usize,
+        implicit_entry: bool,
+    ) -> fmt::Result {
         self.sink.write_char('{')?;
         let blocks = self
             .doc
@@ -949,12 +1104,13 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             .collect::<Vec<_>>();
         for (block_index, &block) in blocks.iter().enumerate() {
             let explicit = block_index != 0
-                || self.doc.block_label(block).ok_or(fmt::Error)?.is_some()
-                || !self
-                    .doc
-                    .block_argument_types(block)
-                    .ok_or(fmt::Error)?
-                    .is_empty();
+                || (!implicit_entry
+                    && (self.doc.block_label(block).ok_or(fmt::Error)?.is_some()
+                        || !self
+                            .doc
+                            .block_argument_types(block)
+                            .ok_or(fmt::Error)?
+                            .is_empty()));
             if explicit {
                 self.newline(indent + 1)?;
                 self.block_name(block)?;
@@ -1031,11 +1187,8 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         }
     }
     fn value(&mut self, value: ValueId) -> fmt::Result {
-        write!(
-            self.sink,
-            "%v{}",
-            self.values.get(&value).ok_or(fmt::Error)?
-        )
+        self.sink
+            .write_str(self.values.get(&value).ok_or(fmt::Error)?)
     }
     fn block_name(&mut self, block: BlockId) -> fmt::Result {
         write!(
