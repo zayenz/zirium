@@ -11,6 +11,9 @@ API remains experimental, and this release makes no ABI stability guarantee.
   diagnostic-bearing semantic operations.
 - Expose richer Python inspection, including exact type and attribute
   spellings, scalar attributes, and stable value identity.
+- Add a compact `zirium` CLI for selection and edit pipelines, with reusable
+  program files.
+- Parse and lower builtin `array<...>` dense-array attributes.
 - Bound recursive alias expansion across type, attribute, affine, memref, and
   location aliases. Rust and Python callers can select the limit.
 - Make `lower_with_dialect_registry` and
