@@ -158,7 +158,10 @@ impl Query {
                         .copied()
                         .collect::<HashSet<_>>()
                         .into_iter()
-                        .filter(|&operation| document.attribute_id(operation, name).is_some())
+                        .filter(|&operation| {
+                            document.operation_is_unparsed(operation) == Some(true)
+                                || document.attribute_id(operation, name).is_some()
+                        })
                         .collect::<Vec<_>>();
                     if !targets.is_empty() {
                         let mut editor = document.edit(registry).map_err(edit_error)?;

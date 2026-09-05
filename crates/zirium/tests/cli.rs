@@ -422,6 +422,26 @@ fn remove_attr_absent_is_a_noop_and_composes_in_pipeline_order() {
 }
 
 #[test]
+fn remove_attr_rejects_unparsed_operations_before_editing_the_selection() {
+    for input in [
+        "module {\n  mystery.consume {debug.note = \"sealed\"}\n}\n",
+        "module {\n  \"example.known\"() {debug.note = \"drop\"} : () -> ()\n  mystery.consume {debug.note = \"sealed\"}\n}\n",
+    ] {
+        let output = run_stdin(
+            r#"select(op("example.known") or op("mystery.consume")) | remove_attr("debug.note")"#,
+            input,
+        );
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("cannot edit an incomplete document"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn remove_attr_does_not_attach_a_parent_tail_to_a_nested_operation() {
     for child_attributes in [" {analysis.tag = \"hot\"}", ""] {
         let input = format!(
