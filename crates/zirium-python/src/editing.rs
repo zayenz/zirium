@@ -12,16 +12,7 @@ impl AttributeSpecHandle {
     #[new]
     #[pyo3(signature = (attribute, name=None))]
     fn new(attribute: &SemanticAttribute, name: Option<String>) -> PyResult<Self> {
-        let document = read_document(&attribute.state)?;
-        let value = document
-            .attribute_value(attribute.id)
-            .cloned()
-            .ok_or_else(|| stale("attribute"))?;
-        let spelling = document
-            .attribute_spelling_value(attribute.id)
-            .map(str::to_owned)
-            .ok_or_else(|| stale("attribute"))?;
-        drop(document);
+        let (value, spelling) = attribute.cloned_value_and_spelling()?;
         Ok(Self {
             state: attribute.state.clone(),
             spec: AttributeSpec {

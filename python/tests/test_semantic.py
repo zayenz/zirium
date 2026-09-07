@@ -89,6 +89,50 @@ def test_consecutive_pretty_custom_operations_remain_semantically_visible():
     assert all(table.operation(index).is_unparsed for index in range(table.count))
 
 
+def test_locations_typed_integers_and_nested_attribute_elements():
+    source = """#loc1 = loc("f.py":1:1)
+"builtin.module"() ({
+  "test.values"() {
+    integer = 4096 : i64,
+    nested = [["a", "b"], ["c"]],
+    dictionary = {z = [2], a = "first"}
+  } : () -> () loc(unknown)
+  "test.fused"() : () -> () loc(fused<{mac_id = "d_414", op_type = "air.Func"}>[#loc1])
+}) : () -> ()
+"""
+    parsed = zirium.parse_text(source)
+    assert parsed.diagnostics == []
+    lowered = parsed.lower_strict()
+    assert lowered.diagnostics == []
+    assert lowered.document is not None
+
+    operation = lowered.document.operation_table("test.values").operation(0)
+    integer = operation.attribute_by_name("integer")
+    assert integer is not None
+    assert integer.kind == "integer"
+    assert integer.integer_value == 4096
+
+    nested = operation.attribute_by_name("nested")
+    assert nested is not None
+    assert nested.element_count == 2
+    first = nested.element(0)
+    assert first is not None
+    assert first.spelling == '["a", "b"]'
+    assert first.element_count == 2
+    first_string = first.element(0)
+    assert first_string is not None
+    assert first_string.string_value == "a"
+    assert first_string.spelling == '"a"'
+
+    dictionary = operation.attribute_by_name("dictionary")
+    assert dictionary is not None
+    assert dictionary.element_count == 2
+    first_entry = dictionary.element(0)
+    assert first_entry is not None
+    assert first_entry.name == "a"
+    assert first_entry.string_value == "first"
+
+
 def test_operation_table_dictionary_filter_columns_and_indices():
     document = (
         zirium.parse_text(
@@ -187,6 +231,8 @@ def test_runtime_and_stub_expose_only_packed_and_indexed_semantic_surface():
         "def result_type(self, index: int) -> SemanticType:",
         "def attribute_count(self) -> int:",
         "def attribute(self, index: int) -> SemanticAttribute:",
+        "def element_count(self) -> int | None:",
+        "def element(self, index: int) -> SemanticAttribute | None:",
         "def block_count(self) -> int:",
         "def block(self, index: int) -> SemanticBlock:",
         "def operation_count(self) -> int:",

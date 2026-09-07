@@ -680,8 +680,10 @@ impl SemanticOperation {
             .ok_or_else(|| PyIndexError::new_err("attribute index out of range"))?;
         Ok(SemanticAttribute {
             state: self.state.clone(),
-            id,
+            id: Some(id),
             name: name.to_owned(),
+            owned: None,
+            owned_spelling: None,
         })
     }
     fn attribute_by_name(&self, name: &str) -> PyResult<Option<SemanticAttribute>> {
@@ -693,8 +695,10 @@ impl SemanticOperation {
             .attribute_id(self.id, name)
             .map(|id| SemanticAttribute {
                 state: self.state.clone(),
-                id,
+                id: Some(id),
                 name: name.to_owned(),
+                owned: None,
+                owned_spelling: None,
             }))
     }
     fn attribute_snapshot(&self) -> PyResult<Vec<(String, String)>> {
@@ -926,8 +930,83 @@ impl SemanticType {
 #[derive(Clone)]
 pub(super) struct SemanticAttribute {
     pub(super) state: SharedDocument,
-    pub(super) id: AttributeId,
+    pub(super) id: Option<AttributeId>,
     pub(super) name: String,
+    owned: Option<AttributeValue>,
+    owned_spelling: Option<String>,
+}
+
+impl SemanticAttribute {
+    fn with_value<T>(&self, inspect: impl FnOnce(&AttributeValue) -> T) -> PyResult<T> {
+        if let Some(value) = &self.owned {
+            return Ok(inspect(value));
+        }
+        let id = self.id.ok_or_else(|| stale("attribute"))?;
+        let document = read_document(&self.state)?;
+        let value = document
+            .attribute_value(id)
+            .ok_or_else(|| stale("attribute"))?;
+        Ok(inspect(value))
+    }
+
+    fn spelling_value(&self) -> PyResult<String> {
+        if let Some(spelling) = &self.owned_spelling {
+            return Ok(spelling.clone());
+        }
+        let id = self.id.ok_or_else(|| stale("attribute"))?;
+        read_document(&self.state)?
+            .attribute_spelling_value(id)
+            .map(str::to_owned)
+            .ok_or_else(|| stale("attribute"))
+    }
+
+    pub(super) fn cloned_value_and_spelling(&self) -> PyResult<(AttributeValue, String)> {
+        Ok((self.with_value(Clone::clone)?, self.spelling_value()?))
+    }
+}
+
+fn split_attribute_elements(spelling: &str, open: char, close: char) -> Option<Vec<&str>> {
+    let inner = spelling.trim().strip_prefix(open)?.strip_suffix(close)?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut stack = Vec::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in inner.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        if character == '"' {
+            quoted = true;
+            continue;
+        }
+        match character {
+            '(' => stack.push(')'),
+            '[' => stack.push(']'),
+            '{' => stack.push('}'),
+            '<' => stack.push('>'),
+            ')' | ']' | '}' | '>' if stack.last() == Some(&character) => {
+                stack.pop();
+            }
+            ',' if stack.is_empty() => {
+                result.push(inner[start..index].trim());
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    result.push(inner[start..].trim());
+    Some(result)
 }
 
 fn decode_string_attribute(spelling: &str) -> Option<String> {
@@ -972,133 +1051,140 @@ impl SemanticAttribute {
     }
     #[getter]
     fn kind(&self) -> PyResult<&'static str> {
-        Ok(
-            match read_document(&self.state)?
-                .attribute_value(self.id)
-                .ok_or_else(|| stale("attribute"))?
-            {
-                AttributeValue::Large(LargeAttributeValue::Dense(_)) => "dense",
-                AttributeValue::Large(LargeAttributeValue::Sparse(_)) => "sparse",
-                AttributeValue::Large(LargeAttributeValue::Resource(_)) => "resource",
-                AttributeValue::Boolean(_) => "boolean",
-                AttributeValue::Integer(_) => "integer",
-                AttributeValue::Float(_) => "float",
-                AttributeValue::String(_) => "string",
-                AttributeValue::Type(_) => "type",
-                AttributeValue::Symbol(_) => "symbol",
-                AttributeValue::Array(_) => "array",
-                AttributeValue::DenseArray { .. } => "array",
-                AttributeValue::Dictionary(_) => "dictionary",
-                AttributeValue::Location(_) => "location",
-                AttributeValue::AffineMap(_) => "affine_map",
-                AttributeValue::IntegerSet(_) => "integer_set",
-                AttributeValue::WideNumber(_) => "wide_number",
-                AttributeValue::Opaque(_) => "opaque",
-                AttributeValue::Invalid(_) => "invalid",
-            },
-        )
+        self.with_value(|value| match value {
+            AttributeValue::Large(LargeAttributeValue::Dense(_)) => "dense",
+            AttributeValue::Large(LargeAttributeValue::Sparse(_)) => "sparse",
+            AttributeValue::Large(LargeAttributeValue::Resource(_)) => "resource",
+            AttributeValue::Boolean(_) => "boolean",
+            AttributeValue::Integer(_) => "integer",
+            AttributeValue::Float(_) => "float",
+            AttributeValue::String(_) => "string",
+            AttributeValue::Type(_) => "type",
+            AttributeValue::Symbol(_) => "symbol",
+            AttributeValue::Array(_) => "array",
+            AttributeValue::DenseArray { .. } => "array",
+            AttributeValue::Dictionary(_) => "dictionary",
+            AttributeValue::Location(_) => "location",
+            AttributeValue::AffineMap(_) => "affine_map",
+            AttributeValue::IntegerSet(_) => "integer_set",
+            AttributeValue::WideNumber(_) => "wide_number",
+            AttributeValue::Opaque(_) => "opaque",
+            AttributeValue::Invalid(_) => "invalid",
+        })
     }
     #[getter]
     fn spelling(&self) -> PyResult<String> {
-        read_document(&self.state)?
-            .attribute_spelling_value(self.id)
-            .map(str::to_owned)
-            .ok_or_else(|| stale("attribute"))
+        self.spelling_value()
     }
     #[getter]
     fn string_value(&self) -> PyResult<Option<String>> {
-        Ok(
-            match read_document(&self.state)?
-                .attribute_value(self.id)
-                .ok_or_else(|| stale("attribute"))?
-            {
-                AttributeValue::String(value) => decode_string_attribute(value),
-                _ => None,
-            },
-        )
+        self.with_value(|value| match value {
+            AttributeValue::String(value) => decode_string_attribute(value),
+            _ => None,
+        })
     }
     #[getter]
     fn integer_value(&self) -> PyResult<Option<i128>> {
-        Ok(
-            match read_document(&self.state)?
-                .attribute_value(self.id)
-                .ok_or_else(|| stale("attribute"))?
-            {
-                AttributeValue::Integer(value) => value
-                    .split(':')
-                    .next()
-                    .and_then(|value| value.trim().parse().ok()),
-                _ => None,
-            },
-        )
+        self.with_value(|value| match value {
+            AttributeValue::Integer(value) => value
+                .split(':')
+                .next()
+                .and_then(|value| value.trim().parse().ok()),
+            _ => None,
+        })
     }
     #[getter]
     fn float_value(&self) -> PyResult<Option<f64>> {
-        Ok(
-            match read_document(&self.state)?
-                .attribute_value(self.id)
-                .ok_or_else(|| stale("attribute"))?
-            {
-                AttributeValue::Float(value) => value
-                    .split(':')
-                    .next()
-                    .and_then(|value| value.trim().parse().ok()),
-                _ => None,
-            },
-        )
+        self.with_value(|value| match value {
+            AttributeValue::Float(value) => value
+                .split(':')
+                .next()
+                .and_then(|value| value.trim().parse().ok()),
+            _ => None,
+        })
     }
     #[getter]
     fn boolean_value(&self) -> PyResult<Option<bool>> {
-        Ok(
-            match read_document(&self.state)?
-                .attribute_value(self.id)
-                .ok_or_else(|| stale("attribute"))?
-            {
-                AttributeValue::Boolean(value) => Some(*value),
-                _ => None,
-            },
-        )
+        self.with_value(|value| match value {
+            AttributeValue::Boolean(value) => Some(*value),
+            _ => None,
+        })
     }
     #[getter]
     fn symbol_value(&self) -> PyResult<Option<String>> {
-        Ok(
-            match read_document(&self.state)?
-                .attribute_value(self.id)
-                .ok_or_else(|| stale("attribute"))?
-            {
-                AttributeValue::Symbol(path) => Some(path.join("::")),
-                _ => None,
-            },
-        )
+        self.with_value(|value| match value {
+            AttributeValue::Symbol(path) => Some(path.join("::")),
+            _ => None,
+        })
+    }
+    #[getter]
+    fn element_count(&self) -> PyResult<Option<usize>> {
+        self.with_value(|value| match value {
+            AttributeValue::Array(values) => Some(values.len()),
+            AttributeValue::DenseArray { elements, .. } => Some(elements.len()),
+            AttributeValue::Dictionary(entries) => Some(entries.len()),
+            _ => None,
+        })
+    }
+    fn element(&self, index: usize) -> PyResult<Option<SemanticAttribute>> {
+        let parent_spelling = self.spelling_value()?;
+        let value = self.with_value(|value| match value {
+            AttributeValue::Array(values) => values
+                .get(index)
+                .cloned()
+                .map(|value| (String::new(), value)),
+            AttributeValue::DenseArray { elements, .. } => elements
+                .get(index)
+                .cloned()
+                .map(|value| (String::new(), value)),
+            AttributeValue::Dictionary(entries) => entries
+                .get(index)
+                .map(|(name, value)| (name.clone(), value.clone())),
+            _ => None,
+        })?;
+        let Some((name, value)) = value else {
+            return Ok(None);
+        };
+        let spelling =
+            match self.with_value(|value| matches!(value, AttributeValue::Dictionary(_)))? {
+                true => split_attribute_elements(&parent_spelling, '{', '}').and_then(|entries| {
+                    entries.into_iter().find_map(|entry| {
+                        let (key, value) = entry.split_once('=')?;
+                        (key.trim() == name).then(|| value.trim().to_owned())
+                    })
+                }),
+                false => split_attribute_elements(&parent_spelling, '[', ']')
+                    .and_then(|elements| elements.get(index).map(|value| (*value).to_owned())),
+            }
+            .unwrap_or_default();
+        Ok(Some(SemanticAttribute {
+            state: self.state.clone(),
+            id: None,
+            name,
+            owned: Some(value),
+            owned_spelling: Some(spelling),
+        }))
     }
     #[getter]
     fn payload_byte_length(&self) -> PyResult<Option<usize>> {
-        Ok(
-            match read_document(&self.state)?
-                .attribute_value(self.id)
-                .ok_or_else(|| stale("attribute"))?
-            {
-                AttributeValue::Large(
-                    LargeAttributeValue::Dense(bytes)
-                    | LargeAttributeValue::Sparse(bytes)
-                    | LargeAttributeValue::Resource(bytes),
-                ) => Some(bytes.len()),
-                _ => None,
-            },
-        )
+        self.with_value(|value| match value {
+            AttributeValue::Large(
+                LargeAttributeValue::Dense(bytes)
+                | LargeAttributeValue::Sparse(bytes)
+                | LargeAttributeValue::Resource(bytes),
+            ) => Some(bytes.len()),
+            _ => None,
+        })
     }
     fn raw_buffer<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
-        let bytes = match read_document(&self.state)?
-            .attribute_value(self.id)
-            .ok_or_else(|| stale("attribute"))?
-        {
+        let bytes = self.with_value(|value| match value {
             AttributeValue::Large(
                 LargeAttributeValue::Dense(bytes)
                 | LargeAttributeValue::Sparse(bytes)
                 | LargeAttributeValue::Resource(bytes),
             ) => Some(bytes.clone()),
             _ => None,
-        };
+        })?;
         Ok(bytes.map(|bytes| PyBytes::new(py, &bytes)))
     }
 }

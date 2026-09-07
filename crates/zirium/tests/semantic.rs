@@ -1444,6 +1444,70 @@ fn forward_aliases_resolve_through_nested_locations() {
 }
 
 #[test]
+fn unknown_and_dictionary_metadata_locations_lower_cleanly() {
+    let bytes = br#"#loc1 = loc("f.py":1:1)
+"builtin.module"() ({
+  "test.unknown"() : () -> () loc(unknown)
+  "test.fused"() : () -> () loc(fused<{mac_id = "d_414", op_type = "air.Func"}>[#loc1])
+}) : () -> ()
+"#;
+    let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let find = |name| {
+        document
+            .operations()
+            .find(|&id| document.operation_name(id) == Some(name))
+            .unwrap()
+    };
+    assert!(matches!(
+        document.operation_location_value(find("test.unknown")),
+        Some(Some(LocationValue::Unknown))
+    ));
+    assert!(matches!(
+        document.operation_location_value(find("test.fused")),
+        Some(Some(LocationValue::Fused { metadata: Some(metadata), locations }))
+            if metadata == "{mac_id = \"d_414\", op_type = \"air.Func\"}"
+                && locations.len() == 1
+    ));
+}
+
+#[test]
+fn typed_decimal_integers_use_the_integer_representation_when_they_fit() {
+    let bytes = br#""test.typed_integers"() {
+  index = 0 : index,
+  i64 = 4096 : i64,
+  negative = -1 : i64,
+  boolean_width = 1 : i1,
+  wide = 0x1234567890abcdef1234567890abcdef : i128
+} : () -> ()"#;
+    let parsed = ParsedFile::parse(bytes.as_slice()).unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.operations().next().unwrap();
+    for (name, expected) in [
+        ("index", "0:index"),
+        ("i64", "4096:i64"),
+        ("negative", "-1:i64"),
+        ("boolean_width", "1:i1"),
+    ] {
+        assert!(matches!(
+            document.attribute_value(document.attribute_id(operation, name).unwrap()),
+            Some(AttributeValue::Integer(value)) if value == expected
+        ));
+    }
+    assert!(matches!(
+        document.attribute_value(document.attribute_id(operation, "wide").unwrap()),
+        Some(AttributeValue::WideNumber(_))
+    ));
+}
+
+#[test]
 fn unresolved_nested_forward_location_preserves_surrounding_operations() {
     let bytes = br#""before"() : () -> ()
 "nested"() : () -> () loc(callsite(#missing at "caller"(#missing)))

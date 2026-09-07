@@ -1454,9 +1454,8 @@ impl Parser<'_> {
                             | TokenKind::Fused
                     )
                 );
-            let at_enclosing_boundary = !stack.is_empty()
-                && (kind == TokenKind::RBrace
-                    || (kind == TokenKind::Comma && stack.last() == Some(&TokenKind::RParen)));
+            let at_enclosing_boundary = stack.last() == Some(&TokenKind::RParen)
+                && matches!(kind, TokenKind::RBrace | TokenKind::Comma);
             if (stack.len() == 1 && kind == TokenKind::RParen)
                 || at_enclosing_boundary
                 || following_operation

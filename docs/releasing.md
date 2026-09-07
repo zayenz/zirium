@@ -49,11 +49,11 @@ publishing remain user-owned actions.
 
 ## Publish a version
 
-Tag the checked commit and push only that tag. For example, for 0.0.2:
+Tag the checked commit and push only that tag. For example, for 0.0.3:
 
 ```sh
-git tag -a v0.0.2 -m "Zirium 0.0.2"
-git push origin v0.0.2
+git tag -a v0.0.3 -m "Zirium 0.0.3"
+git push origin v0.0.3
 ```
 
 Do not use `git push --tags`. This repository may contain local tags that are
@@ -76,8 +76,8 @@ After approving the deployment, query the Rust package and install the Python
 package from their registries:
 
 ```sh
-cargo info zirium@0.0.2
-uv run --no-project --isolated --with zirium==0.0.2 python -c \
+cargo info zirium@0.0.3
+uv run --no-project --isolated --with zirium==0.0.3 python -c \
   'import zirium; assert zirium.parse_text("\"test\"() : () -> ()")'
 ```
 
@@ -93,7 +93,7 @@ commit it to `main`, then run the updated workflow against the existing tag.
 Select only the registry whose upload has not succeeded:
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v0.0.2 -f registry=pypi
+gh workflow run release.yml --ref main -f tag=v0.0.3 -f registry=pypi
 ```
 
 Use `registry=crates-io` for a Rust-only retry or `registry=both` if neither

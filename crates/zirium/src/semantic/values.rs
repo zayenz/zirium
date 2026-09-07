@@ -891,11 +891,11 @@ fn resolve_attribute(
         return Ok(AttributeValue::Type(ty));
     }
     let literal = spelling.split(':').next().unwrap_or(spelling).trim();
-    if is_valid_wide_number(spelling) {
-        return Ok(AttributeValue::WideNumber(Arc::from(spelling.as_bytes())));
-    }
     if literal.parse::<i128>().is_ok() {
         return Ok(AttributeValue::Integer(compact(spelling)));
+    }
+    if is_valid_wide_number(spelling) {
+        return Ok(AttributeValue::WideNumber(Arc::from(spelling.as_bytes())));
     }
     if literal.parse::<f64>().is_ok() {
         return Ok(AttributeValue::Float(compact(spelling)));
@@ -1176,6 +1176,9 @@ fn fused_parts(value: &str) -> Option<(Option<String>, &str)> {
 
 fn parse_location_detail(value: &str) -> Option<LocationValue> {
     let value = value.trim();
+    if value == "unknown" {
+        return Some(LocationValue::Unknown);
+    }
     if let Some(stripped) = value.strip_prefix('"') {
         let quote_end = stripped.find('"')? + 1;
         let name = value[..=quote_end].to_owned();

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.0.3
+
+Zirium 0.0.3 extends semantic inspection for custom-format MLIR encountered in
+production compiler dumps.
+
+- Parse and lower `loc(unknown)` and fused locations with dictionary metadata.
+- Represent type-suffixed decimal literals as integers when their value fits in
+  `i128`, while retaining genuinely wide literals as wide numbers.
+- Expose indexed array and dictionary elements through Python
+  `SemanticAttribute` handles, including nested typed access and exact child
+  spellings.
+
 ## 0.0.2
 
 Zirium 0.0.2 improves best-effort inspection of real-world textual MLIR. The
