@@ -1926,7 +1926,7 @@ impl Parser<'_> {
                 | TokenKind::Fused
         )
     }
-    fn nth_nontrivia(&self, n: usize) -> Option<TokenKind> {
+    pub(super) fn nth_nontrivia(&self, n: usize) -> Option<TokenKind> {
         self.tokens[self.position..]
             .iter()
             .filter(|token| !matches!(token.kind(), TokenKind::Whitespace | TokenKind::LineComment))

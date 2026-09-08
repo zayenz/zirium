@@ -293,6 +293,40 @@ fn shaped_func_like_operations_own_trailing_locations() {
 }
 
 #[test]
+fn declarative_operations_own_trailing_locations() {
+    let registry = DialectRegistry::proving();
+    for (name, source) in [
+        ("builtin.module", "module @m {} loc(unknown)"),
+        ("func.func", "func.func @f() { func.return } loc(unknown)"),
+        ("func.call", "func.call @f() : () -> () loc(unknown)"),
+        ("arith.constant", "%x = arith.constant 1 : i32 loc(unknown)"),
+        ("arith.addi", "%x = arith.addi %a, %b : i32 loc(unknown)"),
+        ("func.return", "func.return loc(unknown)"),
+        ("cf.br", "cf.br ^next loc(unknown)"),
+        (
+            "cf.cond_br",
+            "cf.cond_br %condition, ^yes, ^no loc(unknown)",
+        ),
+    ] {
+        let parsed = ParsedFile::parse_with_registry(source.as_bytes(), registry).unwrap();
+        assert!(parsed.syntax().diagnostics().is_empty(), "{name}");
+        let operation = parsed.syntax().file().operations().next().unwrap();
+        assert!(operation.trailing_location().is_some(), "{name}");
+    }
+
+    let source = b"module @outer { module @inner {} loc(#loc1) }\n#loc1 = loc(unknown)";
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), registry).unwrap();
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, registry);
+    assert!(lowered.diagnostics.is_empty());
+    let document = lowered.document.unwrap();
+    let inner = document
+        .operations()
+        .find(|operation| document.operation_symbol_name(*operation).as_deref() == Some("inner"))
+        .unwrap();
+    assert_eq!(document.operation_location(inner), Some(Some("loc(#loc1)")));
+}
+
+#[test]
 fn shaped_operations_use_header_syntax_boundaries() {
     let registry = DialectRegistry::with_operation_shapes(&[
         ("vendor.function", OperationShape::FuncLike),

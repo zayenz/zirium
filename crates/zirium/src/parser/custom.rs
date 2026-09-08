@@ -39,12 +39,7 @@ impl DialectParser<'_, '_> {
                     self.parser.diagnostic();
                     good = false;
                 }
-                self.parser.builder.complete_with_error(
-                    self.marker,
-                    self.descriptor.syntax_kind,
-                    !good,
-                )?;
-                Ok(())
+                self.complete_operation(good)
             }
             AssemblyProgram::Function => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
@@ -82,12 +77,7 @@ impl DialectParser<'_, '_> {
                 if self.parser.at(TokenKind::LBrace) {
                     self.parser.region()?;
                 }
-                self.parser.builder.complete_with_error(
-                    self.marker,
-                    self.descriptor.syntax_kind,
-                    !good,
-                )?;
-                Ok(())
+                self.complete_operation(good)
             }
             AssemblyProgram::Call => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
@@ -103,12 +93,7 @@ impl DialectParser<'_, '_> {
                 good &= self.parser.expect(TokenKind::Colon)?;
                 self.parser.trivia()?;
                 self.parser.function_type()?;
-                self.parser.builder.complete_with_error(
-                    self.marker,
-                    self.descriptor.syntax_kind,
-                    !good,
-                )?;
-                Ok(())
+                self.complete_operation(good)
             }
             AssemblyProgram::ConditionalBranch => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
@@ -132,12 +117,7 @@ impl DialectParser<'_, '_> {
                 if self.parser.at(TokenKind::LBrace) {
                     self.parser.attribute_dict()?;
                 }
-                self.parser.builder.complete_with_error(
-                    self.marker,
-                    self.descriptor.syntax_kind,
-                    !good,
-                )?;
-                Ok(())
+                self.complete_operation(good)
             }
             AssemblyProgram::TypedAttribute => self.parse_zero_operand_constant(),
             AssemblyProgram::BinaryOperands => {
@@ -183,12 +163,7 @@ impl DialectParser<'_, '_> {
                 good &= self.parser.expect(TokenKind::Colon)?;
                 self.parser.trivia()?;
                 good &= self.parser.type_syntax(0)?;
-                self.parser.builder.complete_with_error(
-                    self.marker,
-                    self.descriptor.syntax_kind,
-                    !good,
-                )?;
-                Ok(())
+                self.complete_operation(good)
             }
             AssemblyProgram::OptionalTypedOperands => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
@@ -226,12 +201,7 @@ impl DialectParser<'_, '_> {
                     self.parser.diagnostic();
                     good = false;
                 }
-                self.parser.builder.complete_with_error(
-                    self.marker,
-                    self.descriptor.syntax_kind,
-                    !good,
-                )?;
-                Ok(())
+                self.complete_operation(good)
             }
             AssemblyProgram::TypedSuccessor => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
@@ -255,12 +225,7 @@ impl DialectParser<'_, '_> {
                 if self.parser.at(TokenKind::LBrace) {
                     self.parser.attribute_dict()?;
                 }
-                self.parser.builder.complete_with_error(
-                    self.marker,
-                    self.descriptor.syntax_kind,
-                    !good,
-                )?;
-                Ok(())
+                self.complete_operation(good)
             }
         }
     }
@@ -312,6 +277,21 @@ impl DialectParser<'_, '_> {
         self.parser.trivia()?;
         let type_good = self.parser.type_syntax(0)?;
         good &= type_good;
+        self.complete_operation(good)
+    }
+
+    fn complete_operation(&mut self, mut good: bool) -> Result<(), CompactError> {
+        if self.parser.nth_nontrivia(0) == Some(TokenKind::Loc) {
+            self.parser.trivia()?;
+            let location = self.parser.builder.start();
+            let location_good = self.parser.location_attribute()?;
+            good &= location_good;
+            self.parser.builder.complete_with_error(
+                location,
+                SyntaxKind::TrailingLocation,
+                !location_good,
+            )?;
+        }
         self.parser
             .builder
             .complete_with_error(self.marker, self.descriptor.syntax_kind, !good)?;
