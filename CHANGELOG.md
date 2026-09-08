@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.0.7
+
+Zirium 0.0.7 adds shared registry configuration, an initial StableHLO preset,
+and consistent handling for quoted symbols and aliased attribute values.
 
 - Add a bundled `stablehlo` registry preset, available by name and through the
   JSON configuration's optional `presets` field. The initial subset parses and
@@ -17,6 +20,9 @@
   registries containing `builtin.module`; remove the CLI's source rewrite.
 - Reject CLI semantic lowering errors even when an unknown custom sibling
   requires best-effort recovery.
+- Resolve quoted and nested symbol paths consistently in lookup, diagnostics,
+  closure queries, and output.
+- Preserve exact or canonical element spellings through attribute aliases.
 - Expose dense-array element spellings in Python, accept general mappings for
   operation shapes, and report file-print validation failures as `ValueError`.
 
