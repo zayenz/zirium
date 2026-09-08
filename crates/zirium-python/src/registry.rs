@@ -1,4 +1,6 @@
 use super::*;
+use pyo3::types::{PyDict, PyMapping, PyMappingMethods, PyTuple};
+use zirium::dialect::{RegistryConfig, RegistryConfigError};
 
 #[derive(Clone)]
 pub(super) enum RegistryKind {
@@ -48,6 +50,59 @@ impl OperationShape {
 #[pymethods]
 impl DialectRegistryHandle {
     #[staticmethod]
+    #[pyo3(signature = (path, *additional_paths))]
+    fn from_file(
+        path: PathBuf,
+        additional_paths: &Bound<'_, PyTuple>,
+        py: Python<'_>,
+    ) -> PyResult<Self> {
+        let mut paths = vec![path];
+        paths.extend(additional_paths.extract::<Vec<PathBuf>>()?);
+        py.detach(move || {
+            let registry =
+                DialectRegistry::from_config_files(paths).map_err(|error| match error {
+                    RegistryConfigError::Io { .. } => PyIOError::new_err(error.to_string()),
+                    _ => PyValueError::new_err(error.to_string()),
+                })?;
+            Ok(Self {
+                kind: RegistryKind::Declarative(Arc::new(registry)),
+            })
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (config, *additional_configs))]
+    fn from_config(
+        config: &Bound<'_, PyAny>,
+        additional_configs: &Bound<'_, PyTuple>,
+        py: Python<'_>,
+    ) -> PyResult<Self> {
+        let model_type = py.import("zirium.config")?.getattr("RegistryConfig")?;
+        let dumps = py.import("json")?.getattr("dumps")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("allow_nan", false)?;
+        let mut json_configs = Vec::new();
+        for config in std::iter::once(config.clone()).chain(additional_configs.iter()) {
+            let config = if config.is_instance(&model_type)? {
+                config.call_method0("model_dump")?
+            } else {
+                config
+            };
+            json_configs.push(dumps.call((config,), Some(&kwargs))?.extract::<String>()?);
+        }
+        py.detach(move || {
+            let configs = json_configs
+                .iter()
+                .map(|json| RegistryConfig::from_json(json).map_err(py_error))
+                .collect::<PyResult<Vec<_>>>()?;
+            let registry = RegistryConfig::build_many(&configs).map_err(py_error)?;
+            Ok(Self {
+                kind: RegistryKind::Declarative(Arc::new(registry)),
+            })
+        })
+    }
+
+    #[staticmethod]
     fn empty() -> Self {
         Self {
             kind: RegistryKind::Empty,
@@ -78,9 +133,10 @@ impl DialectRegistryHandle {
     }
 
     #[staticmethod]
-    fn with_operation_shapes(
-        operation_shapes: HashMap<String, PyRef<'_, OperationShape>>,
-    ) -> PyResult<Self> {
+    fn with_operation_shapes(operation_shapes: &Bound<'_, PyMapping>) -> PyResult<Self> {
+        let operation_shapes = operation_shapes
+            .items()?
+            .extract::<Vec<(String, PyRef<'_, OperationShape>)>>()?;
         let owned = operation_shapes
             .iter()
             .map(|(name, shape)| (name.as_str(), shape.shape))
@@ -91,10 +147,10 @@ impl DialectRegistryHandle {
         })
     }
 
-    fn extend_operation_shapes(
-        &self,
-        operation_shapes: HashMap<String, PyRef<'_, OperationShape>>,
-    ) -> PyResult<Self> {
+    fn extend_operation_shapes(&self, operation_shapes: &Bound<'_, PyMapping>) -> PyResult<Self> {
+        let operation_shapes = operation_shapes
+            .items()?
+            .extract::<Vec<(String, PyRef<'_, OperationShape>)>>()?;
         let owned = operation_shapes
             .iter()
             .map(|(name, shape)| (name.as_str(), shape.shape))

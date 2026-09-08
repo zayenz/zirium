@@ -298,10 +298,10 @@ def test_retention_diagnostics_completeness_and_incomplete_preflight(tmp_path: P
         best_effort.document.canonical_bytes()
     output = tmp_path / "invalid.mlir"
     output.write_bytes(b"keep me")
-    with pytest.raises(OSError, match="incomplete"):
+    with pytest.raises(ValueError, match="incomplete"):
         best_effort.document.write_canonical(output)
     assert output.read_bytes() == b"keep me"
-    with pytest.raises(OSError, match="incomplete"):
+    with pytest.raises(ValueError, match="incomplete"):
         best_effort.document.write_custom(output)
     assert output.read_bytes() == b"keep me"
 
@@ -631,3 +631,50 @@ def test_registered_operation_shapes_lower_and_bind_function_arguments():
     assert ("callee", '@"quoted symbol"') in call.attribute_snapshot()
     unknown = document.operation_table("vendor.unregistered").operation(0)
     assert unknown.is_unparsed
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '%x = "arith.addi"() : () -> i32',
+        '%x = "arith.constant"() {value = 7 : i32} : () -> i32',
+        '%x = "arith.constant"() {value = 7} : () -> i32 loc("a":1:2)',
+        '"func.return"() <{tag = "keep"}> : () -> ()',
+        '"func.return"() ({"test.child"() : () -> ()}) : () -> ()',
+        '"builtin.module"() ({}) {sym_name = "named"} : () -> ()',
+    ],
+)
+def test_custom_printing_falls_back_without_panics_or_data_loss(source: str):
+    registry = zirium.DialectRegistry.proving()
+    document = zirium.parse_text(source, registry=registry).lower_strict().document
+    assert document is not None
+    printed = document.custom_bytes()
+    reparsed = zirium.parse_bytes(printed, registry=registry)
+    assert reparsed.diagnostics == []
+    restored = reparsed.lower_strict().document
+    assert restored is not None
+    assert document.structurally_equal(restored)
+
+
+@pytest.mark.parametrize(
+    ("payload", "spellings"),
+    [
+        ("i64: 1, -2", ["1", "-2"]),
+        ("i1: true, false", ["true", "false"]),
+        ("f64: 1.5, -2.0", ["1.5", "-2.0"]),
+    ],
+)
+def test_dense_array_element_spellings(payload: str, spellings: list[str]):
+    document = (
+        zirium.parse_text(f'"test"() {{a = array<{payload}>}} : () -> ()')
+        .lower_strict()
+        .document
+    )
+    assert document is not None
+    attribute = document.operation_table().operation(0).attribute_by_name("a")
+    assert attribute is not None
+    for index, spelling in enumerate(spellings):
+        element = attribute.element(index)
+        assert element is not None
+        assert element.spelling == spelling
+    assert attribute.element(len(spellings)) is None

@@ -45,6 +45,13 @@ fn py_preserve_error(error: zirium::printer::PreserveError) -> PyErr {
     }
 }
 
+fn py_print_error(error: zirium::printer::PrintError) -> PyErr {
+    match error {
+        zirium::printer::PrintError::Io(error) => PyIOError::new_err(error.to_string()),
+        error => py_error(error),
+    }
+}
+
 fn range_tuple(range: Option<TextRange>) -> Option<(u32, u32)> {
     range.map(|range| (range.start(), range.end()))
 }

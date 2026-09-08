@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Zayenz" }]
 requires-python = ">=3.11,<3.15"
+dependencies = ["pydantic>=2.12,<3"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

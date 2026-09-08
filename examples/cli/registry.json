@@ -1,0 +1,14 @@
+{
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return",
+    "arith.constant",
+    "arith.addi"
+  ],
+  "operation_shapes": [
+    {"name": "vendor.function", "shape": "func_like"},
+    {"name": "vendor.invoke", "shape": "call_like"}
+  ]
+}

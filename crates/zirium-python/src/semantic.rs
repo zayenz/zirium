@@ -391,7 +391,7 @@ impl Document {
                     DialectPrintMode::PreferCustom,
                     registry.registry(),
                 )
-                .map_err(|error| PyIOError::new_err(error.to_string()))
+                .map_err(py_print_error)
         })
     }
 
@@ -433,7 +433,7 @@ impl Document {
                         PrintLayout::Pretty
                     },
                 )
-                .map_err(|error| PyIOError::new_err(error.to_string()))
+                .map_err(py_print_error)
         })
     }
 
@@ -1182,18 +1182,29 @@ impl SemanticAttribute {
         let Some((name, value)) = value else {
             return Ok(None);
         };
-        let spelling =
-            match self.with_value(|value| matches!(value, AttributeValue::Dictionary(_)))? {
-                true => split_attribute_elements(&parent_spelling, '{', '}').and_then(|entries| {
-                    entries.into_iter().find_map(|entry| {
-                        let (key, value) = entry.split_once('=')?;
-                        (key.trim() == name).then(|| value.trim().to_owned())
-                    })
-                }),
-                false => split_attribute_elements(&parent_spelling, '[', ']')
-                    .and_then(|elements| elements.get(index).map(|value| (*value).to_owned())),
-            }
-            .unwrap_or_default();
+        let spelling = match self.with_value(|value| {
+            (
+                matches!(value, AttributeValue::Dictionary(_)),
+                matches!(value, AttributeValue::DenseArray { .. }),
+            )
+        })? {
+            (true, _) => split_attribute_elements(&parent_spelling, '{', '}').and_then(|entries| {
+                entries.into_iter().find_map(|entry| {
+                    let (key, value) = entry.split_once('=')?;
+                    (key.trim() == name).then(|| value.trim().to_owned())
+                })
+            }),
+            (_, true) => match &value {
+                AttributeValue::Boolean(value) => Some(value.to_string()),
+                AttributeValue::Integer(value) | AttributeValue::Float(value) => {
+                    Some(value.clone())
+                }
+                _ => None,
+            },
+            _ => split_attribute_elements(&parent_spelling, '[', ']')
+                .and_then(|elements| elements.get(index).map(|value| (*value).to_owned())),
+        }
+        .unwrap_or_default();
         Ok(Some(SemanticAttribute {
             state: self.state.clone(),
             id: None,

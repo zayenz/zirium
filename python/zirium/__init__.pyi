@@ -3,7 +3,14 @@
 from collections.abc import Mapping
 from os import PathLike
 from types import TracebackType
-from typing import Literal, Self, TypeAlias
+from typing import Any, Literal, Self, TypeAlias
+
+from .config import (
+    OperationShapeConfig as OperationShapeConfig,
+)
+from .config import (
+    RegistryConfig as RegistryConfig,
+)
 
 _TextRange: TypeAlias = tuple[int, int]
 _Path: TypeAlias = str | PathLike[str]
@@ -54,6 +61,13 @@ class OperationShape:
 class DialectRegistry:
     """Dialect syntax and semantic rules retained through parse and lower."""
 
+    @staticmethod
+    def from_config(
+        config: RegistryConfig | dict[str, Any],
+        *additional_configs: RegistryConfig | dict[str, Any],
+    ) -> DialectRegistry: ...
+    @staticmethod
+    def from_file(path: _Path, *additional_paths: _Path) -> DialectRegistry: ...
     @staticmethod
     def empty() -> DialectRegistry: ...
     @staticmethod

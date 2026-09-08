@@ -114,6 +114,9 @@ Generic quoted operations are handled without a dialect registry. Unknown dialec
 
 Registered custom syntax is currently a proving surface rather than broad MLIR dialect coverage. The built-in proving registry covers a fixed subset of Builtin, Func, Arith, and CF operations. A declarative registry can select from that same fixed set. Zirium does not load LLVM dialect definitions, interpret arbitrary ODS/TableGen files, or run Python callbacks while parsing.
 
+The [custom-format guide](docs/custom-formats.md) explains operation shapes,
+registry ownership, and the differences between Rust, Python, and the binary.
+
 See [compatibility and local wheel checks](https://github.com/zayenz/zirium/blob/main/docs/compatibility.md) for the exact toolchain and CPython matrix. The [corpus notes](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/README.md) explain how syntax compatibility is tied to `llvmorg-22.1.0`.
 
 ## Repository layout

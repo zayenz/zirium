@@ -981,3 +981,152 @@ fn recovered_unknown_sibling_does_not_block_empty_or_understood_selections() {
     assert!(text.contains("vendor.known"), "{text}");
     assert!(!text.contains("vendor.unknown"), "{text}");
 }
+
+#[test]
+fn named_nested_and_commented_module_shorthand_uses_the_parser() {
+    let source = "module @outer attributes {tag = \"keep\"} {\n module // nested module\n @inner {\n  \"test.op\"() : () -> ()\n }\n}\n";
+    let output = run_stdin(r#"select(op("builtin.module")) | count"#, source);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"2\n");
+    let printed = run_stdin(r#"select(op("builtin.module")) | root"#, source);
+    assert!(
+        printed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    let restored = run_stdin(
+        r#"select(op("test.op")) | count"#,
+        std::str::from_utf8(&printed.stdout).unwrap(),
+    );
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    assert_eq!(restored.stdout, b"1\n");
+}
+
+#[test]
+fn unknown_custom_sibling_does_not_hide_semantic_errors() {
+    let source =
+        "module {\n  \"test.use\"(%missing) : (i32) -> ()\n  vendor.unknown opaque<payload>\n}\n";
+    let output = run_stdin(r#"select(op("test.use")) | count"#, source);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("could not lower stdin"), "{diagnostic}");
+    assert!(diagnostic.contains("missing"), "{diagnostic}");
+}
+
+#[test]
+fn registry_file_drives_cli_lowering_and_round_trip_output() {
+    use zirium::{
+        dialect::DialectRegistry,
+        parser::ParsedFile,
+        semantic::{LoweringMode, lower_with_dialect_registry},
+    };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/cli");
+    let registry_path = root.join("registry.json");
+    let input = root.join("registered-shapes.mlir");
+    let registry = DialectRegistry::from_config_file(&registry_path).unwrap();
+    let source = fs::read(&input).unwrap();
+    let parsed = ParsedFile::parse_with_registry(source, &registry).unwrap();
+    let original = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry)
+        .document
+        .unwrap();
+    for (query, expected) in [
+        (
+            r#"select(op("vendor.function")) | count"#,
+            Some(b"1\n".as_slice()),
+        ),
+        (r#"select(op("vendor.invoke")) | root"#, None),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .arg("--registry")
+            .arg(&registry_path)
+            .arg("--registry")
+            .arg(&registry_path)
+            .arg(query)
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if let Some(expected) = expected {
+            assert_eq!(output.stdout, expected);
+        } else {
+            let parsed = ParsedFile::parse_with_registry(output.stdout, &registry).unwrap();
+            assert!(parsed.syntax().diagnostics().is_empty());
+            let restored = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry)
+                .document
+                .unwrap();
+            assert!(original.structurally_eq(&restored));
+        }
+    }
+    let program = temporary_path("registered-query", "zirium");
+    fs::write(&program, r#"select(op("vendor.invoke")) | count"#).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("-f")
+        .arg(&program)
+        .arg("--registry")
+        .arg(&registry_path)
+        .arg(&input)
+        .output()
+        .unwrap();
+    fs::remove_file(program).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"1\n");
+    let closure = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--registry")
+        .arg(&registry_path)
+        .arg(r#"select(op("vendor.invoke")) | closure"#)
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(!closure.status.success());
+    assert!(closure.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&closure.stderr).contains("reference semantics"));
+}
+
+#[test]
+fn invalid_registry_fails_without_waiting_for_mlir_stdin() {
+    let registry = temporary_path("invalid-registry", "json");
+    fs::write(
+        &registry,
+        r#"{"builtins":[],"operation_shapes":[],"typo":true}"#,
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--registry")
+        .arg(&registry)
+        .arg(r#"select(op("a.b")) | count"#)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            panic!("read stdin before rejecting registry");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    fs::remove_file(registry).unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown field"));
+}

@@ -204,6 +204,8 @@ impl ParsedFile {
     ///
     /// Ranges refer to this file's original bytes. The returned file preserves
     /// this file's complete [`ParseLimits`].
+    /// This method reparses with the empty registry. For registered custom
+    /// syntax, use [`Self::apply_text_edits_with_registry`] with the original registry.
     ///
     /// # Errors
     ///

@@ -2,6 +2,9 @@
 
 use std::sync::OnceLock;
 
+mod config;
+pub use config::{OperationShapeConfig, RegistryConfig, RegistryConfigError};
+
 use crate::{
     SyntaxKind,
     parser::DialectParser,
@@ -185,6 +188,33 @@ impl AssemblyProgram {
     }
 
     pub(crate) fn print(self, document: &Document, operation: OperationId) -> Option<String> {
+        // Generic input need not satisfy a registered operation's schema. Only
+        // use assembly when it can represent all of the operation's structure.
+        let descriptor = PROVING_OPERATIONS
+            .iter()
+            .find(|descriptor| descriptor.assembly == Some(self))?;
+        if !descriptor
+            .schema
+            .operands
+            .accepts(document.operands(operation)?.len())
+            || !descriptor
+                .schema
+                .results
+                .accepts(document.result_types(operation)?.len())
+            || document.properties(operation)?.next().is_some()
+            || document.operation_location(operation)?.is_some()
+            || (!matches!(self, Self::Module | Self::Function)
+                && !document.operation_regions(operation)?.is_empty())
+            || (!matches!(self, Self::TypedSuccessor | Self::ConditionalBranch)
+                && !document.successors(operation)?.is_empty())
+        {
+            return None;
+        }
+        // Return assembly also works in generic containers without a known
+        // function signature; its contextual verifier is not a print precondition.
+        if self != Self::OptionalTypedOperands {
+            self.verify(document, operation).ok()?;
+        }
         match self {
             Self::Module => print_module(document, operation),
             Self::Function => print_function(document, operation),
@@ -292,6 +322,8 @@ pub struct AttributeDescriptor {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DeclarativeRegistryError {
+    InvalidOperationName(String),
+    ConflictingShape(String),
     UnknownOperation(String),
     DuplicateOperation(String),
     EmptyOperation,
@@ -302,6 +334,12 @@ pub enum DeclarativeRegistryError {
 impl std::fmt::Display for DeclarativeRegistryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ConflictingShape(name) => {
+                write!(formatter, "conflicting operation shapes for: {name}")
+            }
+            Self::InvalidOperationName(name) => {
+                write!(formatter, "invalid custom operation name: {name:?}")
+            }
             Self::UnknownOperation(name) => {
                 write!(formatter, "unknown declarative operation: {name}")
             }
@@ -321,7 +359,8 @@ impl std::fmt::Display for DeclarativeRegistryError {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OperationShape {
     FuncLike,
     CallLike,
@@ -578,6 +617,17 @@ impl DialectRegistry {
             if name.is_empty() {
                 return Err(DeclarativeRegistryError::EmptyOperation);
             }
+            let source = crate::source::Source::new(name.as_bytes())
+                .map_err(|_| DeclarativeRegistryError::InvalidOperationName(name.to_owned()))?;
+            let lexed = crate::lexer::lex(&source);
+            if !lexed.diagnostics().is_empty()
+                || lexed.tokens().len() != 2
+                || lexed.tokens()[0].kind() != crate::lexer::TokenKind::BareIdentifier
+            {
+                return Err(DeclarativeRegistryError::InvalidOperationName(
+                    name.to_owned(),
+                ));
+            }
             if self.operation(name).is_some() || (name == "module" && self.module_alias) {
                 return Err(DeclarativeRegistryError::RegisteredOperation(
                     name.to_owned(),
@@ -677,7 +727,7 @@ impl DialectRegistry {
             types: &[],
             attributes: &[],
             operation_shapes: None,
-            module_alias: false,
+            module_alias: operation_names.contains(&"builtin.module"),
         })
     }
 
@@ -1042,6 +1092,11 @@ fn print_arith_constant(document: &Document, operation: OperationId) -> Option<S
     let value = document
         .attributes(operation)?
         .find_map(|(name, value)| (name == "value").then_some(value))?;
+    // The proving assembly stores an untyped scalar. Keep typed generic
+    // attributes generic instead of emitting a second type annotation.
+    if value.contains(':') {
+        return None;
+    }
     let ty = document
         .result_types(operation)?
         .first()
@@ -1181,6 +1236,9 @@ fn print_module(document: &Document, operation: OperationId) -> Option<String> {
     let symbol = document
         .attributes(operation)?
         .find_map(|(name, value)| (name == "sym_name").then_some(value));
+    if symbol.is_some_and(|symbol| !symbol.starts_with('@')) {
+        return None;
+    }
     let dictionary = print_attribute_dictionary(document, operation, &["sym_name"])?;
     Some(format!(
         "builtin.module{}{} ",
@@ -1197,6 +1255,9 @@ fn print_function(document: &Document, operation: OperationId) -> Option<String>
     let symbol = document
         .attributes(operation)?
         .find_map(|(name, value)| (name == "sym_name").then_some(value))?;
+    if !symbol.starts_with('@') {
+        return None;
+    }
     let signature = document
         .attributes(operation)?
         .find_map(|(name, value)| (name == "function_type").then_some(value))?;
@@ -1500,7 +1561,11 @@ static CORE_OPERATIONS: &[OperationDescriptor] =
     &[BUILTIN_MODULE, FUNC_FUNC, FUNC_RETURN, FUNC_CALL];
 static DECLARATIVE_OPERATION_SETS: [OnceLock<Box<[OperationDescriptor]>>; 256] =
     [const { OnceLock::new() }; 256];
-static PROVING_REGISTRY: DialectRegistry = DialectRegistry::new(PROVING_OPERATIONS, &[], &[]);
+static PROVING_REGISTRY: DialectRegistry = {
+    let mut registry = DialectRegistry::new(PROVING_OPERATIONS, &[], &[]);
+    registry.module_alias = true;
+    registry
+};
 static CORE_REGISTRY: DialectRegistry = DialectRegistry {
     operations: CORE_OPERATIONS,
     types: &[],

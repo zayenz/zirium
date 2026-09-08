@@ -21,24 +21,66 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut arguments = env::args().skip(1);
-    let first_argument = arguments
-        .next()
-        .ok_or_else(|| "missing query; expected `select(op(\"name\"))`".to_owned())?;
-    let query_text = if first_argument == "-f" || first_argument == "--program-file" {
-        let path = arguments
-            .next()
-            .ok_or_else(|| format!("missing program file after `{first_argument}`"))?;
-        let bytes = fs::read(&path)
-            .map_err(|error| format!("could not read program file {path}: {error}"))?;
-        String::from_utf8(bytes)
-            .map_err(|_| format!("program file {path} is not valid UTF-8"))?
+    let mut registry_paths = Vec::new();
+    let mut program_path = None;
+    let mut inline_query = None;
+    let mut paths = Vec::new();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--registry" => {
+                let path = arguments.next().ok_or("missing path after --registry")?;
+                if path == "-" {
+                    return Err(
+                        "--registry requires a file path; stdin is reserved for MLIR".into(),
+                    );
+                }
+                registry_paths.push(path);
+            }
+            "-f" | "--program-file" => {
+                if program_path.is_some() {
+                    return Err("program file may only be supplied once".into());
+                }
+                program_path = Some(
+                    arguments
+                        .next()
+                        .ok_or("missing program file after -f/--program-file")?,
+                );
+            }
+            "--" => {
+                if program_path.is_none() {
+                    inline_query = arguments.next();
+                }
+                paths.extend(arguments);
+                break;
+            }
+            option if option.starts_with('-') => return Err(format!("unknown option: {option}")),
+            _ => {
+                if program_path.is_some() {
+                    paths.push(argument);
+                } else {
+                    inline_query = Some(argument);
+                }
+                paths.extend(arguments);
+                break;
+            }
+        }
+    }
+    let query_text = if let Some(path) = program_path {
+        fs::read_to_string(&path)
+            .map_err(|error| format!("could not read program file {path}: {error}"))?
             .trim()
             .to_owned()
     } else {
-        first_argument
+        inline_query.ok_or_else(|| "missing query; expected `select(op(\"name\"))`".to_owned())?
     };
     let query = Query::parse(&query_text).map_err(|error| error.to_string())?;
-    let paths = arguments.collect::<Vec<_>>();
+    let registry = if registry_paths.is_empty() {
+        DialectRegistry::proving().clone()
+    } else {
+        DialectRegistry::from_config_files(&registry_paths)
+            .map_err(|error| format!("could not load registry: {error}"))?
+    };
+    let registry = &registry;
     let inputs = if paths.is_empty() {
         let mut bytes = Vec::new();
         io::stdin()
@@ -55,11 +97,9 @@ fn run() -> Result<(), String> {
             })
             .collect::<Result<Vec<_>, _>>()?
     };
-    let registry = DialectRegistry::proving();
     let mut answers = Vec::new();
     let mut scalar_output = false;
     for (name, bytes) in inputs {
-        let (bytes, insertion) = normalize_module_shorthand(bytes);
         let parsed = ParsedFile::parse_with_registry(bytes, registry)
             .map_err(|error| format!("could not parse {name}: {error}"))?;
         let recovered_unknown_custom =
@@ -73,17 +113,22 @@ fn run() -> Result<(), String> {
         {
             let mut diagnostics = Vec::new();
             diagnostics.extend(parsed.lexer_diagnostics().iter().map(|diagnostic| {
-                let range = original_range(
-                    diagnostic.range().start(),
-                    diagnostic.range().end(),
-                    insertion,
-                );
-                format!("{:?} at bytes {}..{}", diagnostic.kind(), range.0, range.1)
+                let range = diagnostic.range();
+                format!(
+                    "{:?} at bytes {}..{}",
+                    diagnostic.kind(),
+                    range.start(),
+                    range.end()
+                )
             }));
             diagnostics.extend(parsed.syntax().diagnostics().iter().map(|diagnostic| {
                 let range = diagnostic.range();
-                let range = original_range(range.start(), range.end(), insertion);
-                format!("{:?} at bytes {}..{}", diagnostic.kind(), range.0, range.1)
+                format!(
+                    "{:?} at bytes {}..{}",
+                    diagnostic.kind(),
+                    range.start(),
+                    range.end()
+                )
             }));
             return Err(format!(
                 "could not parse {name}: {}",
@@ -100,30 +145,32 @@ fn run() -> Result<(), String> {
             RetentionProfile::Hybrid,
             registry,
         );
-        let mut document = lowered.document.ok_or_else(|| {
-            let details = lowered
-                .diagnostics
-                .iter()
-                .enumerate()
-                .map(|(index, diagnostic)| {
-                    let range =
-                        original_range(diagnostic.range.start(), diagnostic.range.end(), insertion);
-                    format!(
-                        "diagnostic #{} at bytes {}..{}: {}",
-                        index + 1,
-                        range.0,
-                        range.1,
-                        diagnostic.message
-                    )
-                })
-                .collect::<Vec<_>>();
-            let detail = if details.is_empty() {
-                "strict lowering failed".to_owned()
-            } else {
-                details.join("; ")
-            };
-            format!("could not lower {name}: {detail}")
-        })?;
+        let mut document = lowered
+            .document
+            .filter(|_| lowered.diagnostics.is_empty())
+            .ok_or_else(|| {
+                let details = lowered
+                    .diagnostics
+                    .iter()
+                    .enumerate()
+                    .map(|(index, diagnostic)| {
+                        let range = diagnostic.range;
+                        format!(
+                            "diagnostic #{} at bytes {}..{}: {}",
+                            index + 1,
+                            range.start(),
+                            range.end(),
+                            diagnostic.message
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let detail = if details.is_empty() {
+                    "strict lowering failed".to_owned()
+                } else {
+                    details.join("; ")
+                };
+                format!("could not lower {name}: {detail}")
+            })?;
         let result = query
             .evaluate(&mut document, registry)
             .map_err(|error| format!("could not evaluate {name}: {error}"))?;
@@ -165,49 +212,4 @@ fn run() -> Result<(), String> {
         output.write_all(&answer).map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-fn normalize_module_shorthand(mut bytes: Vec<u8>) -> (Vec<u8>, Option<(usize, usize)>) {
-    let mut position = 0;
-    loop {
-        while bytes.get(position).is_some_and(u8::is_ascii_whitespace) {
-            position += 1;
-        }
-        if bytes.get(position..position + 2) == Some(b"//") {
-            position = bytes[position..]
-                .iter()
-                .position(|&byte| byte == b'\n')
-                .map_or(bytes.len(), |offset| position + offset + 1);
-            continue;
-        }
-        break;
-    }
-    let end = position + b"module".len();
-    if bytes.get(position..end) != Some(b"module") {
-        return (bytes, None);
-    }
-    let mut brace = end;
-    while bytes.get(brace).is_some_and(u8::is_ascii_whitespace) {
-        brace += 1;
-    }
-    if bytes.get(brace) != Some(&b'{') {
-        return (bytes, None);
-    }
-    const QUALIFIER: &[u8] = b"builtin.";
-    bytes.splice(position..position, QUALIFIER.iter().copied());
-    (bytes, Some((position, QUALIFIER.len())))
-}
-
-fn original_range(start: u32, end: u32, insertion: Option<(usize, usize)>) -> (u32, u32) {
-    let Some((position, length)) = insertion else {
-        return (start, end);
-    };
-    let map = |offset: u32| {
-        if offset as usize <= position {
-            offset
-        } else {
-            offset.saturating_sub(length as u32)
-        }
-    };
-    (map(start), map(end))
 }

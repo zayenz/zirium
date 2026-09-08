@@ -35,6 +35,7 @@ from ._zirium import (  # ty: ignore[unresolved-import]
     parse_file,
     parse_text,
 )
+from .config import OperationShapeConfig, RegistryConfig
 
 __all__ = [
     "AttributeSpecHandle",
@@ -46,8 +47,10 @@ __all__ = [
     "LoweringResult",
     "Operation",
     "OperationShape",
+    "OperationShapeConfig",
     "OperationSpec",
     "OperationTable",
+    "RegistryConfig",
     "ResourceLimitError",
     "SemanticAttribute",
     "SemanticBlock",

@@ -1,4 +1,6 @@
+from collections import UserDict
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 import zirium
@@ -58,16 +60,20 @@ def test_registry_selects_custom_syntax_and_is_owned_by_file():
     assert generic.diagnostics
 
 
-def test_core_registry_accepts_ordinary_and_nested_modules_only_when_selected():
+def test_builtin_registries_accept_ordinary_and_nested_modules():
     source = b"module { module { } }"
     parsed = zirium.parse_bytes(source, registry=zirium.DialectRegistry.core())
     assert parsed.diagnostics == []
     assert parsed.operation_count == 2
 
     assert zirium.parse_bytes(source).diagnostics
-    assert zirium.parse_bytes(
-        source, registry=zirium.DialectRegistry.proving()
-    ).diagnostics
+    for registry in [
+        zirium.DialectRegistry.proving(),
+        zirium.DialectRegistry.declarative(["builtin.module"]),
+    ]:
+        parsed = zirium.parse_bytes(source, registry=registry)
+        assert parsed.diagnostics == []
+        assert parsed.lower_strict().document is not None
 
 
 def test_declarative_registry_rejects_unknown_and_duplicate_operations():
@@ -81,7 +87,7 @@ def test_declarative_registry_rejects_unknown_and_duplicate_operations():
 
 def test_operation_shape_registry_validates_owned_per_mnemonic_mappings():
     registry = zirium.DialectRegistry.with_operation_shapes(
-        {"vendor.function": zirium.OperationShape.FUNC_LIKE}
+        UserDict({"vendor.function": zirium.OperationShape.FUNC_LIKE})
     )
     assert (
         zirium.parse_text("vendor.function @decl()", registry=registry).diagnostics
@@ -100,7 +106,9 @@ def test_operation_shape_registry_validates_owned_per_mnemonic_mappings():
 def test_operation_shapes_extend_declarative_registries():
     registry = zirium.DialectRegistry.declarative(
         ["arith.constant"]
-    ).extend_operation_shapes({"vendor.function": zirium.OperationShape.FUNC_LIKE})
+    ).extend_operation_shapes(
+        MappingProxyType({"vendor.function": zirium.OperationShape.FUNC_LIKE})
+    )
     source = "%value = arith.constant 7 : i32\nvendor.function @decl()"
     assert zirium.parse_text(source, registry=registry).diagnostics == []
 

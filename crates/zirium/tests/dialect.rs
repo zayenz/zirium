@@ -256,7 +256,7 @@ fn unnamed_module_does_not_adopt_a_nested_function_symbol() {
 }
 
 #[test]
-fn core_registry_accepts_module_alias_without_changing_other_registries() {
+fn builtin_registries_accept_module_alias() {
     assert_eq!(
         DialectRegistry::core()
             .operation_names()
@@ -274,10 +274,18 @@ fn core_registry_accepts_module_alias_without_changing_other_registries() {
     assert_eq!(document.operation_name(outer), Some("builtin.module"));
     assert_eq!(document.statistics().operations, 2);
 
-    for registry in [DialectRegistry::proving(), &DialectRegistry::EMPTY] {
+    let declarative = DialectRegistry::declarative(&["builtin.module"]).unwrap();
+    for registry in [DialectRegistry::proving(), &declarative] {
         let parsed = ParsedFile::parse_with_registry(source, registry).unwrap();
-        assert!(!parsed.syntax().diagnostics().is_empty());
+        assert!(parsed.syntax().diagnostics().is_empty());
+        assert!(
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, registry)
+                .document
+                .is_some()
+        );
     }
+    let empty = ParsedFile::parse_with_registry(source, &DialectRegistry::EMPTY).unwrap();
+    assert!(!empty.syntax().diagnostics().is_empty());
 }
 
 #[test]
@@ -1614,6 +1622,55 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
         assert!(
             std::panic::catch_unwind(|| DialectRegistry::new(operations, &[], &[])).is_err(),
             "inconsistent metadata for {name} was accepted"
+        );
+    }
+}
+
+#[test]
+fn registry_json_validates_records_and_registrations() {
+    use zirium::dialect::RegistryConfig;
+    let config =
+        RegistryConfig::from_json(include_str!("../../../examples/cli/registry.json")).unwrap();
+    let registry = config.build().unwrap();
+    assert_eq!(
+        registry.operation_shape("vendor.function"),
+        Some(OperationShape::FuncLike)
+    );
+    assert!(registry.operation("arith.constant").is_some());
+    assert!(registry.operation("cf.br").is_none());
+    for json in [
+        r#"{}"#,
+        r#"{"builtins": [], "operation_shapes": [], "typo": true}"#,
+        r#"{"builtins": [], "operation_shapes": [{"name": "a.b", "shape": "other"}]}"#,
+        r#"{"builtins": [], "operation_shapes": [{"name": "a.b", "shape": "func_like", "typo": 1}]}"#,
+        r#"{"builtins": null, "operation_shapes": []}"#,
+    ] {
+        assert!(RegistryConfig::from_json(json).is_err(), "{json}");
+    }
+    for json in [
+        r#"{"builtins": ["unknown"], "operation_shapes": []}"#,
+        r#"{"builtins": ["func.func", "func.func"], "operation_shapes": []}"#,
+        r#"{"builtins": ["func.func"], "operation_shapes": [{"name":"func.func", "shape":"func_like"}]}"#,
+        r#"{"builtins": [], "operation_shapes": [{"name":"a.b", "shape":"func_like"}, {"name":"a.b", "shape":"call_like"}]}"#,
+    ] {
+        assert!(
+            RegistryConfig::from_json(json).unwrap().build().is_err(),
+            "{json}"
+        );
+    }
+    for name in [
+        " a.b",
+        "a.b ",
+        "a b",
+        "a.b()",
+        "\"a.b\"",
+        "i32",
+        "a.b\n",
+        "a.b//comment",
+    ] {
+        assert!(
+            DialectRegistry::with_operation_shapes(&[(name, OperationShape::FuncLike)]).is_err(),
+            "{name:?}"
         );
     }
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Load and combine JSON registry files with `zirium --registry FILE` and Python's
+  `DialectRegistry.from_file`. Python's `from_config` accepts JSON-compatible
+  dictionaries or the new Pydantic `RegistryConfig` / `OperationShapeConfig`
+  models. All entry points share Serde deserialization and registry validation.
+
+- Fall back to generic printing when built-in custom assembly cannot preserve
+  operation structure, locations, properties, or supported attribute spellings.
+  Malformed generic arithmetic operations no longer panic in custom printing.
+- Accept named and nested `module` shorthand in proving and declarative
+  registries containing `builtin.module`; remove the CLI's source rewrite.
+- Reject CLI semantic lowering errors even when an unknown custom sibling
+  requires best-effort recovery.
+- Expose dense-array element spellings in Python, accept general mappings for
+  operation shapes, and report file-print validation failures as `ValueError`.
+
 ## 0.0.6
 
 Zirium 0.0.6 raises the minimum supported Rust version to 1.88.
