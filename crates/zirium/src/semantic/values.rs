@@ -1279,7 +1279,7 @@ fn angle_inner<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
 fn bracket_inner(value: &str, open: char, close: char) -> Option<&str> {
     value.trim().strip_prefix(open)?.strip_suffix(close)
 }
-fn split_arrow(value: &str) -> Option<(&str, &str)> {
+pub(super) fn split_arrow(value: &str) -> Option<(&str, &str)> {
     let mut depth = 0i32;
     let mut quoted = false;
     let mut escaped = false;

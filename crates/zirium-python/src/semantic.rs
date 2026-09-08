@@ -567,6 +567,30 @@ impl SemanticOperation {
             .ok_or_else(|| stale("operation"))
     }
     #[getter]
+    fn symbol_name(&self) -> PyResult<Option<String>> {
+        let document = read_document(&self.state)?;
+        document
+            .operation(self.id)
+            .ok_or_else(|| stale("operation"))?;
+        Ok(document.operation_symbol_name(self.id))
+    }
+    #[getter]
+    fn signature(&self) -> PyResult<Option<String>> {
+        let document = read_document(&self.state)?;
+        document
+            .operation(self.id)
+            .ok_or_else(|| stale("operation"))?;
+        Ok(document.operation_signature(self.id))
+    }
+    #[getter]
+    fn callee(&self) -> PyResult<Option<String>> {
+        let document = read_document(&self.state)?;
+        document
+            .operation(self.id)
+            .ok_or_else(|| stale("operation"))?;
+        Ok(document.operation_callee(self.id))
+    }
+    #[getter]
     fn source_range(&self) -> PyResult<Option<(u32, u32)>> {
         let document = read_document(&self.state)?;
         document

@@ -10,6 +10,8 @@
   recovery. The syntax diagnostic and `is_unparsed` identify each recovered op.
 - Compose operation shapes with empty, core, proving, or declarative registries
   through `extend_operation_shapes`.
+- Expose form-independent `symbol_name`, `signature`, and `callee` operation
+  roles in Rust and Python.
 
 ## 0.0.4
 

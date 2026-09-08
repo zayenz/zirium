@@ -102,12 +102,24 @@ fn owned_operation_shapes_lower_neutral_func_and_call_forms() {
         document.attribute_spelling_value(symbol),
         Some("@\"quoted symbol\"")
     );
+    assert_eq!(
+        document.operation_symbol_name(function).as_deref(),
+        Some("quoted symbol")
+    );
+    assert_eq!(
+        document.operation_signature(function).as_deref(),
+        Some("(i32) -> i32")
+    );
     let call = document
         .operations()
         .find(|operation| document.operation_name(*operation) == Some("vendor.invoke"))
         .unwrap();
     assert_eq!(document.operands(call).unwrap().len(), 1);
     assert_eq!(document.result_types(call).unwrap().len(), 1);
+    assert_eq!(
+        document.operation_callee(call).as_deref(),
+        Some("quoted symbol")
+    );
     assert!(
         document
             .operations()

@@ -465,17 +465,7 @@ def test_func_like_generic_and_custom_forms_have_the_same_normalized_identity():
         lowered = zirium.parse_text(source, registry=registry).lower_strict()
         assert lowered.document is not None, lowered.diagnostics
         operation = lowered.document.operation_table("air.Func").operation(0)
-        name = operation.attribute_by_name("sym_name")
-        signature = operation.attribute_by_name(
-            "function_type"
-        ) or operation.attribute_by_name("type")
-        assert name is not None
-        assert signature is not None
-        normalized_name = name.string_value or name.symbol_value
-        inputs, results = (part.strip() for part in signature.spelling.split("->", 1))
-        if results.startswith("(") and results.endswith(")") and "," not in results:
-            results = results[1:-1].strip()
-        return operation.name, normalized_name, f"{inputs} -> {results}"
+        return operation.name, operation.symbol_name, operation.signature
 
     assert (
         identity(generic)
@@ -486,6 +476,26 @@ def test_func_like_generic_and_custom_forms_have_the_same_normalized_identity():
             "(i32) -> i32",
         )
     )
+
+    generic_call = (
+        zirium.parse_text('"air.FunctionCall"() {kCallee = @"a.b"} : () -> ()')
+        .lower_strict()
+        .document
+    )
+    custom_call = (
+        zirium.parse_text(
+            'air.FunctionCall @"a.b"() : () -> ()',
+            registry=zirium.DialectRegistry.with_operation_shapes(
+                {"air.FunctionCall": zirium.OperationShape.CALL_LIKE}
+            ),
+        )
+        .lower_strict()
+        .document
+    )
+    assert generic_call is not None
+    assert custom_call is not None
+    assert generic_call.operation_table().operation(0).callee == "a.b"
+    assert custom_call.operation_table().operation(0).callee == "a.b"
 
 
 def test_stablehlo_operation_survives_equivalent_generic_and_custom_functions():
@@ -510,16 +520,9 @@ def test_stablehlo_operation_survives_equivalent_generic_and_custom_functions():
         assert lowered.document is not None, lowered.diagnostics
         document = lowered.document
         function = document.operation_table("func.func").operation(0)
-        name = function.attribute_by_name("sym_name")
-        signature = function.attribute_by_name("function_type")
-        assert name is not None
-        assert signature is not None
-        inputs, results = (part.strip() for part in signature.spelling.split("->", 1))
-        if results.startswith("(") and results.endswith(")") and "," not in results:
-            results = results[1:-1].strip()
         return (
-            name.string_value or name.symbol_value,
-            f"{inputs} -> {results}",
+            function.symbol_name,
+            function.signature,
             document.operation_table("stablehlo.add").count,
         )
 

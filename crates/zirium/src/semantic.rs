@@ -770,6 +770,51 @@ impl Document {
             .and_then(|op| self.strings.get(op.name as usize))
             .map(String::as_str)
     }
+    /// Returns a decoded symbol name from either generic or custom-form attributes.
+    pub fn operation_symbol_name(&self, id: OperationId) -> Option<String> {
+        self.operation_role_symbol(id, &["sym_name"])
+    }
+    /// Returns a normalized function signature from either generic or custom-form attributes.
+    pub fn operation_signature(&self, id: OperationId) -> Option<String> {
+        let attribute = self
+            .attribute_id(id, "function_type")
+            .or_else(|| self.attribute_id(id, "type"))?;
+        let spelling = self.attribute_spelling_value(attribute)?;
+        let AttributeValue::Type(TypeValue::Function { results, .. }) =
+            self.attribute_value(attribute)?
+        else {
+            return None;
+        };
+        let (inputs, output) = values::split_arrow(spelling)?;
+        let output = output.trim();
+        let output = if results.len() == 1 {
+            output
+                .strip_prefix('(')
+                .and_then(|value| value.strip_suffix(')'))
+                .map(str::trim)
+                .unwrap_or(output)
+        } else {
+            output
+        };
+        Some(format!("{} -> {output}", inputs.trim()))
+    }
+    /// Returns a decoded callee from either generic or custom-form attributes.
+    pub fn operation_callee(&self, id: OperationId) -> Option<String> {
+        self.operation_role_symbol(id, &["callee", "kCallee"])
+    }
+    fn operation_role_symbol(&self, id: OperationId, names: &[&str]) -> Option<String> {
+        let attribute = names.iter().find_map(|name| self.attribute_id(id, name))?;
+        match self.attribute_value(attribute)? {
+            AttributeValue::String(spelling) => decode_mlir_string(spelling),
+            AttributeValue::Symbol(path) => Some(
+                path.iter()
+                    .map(|part| decode_mlir_string(part).unwrap_or_else(|| part.clone()))
+                    .collect::<Vec<_>>()
+                    .join("::"),
+            ),
+            _ => None,
+        }
+    }
     /// Resolves a spelling already present in this document without interning it.
     pub fn existing_string_index(&self, value: &str) -> Option<u32> {
         self.strings
@@ -1441,6 +1486,40 @@ impl Document {
             VisibilityAnalysis::Indexed(index),
         )
     }
+}
+
+fn decode_mlir_string(spelling: &str) -> Option<String> {
+    let inner = spelling.strip_prefix('"')?.strip_suffix('"')?;
+    let bytes = inner.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'\\' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        match *bytes.get(index)? {
+            b'"' => decoded.push(b'"'),
+            b'\\' => decoded.push(b'\\'),
+            b'n' => decoded.push(b'\n'),
+            b't' => decoded.push(b'\t'),
+            high if high.is_ascii_hexdigit() => {
+                let low = *bytes.get(index + 1)?;
+                if !low.is_ascii_hexdigit() {
+                    return None;
+                }
+                decoded.push(
+                    (high as char).to_digit(16)? as u8 * 16 + (low as char).to_digit(16)? as u8,
+                );
+                index += 1;
+            }
+            _ => return None,
+        }
+        index += 1;
+    }
+    String::from_utf8(decoded).ok()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

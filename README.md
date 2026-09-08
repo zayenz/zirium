@@ -25,6 +25,7 @@ dialect coverage, bytecode support, ODS/TableGen loading, or a stable API.
 - Strict and best-effort lowering into a separate semantic document.
 - Operations, regions, blocks, SSA values, types, attributes, locations, symbols, and dominance queries.
 - Python inspection of exact type and attribute spellings, scalar attributes, and stable value identity.
+- Form-independent operation roles for symbol names, signatures, and callees.
 - Deterministic generic MLIR output and structural round-trip comparison.
 - Buffered semantic edits that commit atomically.
 - Conservative source-preserving output for documents lowered with hybrid retention.
