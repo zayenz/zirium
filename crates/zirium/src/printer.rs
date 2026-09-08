@@ -110,6 +110,27 @@ impl std::error::Error for PrintError {
 }
 
 impl Document {
+    /// Formats one semantic attribute as valid canonical MLIR.
+    ///
+    /// This is useful when a value has no independent source spelling, such as
+    /// an element reached through an attribute alias.
+    pub fn canonical_attribute_spelling(
+        &self,
+        value: &AttributeValue,
+    ) -> Result<String, PrintError> {
+        let mut spelling = String::new();
+        Printer::new(
+            self,
+            &mut spelling,
+            PrintLayout::Compact,
+            DialectPrintMode::GenericOnly,
+            &DialectRegistry::EMPTY,
+        )
+        .attribute(value)
+        .map_err(PrintError::Format)?;
+        Ok(spelling)
+    }
+
     /// Prints selected operations with the operation, region, and block shells
     /// that contain them. Unselected siblings are omitted.
     pub fn write_selection<W: io::Write>(
@@ -1353,16 +1374,9 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                 self.type_value(v)?;
                 self.sink.write_char('>')
             }
-            AttributeValue::Symbol(parts) => {
-                for (index, part) in parts.iter().enumerate() {
-                    if index != 0 {
-                        self.sink.write_str("::")?;
-                    }
-                    self.sink.write_char('@')?;
-                    self.sink.write_str(part)?;
-                }
-                Ok(())
-            }
+            AttributeValue::Symbol(parts) => self
+                .sink
+                .write_str(&crate::semantic::format_symbol_path(parts, true)),
             AttributeValue::Array(values) => {
                 self.sink.write_char('[')?;
                 for (index, value) in values.iter().enumerate() {

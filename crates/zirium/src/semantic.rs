@@ -26,14 +26,13 @@ mod values;
 mod verify;
 
 pub use lowering::{lower_with_dialect_registry, lower_with_dialect_registry_and_retention};
-pub(crate) use values::split_registered_types;
+pub(crate) use values::{format_symbol_path, split_registered_types};
 pub(crate) use verify::{
     verify_builtin_module, verify_cf_br, verify_cf_cond_br, verify_func_call, verify_func_func,
     verify_func_return,
 };
 
 use values::*;
-use verify::*;
 
 static NEXT_DOCUMENT_IDENTITY: OnceLock<Mutex<u128>> = OnceLock::new();
 static LIVE_DOCUMENT_IDENTITIES: OnceLock<Mutex<HashMap<u128, Weak<DocumentIdentity>>>> =
@@ -853,12 +852,7 @@ impl Document {
         let attribute = names.iter().find_map(|name| self.attribute_id(id, name))?;
         match self.attribute_value(attribute)? {
             AttributeValue::String(spelling) => decode_mlir_string(spelling),
-            AttributeValue::Symbol(path) => Some(
-                path.iter()
-                    .map(|part| decode_mlir_string(part).unwrap_or_else(|| part.clone()))
-                    .collect::<Vec<_>>()
-                    .join("::"),
-            ),
+            AttributeValue::Symbol(path) => Some(path.join("::")),
             _ => None,
         }
     }
@@ -1444,11 +1438,16 @@ impl Document {
             .lock()
             .expect("registry query lock is not poisoned");
         self.ensure_symbol_index(registry);
-        let path = symbol
-            .split("::")
-            .map(normalize_symbol)
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>();
+        let path = if symbol.trim_start().starts_with('@') {
+            parse_symbol_path(symbol)?
+        } else {
+            let symbol = symbol.trim();
+            if symbol.is_empty() {
+                return None;
+            }
+            vec![symbol.to_owned()]
+        };
+        let path = path.iter().map(String::as_str).collect::<Vec<_>>();
         let caches = self
             .analyses
             .0

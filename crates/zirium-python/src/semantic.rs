@@ -1145,12 +1145,7 @@ impl SemanticAttribute {
     #[getter]
     fn symbol_value(&self) -> PyResult<Option<String>> {
         self.with_value(|value| match value {
-            AttributeValue::Symbol(path) => Some(
-                path.iter()
-                    .map(|part| decode_string_attribute(part).unwrap_or_else(|| part.clone()))
-                    .collect::<Vec<_>>()
-                    .join("::"),
-            ),
+            AttributeValue::Symbol(path) => Some(path.join("::")),
             _ => None,
         })
     }
@@ -1182,7 +1177,7 @@ impl SemanticAttribute {
         let Some((name, value)) = value else {
             return Ok(None);
         };
-        let spelling = match self.with_value(|value| {
+        let source_spelling = match self.with_value(|value| {
             (
                 matches!(value, AttributeValue::Dictionary(_)),
                 matches!(value, AttributeValue::DenseArray { .. }),
@@ -1203,8 +1198,13 @@ impl SemanticAttribute {
             },
             _ => split_attribute_elements(&parent_spelling, '[', ']')
                 .and_then(|elements| elements.get(index).map(|value| (*value).to_owned())),
-        }
-        .unwrap_or_default();
+        };
+        let spelling = match source_spelling.filter(|spelling| !spelling.is_empty()) {
+            Some(spelling) => spelling,
+            None => read_document(&self.state)?
+                .canonical_attribute_spelling(&value)
+                .map_err(py_error)?,
+        };
         Ok(Some(SemanticAttribute {
             state: self.state.clone(),
             id: None,

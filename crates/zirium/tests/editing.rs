@@ -899,6 +899,67 @@ fn registered_symbol_indexes_shadow_nested_scopes_and_report_unresolved_refs() {
 }
 
 #[test]
+fn quoted_symbol_components_round_trip_and_resolve_without_splitting() {
+    let document = registered(
+        r#"builtin.module {
+  func.func @"a::b"() { func.return }
+  func.func @"caf\C3\A9"() { func.return }
+  func.func @"say\22hi"() { func.return }
+  builtin.module @outer {
+    func.func @"nested::name"() { func.return }
+  }
+  func.func @caller() {
+    func.call @"a::b"() : () -> ()
+    func.call @"caf\C3\A9"() : () -> ()
+    func.call @"say\22hi"() : () -> ()
+    func.call @outer::@"nested::name"() : () -> ()
+    func.return
+  }
+}"#,
+    );
+    let calls = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("func.call"))
+        .collect::<Vec<_>>();
+    let literal_separator = document
+        .lookup_symbol(calls[0], r#"@"a::b""#, DialectRegistry::proving())
+        .unwrap();
+    let equivalent_utf8 = document
+        .lookup_symbol(calls[1], r#"@"café""#, DialectRegistry::proving())
+        .unwrap();
+    let equivalent_quote = document
+        .lookup_symbol(calls[2], r#"@"say\"hi""#, DialectRegistry::proving())
+        .unwrap();
+    let nested = document
+        .lookup_symbol(
+            calls[3],
+            r#"@outer::@"nested::name""#,
+            DialectRegistry::proving(),
+        )
+        .unwrap();
+    assert_eq!(
+        document.operation_symbol_name(literal_separator).as_deref(),
+        Some("a::b")
+    );
+    assert_eq!(
+        document.operation_symbol_name(equivalent_utf8).as_deref(),
+        Some("café")
+    );
+    assert_eq!(
+        document.operation_symbol_name(equivalent_quote).as_deref(),
+        Some("say\"hi")
+    );
+    assert_eq!(
+        document.operation_symbol_name(nested).as_deref(),
+        Some("nested::name")
+    );
+    let output = String::from_utf8(document.canonical_bytes(PrintLayout::Pretty).unwrap()).unwrap();
+    assert!(output.contains(r#"@"a::b""#));
+    assert!(output.contains(r#"@"café""#));
+    assert!(!output.contains(r#"@"a@::@b""#));
+}
+
+#[test]
 fn concurrent_registry_queries_keep_matching_symbol_and_dominance_results() {
     let document = Arc::new(registered_best_effort(
         r#"builtin.module {

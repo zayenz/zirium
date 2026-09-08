@@ -426,6 +426,33 @@ def test_declarative_subset_is_owned_and_used_end_to_end():
     assert b"func.call @callee()" in document.custom_bytes()
 
 
+def test_quoted_symbol_paths_resolve_by_decoded_components():
+    registry = zirium.DialectRegistry.proving()
+    source = r"""builtin.module {
+      func.func @"a::b"() { func.return }
+      builtin.module @outer {
+        func.func @"caf\C3\A9"() { func.return }
+      }
+      func.func @caller() {
+        func.call @"a::b"() : () -> ()
+        func.call @outer::@"café"() : () -> ()
+        func.return
+      }
+    }"""
+    document = zirium.parse_text(source, registry=registry).lower_strict().document
+    assert document is not None
+    calls = document.operation_table("func.call")
+    literal_separator = document.lookup_symbol(calls.operation(0), '@"a::b"')
+    equivalent_utf8 = document.lookup_symbol(
+        calls.operation(1), r'@outer::@"caf\C3\A9"'
+    )
+    assert literal_separator is not None
+    assert equivalent_utf8 is not None
+    assert literal_separator.symbol_name == "a::b"
+    assert equivalent_utf8.symbol_name == "café"
+    document.verify_semantics()
+
+
 def test_core_registry_binds_function_arguments_in_generic_operations():
     source = """module {
       func.func @add(%lhs: tensor<2xf32>, %rhs: tensor<2xf32>) -> tensor<2xf32> {
@@ -586,6 +613,17 @@ def test_attributes_and_values_expose_scalar_and_document_identity():
     target = quoted.operation_table().operation(0).attribute_by_name("target")
     assert target is not None
     assert target.symbol_value == "a.b"
+
+    quoted_separator = (
+        zirium.parse_text('"quoted"() {target = @"a::b"} : () -> ()')
+        .lower_strict()
+        .document
+    )
+    assert quoted_separator is not None
+    target = quoted_separator.operation_table().operation(0).attribute_by_name("target")
+    assert target is not None
+    assert target.symbol_value == "a::b"
+    assert b'@"a::b"' in quoted_separator.canonical_bytes()
 
     result = producer.result(0)
     argument = consumer.operand(1)

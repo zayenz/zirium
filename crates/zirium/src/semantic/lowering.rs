@@ -678,11 +678,15 @@ fn lower_with_registry(
         );
         if is_unparsed {
             doc.complete = false;
-            if let Some(symbol) = leading_symbol(text(source.bytes(), range)) {
-                let value = AttributeValue::Symbol(vec![symbol.to_owned()]);
+            if let Some(spelling) = op
+                .leading_symbol_range()
+                .map(|range| text(source.bytes(), range))
+                && let Some(path) = parse_symbol_path(spelling)
+            {
+                let value = AttributeValue::Symbol(path);
                 let index = attrs.intern_value(value);
                 if index as usize == attribute_spellings.len() {
-                    attribute_spellings.push(format!("@{symbol}"));
+                    attribute_spellings.push(spelling.to_owned());
                 }
                 attributes.push((
                     strings.intern("sym_name"),

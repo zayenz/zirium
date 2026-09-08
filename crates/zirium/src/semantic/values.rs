@@ -45,6 +45,101 @@ impl AliasExpansionState {
 }
 
 use super::*;
+use crate::{
+    lexer::{TokenKind, lex},
+    source::Source,
+};
+
+pub(super) fn parse_symbol_path(spelling: &str) -> Option<Vec<String>> {
+    let source = Source::new(spelling.as_bytes().to_vec()).ok()?;
+    let lexed = lex(&source);
+    if !lexed.diagnostics().is_empty() {
+        return None;
+    }
+    let tokens = lexed
+        .tokens()
+        .iter()
+        .copied()
+        .filter(|token| {
+            !matches!(
+                token.kind(),
+                TokenKind::Whitespace | TokenKind::LineComment | TokenKind::Eof
+            )
+        })
+        .collect::<Vec<_>>();
+    if tokens.len() % 3 != 1 {
+        return None;
+    }
+    let mut path = Vec::with_capacity(tokens.len() / 3 + 1);
+    for (index, token) in tokens.iter().enumerate() {
+        let expected = if index % 3 == 0 {
+            TokenKind::AtIdentifier
+        } else {
+            TokenKind::Colon
+        };
+        if token.kind() != expected {
+            return None;
+        }
+        if expected == TokenKind::AtIdentifier {
+            let component = text(source.bytes(), token.range()).strip_prefix('@')?;
+            path.push(decode_mlir_string(component).unwrap_or_else(|| component.to_owned()));
+        }
+    }
+    (!path.is_empty()).then_some(path)
+}
+
+fn bare_symbol_component(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$' | b'.'))
+}
+
+fn quote_mlir_string(value: &str) -> String {
+    let mut result = String::with_capacity(value.len() + 2);
+    result.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => result.push_str("\\\""),
+            '\\' => result.push_str("\\\\"),
+            '\n' => result.push_str("\\n"),
+            '\t' => result.push_str("\\t"),
+            character if character.is_control() => {
+                let mut bytes = [0; 4];
+                for byte in character.encode_utf8(&mut bytes).bytes() {
+                    use std::fmt::Write as _;
+                    write!(result, "\\{byte:02X}").expect("writing to a String cannot fail");
+                }
+            }
+            character => result.push(character),
+        }
+    }
+    result.push('"');
+    result
+}
+
+fn format_symbol_component(value: &str) -> String {
+    if bare_symbol_component(value) {
+        value.to_owned()
+    } else {
+        quote_mlir_string(value)
+    }
+}
+
+pub(crate) fn format_symbol_path(path: &[String], sigils: bool) -> String {
+    path.iter()
+        .map(|component| {
+            let component = format_symbol_component(component);
+            if sigils {
+                format!("@{component}")
+            } else {
+                component
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("::")
+}
 
 pub(super) fn text(bytes: &[u8], range: TextRange) -> &str {
     std::str::from_utf8(&bytes[range.start() as usize..range.end() as usize]).unwrap_or("")
@@ -890,12 +985,9 @@ fn resolve_attribute(
         return result;
     }
     if spelling.starts_with('@') {
-        return Ok(AttributeValue::Symbol(
-            spelling
-                .split("::")
-                .map(|s| s.trim_start_matches('@').to_owned())
-                .collect(),
-        ));
+        return parse_symbol_path(spelling)
+            .map(AttributeValue::Symbol)
+            .ok_or_else(|| format!("malformed symbol reference `{spelling}`"));
     }
     if spelling.starts_with('"') {
         return Ok(AttributeValue::String(spelling.to_owned()));
@@ -2470,21 +2562,4 @@ pub(super) fn push_diagnostic(
         .push(SemanticDiagnostic::new(code, range, message));
     doc.complete = false;
     id
-}
-
-pub(super) fn leading_symbol(spelling: &str) -> Option<&str> {
-    let spelling = spelling.trim_start();
-    let operation = if spelling.starts_with('%') {
-        spelling.split_once('=')?.1
-    } else {
-        spelling
-    };
-    let mut parts = operation.split_ascii_whitespace();
-    parts.next()?;
-    let symbol = parts.next()?.strip_prefix('@')?;
-    let end = symbol
-        .bytes()
-        .position(|byte| b"#: ,()={}[]".contains(&byte))
-        .unwrap_or(symbol.len());
-    Some(&symbol[..end])
 }

@@ -708,33 +708,8 @@ impl Document {
     }
 
     fn resolve_call_target(&self, call: OperationId, callee: &str) -> Option<OperationId> {
-        let mut parent = self
-            .operation(call)
-            .and_then(Operation::parent_block)
-            .and_then(|block| self.block(block).map(Block::parent_region))
-            .and_then(|region| self.region(region).map(Region::parent_operation));
-        while let Some(operation) = parent {
-            if DialectRegistry::proving()
-                .symbols(self.operation_name(operation)?)
-                .symbol_table
-            {
-                return self
-                    .direct_operations_in_operation_regions(operation)
-                    .into_iter()
-                    .find(|candidate| {
-                        self.operation_name(*candidate) == Some("func.func")
-                            && self
-                                .attribute_spelling(*candidate, "sym_name")
-                                .is_some_and(|symbol| same_symbol(symbol, callee))
-                    });
-            }
-            parent = self
-                .operation(operation)
-                .and_then(Operation::parent_block)
-                .and_then(|block| self.block(block).map(Block::parent_region))
-                .and_then(|region| self.region(region).map(Region::parent_operation));
-        }
-        None
+        let target = self.lookup_symbol(call, callee, DialectRegistry::proving())?;
+        (self.operation_name(target) == Some("func.func")).then_some(target)
     }
 
     pub(super) fn direct_operations_in_operation_regions(
@@ -916,14 +891,6 @@ impl Document {
             inner = parent_region;
         }
     }
-}
-
-fn same_symbol(left: &str, right: &str) -> bool {
-    left.trim_matches('@').trim_matches('"') == right.trim_matches('@').trim_matches('"')
-}
-
-pub(super) fn normalize_symbol(symbol: &str) -> &str {
-    symbol.trim().trim_matches('@').trim_matches('"')
 }
 
 pub(crate) fn verify_builtin_module(
@@ -1575,8 +1542,17 @@ impl Document {
                 if !registry.symbols(name).defines_symbol {
                     continue;
                 }
-                if let Some(symbol) = self.attribute_spelling(child, "sym_name") {
-                    entries.insert(normalize_symbol(symbol).to_owned(), child);
+                if let Some(attribute) = self.attribute_id(child, "sym_name") {
+                    let symbol = match self.attribute_value(attribute) {
+                        Some(AttributeValue::String(spelling)) => decode_mlir_string(spelling),
+                        Some(AttributeValue::Symbol(path)) if path.len() == 1 => {
+                            Some(path[0].clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(symbol) = symbol {
+                        entries.insert(symbol, child);
+                    }
                 }
             }
         }
@@ -1602,12 +1578,8 @@ impl Document {
                 let Some(AttributeValue::Symbol(path)) = self.attribute_value(attribute) else {
                     continue;
                 };
-                let spelling = path.join("::");
-                let path = spelling
-                    .split("::")
-                    .map(normalize_symbol)
-                    .filter(|part| !part.is_empty())
-                    .collect::<Vec<_>>();
+                let spelling = format_symbol_path(path, false);
+                let path = path.iter().map(String::as_str).collect::<Vec<_>>();
                 let unresolved = self.analyses.borrow().symbols.as_ref().is_none_or(|index| {
                     self.lookup_symbol_in_index(operation, &path, index)
                         .is_none()

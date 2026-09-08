@@ -570,6 +570,29 @@ fn closure_follows_recursive_symbol_once_without_sibling_symbols() {
 }
 
 #[test]
+fn closure_resolves_a_quoted_symbol_containing_path_separators() {
+    let input = r#"module {
+  func.func @"a::b"() { func.return }
+  func.func @unrelated() { func.return }
+  func.func @caller() {
+    func.call @"a::b"() : () -> ()
+    func.return
+  }
+}
+"#;
+    let output = run_stdin("select(op(\"func.call\")) | closure", input);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(r#"func.func @"a::b""#), "{text}");
+    assert!(text.contains(r#"func.call @"a::b""#), "{text}");
+    assert!(!text.contains("func.func @unrelated"), "{text}");
+}
+
+#[test]
 fn closure_retains_cyclic_cfg_once_for_conditional_and_unconditional_branches() {
     let input = "module {\n  func.func @loop() {\n  ^entry:\n    cf.br ^loop\n  ^loop:\n    %condition = arith.constant 1 : i1\n    cf.cond_br %condition, ^loop, ^exit\n  ^exit:\n    func.return\n  }\n}\n";
     let output = run_stdin("select(op(\"cf.cond_br\")) | closure", input);

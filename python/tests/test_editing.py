@@ -310,6 +310,32 @@ def test_fixed_result_types_attrs_properties_and_pool_compaction():
     assert operation.name == "test.properties"
 
 
+def test_aliased_attribute_elements_have_printable_recursive_spellings():
+    doc = generic_document(
+        '#items = [1, {nested = [2]}]\n"test.alias"() {items = #items} : () -> ()'
+    )
+    operation = doc.operation_table("test.alias").operation(0)
+    items = operation.attribute_by_name("items")
+    assert items is not None
+    first = items.element(0)
+    nested_dictionary = items.element(1)
+    assert first is not None and first.spelling == "1"
+    assert (
+        nested_dictionary is not None and nested_dictionary.spelling == "{nested = [2]}"
+    )
+    nested_array = nested_dictionary.element(0)
+    assert nested_array is not None and nested_array.spelling == "[2]"
+    nested_value = nested_array.element(0)
+    assert nested_value is not None and nested_value.spelling == "2"
+
+    with doc.edit() as edit:
+        edit.set_attribute(
+            operation, zirium.AttributeSpecHandle(nested_value, "copied")
+        )
+    assert ("copied", "2") in operation.attribute_snapshot()
+    assert b"copied = 2" in doc.canonical_bytes()
+
+
 def test_semantic_verification_failures_have_distinct_kinds_and_classes():
     incomplete = zirium.parse_file(UNRESOLVED).lower_best_effort("semantic")
     assert incomplete.document is not None
