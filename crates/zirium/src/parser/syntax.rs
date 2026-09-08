@@ -509,6 +509,16 @@ impl<'a> OperationSyntax<'a> {
     /// Returns a leading symbol token from the operation header, if present.
     pub fn leading_symbol_range(self) -> Option<TextRange> {
         let mnemonic = self.mnemonic_range()?;
+        if let Some(range) = self
+            .tree
+            .children(self.id)
+            .into_iter()
+            .flatten()
+            .find(|child| self.tree.kind(*child) == Some(SyntaxKind::SymbolReference))
+            .and_then(|child| self.tree.text_range(child))
+        {
+            return Some(range);
+        }
         let operation_end = self.tree.text_range(self.id)?.end();
         let header_end = self
             .tree

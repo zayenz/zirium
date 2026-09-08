@@ -1271,7 +1271,7 @@ impl Parser<'_> {
         Ok(good)
     }
 
-    fn symbol_reference(&mut self) -> Result<bool, CompactError> {
+    pub(super) fn symbol_reference(&mut self) -> Result<bool, CompactError> {
         let marker = self.builder.start();
         self.bump()?;
         let mut good = true;

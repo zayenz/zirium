@@ -92,7 +92,7 @@ impl DialectParser<'_, '_> {
             AssemblyProgram::Call => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
                 self.parser.trivia()?;
-                good &= self.parser.expect(TokenKind::AtIdentifier)?;
+                good &= self.parser.symbol_reference()?;
                 self.parser.trivia()?;
                 self.parser.operand_list()?;
                 self.parser.trivia()?;
@@ -395,10 +395,10 @@ pub(super) fn shaped_operation(
 ) -> Result<(), CompactError> {
     let mut good = parser.expect(TokenKind::BareIdentifier)?;
     parser.trivia()?;
-    good &= parser.expect(TokenKind::AtIdentifier)?;
-    parser.trivia()?;
     match shape {
         OperationShape::FuncLike => {
+            good &= parser.expect(TokenKind::AtIdentifier)?;
+            parser.trivia()?;
             good &= parser.block_argument_list(SyntaxKind::BlockArgumentList)?;
             parser.trivia()?;
             if parser.at(TokenKind::Arrow) {
@@ -422,6 +422,8 @@ pub(super) fn shaped_operation(
             }
         }
         OperationShape::CallLike => {
+            good &= parser.symbol_reference()?;
+            parser.trivia()?;
             parser.operand_list()?;
             parser.trivia()?;
             if parser.at(TokenKind::LBrace) {

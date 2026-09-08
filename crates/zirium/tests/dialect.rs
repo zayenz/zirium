@@ -149,6 +149,27 @@ fn owned_operation_shapes_lower_neutral_func_and_call_forms() {
 }
 
 #[test]
+fn shaped_call_like_operations_accept_nested_symbol_callees() {
+    let registry =
+        DialectRegistry::with_operation_shapes(&[("vendor.invoke", OperationShape::CallLike)])
+            .unwrap();
+
+    for (spelling, expected) in [
+        ("@root::@callee", "root::callee"),
+        ("@root::@\"<lambda>_1\"", "root::<lambda>_1"),
+    ] {
+        let source = format!("%result = vendor.invoke {spelling}() : () -> i32");
+        let parsed = ParsedFile::parse_with_registry(source.as_bytes(), &registry).unwrap();
+        assert!(parsed.syntax().diagnostics().is_empty(), "{spelling}");
+        let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+        assert!(lowered.diagnostics.is_empty(), "{spelling}");
+        let document = lowered.document.unwrap();
+        let call = document.operations().next().unwrap();
+        assert_eq!(document.operation_callee(call).as_deref(), Some(expected));
+    }
+}
+
+#[test]
 fn shaped_operations_use_header_syntax_boundaries() {
     let registry = DialectRegistry::with_operation_shapes(&[
         ("vendor.function", OperationShape::FuncLike),
