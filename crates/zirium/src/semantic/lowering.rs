@@ -360,6 +360,12 @@ fn lower_with_registry(
         .map(|op| {
             let range = op.tree().text_range(op.id())?;
             let spelling = text(source.bytes(), range);
+            let assembly_spelling = op
+                .trailing_location()
+                .and_then(|location| location.tree().text_range(location.id()))
+                .and_then(|location| TextRange::new(range.start(), location.start()))
+                .map(|range| text(source.bytes(), range))
+                .unwrap_or(spelling);
             let mnemonic_spelling = text(source.bytes(), op.mnemonic_range()?);
             let mnemonic = mnemonic_spelling
                 .strip_prefix('"')
@@ -367,6 +373,7 @@ fn lower_with_registry(
                 .unwrap_or(mnemonic_spelling);
             let context = RegisteredLoweringContext {
                 spelling,
+                assembly_spelling,
                 mnemonic,
                 leading_symbol: op
                     .leading_symbol_range()

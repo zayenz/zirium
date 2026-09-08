@@ -329,6 +329,8 @@ pub enum DeclarativeRegistryError {
     EmptyOperation,
     CoreOperation(String),
     RegisteredOperation(String),
+    UnknownPreset(String),
+    DuplicatePreset(String),
 }
 
 impl std::fmt::Display for DeclarativeRegistryError {
@@ -355,6 +357,8 @@ impl std::fmt::Display for DeclarativeRegistryError {
                 formatter,
                 "operation shape conflicts with registered operation: {name}"
             ),
+            Self::UnknownPreset(name) => write!(formatter, "unknown registry preset: {name}"),
+            Self::DuplicatePreset(name) => write!(formatter, "duplicate registry preset: {name}"),
         }
     }
 }
@@ -362,8 +366,14 @@ impl std::fmt::Display for DeclarativeRegistryError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationShape {
+    /// A function name, arguments, optional results and attributes, and an optional body.
     FuncLike,
+    /// A callee, operands, optional attributes, and a function type.
     CallLike,
+    /// Two operands and either one shared type or a function type.
+    BinaryOperands,
+    /// Zero or more operands followed by the same number of optional types.
+    OptionalTypedOperands,
 }
 
 impl std::error::Error for DeclarativeRegistryError {}
@@ -1033,6 +1043,8 @@ pub(crate) fn lower_operation_shape(
     match shape {
         OperationShape::FuncLike => lower_func_like(operation, context),
         OperationShape::CallLike => lower_call_like(operation, context),
+        OperationShape::BinaryOperands => lower_binary_operands(operation, context),
+        OperationShape::OptionalTypedOperands => lower_optional_typed_operands(operation, context),
     }
 }
 
@@ -1127,6 +1139,29 @@ fn lower_addi(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLower
     })
 }
 
+fn lower_binary_operands(
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    let tail = context.assembly_spelling().split_once(operation)?.1;
+    let (_, ty) = tail.rsplit_once(':')?;
+    let ty = ty.trim();
+    let (function_type, result_types) = if let Some((inputs, results)) = ty.split_once("->") {
+        (
+            format!("{} -> {}", inputs.trim(), results.trim()),
+            crate::semantic::split_registered_types(results),
+        )
+    } else {
+        (format!("({ty}, {ty}) -> {ty}"), vec![ty.into()])
+    };
+    Some(RegisteredLowering {
+        name: "arith.addi",
+        result_types,
+        function_type,
+        attributes: Vec::new(),
+    })
+}
+
 fn strip_overflow_trivia(value: &str) -> String {
     value
         .lines()
@@ -1147,6 +1182,28 @@ fn lower_no_results(name: &'static str) -> Option<RegisteredLowering> {
 
 fn lower_return(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLowering> {
     let tail = context.spelling().split_once("func.return")?.1.trim();
+    let input = tail
+        .rsplit_once(':')
+        .map(|(_, types)| types.trim())
+        .unwrap_or("()");
+    let input = if input.starts_with('(') {
+        input.to_owned()
+    } else {
+        format!("({input})")
+    };
+    Some(RegisteredLowering {
+        name: "func.return",
+        result_types: Vec::new(),
+        function_type: format!("{input} -> ()"),
+        attributes: Vec::new(),
+    })
+}
+
+fn lower_optional_typed_operands(
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    let tail = context.assembly_spelling().split_once(operation)?.1.trim();
     let input = tail
         .rsplit_once(':')
         .map(|(_, types)| types.trim())

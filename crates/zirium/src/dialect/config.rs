@@ -12,6 +12,8 @@ use super::{DeclarativeRegistryError, DialectRegistry, OperationShape};
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryConfig {
+    #[serde(default)]
+    pub presets: Vec<String>,
     pub builtins: Vec<String>,
     pub operation_shapes: Vec<OperationShapeConfig>,
 }
@@ -22,6 +24,13 @@ pub struct RegistryConfig {
 pub struct OperationShapeConfig {
     pub name: String,
     pub shape: OperationShape,
+}
+
+fn preset_json(name: &str) -> Option<&'static str> {
+    match name {
+        "stablehlo" => Some(include_str!("../../registries/stablehlo.json")),
+        _ => None,
+    }
 }
 
 impl RegistryConfig {
@@ -50,35 +59,83 @@ impl RegistryConfig {
         let mut builtins = BTreeSet::new();
         let mut shapes = BTreeMap::new();
         for config in configs {
-            config.build()?;
-            builtins.extend(config.builtins.iter().cloned());
-            for operation in &config.operation_shapes {
-                if let Some(previous) = shapes.insert(operation.name.clone(), operation.shape)
-                    && previous != operation.shape
+            let (config_builtins, config_shapes) = config.expanded()?;
+            builtins.extend(config_builtins);
+            for (name, shape) in config_shapes {
+                if let Some(previous) = shapes.insert(name.clone(), shape)
+                    && previous != shape
                 {
-                    return Err(DeclarativeRegistryError::ConflictingShape(
-                        operation.name.clone(),
-                    ));
+                    return Err(DeclarativeRegistryError::ConflictingShape(name));
                 }
             }
         }
-        Self {
-            builtins: builtins.into_iter().collect(),
-            operation_shapes: shapes
-                .into_iter()
-                .map(|(name, shape)| OperationShapeConfig { name, shape })
-                .collect(),
-        }
-        .build()
+        Self::build_entries(builtins, shapes)
     }
 
     /// Validates all registrations and constructs an owned registry.
     pub fn build(&self) -> Result<DialectRegistry, DeclarativeRegistryError> {
-        let builtins = self.builtins.iter().map(String::as_str).collect::<Vec<_>>();
-        let shapes = self
-            .operation_shapes
+        let (builtins, shapes) = self.expanded()?;
+        Self::build_entries(builtins, shapes)
+    }
+
+    fn expanded(
+        &self,
+    ) -> Result<(BTreeSet<String>, BTreeMap<String, OperationShape>), DeclarativeRegistryError>
+    {
+        let mut seen_presets = BTreeSet::new();
+        let mut builtins = BTreeSet::new();
+        let mut shapes = BTreeMap::new();
+        for name in &self.presets {
+            if !seen_presets.insert(name.as_str()) {
+                return Err(DeclarativeRegistryError::DuplicatePreset(name.clone()));
+            }
+            let json = preset_json(name)
+                .ok_or_else(|| DeclarativeRegistryError::UnknownPreset(name.clone()))?;
+            let preset = Self::from_json(json).expect("bundled registry preset must be valid");
+            let (preset_builtins, preset_shapes) = preset.expanded()?;
+            builtins.extend(preset_builtins);
+            for (name, shape) in preset_shapes {
+                if let Some(previous) = shapes.insert(name.clone(), shape)
+                    && previous != shape
+                {
+                    return Err(DeclarativeRegistryError::ConflictingShape(name));
+                }
+            }
+        }
+
+        let mut explicit_builtins = BTreeSet::new();
+        for name in &self.builtins {
+            if !explicit_builtins.insert(name.as_str()) {
+                return Err(DeclarativeRegistryError::DuplicateOperation(name.clone()));
+            }
+            builtins.insert(name.clone());
+        }
+        let mut explicit_shapes = BTreeSet::new();
+        for operation in &self.operation_shapes {
+            if !explicit_shapes.insert(operation.name.as_str()) {
+                return Err(DeclarativeRegistryError::DuplicateOperation(
+                    operation.name.clone(),
+                ));
+            }
+            if let Some(previous) = shapes.insert(operation.name.clone(), operation.shape)
+                && previous != operation.shape
+            {
+                return Err(DeclarativeRegistryError::ConflictingShape(
+                    operation.name.clone(),
+                ));
+            }
+        }
+        Ok((builtins, shapes))
+    }
+
+    fn build_entries(
+        builtins: BTreeSet<String>,
+        shapes: BTreeMap<String, OperationShape>,
+    ) -> Result<DialectRegistry, DeclarativeRegistryError> {
+        let builtins = builtins.iter().map(String::as_str).collect::<Vec<_>>();
+        let shapes = shapes
             .iter()
-            .map(|operation| (operation.name.as_str(), operation.shape))
+            .map(|(name, shape)| (name.as_str(), *shape))
             .collect::<Vec<_>>();
         DialectRegistry::declarative(&builtins)?.extend_operation_shapes(&shapes)
     }
@@ -119,6 +176,16 @@ impl std::error::Error for RegistryConfigError {
 }
 
 impl DialectRegistry {
+    /// Builds one registry preset bundled with this Zirium release.
+    pub fn from_name(name: &str) -> Result<Self, DeclarativeRegistryError> {
+        RegistryConfig {
+            presets: vec![name.to_owned()],
+            builtins: Vec::new(),
+            operation_shapes: Vec::new(),
+        }
+        .build()
+    }
+
     /// Loads a complete registry from a UTF-8 JSON file.
     ///
     /// No default operations are implicitly added. I/O, JSON, and registration

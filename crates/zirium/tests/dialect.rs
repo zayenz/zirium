@@ -60,6 +60,101 @@ fn operation_shapes_extend_existing_registries() {
 }
 
 #[test]
+fn named_stablehlo_registry_parses_and_lowers_its_supported_custom_forms() {
+    let registry = DialectRegistry::from_name("stablehlo").unwrap();
+    for name in [
+        "stablehlo.add",
+        "stablehlo.and",
+        "stablehlo.atan2",
+        "stablehlo.divide",
+        "stablehlo.maximum",
+        "stablehlo.minimum",
+        "stablehlo.multiply",
+        "stablehlo.or",
+        "stablehlo.power",
+        "stablehlo.remainder",
+        "stablehlo.shift_left",
+        "stablehlo.shift_right_arithmetic",
+        "stablehlo.shift_right_logical",
+        "stablehlo.subtract",
+        "stablehlo.xor",
+    ] {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::BinaryOperands)
+        );
+    }
+    let source = br#"module {
+      func.func @add(%lhs: tensor<2xf32>, %rhs: tensor<2xf32>) -> tensor<2xf32> {
+        %sum = stablehlo.add %lhs, %rhs : tensor<2xf32> loc(unknown)
+        %unused = stablehlo.add %lhs, %rhs : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
+        func.return %sum : tensor<2xf32>
+      }
+      "test.container"() ({
+      ^bb0(%arg: tensor<f32>):
+        stablehlo.return %arg : tensor<f32>
+      }) : () -> ()
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty());
+    let document = lowered.document.unwrap();
+    let add = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("stablehlo.add"))
+        .unwrap();
+    assert_eq!(document.operands(add).unwrap().len(), 2);
+    assert_eq!(document.result_types(add).unwrap().len(), 1);
+    assert_eq!(
+        document
+            .operations()
+            .filter(|operation| document.operation_name(*operation) == Some("stablehlo.add"))
+            .count(),
+        2
+    );
+    let stablehlo_return = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("stablehlo.return"))
+        .unwrap();
+    assert_eq!(document.operands(stablehlo_return).unwrap().len(), 1);
+    assert!(document.result_types(stablehlo_return).unwrap().is_empty());
+}
+
+#[test]
+fn registry_presets_validate_names_and_compose_with_explicit_entries() {
+    use zirium::dialect::RegistryConfig;
+
+    let config = RegistryConfig::from_json(
+        r#"{
+          "presets": ["stablehlo"],
+          "builtins": ["arith.constant"],
+          "operation_shapes": [
+            {"name": "vendor.function", "shape": "func_like"}
+          ]
+        }"#,
+    )
+    .unwrap();
+    let registry = config.build().unwrap();
+    assert!(registry.operation("arith.constant").is_some());
+    assert_eq!(
+        registry.operation_shape("stablehlo.add"),
+        Some(OperationShape::BinaryOperands)
+    );
+    assert_eq!(
+        registry.operation_shape("vendor.function"),
+        Some(OperationShape::FuncLike)
+    );
+
+    assert!(DialectRegistry::from_name("unknown").is_err());
+    let duplicate = RegistryConfig::from_json(
+        r#"{"presets":["stablehlo","stablehlo"],"builtins":[],"operation_shapes":[]}"#,
+    )
+    .unwrap();
+    assert!(duplicate.build().is_err());
+}
+
+#[test]
 fn operation_shapes_preserve_the_core_module_alias() {
     let source = br#"module @outer {
       module @inner {

@@ -434,6 +434,85 @@ pub(super) fn shaped_operation(
             parser.trivia()?;
             parser.function_type()?;
         }
+        OperationShape::BinaryOperands => {
+            for index in 0..2 {
+                let operand = parser.builder.start();
+                let use_marker = parser.builder.start();
+                good &= parser.expect(TokenKind::PercentIdentifier)?;
+                parser
+                    .builder
+                    .complete(use_marker, SyntaxKind::OperandUse)?;
+                parser.builder.complete(operand, SyntaxKind::Operand)?;
+                parser.trivia()?;
+                if index == 0 {
+                    good &= parser.expect(TokenKind::Comma)?;
+                    parser.trivia()?;
+                }
+            }
+            if parser.at(TokenKind::LBrace) {
+                parser.attribute_dict()?;
+                parser.trivia()?;
+            }
+            good &= parser.expect(TokenKind::Colon)?;
+            parser.trivia()?;
+            if parser.at(TokenKind::LParen) {
+                parser.function_type()?;
+            } else {
+                good &= parser.type_syntax(0)?;
+            }
+        }
+        OperationShape::OptionalTypedOperands => {
+            let mut operand_count = 0;
+            while parser.at(TokenKind::PercentIdentifier) {
+                let operand = parser.builder.start();
+                let use_marker = parser.builder.start();
+                parser.bump()?;
+                parser
+                    .builder
+                    .complete(use_marker, SyntaxKind::OperandUse)?;
+                parser.builder.complete(operand, SyntaxKind::Operand)?;
+                operand_count += 1;
+                parser.trivia()?;
+                if !parser.at(TokenKind::Comma) {
+                    break;
+                }
+                parser.bump()?;
+                parser.trivia()?;
+            }
+            if parser.at(TokenKind::LBrace) {
+                parser.attribute_dict()?;
+                parser.trivia()?;
+            }
+            if parser.at(TokenKind::Colon) {
+                parser.bump()?;
+                parser.trivia()?;
+                let type_count = if parser.at(TokenKind::LParen) {
+                    parser.bump()?;
+                    parser.trivia()?;
+                    let mut count = 0;
+                    while parser.at_type_start() {
+                        count += usize::from(parser.type_syntax(0)?);
+                        parser.trivia()?;
+                        if !parser.at(TokenKind::Comma) {
+                            break;
+                        }
+                        parser.bump()?;
+                        parser.trivia()?;
+                    }
+                    good &= parser.expect(TokenKind::RParen)?;
+                    count
+                } else {
+                    usize::from(parser.type_syntax(0)?)
+                };
+                if type_count != operand_count {
+                    parser.diagnostic();
+                    good = false;
+                }
+            } else if operand_count != 0 {
+                parser.diagnostic();
+                good = false;
+            }
+        }
     }
     parser.trivia()?;
     if parser.at(TokenKind::Loc) {

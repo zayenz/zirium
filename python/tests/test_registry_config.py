@@ -43,6 +43,35 @@ def test_file_dict_and_pydantic_registry_agree():
     assert all(documents[0].structurally_equal(doc) for doc in documents[1:])
 
 
+def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
+    config = {"presets": ["stablehlo"], "builtins": [], "operation_shapes": []}
+    path = tmp_path / "stablehlo.json"
+    path.write_text(json.dumps(config))
+    registries = [
+        zirium.DialectRegistry.from_name("stablehlo"),
+        zirium.DialectRegistry.from_config(config),
+        zirium.DialectRegistry.from_file(path),
+    ]
+    source = """module {
+      func.func @add(%lhs: tensor<2xf32>, %rhs: tensor<2xf32>) -> tensor<2xf32> {
+        %sum = stablehlo.add %lhs, %rhs : tensor<2xf32>
+        func.return %sum : tensor<2xf32>
+      }
+    }"""
+    for registry in registries:
+        parsed = zirium.parse_text(source, registry=registry)
+        assert parsed.diagnostics == []
+        lowered = parsed.lower_strict()
+        assert lowered.diagnostics == []
+        assert lowered.document is not None
+        add = lowered.document.operation_table("stablehlo.add").operation(0)
+        assert add.operand_count() == 2
+        assert add.result_count() == 1
+
+    with pytest.raises(ValueError, match="unknown registry preset"):
+        zirium.DialectRegistry.from_name("unknown")
+
+
 @pytest.mark.parametrize(
     "config",
     [

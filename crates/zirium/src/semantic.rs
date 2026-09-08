@@ -421,6 +421,7 @@ pub struct LoweringResult {
 /// Read-only CST input for a registered lowerer.
 pub struct RegisteredLoweringContext<'a> {
     spelling: &'a str,
+    assembly_spelling: &'a str,
     mnemonic: &'a str,
     leading_symbol: Option<&'a str>,
     visibility: Option<&'a str>,
@@ -437,6 +438,10 @@ pub struct RegisteredArgument<'a> {
 impl<'a> RegisteredLoweringContext<'a> {
     pub fn spelling(&self) -> &'a str {
         self.spelling
+    }
+    /// Returns the operation spelling before its optional trailing location.
+    pub fn assembly_spelling(&self) -> &'a str {
+        self.assembly_spelling
     }
     pub fn mnemonic(&self) -> &'a str {
         self.mnemonic

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a bundled `stablehlo` registry preset, available by name and through the
+  JSON configuration's optional `presets` field. The initial subset parses and
+  lowers binary elementwise custom forms and `stablehlo.return`.
 - Load and combine JSON registry files with `zirium --registry FILE` and Python's
   `DialectRegistry.from_file`. Python's `from_config` accepts JSON-compatible
   dictionaries or the new Pydantic `RegistryConfig` / `OperationShapeConfig`

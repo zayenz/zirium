@@ -45,10 +45,28 @@ impl OperationShape {
     const CALL_LIKE: Self = Self {
         shape: CoreOperationShape::CallLike,
     };
+
+    #[classattr]
+    const BINARY_OPERANDS: Self = Self {
+        shape: CoreOperationShape::BinaryOperands,
+    };
+
+    #[classattr]
+    const OPTIONAL_TYPED_OPERANDS: Self = Self {
+        shape: CoreOperationShape::OptionalTypedOperands,
+    };
 }
 
 #[pymethods]
 impl DialectRegistryHandle {
+    #[staticmethod]
+    fn from_name(name: &str) -> PyResult<Self> {
+        let registry = DialectRegistry::from_name(name).map_err(py_error)?;
+        Ok(Self {
+            kind: RegistryKind::Declarative(Arc::new(registry)),
+        })
+    }
+
     #[staticmethod]
     #[pyo3(signature = (path, *additional_paths))]
     fn from_file(

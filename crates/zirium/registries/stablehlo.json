@@ -1,0 +1,27 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "stablehlo.add", "shape": "binary_operands"},
+    {"name": "stablehlo.and", "shape": "binary_operands"},
+    {"name": "stablehlo.atan2", "shape": "binary_operands"},
+    {"name": "stablehlo.divide", "shape": "binary_operands"},
+    {"name": "stablehlo.maximum", "shape": "binary_operands"},
+    {"name": "stablehlo.minimum", "shape": "binary_operands"},
+    {"name": "stablehlo.multiply", "shape": "binary_operands"},
+    {"name": "stablehlo.or", "shape": "binary_operands"},
+    {"name": "stablehlo.power", "shape": "binary_operands"},
+    {"name": "stablehlo.remainder", "shape": "binary_operands"},
+    {"name": "stablehlo.return", "shape": "optional_typed_operands"},
+    {"name": "stablehlo.shift_left", "shape": "binary_operands"},
+    {"name": "stablehlo.shift_right_arithmetic", "shape": "binary_operands"},
+    {"name": "stablehlo.shift_right_logical", "shape": "binary_operands"},
+    {"name": "stablehlo.subtract", "shape": "binary_operands"},
+    {"name": "stablehlo.xor", "shape": "binary_operands"}
+  ]
+}

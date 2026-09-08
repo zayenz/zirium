@@ -57,10 +57,14 @@ class Diagnostic:
 class OperationShape:
     FUNC_LIKE: OperationShape
     CALL_LIKE: OperationShape
+    BINARY_OPERANDS: OperationShape
+    OPTIONAL_TYPED_OPERANDS: OperationShape
 
 class DialectRegistry:
     """Dialect syntax and semantic rules retained through parse and lower."""
 
+    @staticmethod
+    def from_name(name: str) -> DialectRegistry: ...
     @staticmethod
     def from_config(
         config: RegistryConfig | dict[str, Any],

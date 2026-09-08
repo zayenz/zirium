@@ -3,7 +3,8 @@
 Status: implemented, including the follow-up requests for Pydantic models and
 multiple configurations. This refines item 2 in
 [the repository review](2026-09-08-review.md). The first implementation uses
-JSON, Serde, and the two operation shapes already supported by Zirium.
+JSON and Serde. A later follow-up added bundled presets and two more structural
+operation shapes for the initial StableHLO subset.
 
 Each file describes a complete registry; multiple files combine by union. Python accepts the same data as an
 ordinary dictionary containing lists, dictionaries, and strings. Loading the
@@ -14,6 +15,7 @@ same validation errors.
 
 ```json
 {
+  "presets": [],
   "builtins": [
     "builtin.module",
     "func.func",
@@ -29,7 +31,8 @@ same validation errors.
 }
 ```
 
-Both fields are required; either list may be empty. An empty registry is
+`builtins` and `operation_shapes` are required; either list may be empty.
+`presets` is optional. An empty registry is
 `{"builtins": [], "operation_shapes": []}`. No operations are added implicitly.
 In particular, loading this configuration does not extend the CLI's default
 proving registry or Python's default empty registry.
@@ -40,19 +43,22 @@ proving registry or Python's default empty registry.
 its `module` shorthand, as the existing registry constructor does.
 
 An operation-shape entry assigns a supported grammar to one exact operation
-name. The initial shape strings are `func_like` and `call_like`. The names are
-case-sensitive; `air.Func` and `air.func` remain distinct.
+name. The shape strings are `func_like`, `call_like`, `binary_operands`, and
+`optional_typed_operands`. The names are case-sensitive; `air.Func` and
+`air.func` remain distinct.
 
 A list of entries is a little longer than a name-to-shape object, but duplicate
 operation names remain visible to the shared validator. Ordinary JSON object
 deserialization can otherwise overwrite a duplicate key before validation.
 It also gives each operation an ordinary typed record in Rust and a Pydantic model in Python.
 
-Explicit built-in names avoid an implicit, growing `proving` preset in saved
-files. Existing programmatic presets remain useful; the file format needs only
-one way to select its built-ins. There is no format-version field in this first
-experimental implementation. Unknown fields are rejected, and an incompatible
-future format change needs an explicit compatibility decision.
+Explicit built-in names keep saved registries inspectable. The optional
+`presets` field composes definitions bundled with Zirium; `stablehlo` is the
+first such preset. Its checked-in JSON file is embedded in the Rust library and
+therefore travels with both the crate and Python wheels. There is no
+format-version field in this experimental implementation. Unknown fields are
+rejected, and an incompatible future format change needs an explicit
+compatibility decision.
 
 JSON is the sole file syntax initially. It works directly with Python's
 standard library and Serde JSON. Do not add JSON5 comments, YAML, includes,
@@ -170,6 +176,8 @@ exposed through the dialect module:
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryConfig {
+    #[serde(default)]
+    pub presets: Vec<String>,
     pub builtins: Vec<String>,
     pub operation_shapes: Vec<OperationShapeConfig>,
 }
@@ -196,6 +204,7 @@ configuration crate or optional-feature matrix for this small API.
 
 The shared API provides:
 
+- `DialectRegistry::from_name("stablehlo")` builds a bundled preset.
 - `RegistryConfig::from_json(&str)` deserializes the schema.
 - `RegistryConfig::build(&self)` validates and constructs an owned registry.
 - `DialectRegistry::from_config_file(path)` reads UTF-8 JSON and invokes both.

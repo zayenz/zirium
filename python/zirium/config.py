@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class OperationShapeConfig(BaseModel):
@@ -11,13 +11,16 @@ class OperationShapeConfig(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     name: str
-    shape: Literal["func_like", "call_like"]
+    shape: Literal[
+        "func_like", "call_like", "binary_operands", "optional_typed_operands"
+    ]
 
 
 class RegistryConfig(BaseModel):
-    """A complete registry; registration conflicts are checked by from_config."""
+    """A complete registry composed from presets and explicit entries."""
 
     model_config = ConfigDict(strict=True, extra="forbid")
 
+    presets: list[str] = Field(default_factory=list)
     builtins: list[str]
     operation_shapes: list[OperationShapeConfig]
