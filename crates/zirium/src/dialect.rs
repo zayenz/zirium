@@ -634,7 +634,7 @@ impl DialectRegistry {
 
     pub(crate) fn custom_operation(&self, spelling: &str) -> Option<&OperationDescriptor> {
         self.operation(spelling).or_else(|| {
-            (spelling == "module" && (self.module_alias || std::ptr::eq(self, &CORE_REGISTRY)))
+            (spelling == "module" && self.module_alias)
                 .then(|| self.operation("builtin.module"))
                 .flatten()
         })
@@ -1501,4 +1501,10 @@ static CORE_OPERATIONS: &[OperationDescriptor] =
 static DECLARATIVE_OPERATION_SETS: [OnceLock<Box<[OperationDescriptor]>>; 256] =
     [const { OnceLock::new() }; 256];
 static PROVING_REGISTRY: DialectRegistry = DialectRegistry::new(PROVING_OPERATIONS, &[], &[]);
-static CORE_REGISTRY: DialectRegistry = DialectRegistry::new(CORE_OPERATIONS, &[], &[]);
+static CORE_REGISTRY: DialectRegistry = DialectRegistry {
+    operations: CORE_OPERATIONS,
+    types: &[],
+    attributes: &[],
+    operation_shapes: None,
+    module_alias: true,
+};

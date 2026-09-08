@@ -60,6 +60,27 @@ fn operation_shapes_extend_existing_registries() {
 }
 
 #[test]
+fn operation_shapes_preserve_the_core_module_alias() {
+    let source = br#"module @outer {
+      module @inner {
+        "a.Op"() : () -> ()
+      }
+    }"#;
+    let empty_extension = DialectRegistry::core()
+        .extend_operation_shapes(&[])
+        .unwrap();
+    let shaped_extension = DialectRegistry::core()
+        .extend_operation_shapes(&[("vendor.function", OperationShape::FuncLike)])
+        .unwrap();
+
+    for registry in [&empty_extension, &shaped_extension] {
+        let parsed = ParsedFile::parse_with_registry(source.as_slice(), registry).unwrap();
+        assert!(parsed.syntax().diagnostics().is_empty());
+        assert_eq!(parsed.syntax().file().operations().count(), 3);
+    }
+}
+
+#[test]
 fn owned_operation_shapes_lower_neutral_func_and_call_forms() {
     assert!(std::mem::needs_drop::<DialectRegistry>());
     for index in 0..32 {
