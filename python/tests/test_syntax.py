@@ -97,6 +97,14 @@ def test_operation_shape_registry_validates_owned_per_mnemonic_mappings():
         )
 
 
+def test_operation_shapes_extend_declarative_registries():
+    registry = zirium.DialectRegistry.declarative(
+        ["arith.constant"]
+    ).extend_operation_shapes({"vendor.function": zirium.OperationShape.FUNC_LIKE})
+    source = "%value = arith.constant 7 : i32\nvendor.function @decl()"
+    assert zirium.parse_text(source, registry=registry).diagnostics == []
+
+
 def test_invalid_utf8_bytes_and_exact_original_output():
     source = VALID + b"\xff\xfe"
     parsed = zirium.parse_bytes(source)

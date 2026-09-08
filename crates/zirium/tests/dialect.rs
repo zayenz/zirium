@@ -42,6 +42,24 @@ fn declarative_registry_owns_a_selected_builtin_subset() {
 }
 
 #[test]
+fn operation_shapes_extend_existing_registries() {
+    let registry = DialectRegistry::declarative(&["arith.constant"])
+        .unwrap()
+        .extend_operation_shapes(&[("vendor.function", OperationShape::FuncLike)])
+        .unwrap();
+    assert!(registry.operation("arith.constant").is_some());
+    assert_eq!(
+        registry.operation_shape("vendor.function"),
+        Some(OperationShape::FuncLike)
+    );
+    assert!(
+        registry
+            .extend_operation_shapes(&[("arith.constant", OperationShape::CallLike)])
+            .is_err()
+    );
+}
+
+#[test]
 fn owned_operation_shapes_lower_neutral_func_and_call_forms() {
     assert!(std::mem::needs_drop::<DialectRegistry>());
     for index in 0..32 {

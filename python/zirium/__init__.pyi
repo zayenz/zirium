@@ -52,6 +52,9 @@ class DialectRegistry:
     def with_operation_shapes(
         operation_shapes: Mapping[str, OperationShape],
     ) -> DialectRegistry: ...
+    def extend_operation_shapes(
+        self, operation_shapes: Mapping[str, OperationShape]
+    ) -> DialectRegistry: ...
 
 class SyntaxNode:
     @property

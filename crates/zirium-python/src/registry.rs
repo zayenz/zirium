@@ -90,4 +90,22 @@ impl DialectRegistryHandle {
             kind: RegistryKind::Declarative(Arc::new(registry)),
         })
     }
+
+    fn extend_operation_shapes(
+        &self,
+        operation_shapes: HashMap<String, PyRef<'_, OperationShape>>,
+    ) -> PyResult<Self> {
+        let owned = operation_shapes
+            .iter()
+            .map(|(name, shape)| (name.as_str(), shape.shape))
+            .collect::<Vec<_>>();
+        let registry = self
+            .kind
+            .registry()
+            .extend_operation_shapes(&owned)
+            .map_err(py_error)?;
+        Ok(Self {
+            kind: RegistryKind::Declarative(Arc::new(registry)),
+        })
+    }
 }

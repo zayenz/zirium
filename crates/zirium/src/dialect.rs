@@ -296,6 +296,7 @@ pub enum DeclarativeRegistryError {
     DuplicateOperation(String),
     EmptyOperation,
     CoreOperation(String),
+    RegisteredOperation(String),
 }
 
 impl std::fmt::Display for DeclarativeRegistryError {
@@ -311,6 +312,10 @@ impl std::fmt::Display for DeclarativeRegistryError {
             Self::CoreOperation(name) => write!(
                 formatter,
                 "operation shape conflicts with core operation: {name}"
+            ),
+            Self::RegisteredOperation(name) => write!(
+                formatter,
+                "operation shape conflicts with registered operation: {name}"
             ),
         }
     }
@@ -329,6 +334,7 @@ impl std::error::Error for DeclarativeRegistryError {}
 /// Use [`Self::EMPTY`] for generic quoted syntax, [`Self::core`] or
 /// [`Self::proving`] for the built-in sets, and [`Self::new`] for static custom
 /// descriptors.
+#[derive(Clone)]
 pub struct DialectRegistry {
     operations: &'static [OperationDescriptor],
     types: &'static [TypeDescriptor],
@@ -535,17 +541,47 @@ impl DialectRegistry {
     pub fn with_operation_shapes(
         operation_shapes: &[(&str, OperationShape)],
     ) -> Result<Self, DeclarativeRegistryError> {
-        let mut shapes = Vec::with_capacity(operation_shapes.len());
+        Self {
+            operations: CORE_OPERATIONS,
+            types: &[],
+            attributes: &[],
+            operation_shapes: None,
+            module_alias: true,
+        }
+        .extend_operation_shapes(operation_shapes)
+        .map_err(|error| match error {
+            DeclarativeRegistryError::RegisteredOperation(name) => {
+                DeclarativeRegistryError::CoreOperation(name)
+            }
+            error => error,
+        })
+    }
+
+    /// Returns this registry with additional caller-named operation shapes.
+    ///
+    /// Existing descriptors, types, attributes, aliases, and shapes remain available.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty names, duplicate shapes, and names already registered as operations.
+    pub fn extend_operation_shapes(
+        &self,
+        operation_shapes: &[(&str, OperationShape)],
+    ) -> Result<Self, DeclarativeRegistryError> {
+        let mut shapes = self
+            .operation_shapes
+            .as_deref()
+            .unwrap_or_default()
+            .to_vec();
+        shapes.reserve(operation_shapes.len());
         for &(name, shape) in operation_shapes {
             if name.is_empty() {
                 return Err(DeclarativeRegistryError::EmptyOperation);
             }
-            if CORE_OPERATIONS
-                .iter()
-                .any(|descriptor| descriptor.name == name)
-                || name == "module"
-            {
-                return Err(DeclarativeRegistryError::CoreOperation(name.to_owned()));
+            if self.operation(name).is_some() || (name == "module" && self.module_alias) {
+                return Err(DeclarativeRegistryError::RegisteredOperation(
+                    name.to_owned(),
+                ));
             }
             if shapes.iter().any(|(candidate, _)| candidate == name) {
                 return Err(DeclarativeRegistryError::DuplicateOperation(
@@ -555,11 +591,11 @@ impl DialectRegistry {
             shapes.push((name.to_owned(), shape));
         }
         Ok(Self {
-            operations: CORE_OPERATIONS,
-            types: &[],
-            attributes: &[],
+            operations: self.operations,
+            types: self.types,
+            attributes: self.attributes,
             operation_shapes: Some(shapes.into_boxed_slice()),
-            module_alias: true,
+            module_alias: self.module_alias,
         })
     }
 

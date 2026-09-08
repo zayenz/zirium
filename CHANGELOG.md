@@ -8,6 +8,8 @@
   from unregistered custom-format operations.
 - Suppress semantic diagnostics caused only by successful custom-operation
   recovery. The syntax diagnostic and `is_unparsed` identify each recovered op.
+- Compose operation shapes with empty, core, proving, or declarative registries
+  through `extend_operation_shapes`.
 
 ## 0.0.4
 
