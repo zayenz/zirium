@@ -396,61 +396,12 @@ impl SemanticDiagnosticCode {
             Self::InvalidValue => "semantic.InvalidValue",
         }
     }
-
-    fn classify(message: &str) -> Self {
-        if message.contains("limit") || message.contains("exceeds") {
-            Self::ResourceLimit
-        } else if message.starts_with("unresolved") {
-            Self::UnresolvedReference
-        } else if message.starts_with("duplicate") {
-            Self::DuplicateDefinition
-        } else if message.contains("count")
-            || message.contains("arity")
-            || message.contains("expects")
-        {
-            Self::ArityMismatch
-        } else if message.contains("location") {
-            Self::Location
-        } else if message.contains("affine") || message.contains("integer set") {
-            Self::Affine
-        } else if message.contains("symbol") || message.contains("callee") {
-            Self::Symbol
-        } else if message.contains("successor")
-            || message.contains("block")
-            || message.contains("terminator")
-            || message.contains("branch")
-        {
-            Self::ControlFlow
-        } else if message.contains("type")
-            || message.contains("tensor")
-            || message.contains("vector")
-            || message.contains("memref")
-            || message.contains("layout")
-            || message.contains("memory space")
-            || message.contains("dimension")
-        {
-            Self::Type
-        } else if message.contains("attribute")
-            || message.contains("dictionary")
-            || message.contains("integer")
-            || message.contains("float")
-            || message.contains("boolean")
-            || message.contains("dense")
-            || message.contains("sparse")
-        {
-            Self::Attribute
-        } else if message.starts_with("malformed") {
-            Self::Syntax
-        } else {
-            Self::InvalidValue
-        }
-    }
 }
 
 impl SemanticDiagnostic {
-    fn new(range: TextRange, message: String) -> Self {
+    fn new(code: SemanticDiagnosticCode, range: TextRange, message: String) -> Self {
         Self {
-            code: SemanticDiagnosticCode::classify(&message),
+            code,
             range,
             message,
         }

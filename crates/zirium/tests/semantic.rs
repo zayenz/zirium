@@ -770,6 +770,18 @@ fn unresolved_reference_obeys_strict_and_best_effort_contract() {
         document.operands(consume),
         Some([ValueReference::Invalid(_)])
     ));
+
+    let named_like_a_limit =
+        ParsedFile::parse(br#"%r = "producer"(%limit) : (i32) -> i32"#.to_vec()).unwrap();
+    let lowered = lower_with_dialect_registry(
+        &named_like_a_limit,
+        LoweringMode::BestEffort,
+        &DialectRegistry::EMPTY,
+    );
+    assert_eq!(
+        lowered.diagnostics[0].code,
+        zirium::semantic::SemanticDiagnosticCode::UnresolvedReference
+    );
 }
 
 #[test]

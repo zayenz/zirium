@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.0.5
+
+Zirium 0.0.5 improves recovery and semantic inspection of custom-format MLIR.
 
 - Resolve enclosing block arguments from nested regions.
 - Decode quoted symbol-reference segments in Python's `symbol_value` accessor.

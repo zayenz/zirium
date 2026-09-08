@@ -284,6 +284,7 @@ fn lower_with_registry(
     for (name, range) in duplicate_aliases {
         push_diagnostic(
             &mut doc,
+            SemanticDiagnosticCode::DuplicateDefinition,
             range,
             format!("duplicate alias definition `{name}`"),
         );
@@ -314,6 +315,7 @@ fn lower_with_registry(
                 _ => return None,
             };
             Some(SemanticDiagnostic::new(
+                SemanticDiagnosticCode::Syntax,
                 syntax.tree().text_range(node)?,
                 message.into(),
             ))
@@ -323,12 +325,22 @@ fn lower_with_registry(
         if !doc.diagnostics.iter().any(|existing| {
             existing.range == diagnostic.range && existing.message == diagnostic.message
         }) {
-            push_diagnostic(&mut doc, diagnostic.range, diagnostic.message);
+            push_diagnostic(
+                &mut doc,
+                diagnostic.code,
+                diagnostic.range,
+                diagnostic.message,
+            );
         }
     }
     for diagnostic in file.lexer_diagnostics() {
         push_diagnostic(
             &mut doc,
+            match diagnostic.kind() {
+                crate::lexer::DiagnosticKind::FileLimit
+                | crate::lexer::DiagnosticKind::TokenLimit => SemanticDiagnosticCode::ResourceLimit,
+                _ => SemanticDiagnosticCode::Syntax,
+            },
             diagnostic.range(),
             format!("malformed token: {:?}", diagnostic.kind()),
         );
@@ -463,6 +475,7 @@ fn lower_with_registry(
             if count == 0 || duplicate {
                 push_diagnostic(
                     &mut doc,
+                    SemanticDiagnosticCode::DuplicateDefinition,
                     result.tree().text_range(result.id()).unwrap(),
                     format!("duplicate or empty SSA result group `%{name}`"),
                 );
@@ -475,6 +488,7 @@ fn lower_with_registry(
         if result_index != output_types.len() {
             push_diagnostic(
                 &mut doc,
+                SemanticDiagnosticCode::ArityMismatch,
                 op.tree().text_range(op.id()).unwrap(),
                 format!(
                     "result definition count {result_index} does not match result type count {}",
@@ -552,6 +566,7 @@ fn lower_with_registry(
             if block_definitions.contains_key(&(id, name.clone())) {
                 push_diagnostic(
                     &mut doc,
+                    SemanticDiagnosticCode::DuplicateDefinition,
                     syntax_argument
                         .tree()
                         .text_range(syntax_argument.id())
@@ -690,6 +705,7 @@ fn lower_with_registry(
                 {
                     push_diagnostic(
                         &mut doc,
+                        SemanticDiagnosticCode::DuplicateDefinition,
                         range,
                         format!("duplicate inherent attribute `{name}`"),
                     );
@@ -783,6 +799,7 @@ fn lower_with_registry(
             if labels.contains_key(&name) {
                 push_diagnostic(
                     &mut doc,
+                    SemanticDiagnosticCode::DuplicateDefinition,
                     syntax.tree().text_range(label).unwrap(),
                     format!("duplicate block label `^{name}` in region"),
                 );
@@ -833,8 +850,12 @@ fn lower_with_registry(
                         .tree()
                         .text_range(op.id())
                         .unwrap_or_else(|| TextRange::at(source.len()));
-                    let diagnostic =
-                        push_diagnostic(&mut doc, range, "malformed successor".to_owned());
+                    let diagnostic = push_diagnostic(
+                        &mut doc,
+                        SemanticDiagnosticCode::ControlFlow,
+                        range,
+                        "malformed successor".to_owned(),
+                    );
                     return Successor {
                         block: BlockId::new(usize::MAX, generation),
                         invalid: Some(diagnostic),
@@ -854,6 +875,7 @@ fn lower_with_registry(
                     None => {
                         let diagnostic = push_diagnostic(
                             &mut doc,
+                            SemanticDiagnosticCode::UnresolvedReference,
                             range,
                             format!("unresolved block `^{label}`"),
                         );
@@ -877,6 +899,7 @@ fn lower_with_registry(
                             ),
                             None => ValueReference::Invalid(push_diagnostic(
                                 &mut doc,
+                                SemanticDiagnosticCode::ControlFlow,
                                 range,
                                 "malformed successor argument".to_owned(),
                             )),
@@ -897,6 +920,7 @@ fn lower_with_registry(
                 if invalid.is_none() && arguments.len() != expected.len() {
                     push_diagnostic(
                         &mut doc,
+                        SemanticDiagnosticCode::ArityMismatch,
                         range,
                         format!(
                             "successor `^{label}` expects {} arguments, got {}",
@@ -916,6 +940,7 @@ fn lower_with_registry(
                     if actual_type != *expected_type {
                         push_diagnostic(
                             &mut doc,
+                            SemanticDiagnosticCode::ControlFlow,
                             range,
                             format!(
                                 "successor `^{label}` argument {index} has type `{actual_type}`, expected `{expected_type}`"
@@ -955,14 +980,14 @@ fn lower_with_registry(
     unparsed_ranges.sort_by_key(|range| range.start());
     let mut merged_unparsed_ranges = Vec::<TextRange>::new();
     for range in unparsed_ranges {
-        if let Some(previous) = merged_unparsed_ranges.last_mut()
-            && range.start() <= previous.end()
-        {
-            *previous = TextRange::new(previous.start(), previous.end().max(range.end()))
-                .expect("merged source ranges remain ordered");
-        } else {
-            merged_unparsed_ranges.push(range);
+        if let Some(previous) = merged_unparsed_ranges.last_mut() {
+            if range.start() <= previous.end() {
+                *previous = TextRange::new(previous.start(), previous.end().max(range.end()))
+                    .expect("merged source ranges remain ordered");
+                continue;
+            }
         }
+        merged_unparsed_ranges.push(range);
     }
     let diagnostics = doc
         .diagnostics
@@ -977,7 +1002,7 @@ fn lower_with_registry(
                 .checked_sub(1)
                 .and_then(|index| merged_unparsed_ranges.get(index));
             diagnostic.code != SemanticDiagnosticCode::UnresolvedReference
-                || !candidate.is_some_and(|range| diagnostic.range.end() <= range.end())
+                || candidate.is_none_or(|range| diagnostic.range.end() > range.end())
         })
         .cloned()
         .collect();

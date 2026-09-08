@@ -4,6 +4,7 @@ use super::lowering::Interner;
 pub(super) struct AliasExpansionState {
     limit: usize,
     active: HashSet<String>,
+    limit_exceeded: bool,
 }
 
 impl AliasExpansionState {
@@ -11,6 +12,7 @@ impl AliasExpansionState {
         Self {
             limit,
             active: HashSet::new(),
+            limit_exceeded: false,
         }
     }
 
@@ -19,6 +21,7 @@ impl AliasExpansionState {
             return Err(format!("cyclic {family} alias `{alias}`"));
         }
         if self.active.len() >= self.limit {
+            self.limit_exceeded = true;
             return Err(format!(
                 "alias expansion depth exceeds limit of {}",
                 self.limit
@@ -30,6 +33,14 @@ impl AliasExpansionState {
 
     fn exit(&mut self, alias: &str) {
         self.active.remove(alias);
+    }
+
+    fn diagnostic_code(&self, fallback: SemanticDiagnosticCode) -> SemanticDiagnosticCode {
+        if self.limit_exceeded {
+            SemanticDiagnosticCode::ResourceLimit
+        } else {
+            fallback
+        }
     }
 }
 
@@ -177,7 +188,12 @@ fn lower_type_value_with_stack(
     if let Some((target, _)) = type_aliases.get(spelling) {
         if target != spelling {
             if let Err(message) = alias_stack.enter(spelling, "type") {
-                return TypeValue::Invalid(push_diagnostic(doc, range, message));
+                return TypeValue::Invalid(push_diagnostic(
+                    doc,
+                    alias_stack.diagnostic_code(SemanticDiagnosticCode::Type),
+                    range,
+                    message,
+                ));
             }
             let value = lower_type_value_with_stack(
                 target,
@@ -261,6 +277,7 @@ fn lower_type_value_with_stack(
                                     None,
                                     Some(push_diagnostic(
                                         doc,
+                                        SemanticDiagnosticCode::Type,
                                         range,
                                         format!("invalid {prefix} dimension `{dimension}`"),
                                     )),
@@ -338,7 +355,12 @@ fn lower_type_value_with_stack(
         Err(message) => message,
         Ok(_) => format!("unsupported or malformed type `{spelling}`"),
     };
-    TypeValue::Invalid(push_diagnostic(doc, range, message))
+    TypeValue::Invalid(push_diagnostic(
+        doc,
+        SemanticDiagnosticCode::Type,
+        range,
+        message,
+    ))
 }
 
 fn lower_memref_layout(
@@ -355,6 +377,7 @@ fn lower_memref_layout(
             AttributeValue::Invalid(diagnostic) => MemRefLayout::Invalid(diagnostic),
             _ => MemRefLayout::Invalid(push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::Type,
                 range,
                 "memref affine layout has wrong kind".into(),
             )),
@@ -363,7 +386,14 @@ fn lower_memref_layout(
     if let Some(affine_spelling) =
         match resolve_affine_alias(spelling.trim(), attribute_aliases, expansion) {
             Ok(value) => value,
-            Err(message) => return MemRefLayout::Invalid(push_diagnostic(doc, range, message)),
+            Err(message) => {
+                return MemRefLayout::Invalid(push_diagnostic(
+                    doc,
+                    expansion.diagnostic_code(SemanticDiagnosticCode::Type),
+                    range,
+                    message,
+                ));
+            }
         }
     {
         return match lower_affine_attribute(affine_spelling, range, doc) {
@@ -371,6 +401,7 @@ fn lower_memref_layout(
             AttributeValue::Invalid(diagnostic) => MemRefLayout::Invalid(diagnostic),
             AttributeValue::IntegerSet(_) => MemRefLayout::Invalid(push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::Type,
                 range,
                 "integer set has wrong kind for memref affine layout".into(),
             )),
@@ -388,6 +419,7 @@ fn lower_memref_layout(
             | AttributeValue::Dictionary(_)
             | AttributeValue::Location(_) => MemRefLayout::Invalid(push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::Type,
                 range,
                 "affine alias has wrong kind for memref affine layout".into(),
             )),
@@ -424,7 +456,12 @@ fn lower_memref_layout(
                     ),
                 }
             } else {
-                MemRefLayout::Invalid(push_diagnostic(doc, range, message))
+                MemRefLayout::Invalid(push_diagnostic(
+                    doc,
+                    expansion.diagnostic_code(SemanticDiagnosticCode::Type),
+                    range,
+                    message,
+                ))
             }
         }
     }
@@ -506,6 +543,7 @@ fn lower_memref_alias_parameters(
             let value = if alias.starts_with('!') {
                 AttributeValue::Invalid(push_diagnostic(
                     doc,
+                    SemanticDiagnosticCode::Type,
                     range,
                     format!("memref layout alias `{alias}` has type kind, expected attribute"),
                 ))
@@ -522,6 +560,7 @@ fn lower_memref_alias_parameters(
             if matches!(value, AttributeValue::Type(_)) {
                 AttributeValue::Invalid(push_diagnostic(
                     doc,
+                    SemanticDiagnosticCode::Type,
                     range,
                     format!("memref layout alias `{alias}` has type kind, expected attribute"),
                 ))
@@ -589,6 +628,7 @@ fn lower_memref_memory_space(
     if spelling.trim().starts_with('!') {
         return AttributeValue::Invalid(push_diagnostic(
             doc,
+            SemanticDiagnosticCode::Type,
             range,
             format!(
                 "memref memory space `{}` has type kind, expected attribute",
@@ -607,6 +647,7 @@ fn lower_memref_memory_space(
     if matches!(value, AttributeValue::Type(_)) {
         AttributeValue::Invalid(push_diagnostic(
             doc,
+            SemanticDiagnosticCode::Type,
             range,
             format!(
                 "memref memory space `{}` has type kind, expected attribute",
@@ -1017,8 +1058,8 @@ pub(super) fn lower_location_value(
     stack: &mut AliasExpansionState,
     doc: &mut Document,
 ) -> LocationValue {
-    let invalid = |doc: &mut Document, message: String| {
-        LocationValue::Invalid(push_diagnostic(doc, range, message))
+    let invalid = |doc: &mut Document, code: SemanticDiagnosticCode, message: String| {
+        LocationValue::Invalid(push_diagnostic(doc, code, range, message))
     };
     let spelling = spelling.trim();
     if spelling.starts_with('#') {
@@ -1029,10 +1070,19 @@ pub(super) fn lower_location_value(
             } else {
                 format!("unresolved location alias `{alias}`")
             };
-            return invalid(doc, message);
+            let code = if type_aliases.contains_key(&format!("!{}", &alias[1..])) {
+                SemanticDiagnosticCode::Location
+            } else {
+                SemanticDiagnosticCode::UnresolvedReference
+            };
+            return invalid(doc, code, message);
         };
         if let Err(message) = stack.enter(&alias, "location") {
-            return invalid(doc, message);
+            return invalid(
+                doc,
+                stack.diagnostic_code(SemanticDiagnosticCode::Location),
+                message,
+            );
         }
         let wrapped;
         let target = if target.starts_with("loc(") {
@@ -1051,7 +1101,11 @@ pub(super) fn lower_location_value(
         .and_then(|value| value.strip_suffix(')'))
         .map(str::trim)
     else {
-        return invalid(doc, "invalid semantic location".into());
+        return invalid(
+            doc,
+            SemanticDiagnosticCode::Location,
+            "invalid semantic location".into(),
+        );
     };
     if inner.starts_with('#') {
         return lower_location_value(inner, range, type_aliases, attribute_aliases, stack, doc);
@@ -1059,7 +1113,13 @@ pub(super) fn lower_location_value(
     if let Some(fused) = inner.strip_prefix("fused") {
         let (metadata, values) = match fused_parts(fused) {
             Some(parts) => parts,
-            None => return invalid(doc, "malformed fused location".into()),
+            None => {
+                return invalid(
+                    doc,
+                    SemanticDiagnosticCode::Location,
+                    "malformed fused location".into(),
+                );
+            }
         };
         let locations = split_top_level_commas(values)
             .iter()
@@ -1077,7 +1137,11 @@ pub(super) fn lower_location_value(
         .and_then(|value| value.strip_suffix(')'))
     {
         let Some((callee, caller)) = split_at_keyword(callsite, " at ") else {
-            return invalid(doc, "malformed callsite location".into());
+            return invalid(
+                doc,
+                SemanticDiagnosticCode::Location,
+                "malformed callsite location".into(),
+            );
         };
         return LocationValue::CallSite {
             callee: Box::new(lower_location_detail(
@@ -1119,6 +1183,7 @@ fn lower_location_detail(
         let Some(quote_end) = stripped.find('"').map(|index| index + 1) else {
             return LocationValue::Invalid(push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::Location,
                 range,
                 format!("invalid nested location `{spelling}`"),
             ));
@@ -1129,6 +1194,7 @@ fn lower_location_detail(
             return parse_location_detail(spelling).unwrap_or_else(|| {
                 LocationValue::Invalid(push_diagnostic(
                     doc,
+                    SemanticDiagnosticCode::Location,
                     range,
                     format!("invalid nested location `{spelling}`"),
                 ))
@@ -1156,6 +1222,7 @@ fn lower_location_detail(
         parse_location_detail(spelling).unwrap_or_else(|| {
             LocationValue::Invalid(push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::Location,
                 range,
                 format!("invalid nested location `{spelling}`"),
             ))
@@ -1415,6 +1482,7 @@ pub(super) fn lower_dictionary(
             let duplicate = seen.insert(name_id, attribute_range).map(|previous| {
                 push_diagnostic(
                     doc,
+                    SemanticDiagnosticCode::DuplicateDefinition,
                     attribute_range,
                     format!(
                         "duplicate {kind} key `{}` (previous at {})",
@@ -1461,6 +1529,7 @@ pub(super) fn lower_dictionary(
             {
                 AttributeValue::Invalid(push_diagnostic(
                     doc,
+                    SemanticDiagnosticCode::Attribute,
                     attribute_range,
                     "malformed attribute value".into(),
                 ))
@@ -1480,6 +1549,7 @@ pub(super) fn lower_dictionary(
             } else if value_spelling.is_empty() && name.trim() != "no_inline" {
                 AttributeValue::Invalid(push_diagnostic(
                     doc,
+                    SemanticDiagnosticCode::Attribute,
                     attribute_range,
                     "malformed dictionary entry".into(),
                 ))
@@ -1536,6 +1606,7 @@ fn lower_attribute_value_with_depth(
         if depth >= doc.attribute_depth_limit {
             return AttributeValue::Invalid(push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::ResourceLimit,
                 range,
                 "attribute nesting depth limit exceeded".into(),
             ));
@@ -1545,7 +1616,12 @@ fn lower_attribute_value_with_depth(
                 element_type,
                 elements,
             },
-            Err(message) => AttributeValue::Invalid(push_diagnostic(doc, range, message)),
+            Err(message) => AttributeValue::Invalid(push_diagnostic(
+                doc,
+                SemanticDiagnosticCode::Attribute,
+                range,
+                message,
+            )),
         };
     }
     if let Some(inner) = angle_inner(spelling, "type") {
@@ -1565,7 +1641,12 @@ fn lower_attribute_value_with_depth(
         match resolve_affine_alias(spelling, attribute_aliases, stack) {
             Ok(Some(target)) => return lower_affine_attribute(target, range, doc),
             Err(message) => {
-                return AttributeValue::Invalid(push_diagnostic(doc, range, message));
+                return AttributeValue::Invalid(push_diagnostic(
+                    doc,
+                    stack.diagnostic_code(SemanticDiagnosticCode::Attribute),
+                    range,
+                    message,
+                ));
             }
             Ok(None) => {}
         }
@@ -1574,6 +1655,7 @@ fn lower_attribute_value_with_depth(
         if depth >= doc.attribute_depth_limit {
             return AttributeValue::Invalid(push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::ResourceLimit,
                 range,
                 "attribute nesting depth limit exceeded".into(),
             ));
@@ -1599,6 +1681,7 @@ fn lower_attribute_value_with_depth(
         if depth >= doc.attribute_depth_limit {
             return AttributeValue::Invalid(push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::ResourceLimit,
                 range,
                 "attribute nesting depth limit exceeded".into(),
             ));
@@ -1608,11 +1691,17 @@ fn lower_attribute_value_with_depth(
             .into_iter()
             .map(|entry| {
                 let Some((name, value)) = entry.split_once('=') else {
-                    push_diagnostic(doc, range, format!("malformed dictionary entry `{entry}`"));
+                    push_diagnostic(
+                        doc,
+                        SemanticDiagnosticCode::Attribute,
+                        range,
+                        format!("malformed dictionary entry `{entry}`"),
+                    );
                     return (
                         "<invalid>".into(),
                         AttributeValue::Invalid(push_diagnostic(
                             doc,
+                            SemanticDiagnosticCode::Attribute,
                             range,
                             "malformed dictionary entry".into(),
                         )),
@@ -1632,6 +1721,7 @@ fn lower_attribute_value_with_depth(
                 let value = if duplicate {
                     AttributeValue::Invalid(push_diagnostic(
                         doc,
+                        SemanticDiagnosticCode::DuplicateDefinition,
                         range,
                         format!("duplicate dictionary key `{name}`"),
                     ))
@@ -1679,7 +1769,12 @@ fn lower_attribute_value_with_depth(
     }
     match resolve_attribute(spelling, type_aliases, attribute_aliases, stack) {
         Ok(value) => value,
-        Err(message) => AttributeValue::Invalid(push_diagnostic(doc, range, message)),
+        Err(message) => AttributeValue::Invalid(push_diagnostic(
+            doc,
+            stack.diagnostic_code(SemanticDiagnosticCode::Attribute),
+            range,
+            message,
+        )),
     }
 }
 
@@ -1895,7 +1990,12 @@ fn invalid_affine_attribute(
         );
         AttributeValue::AffineMap(AffineMapId::new(index, doc.generation))
     } else {
-        let diagnostic = push_diagnostic(doc, range, message.to_owned());
+        let diagnostic = push_diagnostic(
+            doc,
+            SemanticDiagnosticCode::Affine,
+            range,
+            message.to_owned(),
+        );
         let right = invalid_affine_expression(doc, range, message);
         let index = intern_integer_set(
             doc,
@@ -1914,7 +2014,12 @@ fn invalid_affine_attribute(
 }
 
 fn invalid_affine_expression(doc: &mut Document, range: TextRange, message: &str) -> AffineExprId {
-    let diagnostic = push_diagnostic(doc, range, message.to_owned());
+    let diagnostic = push_diagnostic(
+        doc,
+        SemanticDiagnosticCode::Affine,
+        range,
+        message.to_owned(),
+    );
     let index = intern_affine_expression(doc, AffineExprValue::Invalid(diagnostic));
     AffineExprId::new(index, doc.generation)
 }
@@ -1955,6 +2060,7 @@ fn parse_affine_names(
         }) {
             push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::Affine,
                 range,
                 format!("malformed affine {kind} identifier `{name}`"),
             );
@@ -1962,6 +2068,7 @@ fn parse_affine_names(
         if names.iter().any(|existing| existing == name) {
             push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::DuplicateDefinition,
                 range,
                 format!("duplicate affine {kind} identifier `{name}`"),
             );
@@ -2010,6 +2117,7 @@ fn lower_integer_constraint(
         Some((index, _)) => {
             let diagnostic = push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::Affine,
                 range,
                 format!("invalid affine constraint operator in `{value}`"),
             );
@@ -2022,6 +2130,7 @@ fn lower_integer_constraint(
         None => {
             let diagnostic = push_diagnostic(
                 doc,
+                SemanticDiagnosticCode::Affine,
                 range,
                 format!("missing affine constraint operator in `{value}`"),
             );
@@ -2217,7 +2326,12 @@ impl AffineExpressionParser<'_> {
         AffineExprId::new(index, self.doc.generation)
     }
     fn invalid(&mut self, message: String) -> AffineExprId {
-        let diagnostic = push_diagnostic(self.doc, self.range, message);
+        let diagnostic = push_diagnostic(
+            self.doc,
+            SemanticDiagnosticCode::Affine,
+            self.range,
+            message,
+        );
         self.intern(AffineExprValue::Invalid(diagnostic))
     }
 }
@@ -2315,7 +2429,12 @@ pub(super) fn resolve_value(
     } else {
         format!("%{name}")
     };
-    let diagnostic = push_diagnostic(doc, range, format!("unresolved SSA value `{display}`"));
+    let diagnostic = push_diagnostic(
+        doc,
+        SemanticDiagnosticCode::UnresolvedReference,
+        range,
+        format!("unresolved SSA value `{display}`"),
+    );
     ValueReference::Invalid(diagnostic)
 }
 
@@ -2343,12 +2462,13 @@ pub(super) fn value_type(doc: &Document, reference: ValueReference) -> Option<&s
 
 pub(super) fn push_diagnostic(
     doc: &mut Document,
+    code: SemanticDiagnosticCode,
     range: TextRange,
     message: String,
 ) -> DiagnosticId {
     let id = DiagnosticId::new(doc.diagnostics.len(), doc.generation);
     doc.diagnostics
-        .push(SemanticDiagnostic::new(range, message));
+        .push(SemanticDiagnostic::new(code, range, message));
     doc.complete = false;
     id
 }
