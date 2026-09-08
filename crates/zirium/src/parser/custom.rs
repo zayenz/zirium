@@ -435,6 +435,17 @@ pub(super) fn shaped_operation(
             parser.function_type()?;
         }
     }
+    parser.trivia()?;
+    if parser.at(TokenKind::Loc) {
+        let location = parser.builder.start();
+        let location_good = parser.location_attribute()?;
+        good &= location_good;
+        parser.builder.complete_with_error(
+            location,
+            SyntaxKind::TrailingLocation,
+            !location_good,
+        )?;
+    }
     parser
         .builder
         .complete_with_error(marker, SyntaxKind::DialectOperation, !good)?;

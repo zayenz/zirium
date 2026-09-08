@@ -170,6 +170,34 @@ fn shaped_call_like_operations_accept_nested_symbol_callees() {
 }
 
 #[test]
+fn shaped_func_like_operations_own_trailing_locations() {
+    let registry =
+        DialectRegistry::with_operation_shapes(&[("vendor.function", OperationShape::FuncLike)])
+            .unwrap();
+    let source = br#"vendor.function @f(%arg: i32) -> i32 {
+      "a.Nop"() : () -> ()
+    } loc(#loc1)
+    #loc1 = loc(unknown)"#;
+
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let operation = parsed.syntax().file().operations().next().unwrap();
+    assert!(operation.trailing_location().is_some());
+
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    assert!(lowered.diagnostics.is_empty());
+    let document = lowered.document.unwrap();
+    let function = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("vendor.function"))
+        .unwrap();
+    assert_eq!(
+        document.operation_location(function),
+        Some(Some("loc(#loc1)"))
+    );
+}
+
+#[test]
 fn shaped_operations_use_header_syntax_boundaries() {
     let registry = DialectRegistry::with_operation_shapes(&[
         ("vendor.function", OperationShape::FuncLike),

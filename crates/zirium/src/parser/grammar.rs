@@ -1424,7 +1424,7 @@ impl Parser<'_> {
         Ok(good)
     }
 
-    fn location_attribute(&mut self) -> Result<bool, CompactError> {
+    pub(super) fn location_attribute(&mut self) -> Result<bool, CompactError> {
         let marker = self.builder.start();
         self.bump()?;
         self.trivia()?;
