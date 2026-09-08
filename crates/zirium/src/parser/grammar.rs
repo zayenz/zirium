@@ -1583,10 +1583,19 @@ impl Parser<'_> {
         let mut stack = Vec::new();
         let mut line_boundary = false;
         let mut completed_payload = false;
+        let mut in_type_tail = false;
         while !self.at(TokenKind::Eof) {
             let current = self.current();
             if stack.is_empty() && current == TokenKind::LBrace && self.region_shaped_body() {
                 self.region()?;
+                completed_payload = true;
+                continue;
+            }
+            if stack.is_empty()
+                && current == TokenKind::LBrace
+                && self.attribute_dictionary_precedes_type_tail()
+            {
+                self.attribute_dict()?;
                 completed_payload = true;
                 continue;
             }
@@ -1610,6 +1619,24 @@ impl Parser<'_> {
             }
             if stack.is_empty() && completed_payload && !is_trivia(current) {
                 completed_payload = false;
+            }
+            if stack.is_empty()
+                && self.position > start
+                && !in_type_tail
+                && current == TokenKind::PercentIdentifier
+            {
+                let operand = self.builder.start();
+                let operand_use = self.builder.start();
+                self.bump()?;
+                if self.at(TokenKind::HashIdentifier) {
+                    self.bump()?;
+                }
+                self.builder.complete(operand_use, SyntaxKind::OperandUse)?;
+                self.builder.complete(operand, SyntaxKind::Operand)?;
+                continue;
+            }
+            if stack.is_empty() && current == TokenKind::Colon {
+                in_type_tail = true;
             }
             if stack.last() == Some(&current) {
                 stack.pop();
@@ -1643,6 +1670,33 @@ impl Parser<'_> {
         self.builder
             .complete_with_error(marker, SyntaxKind::UnparsedCustomOperation, true)?;
         Ok(())
+    }
+    fn attribute_dictionary_precedes_type_tail(&self) -> bool {
+        let mut index = self.position;
+        let mut stack = vec![TokenKind::RBrace];
+        index += 1;
+        while let Some(expected) = stack.last().copied() {
+            let Some(token) = self.tokens.get(index) else {
+                return false;
+            };
+            let current = token.kind();
+            if current == expected {
+                stack.pop();
+            } else if let Some(close) = close_for(current) {
+                stack.push(close);
+            } else if current == TokenKind::Eof {
+                return false;
+            }
+            index += 1;
+        }
+        while self
+            .tokens
+            .get(index)
+            .is_some_and(|token| is_trivia(token.kind()))
+        {
+            index += 1;
+        }
+        self.tokens.get(index).map(|token| token.kind()) == Some(TokenKind::Colon)
     }
     fn result_custom_operation_start(&self) -> bool {
         self.result_assignment_starts_operation(true)

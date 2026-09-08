@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Resolve enclosing block arguments from nested regions.
+- Decode quoted symbol-reference segments in Python's `symbol_value` accessor.
+- Recover result declarations, operand uses, and trailing attribute dictionaries
+  from unregistered custom-format operations.
+- Suppress semantic diagnostics caused only by successful custom-operation
+  recovery. The syntax diagnostic and `is_unparsed` identify each recovered op.
+
 ## 0.0.4
 
 Zirium 0.0.4 fixes function types used as attribute values in generic-form

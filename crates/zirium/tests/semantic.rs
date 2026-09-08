@@ -51,12 +51,7 @@ fn unknown_custom_operations_lower_with_exact_text_and_nested_regions() {
         &DialectRegistry::EMPTY,
     );
     assert!(!lowered.semantically_complete);
-    assert!(
-        lowered
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("unknown custom operation"))
-    );
+    assert!(lowered.diagnostics.is_empty());
     let document = lowered.document.unwrap();
     let outer = document.root_operations()[0];
     assert_eq!(document.operation_name(outer), Some("vendor.outer"));
@@ -89,6 +84,92 @@ fn unknown_custom_operations_lower_with_exact_text_and_nested_regions() {
     let strict =
         lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
+}
+
+#[test]
+fn unparsed_custom_operations_recover_ssa_and_attribute_structure() {
+    let parsed = ParsedFile::parse(
+        br#""scope"() ({
+^bb0(%arg: i32):
+  %sum = vendor.add %arg, %arg {factor = 2 : i64} : i32
+  "consume"(%sum) : (i32) -> ()
+}) : () -> ()"#
+            .to_vec(),
+    )
+    .unwrap();
+    assert_eq!(parsed.syntax().diagnostics().len(), 1);
+
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let custom = document
+        .operations()
+        .find(|&id| document.operation_name(id) == Some("vendor.add"))
+        .unwrap();
+    assert_eq!(document.result_types(custom).unwrap().len(), 1);
+    assert!(matches!(
+        document.operands(custom),
+        Some([
+            ValueReference::Resolved(ValueId::BlockArgument { .. }),
+            ValueReference::Resolved(ValueId::BlockArgument { .. })
+        ])
+    ));
+    assert!(
+        document
+            .attributes(custom)
+            .unwrap()
+            .any(|(name, spelling)| name == "factor" && spelling == "2 : i64")
+    );
+    let consume = document
+        .operations()
+        .find(|&id| document.operation_name(id) == Some("consume"))
+        .unwrap();
+    assert!(matches!(
+        document.operands(consume),
+        Some([ValueReference::Resolved(ValueId::OperationResult { operation, result: 0 })])
+            if *operation == custom
+    ));
+
+    let recovered = ParsedFile::parse(b"%result = vendor.add %missing : i32".to_vec()).unwrap();
+    assert_eq!(recovered.syntax().diagnostics().len(), 1);
+    let recovered = lower_with_dialect_registry(
+        &recovered,
+        LoweringMode::BestEffort,
+        &DialectRegistry::EMPTY,
+    );
+    assert!(recovered.diagnostics.is_empty());
+}
+
+#[test]
+fn nested_regions_resolve_enclosing_block_arguments() {
+    let parsed = ParsedFile::parse(
+        br#""scope"() ({
+^bb0(%arg: i32):
+  "nested"() ({
+    "deeper"() ({
+      "use"(%arg) : (i32) -> ()
+    }) : () -> ()
+  }) : () -> ()
+}) : () -> ()"#
+            .to_vec(),
+    )
+    .unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let use_op = document
+        .operations()
+        .find(|&id| document.operation_name(id) == Some("use"))
+        .unwrap();
+    assert!(matches!(
+        document.operands(use_op),
+        Some([ValueReference::Resolved(ValueId::BlockArgument {
+            argument: 0,
+            ..
+        })])
+    ));
 }
 
 #[test]

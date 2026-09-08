@@ -36,9 +36,7 @@ def test_unknown_custom_operations_expose_exact_text_and_nested_regions():
     source = b"vendor.outer @entry {\n  vendor.inner\n}"
     lowered = zirium.parse_bytes(source).lower_best_effort()
     assert lowered.semantically_complete is False
-    assert any(
-        "unknown custom operation" in item.message for item in lowered.diagnostics
-    )
+    assert lowered.diagnostics == []
     assert lowered.document is not None
     outer = lowered.document.operation_table().operation(0)
     assert outer.name == "vendor.outer"
@@ -574,6 +572,16 @@ def test_attributes_and_values_expose_scalar_and_document_identity():
     items = producer.attribute_by_name("items")
     assert items is not None
     assert items.integer_value is None
+
+    quoted = (
+        zirium.parse_text('"quoted"() {target = @"a.b"} : () -> ()')
+        .lower_strict()
+        .document
+    )
+    assert quoted is not None
+    target = quoted.operation_table().operation(0).attribute_by_name("target")
+    assert target is not None
+    assert target.symbol_value == "a.b"
 
     result = producer.result(0)
     argument = consumer.operand(1)

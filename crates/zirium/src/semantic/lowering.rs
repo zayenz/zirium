@@ -176,15 +176,20 @@ fn lower_with_registry(
         }
     }
     let mut region_outer = HashMap::new();
+    let mut region_parent_blocks = HashMap::new();
     for region in &regions {
         let parent = region_parents[&region.id()];
+        let parent_block = parent_blocks.get(&ops[parent.index()].id()).copied();
+        let region = region_ids[&region.id()];
         region_outer.insert(
-            region_ids[&region.id()],
-            parent_blocks
-                .get(&ops[parent.index()].id())
-                .and_then(|block| block_regions.get(block))
+            region,
+            parent_block
+                .and_then(|block| block_regions.get(&block))
                 .copied(),
         );
+        if let Some(block) = parent_block {
+            region_parent_blocks.insert(region, block);
+        }
     }
 
     let mut doc = Document {
@@ -401,10 +406,30 @@ fn lower_with_registry(
         })
         .collect::<Vec<_>>();
     for (i, op) in ops.iter().enumerate() {
-        let output_types = registered[i]
-            .as_ref()
-            .map(|matched| matched.lowering.result_types.clone())
-            .unwrap_or_else(|| operation_output_types(*op, source.bytes()));
+        let is_unparsed = op.tree().kind(op.id()) == Some(SyntaxKind::UnparsedCustomOperation);
+        let output_types = if is_unparsed {
+            op.results()
+                .flat_map(|result| {
+                    let count = result
+                        .number()
+                        .and_then(|number| {
+                            text(source.bytes(), result.tree().text_range(number)?)
+                                .bytes()
+                                .filter(u8::is_ascii_digit)
+                                .fold(None, |value, digit| {
+                                    Some(value.unwrap_or(0usize) * 10 + (digit - b'0') as usize)
+                                })
+                        })
+                        .unwrap_or(1usize);
+                    std::iter::repeat_n("!zirium.unparsed<>".to_owned(), count)
+                })
+                .collect()
+        } else {
+            registered[i]
+                .as_ref()
+                .map(|matched| matched.lowering.result_types.clone())
+                .unwrap_or_else(|| operation_output_types(*op, source.bytes()))
+        };
         let mut result_index = 0usize;
         for result in op.results() {
             let spelling = text(
@@ -585,10 +610,14 @@ fn lower_with_registry(
             .find(|child| op.tree().kind(*child) == Some(SyntaxKind::FunctionType))
             .and_then(|child| op.tree().text_range(child))
             .unwrap_or(range);
-        let function_spelling = registered[i]
-            .as_ref()
-            .map(|matched| matched.lowering.function_type.as_str())
-            .unwrap_or_else(|| text(source.bytes(), function_range));
+        let function_spelling = if is_unparsed {
+            "() -> ()"
+        } else {
+            registered[i]
+                .as_ref()
+                .map(|matched| matched.lowering.function_type.as_str())
+                .unwrap_or_else(|| text(source.bytes(), function_range))
+        };
         let function_type = intern_type(
             function_spelling,
             function_range,
@@ -614,6 +643,7 @@ fn lower_with_registry(
                     &region_definitions,
                     &block_definitions,
                     &region_outer,
+                    &region_parent_blocks,
                     &mut doc,
                 )
             })
@@ -632,6 +662,7 @@ fn lower_with_registry(
             &mut doc,
         );
         if is_unparsed {
+            doc.complete = false;
             if let Some(symbol) = leading_symbol(text(source.bytes(), range)) {
                 let value = AttributeValue::Symbol(vec![symbol.to_owned()]);
                 let index = attrs.intern_value(value);
@@ -643,11 +674,6 @@ fn lower_with_registry(
                     AttributeId::new(index as usize, generation),
                 ));
             }
-            push_diagnostic(
-                &mut doc,
-                range,
-                format!("unknown custom operation `{name}`"),
-            );
         }
         if let Some(matched) = &registered[i] {
             let lowered = &matched.lowering;
@@ -846,6 +872,7 @@ fn lower_with_registry(
                                 &region_definitions,
                                 &block_definitions,
                                 &region_outer,
+                                &region_parent_blocks,
                                 &mut doc,
                             ),
                             None => ValueReference::Invalid(push_diagnostic(
@@ -920,7 +947,40 @@ fn lower_with_registry(
     doc.attribute_spellings = attribute_spellings;
     doc.locations = locations.values;
     doc.location_spellings = location_spellings;
-    let diagnostics = doc.diagnostics.clone();
+    let mut unparsed_ranges = ops
+        .iter()
+        .filter(|op| op.tree().kind(op.id()) == Some(SyntaxKind::UnparsedCustomOperation))
+        .filter_map(|op| op.tree().text_range(op.id()))
+        .collect::<Vec<_>>();
+    unparsed_ranges.sort_by_key(|range| range.start());
+    let mut merged_unparsed_ranges = Vec::<TextRange>::new();
+    for range in unparsed_ranges {
+        if let Some(previous) = merged_unparsed_ranges.last_mut()
+            && range.start() <= previous.end()
+        {
+            *previous = TextRange::new(previous.start(), previous.end().max(range.end()))
+                .expect("merged source ranges remain ordered");
+        } else {
+            merged_unparsed_ranges.push(range);
+        }
+    }
+    let diagnostics = doc
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            // An unresolved operand in recovered custom syntax is recovery state,
+            // not a second report: the syntax diagnostic and `is_unparsed` already
+            // identify the operation. Keep the internal diagnostic so invalid value
+            // references remain structurally valid, but do not expose the cascade.
+            let candidate = merged_unparsed_ranges
+                .partition_point(|range| range.start() <= diagnostic.range.start())
+                .checked_sub(1)
+                .and_then(|index| merged_unparsed_ranges.get(index));
+            !diagnostic.message.starts_with("unresolved SSA value")
+                || !candidate.is_some_and(|range| diagnostic.range.end() <= range.end())
+        })
+        .cloned()
+        .collect();
     if !doc.complete && mode == LoweringMode::Strict {
         LoweringResult {
             document: None,

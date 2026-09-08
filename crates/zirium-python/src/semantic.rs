@@ -1113,7 +1113,12 @@ impl SemanticAttribute {
     #[getter]
     fn symbol_value(&self) -> PyResult<Option<String>> {
         self.with_value(|value| match value {
-            AttributeValue::Symbol(path) => Some(path.join("::")),
+            AttributeValue::Symbol(path) => Some(
+                path.iter()
+                    .map(|part| decode_string_attribute(part).unwrap_or_else(|| part.clone()))
+                    .collect::<Vec<_>>()
+                    .join("::"),
+            ),
             _ => None,
         })
     }

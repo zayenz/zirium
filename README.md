@@ -20,7 +20,8 @@ dialect coverage, bytecode support, ODS/TableGen loading, or a stable API.
 - A byte-oriented lexer and lossless concrete syntax tree (CST).
 - Recovery from malformed input with ranged diagnostics and useful outer structure.
 - Standard `module` handling and caller-provided func-like and call-like operation shapes.
-- Diagnostic-bearing recovery of unknown custom operations, including nested regions.
+- Structural recovery of unknown custom operations, including nested regions,
+  SSA declarations and uses, and trailing attribute dictionaries.
 - Strict and best-effort lowering into a separate semantic document.
 - Operations, regions, blocks, SSA values, types, attributes, locations, symbols, and dominance queries.
 - Python inspection of exact type and attribute spellings, scalar attributes, and stable value identity.

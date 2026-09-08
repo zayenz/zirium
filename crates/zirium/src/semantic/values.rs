@@ -2273,6 +2273,7 @@ pub(super) fn resolve_value(
     region_definitions: &HashMap<(Option<RegionId>, String), Vec<ValueId>>,
     block_definitions: &HashMap<(BlockId, String), Vec<ValueId>>,
     region_outer: &HashMap<RegionId, Option<RegionId>>,
+    region_parent_blocks: &HashMap<RegionId, BlockId>,
     doc: &mut Document,
 ) -> ValueReference {
     let name = first_identifier(spelling, b'%').unwrap_or_default();
@@ -2299,6 +2300,14 @@ pub(super) fn resolve_value(
             return ValueReference::Resolved(value);
         }
         let Some(current) = region else { break };
+        if let Some(value) = region_parent_blocks
+            .get(&current)
+            .and_then(|block| block_definitions.get(&(*block, name.clone())))
+            .and_then(|values| values.get(number))
+            .copied()
+        {
+            return ValueReference::Resolved(value);
+        }
         region = region_outer.get(&current).copied().flatten();
     }
     let display = if spelling.contains('#') {
