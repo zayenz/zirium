@@ -36,7 +36,9 @@ impl SyntaxNode {
             .count();
         PyBytes::new_with(py, count * size_of::<u32>(), |bytes| {
             for (slot, child) in bytes
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
                 .zip(self.tree().children(self.id).expect("stored node ID"))
             {
                 slot.copy_from_slice(&(child.index() as u32).to_ne_bytes());
@@ -80,7 +82,7 @@ fn syntax_table(py: Python<'_>, parsed: &ParsedFile) -> PyResult<SyntaxTable> {
     let token_count = tree.token_count();
     let node_u16 = |value: fn(&zirium::SyntaxTree, NodeId) -> u16| {
         PyBytes::new_with(py, node_count * 2, |bytes| {
-            for (index, slot) in bytes.chunks_exact_mut(2).enumerate() {
+            for (index, slot) in bytes.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                 let id = tree.node(index).expect("bounded node index");
                 slot.copy_from_slice(&value(tree, id).to_ne_bytes());
             }
@@ -90,7 +92,7 @@ fn syntax_table(py: Python<'_>, parsed: &ParsedFile) -> PyResult<SyntaxTable> {
     };
     let node_u32 = |value: fn(&zirium::SyntaxTree, NodeId) -> u32| {
         PyBytes::new_with(py, node_count * 4, |bytes| {
-            for (index, slot) in bytes.chunks_exact_mut(4).enumerate() {
+            for (index, slot) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let id = tree.node(index).expect("bounded node index");
                 slot.copy_from_slice(&value(tree, id).to_ne_bytes());
             }
@@ -99,7 +101,7 @@ fn syntax_table(py: Python<'_>, parsed: &ParsedFile) -> PyResult<SyntaxTable> {
         .map(Bound::unbind)
     };
     let token_u16 = PyBytes::new_with(py, token_count * 2, |bytes| {
-        for (index, slot) in bytes.chunks_exact_mut(2).enumerate() {
+        for (index, slot) in bytes.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             slot.copy_from_slice(&token_kind_code(tree.token_kind(index).unwrap()).to_ne_bytes());
         }
         Ok(())
@@ -107,7 +109,7 @@ fn syntax_table(py: Python<'_>, parsed: &ParsedFile) -> PyResult<SyntaxTable> {
     .unbind();
     let token_u32 = |end: bool| {
         PyBytes::new_with(py, token_count * 4, |bytes| {
-            for (index, slot) in bytes.chunks_exact_mut(4).enumerate() {
+            for (index, slot) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let range = tree.token(index).unwrap().range();
                 let value = if end { range.end() } else { range.start() };
                 slot.copy_from_slice(&value.to_ne_bytes());
@@ -239,7 +241,7 @@ fn relationship_column<'a>(
 }
 
 fn fill_u32_bytes(bytes: &mut [u8], values: impl Iterator<Item = u32>) {
-    for (slot, value) in bytes.chunks_exact_mut(4).zip(values) {
+    for (slot, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(values) {
         slot.copy_from_slice(&value.to_ne_bytes());
     }
 }

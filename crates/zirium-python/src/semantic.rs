@@ -151,7 +151,7 @@ impl Document {
             .copied()
             .collect::<HashSet<_>>();
         let name_code = PyBytes::new_with(py, ids.len() * 4, |bytes| {
-            for (slot, id) in bytes.chunks_exact_mut(4).zip(&ids) {
+            for (slot, id) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(&ids) {
                 let stored = document.operation_name_index(*id).expect("live operation");
                 slot.copy_from_slice(&dense[&stored].to_ne_bytes());
             }
@@ -160,7 +160,7 @@ impl Document {
         .unbind();
         let source_column = |end: bool| {
             PyBytes::new_with(py, ids.len() * 4, |bytes| {
-                for (slot, id) in bytes.chunks_exact_mut(4).zip(&ids) {
+                for (slot, id) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(&ids) {
                     let value = document
                         .operation_source_range(*id)
                         .map_or(u32::MAX, |range| {
@@ -200,7 +200,12 @@ impl Document {
         let name_offsets = PyBytes::new_with(py, (dictionary.len() + 1) * 4, |bytes| {
             let mut cursor = 0u32;
             bytes[..4].copy_from_slice(&cursor.to_ne_bytes());
-            for (slot, &index) in bytes[4..].chunks_exact_mut(4).zip(&dictionary) {
+            for (slot, &index) in bytes[4..]
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(&dictionary)
+            {
                 cursor += document
                     .string_at(index)
                     .expect("stored string index")
