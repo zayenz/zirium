@@ -471,6 +471,8 @@ def test_func_like_generic_and_custom_forms_have_the_same_normalized_identity():
         signature = operation.attribute_by_name(
             "function_type"
         ) or operation.attribute_by_name("type")
+        assert name is not None
+        assert signature is not None
         normalized_name = name.string_value or name.symbol_value
         inputs, results = (part.strip() for part in signature.spelling.split("->", 1))
         if results.startswith("(") and results.endswith(")") and "," not in results:
@@ -512,6 +514,8 @@ def test_stablehlo_operation_survives_equivalent_generic_and_custom_functions():
         function = document.operation_table("func.func").operation(0)
         name = function.attribute_by_name("sym_name")
         signature = function.attribute_by_name("function_type")
+        assert name is not None
+        assert signature is not None
         inputs, results = (part.strip() for part in signature.spelling.split("->", 1))
         if results.startswith("(") and results.endswith(")") and "," not in results:
             results = results[1:-1].strip()
