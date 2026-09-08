@@ -2347,7 +2347,8 @@ pub(super) fn push_diagnostic(
     message: String,
 ) -> DiagnosticId {
     let id = DiagnosticId::new(doc.diagnostics.len(), doc.generation);
-    doc.diagnostics.push(SemanticDiagnostic { range, message });
+    doc.diagnostics
+        .push(SemanticDiagnostic::new(range, message));
     doc.complete = false;
     id
 }

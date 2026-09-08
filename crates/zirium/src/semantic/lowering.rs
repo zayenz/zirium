@@ -313,10 +313,10 @@ fn lower_with_registry(
                 SyntaxKind::DialectOperation => "malformed registered operation",
                 _ => return None,
             };
-            Some(SemanticDiagnostic {
-                range: syntax.tree().text_range(node)?,
-                message: message.into(),
-            })
+            Some(SemanticDiagnostic::new(
+                syntax.tree().text_range(node)?,
+                message.into(),
+            ))
         })
         .collect::<Vec<_>>();
     for diagnostic in syntax_diagnostics {
@@ -976,7 +976,7 @@ fn lower_with_registry(
                 .partition_point(|range| range.start() <= diagnostic.range.start())
                 .checked_sub(1)
                 .and_then(|index| merged_unparsed_ranges.get(index));
-            !diagnostic.message.starts_with("unresolved SSA value")
+            diagnostic.code != SemanticDiagnosticCode::UnresolvedReference
                 || !candidate.is_some_and(|range| diagnostic.range.end() <= range.end())
         })
         .cloned()

@@ -12,6 +12,8 @@
   through `extend_operation_shapes`.
 - Expose form-independent `symbol_name`, `signature`, and `callee` operation
   roles in Rust and Python.
+- Add stable machine-readable categories to every Rust and Python semantic
+  diagnostic.
 
 ## 0.0.4
 

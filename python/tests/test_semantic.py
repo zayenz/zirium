@@ -63,6 +63,7 @@ def test_alias_expansion_limit_is_configurable_and_defaults_to_64():
         item.message == "alias expansion depth exceeds limit of 64"
         for item in default.diagnostics
     )
+    assert {item.code for item in default.diagnostics} == {"semantic.ResourceLimit"}
 
     selected = zirium.parse_bytes(
         b'!a = type !b\n!b = type i32\n%r = "alias.limit"() : () -> !a',

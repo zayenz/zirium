@@ -466,6 +466,9 @@ fn semantic_attribute_depth_limit_uses_invalid_sentinel() {
     let strict =
         lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
+    assert!(strict.diagnostics.iter().all(|diagnostic| {
+        diagnostic.code == zirium::semantic::SemanticDiagnosticCode::ResourceLimit
+    }));
     assert!(
         strict
             .diagnostics
@@ -744,6 +747,10 @@ fn unresolved_reference_obeys_strict_and_best_effort_contract() {
         lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
     assert!(strict.document.is_none());
     assert_eq!(strict.diagnostics.len(), 1);
+    assert_eq!(
+        strict.diagnostics[0].code,
+        zirium::semantic::SemanticDiagnosticCode::UnresolvedReference
+    );
     assert!(
         strict.diagnostics[0]
             .message

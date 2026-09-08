@@ -10,6 +10,20 @@ _Path: TypeAlias = str | PathLike[str]
 _Retention: TypeAlias = Literal[
     "semantic", "semantic_only", "syntax", "syntax_only", "hybrid"
 ]
+_SemanticDiagnosticCode: TypeAlias = Literal[
+    "semantic.Syntax",
+    "semantic.ResourceLimit",
+    "semantic.DuplicateDefinition",
+    "semantic.UnresolvedReference",
+    "semantic.ArityMismatch",
+    "semantic.Type",
+    "semantic.Attribute",
+    "semantic.Location",
+    "semantic.Affine",
+    "semantic.ControlFlow",
+    "semantic.Symbol",
+    "semantic.InvalidValue",
+]
 _DeclarativeOperation: TypeAlias = Literal[
     "builtin.module",
     "func.func",
@@ -168,6 +182,8 @@ class LoweringResult:
     def semantically_complete(self) -> bool: ...
 
 class SemanticDiagnostic:
+    @property
+    def code(self) -> _SemanticDiagnosticCode: ...
     @property
     def range(self) -> _TextRange: ...
     @property

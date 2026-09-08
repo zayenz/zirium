@@ -91,7 +91,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     for diagnostic in &lowered.diagnostics {
-        eprintln!("{}: {}", diagnostic.range, diagnostic.message);
+        eprintln!(
+            "{} {}: {}",
+            diagnostic.code.as_str(),
+            diagnostic.range,
+            diagnostic.message
+        );
     }
 
     let document = lowered
@@ -215,7 +220,7 @@ parsed = zirium.parse_text('''\
 result = parsed.lower_strict("semantic")
 if result.document is None:
     for diagnostic in result.diagnostics:
-        print(diagnostic.range, diagnostic.message)
+        print(diagnostic.code, diagnostic.range, diagnostic.message)
     raise SystemExit(1)
 
 document = result.document

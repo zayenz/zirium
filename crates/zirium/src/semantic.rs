@@ -357,8 +357,104 @@ pub enum LoweringMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticDiagnostic {
+    pub code: SemanticDiagnosticCode,
     pub range: TextRange,
     pub message: String,
+}
+
+/// Stable machine-readable category for a semantic diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SemanticDiagnosticCode {
+    Syntax,
+    ResourceLimit,
+    DuplicateDefinition,
+    UnresolvedReference,
+    ArityMismatch,
+    Type,
+    Attribute,
+    Location,
+    Affine,
+    ControlFlow,
+    Symbol,
+    InvalidValue,
+}
+
+impl SemanticDiagnosticCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Syntax => "semantic.Syntax",
+            Self::ResourceLimit => "semantic.ResourceLimit",
+            Self::DuplicateDefinition => "semantic.DuplicateDefinition",
+            Self::UnresolvedReference => "semantic.UnresolvedReference",
+            Self::ArityMismatch => "semantic.ArityMismatch",
+            Self::Type => "semantic.Type",
+            Self::Attribute => "semantic.Attribute",
+            Self::Location => "semantic.Location",
+            Self::Affine => "semantic.Affine",
+            Self::ControlFlow => "semantic.ControlFlow",
+            Self::Symbol => "semantic.Symbol",
+            Self::InvalidValue => "semantic.InvalidValue",
+        }
+    }
+
+    fn classify(message: &str) -> Self {
+        if message.contains("limit") || message.contains("exceeds") {
+            Self::ResourceLimit
+        } else if message.starts_with("unresolved") {
+            Self::UnresolvedReference
+        } else if message.starts_with("duplicate") {
+            Self::DuplicateDefinition
+        } else if message.contains("count")
+            || message.contains("arity")
+            || message.contains("expects")
+        {
+            Self::ArityMismatch
+        } else if message.contains("location") {
+            Self::Location
+        } else if message.contains("affine") || message.contains("integer set") {
+            Self::Affine
+        } else if message.contains("symbol") || message.contains("callee") {
+            Self::Symbol
+        } else if message.contains("successor")
+            || message.contains("block")
+            || message.contains("terminator")
+            || message.contains("branch")
+        {
+            Self::ControlFlow
+        } else if message.contains("type")
+            || message.contains("tensor")
+            || message.contains("vector")
+            || message.contains("memref")
+            || message.contains("layout")
+            || message.contains("memory space")
+            || message.contains("dimension")
+        {
+            Self::Type
+        } else if message.contains("attribute")
+            || message.contains("dictionary")
+            || message.contains("integer")
+            || message.contains("float")
+            || message.contains("boolean")
+            || message.contains("dense")
+            || message.contains("sparse")
+        {
+            Self::Attribute
+        } else if message.starts_with("malformed") {
+            Self::Syntax
+        } else {
+            Self::InvalidValue
+        }
+    }
+}
+
+impl SemanticDiagnostic {
+    fn new(range: TextRange, message: String) -> Self {
+        Self {
+            code: SemanticDiagnosticCode::classify(&message),
+            range,
+            message,
+        }
+    }
 }
 
 /// The document and diagnostics produced by one lowering attempt.

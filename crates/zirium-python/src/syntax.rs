@@ -573,6 +573,7 @@ impl File {
             .diagnostics
             .into_iter()
             .map(|diagnostic| SemanticDiagnostic {
+                code: diagnostic.code.as_str(),
                 range: (diagnostic.range.start(), diagnostic.range.end()),
                 message: diagnostic.message,
             })
