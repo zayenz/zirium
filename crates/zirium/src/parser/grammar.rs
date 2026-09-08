@@ -1039,6 +1039,12 @@ impl Parser<'_> {
                     .complete_with_error(marker, SyntaxKind::TypeAttribute, !good)?;
                 Ok(good)
             }
+            TokenKind::LParen => {
+                let marker = self.builder.start();
+                self.function_type()?;
+                self.builder.complete(marker, SyntaxKind::TypeAttribute)?;
+                Ok(true)
+            }
             TokenKind::Dense => self.payload_attribute(SyntaxKind::DenseElementsAttribute),
             TokenKind::Sparse => self.payload_attribute(SyntaxKind::SparseElementsAttribute),
             TokenKind::DenseResource => {

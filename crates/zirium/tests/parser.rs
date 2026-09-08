@@ -110,6 +110,30 @@ fn builtin_dense_arrays_have_distinct_syntax_and_recover_from_trailing_commas() 
 }
 
 #[test]
+fn function_types_parse_in_recursive_attribute_positions() {
+    let parsed = ParsedFile::parse(
+        br#""test"() {direct = () -> (), array = [() -> ()], nested = !test.box<() -> ()>} : () -> ()"#
+            .to_vec(),
+    )
+    .unwrap();
+
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    assert_eq!(
+        parsed
+            .syntax()
+            .file()
+            .nodes(SyntaxKind::FunctionType)
+            .count(),
+        3
+    );
+    parsed.syntax().tree().verify().unwrap();
+}
+
+#[test]
 fn builtin_dense_array_payload_limit_includes_empty_and_trailing_trivia() {
     for dense_array in ["array<              i64>", "array<i64: 1              >"] {
         let source =

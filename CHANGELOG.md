@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.4
+
+Zirium 0.0.4 fixes function types used as attribute values in generic-form
+MLIR and nested custom types.
+
+- Parse and lower function types in attribute dictionaries and arrays.
+- Preserve arrows inside opaque type parameters, including nested function
+  types such as `!dialect.box<() -> ()>`.
+- Verify normalized function identity and signatures across generic and custom
+  forms, including StableHLO operations.
+
 ## 0.0.3
 
 Zirium 0.0.3 extends semantic inspection for custom-format MLIR encountered in

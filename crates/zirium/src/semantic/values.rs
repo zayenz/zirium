@@ -79,10 +79,11 @@ pub(super) fn operation_output_types(
 
 fn split_types(spelling: &str) -> Vec<String> {
     let spelling = spelling.trim();
-    let inner = spelling
-        .strip_prefix('(')
-        .and_then(|value| value.strip_suffix(')'))
-        .unwrap_or(spelling);
+    let inner = spelling.strip_prefix('(').and_then(|value| {
+        let closing = value.len().checked_sub(1)?;
+        (matching_delimiter(value, '(', ')') == Some(closing)).then_some(&value[..closing])
+    });
+    let inner = inner.unwrap_or(spelling);
     if inner.trim().is_empty() {
         return Vec::new();
     }
@@ -485,7 +486,7 @@ fn resolve_memref_layout(
 
 fn is_composite_type(spelling: &str) -> bool {
     let spelling = spelling.trim();
-    spelling.contains("->")
+    split_arrow(spelling).is_some()
         || ["tuple<", "tensor<", "vector<", "memref<"]
             .iter()
             .any(|prefix| spelling.starts_with(prefix))
@@ -1240,6 +1241,9 @@ fn matching_delimiter(value: &str, _open: char, close: char) -> Option<usize> {
             expected.push(nested_close);
             continue;
         }
+        if character == '>' && value.as_bytes().get(index.wrapping_sub(1)) == Some(&b'-') {
+            continue;
+        }
         if matches!(character, ')' | ']' | '}' | '>') {
             if expected.pop() != Some(character) {
                 return None;
@@ -1298,7 +1302,8 @@ fn split_arrow(value: &str) -> Option<(&str, &str)> {
         }
         match byte {
             b'(' | b'<' | b'[' | b'{' => depth += 1,
-            b')' | b'>' | b']' | b'}' => depth -= 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'>' if i == 0 || bytes[i - 1] != b'-' => depth -= 1,
             _ => {}
         }
         if &bytes[i..i + 2] == b"->" && depth == 0 {
@@ -1314,7 +1319,8 @@ fn split_top_level_x(value: &str) -> Vec<&str> {
     for (i, byte) in value.bytes().enumerate() {
         match byte {
             b'<' | b'(' | b'[' | b'{' => depth += 1,
-            b'>' | b')' | b']' | b'}' => depth -= 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'>' if i == 0 || value.as_bytes()[i - 1] != b'-' => depth -= 1,
             b'x' if depth == 0 => {
                 result.push(value[start..i].trim());
                 start = i + 1;
@@ -1333,7 +1339,8 @@ fn split_top_level_commas(value: &str) -> Vec<&str> {
     for (index, byte) in value.bytes().enumerate() {
         match byte {
             b'<' | b'(' | b'[' | b'{' => depth += 1,
-            b'>' | b')' | b']' | b'}' => depth -= 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'>' if index == 0 || value.as_bytes()[index - 1] != b'-' => depth -= 1,
             b',' if depth == 0 => {
                 result.push(value[start..index].trim());
                 start = index + 1;

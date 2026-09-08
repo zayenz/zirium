@@ -92,6 +92,39 @@ fn unknown_custom_operations_lower_with_exact_text_and_nested_regions() {
 }
 
 #[test]
+fn function_types_lower_as_attributes_and_inside_opaque_types() {
+    let parsed = ParsedFile::parse(
+        br#""test"() {direct = (i32) -> (i32), array = [() -> ()], nested = !test.box<() -> ()>} : () -> ()"#
+            .to_vec(),
+    )
+    .unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    let document = lowered
+        .document
+        .unwrap_or_else(|| panic!("lowering failed: {:?}", lowered.diagnostics));
+    let operation = document.root_operations()[0];
+
+    let direct = document.attribute_id(operation, "direct").unwrap();
+    assert!(matches!(
+        document.attribute_value(direct),
+        Some(AttributeValue::Type(TypeValue::Function { inputs, results }))
+            if inputs.len() == 1 && results.len() == 1
+    ));
+    let array = document.attribute_id(operation, "array").unwrap();
+    assert!(matches!(
+        document.attribute_value(array),
+        Some(AttributeValue::Array(values))
+            if matches!(values.as_slice(), [AttributeValue::Type(TypeValue::Function { .. })])
+    ));
+    let nested = document.attribute_id(operation, "nested").unwrap();
+    assert!(matches!(
+        document.attribute_value(nested),
+        Some(AttributeValue::Type(TypeValue::Opaque(_)))
+    ));
+}
+
+#[test]
 fn consecutive_unknown_custom_operations_preserve_result_prefix_text() {
     let source = b"%result = vendor.first\nvendor.second".to_vec();
     let parsed = ParsedFile::parse(source).unwrap();

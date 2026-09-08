@@ -447,6 +447,91 @@ def test_core_registry_binds_function_arguments_in_generic_operations():
     assert add.operand(1).kind == "block_argument"
 
 
+def test_func_like_generic_and_custom_forms_have_the_same_normalized_identity():
+    registry = zirium.DialectRegistry.with_operation_shapes(
+        {"air.Func": zirium.OperationShape.FUNC_LIKE}
+    )
+    generic = """"builtin.module"() ({
+      "air.Func"() ({
+      ^bb0:
+        "air.Return"() : () -> ()
+      }) {sym_name = "main", type = (i32) -> (i32)} : () -> ()
+    }) : () -> ()"""
+    custom = """"builtin.module"() ({
+      air.Func @main(%arg: i32) -> i32 {
+        "air.Return"(%arg) : (i32) -> ()
+      }
+    }) : () -> ()"""
+
+    def identity(source):
+        lowered = zirium.parse_text(source, registry=registry).lower_strict()
+        assert lowered.document is not None, lowered.diagnostics
+        operation = lowered.document.operation_table("air.Func").operation(0)
+        name = operation.attribute_by_name("sym_name")
+        signature = operation.attribute_by_name(
+            "function_type"
+        ) or operation.attribute_by_name("type")
+        normalized_name = name.string_value or name.symbol_value
+        inputs, results = (part.strip() for part in signature.spelling.split("->", 1))
+        if results.startswith("(") and results.endswith(")") and "," not in results:
+            results = results[1:-1].strip()
+        return operation.name, normalized_name, f"{inputs} -> {results}"
+
+    assert (
+        identity(generic)
+        == identity(custom)
+        == (
+            "air.Func",
+            "main",
+            "(i32) -> i32",
+        )
+    )
+
+
+def test_stablehlo_operation_survives_equivalent_generic_and_custom_functions():
+    generic = """"builtin.module"() ({
+      "func.func"() ({
+      ^bb0(%lhs: tensor<2xf32>, %rhs: tensor<2xf32>):
+        %sum = "stablehlo.add"(%lhs, %rhs) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
+        "func.return"(%sum) : (tensor<2xf32>) -> ()
+      }) {sym_name = "add", function_type = (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>)} : () -> ()
+    }) : () -> ()"""
+    custom = """module {
+      func.func @add(%lhs: tensor<2xf32>, %rhs: tensor<2xf32>) -> tensor<2xf32> {
+        %sum = "stablehlo.add"(%lhs, %rhs) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
+        func.return %sum : tensor<2xf32>
+      }
+    }"""
+
+    def summary(source):
+        lowered = zirium.parse_text(
+            source, registry=zirium.DialectRegistry.core()
+        ).lower_strict()
+        assert lowered.document is not None, lowered.diagnostics
+        document = lowered.document
+        function = document.operation_table("func.func").operation(0)
+        name = function.attribute_by_name("sym_name")
+        signature = function.attribute_by_name("function_type")
+        inputs, results = (part.strip() for part in signature.spelling.split("->", 1))
+        if results.startswith("(") and results.endswith(")") and "," not in results:
+            results = results[1:-1].strip()
+        return (
+            name.string_value or name.symbol_value,
+            f"{inputs} -> {results}",
+            document.operation_table("stablehlo.add").count,
+        )
+
+    assert (
+        summary(generic)
+        == summary(custom)
+        == (
+            "add",
+            "(tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>",
+            1,
+        )
+    )
+
+
 def test_attributes_and_values_expose_scalar_and_document_identity():
     source = """module {
       func.func @inspect(%arg: i32) {
