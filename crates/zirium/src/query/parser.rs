@@ -589,10 +589,10 @@ impl Parser<'_> {
         let mut chars = inner.chars();
         while let Some(ch) = chars.next() {
             if ch == '\\' {
-                if let Some(escaped) = chars.next() {
-                    if matches!(escaped, '"' | '\\') {
-                        value.push(escaped);
-                    }
+                if let Some(escaped) = chars.next()
+                    && matches!(escaped, '"' | '\\')
+                {
+                    value.push(escaped);
                 }
             } else {
                 value.push(ch);

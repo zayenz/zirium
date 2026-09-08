@@ -967,15 +967,13 @@ impl Parser<'_> {
             self.diagnostic();
             bad = true;
         }
-        if bad {
-            if let Some(result) = result {
-                let marker = self.builder.precede(result)?;
-                return Ok(Some(self.builder.complete_with_error(
-                    marker,
-                    SyntaxKind::AffineExpression,
-                    true,
-                )?));
-            }
+        if bad && let Some(result) = result {
+            let marker = self.builder.precede(result)?;
+            return Ok(Some(self.builder.complete_with_error(
+                marker,
+                SyntaxKind::AffineExpression,
+                true,
+            )?));
         }
         Ok(result)
     }

@@ -1,6 +1,6 @@
 # Compatibility and local wheel checks
 
-Zirium 0.0.3 requires Rust 1.85 or newer and supports version-specific CPython
+Zirium 0.0.6 requires Rust 1.88 or newer and supports version-specific CPython
 extensions for conventional CPython 3.11 through 3.14. Published wheels support
 Linux x86_64 and macOS arm64, and the CI quality workflow checks both platforms.
 Source builds may work elsewhere, but other platforms are unsupported. This
@@ -11,8 +11,8 @@ Run the complete local Rust quality gate. The commands match the CI jobs:
 
 ```sh
 cargo fmt --check
-cargo +1.85 test --workspace --all-targets --all-features
-cargo +1.85 clippy --workspace --all-targets --all-features -- -D warnings
+cargo +1.88 test --workspace --all-targets --all-features
+cargo +1.88 clippy --workspace --all-targets --all-features -- -D warnings
 cargo +stable test --workspace --all-targets --all-features
 cargo +stable clippy --workspace --all-targets --all-features -- -D warnings
 cargo +stable test --doc --workspace --all-features

@@ -988,12 +988,12 @@ pub(crate) fn verify_func_func(
     }
     verify_positional_attribute_list(document, operation, "arg_attrs", signature.0.len())?;
     verify_positional_attribute_list(document, operation, "res_attrs", signature.1.len())?;
-    if let Some(no_inline) = document.attribute_id(operation, "no_inline") {
-        if !document.attribute_value(no_inline).is_some_and(
+    if let Some(no_inline) = document.attribute_id(operation, "no_inline")
+        && !document.attribute_value(no_inline).is_some_and(
             |value| matches!(value, AttributeValue::Opaque(bytes) if bytes.as_ref() == b"unit"),
-        ) {
-            return Err("func.func no_inline must be the supported unit form");
-        }
+        )
+    {
+        return Err("func.func no_inline must be the supported unit form");
     }
     Ok(())
 }

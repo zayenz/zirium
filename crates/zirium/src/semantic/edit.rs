@@ -58,10 +58,10 @@ impl DocumentEditor<'_> {
                 self.working
                     .block(block)
                     .ok_or_else(|| self.block_error(block))?;
-                if let InsertionPoint::Block { index, .. } = point {
-                    if index > self.working.block_operations(block).unwrap_or(&[]).len() {
-                        return Err(EditError::InvalidPosition);
-                    }
+                if let InsertionPoint::Block { index, .. } = point
+                    && index > self.working.block_operations(block).unwrap_or(&[]).len()
+                {
+                    return Err(EditError::InvalidPosition);
                 }
                 Some(block)
             }

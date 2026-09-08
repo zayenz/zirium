@@ -911,10 +911,10 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         Ok(())
     }
     fn operation(&mut self, id: OperationId, indent: usize) -> fmt::Result {
-        if self.selected.is_some_and(|selected| selected.contains(&id)) {
-            if let Some(source) = self.doc.operation_unparsed_text(id) {
-                return self.sink.write_str(&String::from_utf8_lossy(source));
-            }
+        if self.selected.is_some_and(|selected| selected.contains(&id))
+            && let Some(source) = self.doc.operation_unparsed_text(id)
+        {
+            return self.sink.write_str(&String::from_utf8_lossy(source));
         }
         let results = self.doc.result_types(id).ok_or(fmt::Error)?;
         for result in 0..results.len() {
@@ -929,8 +929,8 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         if !results.is_empty() {
             self.sink.write_str(" = ")?;
         }
-        if self.mode == DialectPrintMode::PreferCustom {
-            if let Some(mut custom) = self
+        if self.mode == DialectPrintMode::PreferCustom
+            && let Some(mut custom) = self
                 .doc
                 .operation_name(id)
                 .and_then(|name| self.registry.operation(name))
@@ -940,34 +940,33 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                         .and_then(|program| program.print(self.doc, id))
                         .or_else(|| descriptor.print.and_then(|print| print(self.doc, id)))
                 })
-            {
-                if self.selected.is_some() {
-                    custom = self.rewrite_custom_value_names(custom);
-                }
-                self.sink.write_str(&custom)?;
-                let assembly = self
-                    .doc
-                    .operation_name(id)
-                    .and_then(|name| self.registry.operation(name))
-                    .and_then(|descriptor| descriptor.assembly);
-                if matches!(
-                    assembly,
-                    Some(
-                        crate::dialect::AssemblyProgram::Module
-                            | crate::dialect::AssemblyProgram::Function
-                    )
-                ) {
-                    let regions = self.doc.operation_regions(id).ok_or(fmt::Error)?;
-                    if let Some(region) = regions.first() {
-                        return self.region(
-                            *region,
-                            indent,
-                            assembly == Some(crate::dialect::AssemblyProgram::Function),
-                        );
-                    }
-                }
-                return Ok(());
+        {
+            if self.selected.is_some() {
+                custom = self.rewrite_custom_value_names(custom);
             }
+            self.sink.write_str(&custom)?;
+            let assembly = self
+                .doc
+                .operation_name(id)
+                .and_then(|name| self.registry.operation(name))
+                .and_then(|descriptor| descriptor.assembly);
+            if matches!(
+                assembly,
+                Some(
+                    crate::dialect::AssemblyProgram::Module
+                        | crate::dialect::AssemblyProgram::Function
+                )
+            ) {
+                let regions = self.doc.operation_regions(id).ok_or(fmt::Error)?;
+                if let Some(region) = regions.first() {
+                    return self.region(
+                        *region,
+                        indent,
+                        assembly == Some(crate::dialect::AssemblyProgram::Function),
+                    );
+                }
+            }
+            return Ok(());
         }
         write!(
             self.sink,

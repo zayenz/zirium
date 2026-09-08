@@ -185,32 +185,32 @@ fn lower_type_value_with_stack(
     doc: &mut Document,
 ) -> TypeValue {
     let spelling = spelling.trim();
-    if let Some((target, _)) = type_aliases.get(spelling) {
-        if target != spelling {
-            if let Err(message) = alias_stack.enter(spelling, "type") {
-                return TypeValue::Invalid(push_diagnostic(
-                    doc,
-                    alias_stack.diagnostic_code(SemanticDiagnosticCode::Type),
-                    range,
-                    message,
-                ));
-            }
-            let value = lower_type_value_with_stack(
-                target,
-                range,
-                type_aliases,
-                attribute_aliases,
-                alias_stack,
+    if let Some((target, _)) = type_aliases.get(spelling)
+        && target != spelling
+    {
+        if let Err(message) = alias_stack.enter(spelling, "type") {
+            return TypeValue::Invalid(push_diagnostic(
                 doc,
-            );
-            alias_stack.exit(spelling);
-            return value;
+                alias_stack.diagnostic_code(SemanticDiagnosticCode::Type),
+                range,
+                message,
+            ));
         }
+        let value = lower_type_value_with_stack(
+            target,
+            range,
+            type_aliases,
+            attribute_aliases,
+            alias_stack,
+            doc,
+        );
+        alias_stack.exit(spelling);
+        return value;
     }
-    if !is_composite_type(spelling) {
-        if let Ok(value) = resolve_type(spelling, type_aliases, attribute_aliases, alias_stack) {
-            return value;
-        }
+    if !is_composite_type(spelling)
+        && let Ok(value) = resolve_type(spelling, type_aliases, attribute_aliases, alias_stack)
+    {
+        return value;
     }
     if let Some((inputs, results)) = split_arrow(spelling) {
         return TypeValue::Function {
@@ -2396,14 +2396,13 @@ pub(super) fn resolve_value(
         .and_then(|(_, number)| number.trim().split(|c: char| !c.is_ascii_digit()).next())
         .and_then(|number| number.parse::<usize>().ok())
         .unwrap_or(0);
-    if let Some(block) = block {
-        if let Some(value) = block_definitions
+    if let Some(block) = block
+        && let Some(value) = block_definitions
             .get(&(block, name.clone()))
             .and_then(|values| values.get(number))
             .copied()
-        {
-            return ValueReference::Resolved(value);
-        }
+    {
+        return ValueReference::Resolved(value);
     }
     loop {
         if let Some(value) = region_definitions

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.6
+
+Zirium 0.0.6 raises the minimum supported Rust version to 1.88.
+
+- Use Rust 2024 let chains across parsing, printing, and semantic processing.
+- Test the minimum supported Rust version in CI.
+
 ## 0.0.5
 
 Zirium 0.0.5 improves recovery and semantic inspection of custom-format MLIR.

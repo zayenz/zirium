@@ -1125,17 +1125,15 @@ fn verify_addi(document: &Document, operation: OperationId) -> Result<(), &'stat
     }
     if let Some(flags) = document.attributes(operation).and_then(|mut attrs| {
         attrs.find_map(|(name, value)| (name == "overflowFlags").then_some(value))
-    }) {
-        if !matches!(
-            flags,
-            "#arith.overflow<none>"
-                | "#arith.overflow<nsw>"
-                | "#arith.overflow<nuw>"
-                | "#arith.overflow<nsw,nuw>"
-                | "#arith.overflow<nuw,nsw>"
-        ) {
-            return Err("arith.addi has unrecognized overflow flags");
-        }
+    }) && !matches!(
+        flags,
+        "#arith.overflow<none>"
+            | "#arith.overflow<nsw>"
+            | "#arith.overflow<nuw>"
+            | "#arith.overflow<nsw,nuw>"
+            | "#arith.overflow<nuw,nsw>"
+    ) {
+        return Err("arith.addi has unrecognized overflow flags");
     }
     Ok(())
 }

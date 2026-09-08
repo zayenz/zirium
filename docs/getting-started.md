@@ -12,7 +12,7 @@ Keep the parsed file when exact source text matters. Lower to a semantic documen
 
 The Rust workspace requires:
 
-- Rust 1.85 or newer;
+- Rust 1.88 or newer;
 - Cargo.
 
 Python development also requires:

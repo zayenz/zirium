@@ -980,14 +980,14 @@ fn lower_with_registry(
     unparsed_ranges.sort_by_key(|range| range.start());
     let mut merged_unparsed_ranges = Vec::<TextRange>::new();
     for range in unparsed_ranges {
-        if let Some(previous) = merged_unparsed_ranges.last_mut() {
-            if range.start() <= previous.end() {
-                *previous = TextRange::new(previous.start(), previous.end().max(range.end()))
-                    .expect("merged source ranges remain ordered");
-                continue;
-            }
+        if let Some(previous) = merged_unparsed_ranges.last_mut()
+            && range.start() <= previous.end()
+        {
+            *previous = TextRange::new(previous.start(), previous.end().max(range.end()))
+                .expect("merged source ranges remain ordered");
+        } else {
+            merged_unparsed_ranges.push(range);
         }
-        merged_unparsed_ranges.push(range);
     }
     let diagnostics = doc
         .diagnostics

@@ -674,10 +674,8 @@ fn payload_and_opaque_fixture_is_lossless_flat_and_range_backed() {
 fn payload_node_counts_do_not_depend_on_element_count() {
     fn counts(elements: usize) -> (usize, usize) {
         let payload = (0..elements).map(|_| "1").collect::<Vec<_>>().join(",");
-        let bytes = format!(
-            "\"dense\"() {{x = dense<[{}]> : tensor<{}xi32>}} : () -> ()",
-            payload, elements
-        );
+        let bytes =
+            format!("\"dense\"() {{x = dense<[{payload}]> : tensor<{elements}xi32>}} : () -> ()");
         let parsed = parse_bytes_with_limits(bytes.as_bytes(), ParserLimits::default());
         (
             parsed.tree().node_count(),

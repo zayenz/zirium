@@ -25,7 +25,7 @@ fn source(elements: usize) -> Vec<u8> {
             sparse_indices.push_str(", ");
             sparse_values.push_str(", ");
         }
-        sparse_indices.push_str(&format!("[{}, 0]", index));
+        sparse_indices.push_str(&format!("[{index}, 0]"));
         sparse_values.push_str(&(index % 10).to_string());
     }
     sparse_indices.push(']');
