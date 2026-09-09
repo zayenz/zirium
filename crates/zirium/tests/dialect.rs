@@ -1880,6 +1880,109 @@ fn emitc_preset_inventory_and_recovery_match_llvm_22_1() {
 }
 
 #[test]
+fn func_preset_preserves_exact_semantics_and_recovers_the_two_remaining_ops() {
+    assert!(DialectRegistry::preset_names().contains(&"func"));
+    let registry = DialectRegistry::from_name("func").unwrap();
+    assert_eq!(
+        registry.operation_names().collect::<Vec<_>>(),
+        ["builtin.module", "func.func", "func.return", "func.call"]
+    );
+
+    let supported = ["func.func", "func.call", "func.return"];
+    let unsupported = ["func.constant", "func.call_indirect"];
+    assert_eq!(supported.len() + unsupported.len(), 5);
+    for name in supported {
+        assert!(registry.operation(name).is_some(), "{name}");
+    }
+    for name in unsupported {
+        assert!(registry.operation(name).is_none(), "{name}");
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+    }
+
+    let exact = br#"module {
+      func.func private @identity(%arg: i32 {test.argument = true}) -> (i32 {test.result = true})
+      func.func @caller(%arg: i32) -> i32 attributes {test.kind = "caller"} {
+        %result = func.call @identity(%arg) {test.kind = "call"} : (i32) -> i32
+        func.return %result : i32
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(exact.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    document.verify_semantics(&registry).unwrap();
+
+    let identity = document
+        .operations()
+        .find(|operation| document.operation_symbol_name(*operation).as_deref() == Some("identity"))
+        .unwrap();
+    assert_eq!(
+        document.operation_signature(identity).as_deref(),
+        Some("(i32) -> i32")
+    );
+    assert!(document.attribute_id(identity, "arg_attrs").is_some());
+    assert!(document.attribute_id(identity, "res_attrs").is_some());
+
+    let call = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("func.call"))
+        .unwrap();
+    assert_eq!(document.operation_callee(call).as_deref(), Some("identity"));
+    assert_eq!(document.operands(call).unwrap().len(), 1);
+    assert_eq!(document.result_types(call).unwrap().len(), 1);
+    assert_eq!(
+        document.type_spelling(document.result_types(call).unwrap()[0]),
+        Some("i32")
+    );
+
+    let return_op = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("func.return"))
+        .unwrap();
+    assert_eq!(document.operands(return_op).unwrap().len(), 1);
+    assert!(document.result_types(return_op).unwrap().is_empty());
+
+    let gaps = br#"module {
+      func.func @gaps(%arg: i32) {
+        %callee = func.constant {test.kind = "constant"} @identity : (i32) -> i32
+        %result = func.call_indirect %callee(%arg) {test.kind = "indirect"} : (i32) -> i32
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(gaps.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        2
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    for name in [
+        "func.constant",
+        "func.call_indirect",
+        "test.after",
+        "func.return",
+    ] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn dlti_preset_preserves_llvm_22_1_attributes_without_claiming_operations() {
     let registry = DialectRegistry::from_name("dlti").unwrap();
     assert_eq!(registry.operation_names().count(), 4);

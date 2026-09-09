@@ -29,6 +29,7 @@ It does not establish that the operation can be verified or rewritten.
 | Complex preset | Core plus default forms of 21 of the 29 Complex operations. |
 | DLTI preset | Core only; all 6 DLTI attributes remain opaque dialect values. |
 | EmitC preset | Core plus 20 of the 45 EmitC custom-form operations. |
+| Func preset | Exact custom forms for 3 of the 5 Func operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -62,7 +63,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, and `emitc` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, and `func` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -386,6 +387,20 @@ incorrect type. EmitC defines seven dialect types and two attributes; their
 balanced `!emitc.*` and `#emitc.*` spellings already remain lossless opaque
 values. None of the operations has successors. The only registered region is
 the ordinary `emitc.func` body; all operation-specific region forms recover.
+
+Func defines five operations in LLVM 22.1. The preset registers the existing
+exact implementations of `func.func`, `func.call`, and `func.return`. They
+preserve function symbols and signatures, direct-call callees and functional
+types, typed return operands, function bodies, and ordinary attribute
+dictionaries.
+
+`func.constant` and `func.call_indirect` remain on whole-operation recovery.
+The constant has a leading attribute dictionary followed by a symbol value and
+a result type. The indirect call has an SSA callee followed by argument
+operands, while its result types are derived from the callee's function type.
+Current broad operation shapes would lose those distinct roles or claim the
+wrong result structure. Func defines no dialect types or attributes, and none
+of its operations has successors.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

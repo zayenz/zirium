@@ -61,6 +61,7 @@ const PRESET_NAMES: &[&str] = &[
     "complex",
     "dlti",
     "emitc",
+    "func",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -83,6 +84,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "complex" => Some(include_str!("../../registries/complex.json")),
         "dlti" => Some(include_str!("../../registries/dlti.json")),
         "emitc" => Some(include_str!("../../registries/emitc.json")),
+        "func" => Some(include_str!("../../registries/func.json")),
         _ => None,
     }
 }
