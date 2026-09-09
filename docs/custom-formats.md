@@ -33,6 +33,7 @@ It does not establish that the operation can be verified or rewritten.
 | GPU preset | Core plus default forms of 10 of the 66 GPU operations. |
 | Index preset | Core plus the 2 explicitly typed casts among 26 Index operations. |
 | IRDL preset | Core only; all 17 IRDL operations remain on recovery. |
+| LLVM preset | Core plus 138 explicit core and intrinsic forms among 284 LLVM operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -66,7 +67,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, and `index` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, and `llvm` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -510,6 +511,48 @@ two attributes, the `irdl.variadicity` enum and its
 opaque dialect values, including the generic `#irdl<...>` attribute spelling;
 the preset does not interpret an IRDL definition as an ODS schema and does not
 apply declarations to later operations.
+
+LLVM defines 80 concrete core operations in `LLVMOps.td` and 204 concrete
+intrinsic operations in `LLVMIntrinsicOps.td` in LLVM 22.1. The count excludes
+the two helper type records next to the core operations. The preset registers
+43 core and 95 intrinsic forms. This inventory was checked from the concrete
+TableGen definitions, their inherited generated assembly families, the
+handwritten parsers and printers in `LLVMDialect.cpp`, the LLVM dialect docs,
+and representative `mlir/test/Dialect/LLVMIR` files.
+
+The core coverage includes the default forms of all 18 integer and floating
+binary arithmetic operations, `llvm.fneg`, all 13 casts, `llvm.alloca`,
+`llvm.va_arg`, `llvm.select`, `llvm.freeze`, three terminators, and the four
+typed `llvm.mlir.none`, `undef`, `poison`, and `zero` producers. Optional
+overflow, exact, disjoint, non-negative, and dereferenceability clauses are not
+claimed: those variants recover as whole operations.
+
+The intrinsic coverage follows assembly families rather than duplicating an
+intrinsic-by-intrinsic grammar. It includes the parenthesized full-function-type
+unary, binary, ternary, rounding, comparison, two-result, and saturation math
+families; selected pointer lifetime and invariant operations; the four
+constrained conversion forms; `ssa.copy` and `expect`; explicit coroutine,
+variadic-call, exception, and stack forms; four floating vector reductions;
+matrix multiply; masked load and gather; traps; and `stepvector`. Every
+registered form spells enough operand and result type information for the
+existing structural lowering. Bare `!llvm.*` types and builtin fixed or
+scalable vectors use the ordinary type parser and remain queryable as typed or
+opaque values as appropriate.
+
+The other 146 operations remain on whole-operation recovery or use quoted
+generic syntax. The grouped gaps are globals, aliases, functions, comdats,
+symbols, and metadata; GEP and other indexed or position-derived forms; calls,
+invokes, switches, indirect branches, and successor-bearing terminators;
+loads, stores, fences, atomics, orderings, and operand bundles; debug metadata;
+and intrinsic families whose result types are inferred or whose generated form
+is generic-only, including the VP family. `llvm.intr.matrix.transpose` has an
+`into` conversion, but `llvm.intr.get.active.lane.mask`, vector insertion and
+extraction, and masked stores also need positional or multiple typed clauses.
+Registering a nearby six-step conversion or broad clause shape for those forms
+would assign the wrong structural meaning, so the preset stays conservative.
+LLVM attributes, metadata, and types remain balanced opaque dialect values;
+the preset does not apply LLVM verification, data-layout rules, or execution
+semantics.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

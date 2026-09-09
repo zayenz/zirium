@@ -2351,6 +2351,136 @@ fn index_preset_inventory_and_inferred_forms_match_llvm_22_1() {
 }
 
 #[test]
+fn llvm_preset_exposes_core_and_intrinsic_function_types() {
+    assert!(DialectRegistry::preset_names().contains(&"llvm"));
+    let registry = DialectRegistry::from_name("llvm").unwrap();
+    let source = br#"module {
+      func.func @families(%lhs: i32, %rhs: i32, %ptr: !llvm.ptr, %vector: vector<4xf32>) {
+        %sum = llvm.add %lhs, %rhs : i32
+        %wide = llvm.zext %sum : i32 to i64
+        %slot = llvm.alloca %wide x i32 {alignment = 8 : i64} : (i64) -> !llvm.ptr
+        %selected = llvm.select %lhs, %sum, %rhs : i32, i32
+        %none = llvm.mlir.none : !llvm.token
+        %sine = llvm.intr.sin(%vector) : (vector<4xf32>) -> vector<4xf32>
+        llvm.intr.lifetime.start %ptr : !llvm.ptr
+        llvm.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, signature) in [
+        ("llvm.add", 2, 1, "(i32, i32) -> i32"),
+        ("llvm.zext", 1, 1, "(i32) -> i64"),
+        ("llvm.alloca", 1, 1, "(i64) -> !llvm.ptr"),
+        ("llvm.select", 3, 1, "(i32, i32, i32) -> i32"),
+        ("llvm.mlir.none", 0, 1, "() -> !llvm.token"),
+        ("llvm.intr.sin", 1, 1, "(vector<4xf32>) -> vector<4xf32>"),
+        ("llvm.intr.lifetime.start", 1, 0, "(!llvm.ptr) -> ()"),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn llvm_preset_inventory_matches_llvm_22_1_assembly_families() {
+    let registry = DialectRegistry::from_name("llvm").unwrap();
+    // LLVMOps.td contains 80 concrete operations and LLVMIntrinsicOps.td 204.
+    // The preset covers 43 core and 95 intrinsic custom forms plus four core
+    // container operations inherited by every bundled dialect preset.
+    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(
+        registry.operation_shape("llvm.add"),
+        Some(OperationShape::BinaryOperands)
+    );
+    assert_eq!(
+        registry.operation_shape("llvm.intr.sincos"),
+        Some(OperationShape::OperandClauses)
+    );
+
+    for name in [
+        "llvm.getelementptr",
+        "llvm.load",
+        "llvm.store",
+        "llvm.call",
+        "llvm.invoke",
+        "llvm.switch",
+        "llvm.mlir.global",
+        "llvm.func",
+        "llvm.atomicrmw",
+        "llvm.cmpxchg",
+        "llvm.call_intrinsic",
+        "llvm.intr.dbg.value",
+        "llvm.intr.vp.add",
+        "llvm.intr.vector.insert",
+        "llvm.intr.matrix.transpose",
+        "llvm.intr.get.active.lane.mask",
+    ] {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn llvm_unsupported_indexed_and_atomic_forms_recover_at_operation_boundaries() {
+    let registry = DialectRegistry::from_name("llvm").unwrap();
+    let source = br#"module {
+      func.func @gaps(%ptr: !llvm.ptr, %index: i64) {
+        %element = llvm.getelementptr %ptr[%index] : (!llvm.ptr, i64) -> !llvm.ptr, i32
+        %value = llvm.load %ptr atomic monotonic {alignment = 4 : i64} : !llvm.ptr -> i32
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        2
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn irdl_preset_inventory_and_custom_forms_match_llvm_22_1() {
     assert!(DialectRegistry::preset_names().contains(&"irdl"));
     let registry = DialectRegistry::from_name("irdl").unwrap();

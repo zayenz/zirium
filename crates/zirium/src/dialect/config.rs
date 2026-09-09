@@ -65,6 +65,7 @@ const PRESET_NAMES: &[&str] = &[
     "gpu",
     "index",
     "irdl",
+    "llvm",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -91,6 +92,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "gpu" => Some(include_str!("../../registries/gpu.json")),
         "index" => Some(include_str!("../../registries/index.json")),
         "irdl" => Some(include_str!("../../registries/irdl.json")),
+        "llvm" => Some(include_str!("../../registries/llvm.json")),
         _ => None,
     }
 }
