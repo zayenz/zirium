@@ -34,6 +34,7 @@ It does not establish that the operation can be verified or rewritten.
 | Index preset | Core plus the 2 explicitly typed casts among 26 Index operations. |
 | IRDL preset | Core only; all 17 IRDL operations remain on recovery. |
 | LLVM preset | Core plus 138 explicit core and intrinsic forms among 284 LLVM operations. |
+| MemRef preset | Core plus 11 structurally exact forms among 32 MemRef operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -67,7 +68,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, and `math` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, and `memref` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -579,6 +580,30 @@ it would be structurally false. Math defines no dialect types or attributes;
 its fast-math attribute belongs to Arith and otherwise remains an opaque
 balanced value. None of the 46 operations has regions or successors, and the
 preset adds no Math-specific verification, inference, or execution semantics.
+
+MemRef defines 32 operations in LLVM 22.1. This pinned inventory differs from
+the earlier expected count of 31. The preset registers 11 forms whose operand,
+result, and type roles fit existing reusable shapes: `memref.assume_alignment`,
+`memref.distinct_objects`, `memref.alloca_scope`,
+`memref.alloca_scope.return`, `memref.cast`, `memref.dealloc`,
+`memref.extract_aligned_pointer_as_index`, `memref.generic_atomic_rmw`,
+`memref.atomic_yield`, `memref.memory_space_cast`, and `memref.reshape`.
+The two casts are exact unary conversions. The scope and generic atomic forms
+retain their regions and result slots while leaving locally inferred types
+opaque. Typed terminators and `dealloc` expose operands without inventing SSA
+results. `assume_alignment` has one same-typed result in the pinned definition.
+
+The other 21 operations remain on whole-operation recovery. Allocation and
+view forms mix memrefs with dynamic index and symbol operands; load, dimension,
+rank, and metadata forms infer results; store, copy, DMA, wait, and prefetch
+spell operand types despite having no results. Reinterpret, subview, and expand
+shape use mixed static/dynamic index lists. Collapse shape needs reassociation
+syntax, transpose contains an affine-map arrow, and globals need symbol-specific
+headers. Registering these with the broad clause lowering would assign memref
+types to index operands or turn operand-only trailers into result slots. MemRef
+defines no dialect types or attributes: `memref<...>` is a builtin type, so no
+value descriptors are added. The preset does not apply MemRef verification,
+aliasing, layout, memory-space, or execution semantics.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

@@ -1,0 +1,23 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "memref.assume_alignment", "shape": "operand_clauses"},
+    {"name": "memref.distinct_objects", "shape": "operand_clauses"},
+    {"name": "memref.alloca_scope", "shape": "region_clauses"},
+    {"name": "memref.alloca_scope.return", "shape": "optional_typed_operands"},
+    {"name": "memref.cast", "shape": "unary_operand"},
+    {"name": "memref.dealloc", "shape": "optional_typed_operands"},
+    {"name": "memref.extract_aligned_pointer_as_index", "shape": "unary_operand"},
+    {"name": "memref.generic_atomic_rmw", "shape": "region_clauses"},
+    {"name": "memref.atomic_yield", "shape": "optional_typed_operands"},
+    {"name": "memref.memory_space_cast", "shape": "unary_operand"},
+    {"name": "memref.reshape", "shape": "operand_clauses"}
+  ],
+  "operation_formats": []
+}

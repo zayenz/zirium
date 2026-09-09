@@ -5130,3 +5130,198 @@ fn registry_json_validates_records_and_registrations() {
         );
     }
 }
+
+#[test]
+fn memref_preset_exposes_exact_conversion_reshape_and_region_structure() {
+    assert!(DialectRegistry::preset_names().contains(&"memref"));
+    let registry = DialectRegistry::from_name("memref").unwrap();
+    let source = br#"module {
+      func.func @memref_forms(
+          %source: memref<?x?xf32>, %static_source: memref<4x4xf32>,
+          %shape: memref<1xi32>, %lhs: memref<?xf32>, %rhs: memref<?xf32>,
+          %index: index) {
+        %aligned = memref.assume_alignment %source, 16 : memref<?x?xf32>
+        %distinct_lhs, %distinct_rhs = memref.distinct_objects %lhs, %rhs : memref<?xf32>, memref<?xf32>
+        %cast = memref.cast %static_source : memref<4x4xf32> to memref<?x?xf32>
+        %space = memref.memory_space_cast %lhs : memref<?xf32> to memref<?xf32, 1>
+        %pointer = memref.extract_aligned_pointer_as_index %lhs : memref<?xf32> -> index
+        %reshaped = memref.reshape %source(%shape) : (memref<?x?xf32>, memref<1xi32>) -> memref<*xf32>
+        %atomic = memref.generic_atomic_rmw %lhs[%index] : memref<?xf32> {
+        ^bb0(%current: f32):
+          memref.atomic_yield %current : f32
+        }
+        %scoped = memref.alloca_scope -> (index) {
+          memref.alloca_scope.return %index : index
+        }
+        memref.dealloc %lhs : memref<?xf32>
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, signature) in [
+        (
+            "memref.assume_alignment",
+            1,
+            1,
+            "(memref<?x?xf32>) -> memref<?x?xf32>",
+        ),
+        (
+            "memref.distinct_objects",
+            2,
+            2,
+            "(memref<?xf32>, memref<?xf32>) -> (memref<?xf32>, memref<?xf32>)",
+        ),
+        ("memref.cast", 1, 1, "(memref<4x4xf32>) -> memref<?x?xf32>"),
+        (
+            "memref.memory_space_cast",
+            1,
+            1,
+            "(memref<?xf32>) -> memref<?xf32, 1>",
+        ),
+        (
+            "memref.extract_aligned_pointer_as_index",
+            1,
+            1,
+            "(memref<?xf32>) -> index",
+        ),
+        (
+            "memref.reshape",
+            2,
+            1,
+            "(memref<?x?xf32>, memref<1xi32>) -> memref<*xf32>",
+        ),
+        ("memref.atomic_yield", 1, 0, "(f32) -> ()"),
+        ("memref.alloca_scope.return", 1, 0, "(index) -> ()"),
+        ("memref.dealloc", 1, 0, "(memref<?xf32>) -> ()"),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+    }
+
+    for (name, operands, results) in [
+        ("memref.alloca_scope", 0, 1),
+        ("memref.generic_atomic_rmw", 2, 1),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.operation_regions(operation).unwrap().len(),
+            1,
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn memref_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("memref").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/memref.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 11);
+    let recovery = [
+        "memref.alloc",
+        "memref.realloc",
+        "memref.alloca",
+        "memref.copy",
+        "memref.dim",
+        "memref.dma_start",
+        "memref.dma_wait",
+        "memref.extract_strided_metadata",
+        "memref.get_global",
+        "memref.global",
+        "memref.load",
+        "memref.prefetch",
+        "memref.reinterpret_cast",
+        "memref.rank",
+        "memref.expand_shape",
+        "memref.collapse_shape",
+        "memref.store",
+        "memref.subview",
+        "memref.transpose",
+        "memref.view",
+        "memref.atomic_rmw",
+    ];
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 32);
+    for operation in &config.operation_shapes {
+        assert_eq!(
+            registry.operation_shape(&operation.name),
+            Some(operation.shape)
+        );
+    }
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn memref_inferred_index_and_mixed_index_list_forms_recover() {
+    let registry = DialectRegistry::from_name("memref").unwrap();
+    let source = br#"module {
+      func.func @gaps(%source: memref<?xf32>, %index: index, %value: f32) {
+        %dimension = memref.dim %source, %index : memref<?xf32>
+        %loaded = memref.load %source[%index] : memref<?xf32>
+        memref.store %value, %source[%index] : memref<?xf32>
+        %slice = memref.subview %source[%index][4][1] : memref<?xf32> to memref<4xf32, strided<[1], offset: ?>>
+        memref.copy %source, %source : memref<?xf32> to memref<?xf32>
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        5
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|operation| { document.operation_name(operation) == Some("test.after") })
+    );
+}
