@@ -22,6 +22,7 @@ It does not establish that the operation can be verified or rewritten.
 | Arith preset | Core plus default forms of 43 of the 51 Arith operations. |
 | ArmNeon preset | Core plus 1 of the 7 ArmNeon operations. |
 | ArmSME preset | Core plus 3 of the 68 ArmSME operations. |
+| ArmSVE preset | Core plus 9 of the 21 ArmSVE custom-form operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -55,7 +56,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, and `arm_sme` presets were checked against LLVM 22.1.0.
+`arm_neon`, `arm_sme`, and `arm_sve` presets were checked against LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
 its custom symbol/type form has no reusable structural signature. SCF registers
@@ -214,6 +215,36 @@ zero, 16 MOP variants, 10 loads, 10 stores, `str`, two writes, two reads, and
 post-region dictionaries do not apply. Declarative attribute dictionaries sit
 before typed trailers; `streaming_vl` instead permits a trailing dictionary,
 but still has no typed boundary from which to recover its inferred result.
+
+ArmSVE registers all nine operations instantiated from its scalable masked
+integer and floating-point bases: `arm_sve.masked.addi`,
+`arm_sve.masked.addf`, `arm_sve.masked.subi`, `arm_sve.masked.subf`,
+`arm_sve.masked.muli`, `arm_sve.masked.mulf`,
+`arm_sve.masked.divi_signed`, `arm_sve.masked.divi_unsigned`, and
+`arm_sve.masked.divf`. Each exposes exactly three operands and one result. The
+two trailer types map to the mask and the shared source/result vector type, so
+the semantic function type retains the real `(mask, source, source) -> result`
+relationship. Ordinary attribute dictionaries are preserved, including on
+multi-dimensional scalable-vector forms.
+
+The other 12 custom-form operations remain on whole-operation recovery. The
+five integer dot/matrix forms and `arm_sve.intr.bfmmla` infer the accumulator
+type from the result type. `arm_sve.convert_from_svbool` and
+`arm_sve.convert_to_svbool` spell only the type from which the other side is
+derived. `arm_sve.zip.x2` and `arm_sve.zip.x4` return two and four same-typed
+results, respectively. `arm_sve.psel` interleaves an indexed operand and spells
+two independently mapped predicate types, while `arm_sve.dupq_lane` has a
+positional lane attribute in brackets. The current reusable shapes cannot
+represent those relationships without losing structure or assigning an
+incorrect type.
+
+ArmSVE also defines 21 LLVM intrinsic wrappers whose canonical syntax is the
+generic quoted operation form and needs no custom registration. This count is
+separate from `arm_sve.intr.bfmmla`, which overrides the intrinsic base with a
+custom assembly format and is one of the 12 gaps above. ArmSVE defines no
+dialect types or attributes, and none of its operations have regions or
+successors. Transform-dialect pattern operations with `transform.*` names are
+outside the `arm_sve` operation namespace and this preset.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

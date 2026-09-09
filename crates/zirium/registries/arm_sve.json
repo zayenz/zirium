@@ -1,0 +1,21 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "arm_sve.masked.addi", "shape": "operand_clauses"},
+    {"name": "arm_sve.masked.addf", "shape": "operand_clauses"},
+    {"name": "arm_sve.masked.subi", "shape": "operand_clauses"},
+    {"name": "arm_sve.masked.subf", "shape": "operand_clauses"},
+    {"name": "arm_sve.masked.muli", "shape": "operand_clauses"},
+    {"name": "arm_sve.masked.mulf", "shape": "operand_clauses"},
+    {"name": "arm_sve.masked.divi_signed", "shape": "operand_clauses"},
+    {"name": "arm_sve.masked.divi_unsigned", "shape": "operand_clauses"},
+    {"name": "arm_sve.masked.divf", "shape": "operand_clauses"}
+  ],
+  "operation_formats": []
+}

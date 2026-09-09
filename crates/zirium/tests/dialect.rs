@@ -951,6 +951,127 @@ fn arm_sme_preset_inventory_matches_llvm_22_1_structural_coverage() {
 }
 
 #[test]
+fn arm_sve_preset_exposes_mask_and_source_type_relationships() {
+    let registry = DialectRegistry::from_name("arm_sve").unwrap();
+    let source = br#"module {
+      func.func @masked(
+          %mask: vector<2x[4]xi1>,
+          %lhs: vector<2x[4]xf32>,
+          %rhs: vector<2x[4]xf32>) -> vector<2x[4]xf32> {
+        %result = arm_sve.masked.addf %mask, %lhs, %rhs {tag = true} :
+            vector<2x[4]xi1>, vector<2x[4]xf32>
+        func.return %result : vector<2x[4]xf32>
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    document.verify_semantics(&registry).unwrap();
+    let addf = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("arm_sve.masked.addf"))
+        .unwrap();
+
+    assert_eq!(document.operands(addf).unwrap().len(), 3);
+    let result_types = document.result_types(addf).unwrap();
+    assert_eq!(result_types.len(), 1);
+    assert_eq!(
+        document.type_spelling(result_types[0]),
+        Some("vector<2x[4]xf32>")
+    );
+    assert_eq!(
+        document.type_spelling(document.function_type(addf).unwrap()),
+        Some("(vector<2x[4]xi1>, vector<2x[4]xf32>, vector<2x[4]xf32>) -> vector<2x[4]xf32>")
+    );
+    assert!(
+        document
+            .attributes(addf)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "true")
+    );
+    assert!(document.operation_regions(addf).unwrap().is_empty());
+    assert!(document.successors(addf).unwrap().is_empty());
+}
+
+#[test]
+fn arm_sve_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("arm_sve").unwrap();
+    let masked = [
+        "arm_sve.masked.addi",
+        "arm_sve.masked.addf",
+        "arm_sve.masked.subi",
+        "arm_sve.masked.subf",
+        "arm_sve.masked.muli",
+        "arm_sve.masked.mulf",
+        "arm_sve.masked.divi_signed",
+        "arm_sve.masked.divi_unsigned",
+        "arm_sve.masked.divf",
+    ];
+    for name in masked {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::OperandClauses),
+            "{name}"
+        );
+    }
+
+    let unsupported_custom = [
+        "arm_sve.sdot",
+        "arm_sve.smmla",
+        "arm_sve.udot",
+        "arm_sve.ummla",
+        "arm_sve.usmmla",
+        "arm_sve.intr.bfmmla",
+        "arm_sve.convert_from_svbool",
+        "arm_sve.convert_to_svbool",
+        "arm_sve.zip.x2",
+        "arm_sve.zip.x4",
+        "arm_sve.psel",
+        "arm_sve.dupq_lane",
+    ];
+    for name in unsupported_custom {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let generic_intrinsics = [
+        "arm_sve.intr.ummla",
+        "arm_sve.intr.smmla",
+        "arm_sve.intr.usmmla",
+        "arm_sve.intr.sdot",
+        "arm_sve.intr.udot",
+        "arm_sve.intr.add",
+        "arm_sve.intr.fadd",
+        "arm_sve.intr.mul",
+        "arm_sve.intr.fmul",
+        "arm_sve.intr.sub",
+        "arm_sve.intr.fsub",
+        "arm_sve.intr.sdiv",
+        "arm_sve.intr.udiv",
+        "arm_sve.intr.fdiv",
+        "arm_sve.intr.convert.from.svbool",
+        "arm_sve.intr.convert.to.svbool",
+        "arm_sve.intr.zip.x2",
+        "arm_sve.intr.zip.x4",
+        "arm_sve.intr.psel",
+        "arm_sve.intr.whilelt",
+        "arm_sve.intr.dupq_lane",
+    ];
+    assert_eq!(masked.len() + unsupported_custom.len(), 21);
+    assert_eq!(generic_intrinsics.len(), 21);
+    for name in generic_intrinsics {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])
