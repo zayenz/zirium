@@ -626,6 +626,96 @@ pub(super) fn shaped_operation(
     Ok(())
 }
 
+pub(super) fn formatted_operation(
+    parser: &mut Parser<'_>,
+    marker: Marker,
+    format: &OperationFormat,
+) -> Result<(), CompactError> {
+    let checkpoint = parser.shaped_operation_checkpoint();
+    let mut good = parser.expect(TokenKind::BareIdentifier)?;
+    parser.trivia()?;
+    let mut nodes = Vec::new();
+    let mut boundary_trivia = parser.position;
+    for step in format.steps() {
+        match *step {
+            FormatStep::Begin(kind) => nodes.push((kind, parser.builder.start())),
+            FormatStep::End(kind) => {
+                let Some((started_kind, started)) = nodes.pop() else {
+                    good = false;
+                    parser.diagnostic();
+                    continue;
+                };
+                debug_assert_eq!(started_kind, kind);
+                parser.builder.complete(started, kind)?;
+            }
+            FormatStep::Capture(FormatBinding::Operands) => {
+                while parser.at(TokenKind::PercentIdentifier) {
+                    good &= shaped_operand(parser)?;
+                    parser.trivia()?;
+                    if !parser.at(TokenKind::Comma) {
+                        break;
+                    }
+                    parser.bump()?;
+                    parser.trivia()?;
+                }
+            }
+            FormatStep::Capture(FormatBinding::Value) => good &= parser.constant_value()?,
+            FormatStep::Capture(FormatBinding::Results | FormatBinding::Result) => {
+                unreachable!("result bindings only occur in type directives")
+            }
+            FormatStep::AttributeDictionary => {
+                if parser.at(TokenKind::LBrace) {
+                    parser.attribute_dict()?;
+                }
+            }
+            FormatStep::Literal(FormatLiteral::Colon) => {
+                good &= parser.expect(TokenKind::Colon)?;
+            }
+            FormatStep::Literal(FormatLiteral::To) => {
+                if parser.at(TokenKind::BareIdentifier) && parser.current_text() == "to" {
+                    parser.bump()?;
+                } else {
+                    parser.diagnostic();
+                    good = false;
+                }
+            }
+            FormatStep::Type(binding) => {
+                if matches!(binding, FormatBinding::Operands | FormatBinding::Results)
+                    && parser.at(TokenKind::LParen)
+                {
+                    parser.type_list(0)?;
+                } else {
+                    good &= parser.type_syntax(0)?;
+                }
+            }
+        }
+        boundary_trivia = parser.position;
+        parser.trivia()?;
+    }
+    debug_assert!(nodes.is_empty());
+
+    if parser.at(TokenKind::Loc) {
+        let location = parser.builder.start();
+        let location_good = parser.location_attribute()?;
+        good &= location_good;
+        parser.builder.complete_with_error(
+            location,
+            SyntaxKind::TrailingLocation,
+            !location_good,
+        )?;
+        boundary_trivia = parser.position;
+        parser.trivia()?;
+    }
+    let crossed_line = parser.trivia_crosses_line(boundary_trivia);
+    if !good || !parser.shaped_operation_boundary(crossed_line) {
+        return parser.recover_format_mismatch(marker, checkpoint);
+    }
+    parser
+        .builder
+        .complete(marker, SyntaxKind::DialectOperation)?;
+    Ok(())
+}
+
 fn shaped_operand(parser: &mut Parser<'_>) -> Result<bool, CompactError> {
     let operand = parser.builder.start();
     let use_marker = parser.builder.start();

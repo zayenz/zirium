@@ -57,6 +57,13 @@ fn parser_diagnostic_message(
             };
             format!("custom operation `{name}` does not match registered shape `{shape}`")
         }
+        ParseDiagnosticKind::FormatMismatch => {
+            let name = source
+                .get(range.start() as usize..range.end() as usize)
+                .map(String::from_utf8_lossy)
+                .unwrap_or_default();
+            format!("custom operation `{name}` does not match its registered format")
+        }
         ParseDiagnosticKind::ProgressLimit => "parser recovery made no progress".to_owned(),
         ParseDiagnosticKind::DepthLimit => "delimiter nesting depth limit exceeded".to_owned(),
     }
@@ -537,6 +544,9 @@ impl File {
                 kind: match diagnostic.kind() {
                     zirium::parser::ParseDiagnosticKind::ShapeMismatch(_) => {
                         "parser.ShapeMismatch".to_owned()
+                    }
+                    zirium::parser::ParseDiagnosticKind::FormatMismatch => {
+                        "parser.FormatMismatch".to_owned()
                     }
                     kind => format!("parser.{kind:?}"),
                 },

@@ -512,6 +512,113 @@ fn literal_attribute_shape_accepts_attribute_dictionaries() {
 }
 
 #[test]
+fn configured_format_programs_parse_and_lower_captured_roles() {
+    use zirium::dialect::RegistryConfig;
+
+    let config = RegistryConfig::from_json(
+        r#"{
+          "builtins": [],
+          "operation_shapes": [],
+          "operation_formats": [
+            {"name":"a.Op","format":"$operands attr-dict `:` type($operands) `to` type($results)"},
+            {"name":"a.Imm","format":"$value `:` type($value) attr-dict `:` type($result)"}
+          ]
+        }"#,
+    )
+    .unwrap();
+    let registry = config.build().unwrap();
+    assert_eq!(registry.operation_shape("a.Op"), None);
+
+    let source = br#""builtin.module"() ({
+^bb0:
+  %a = "test.source"() : () -> i16
+  %b = "test.source"() : () -> i16
+  %r = a.Op %a, %b : i16 to i16
+  %0 = a.Imm 1 : i64 {k = 2 : i64} : i32
+}) : () -> ()"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    let operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("a.Op"))
+        .unwrap();
+    assert_eq!(document.operands(operation).unwrap().len(), 2);
+    let results = document.result_types(operation).unwrap();
+    assert_eq!(document.type_spelling(results[0]), Some("i16"));
+
+    let literal = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("a.Imm"))
+        .unwrap();
+    let results = document.result_types(literal).unwrap();
+    assert_eq!(document.type_spelling(results[0]), Some("i32"));
+    let value = document.attribute_id(literal, "value").unwrap();
+    assert_eq!(document.attribute_spelling_value(value), Some("1 : i64"));
+    assert!(document.attribute_id(literal, "k").is_some());
+}
+
+#[test]
+fn configured_format_programs_fail_during_registry_construction() {
+    use zirium::dialect::RegistryConfig;
+
+    let config = RegistryConfig::from_json(
+        r#"{"builtins":[],"operation_shapes":[],"operation_formats":[
+          {"name":"a.Broken","format":"$value `:` type($operands)"}
+        ]}"#,
+    )
+    .unwrap();
+    let error = match config.build() {
+        Ok(_) => panic!("invalid format was accepted"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("a.Broken"), "{error}");
+}
+
+#[test]
+fn configured_format_mismatch_recovers_the_whole_operation() {
+    use zirium::dialect::RegistryConfig;
+
+    let registry = RegistryConfig::from_json(
+        r#"{"builtins":[],"operation_shapes":[],"operation_formats":[
+          {"name":"a.Op","format":"$operands attr-dict `:` type($operands) `to` type($results)"}
+        ]}"#,
+    )
+    .unwrap()
+    .build()
+    .unwrap();
+    let source = br#""builtin.module"() ({
+^bb0:
+  %a = "test.source"() : () -> i16
+  %r = a.Op %a : i16 -> i16
+  "test.after"() : () -> ()
+}) : () -> ()"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::FormatMismatch)
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after"))
+    );
+    assert!(
+        !document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("to"))
+    );
+}
+
+#[test]
 fn registry_presets_validate_names_and_compose_with_explicit_entries() {
     use zirium::dialect::RegistryConfig;
 

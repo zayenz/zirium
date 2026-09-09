@@ -37,7 +37,7 @@ from ._zirium import (  # ty: ignore[unresolved-import]
     parse_file,
     parse_text,
 )
-from .config import OperationShapeConfig, RegistryConfig
+from .config import OperationFormatConfig, OperationShapeConfig, RegistryConfig
 
 __version__ = _distribution_version("zirium")
 
@@ -50,6 +50,7 @@ __all__ = [
     "ForeignHandleError",
     "LoweringResult",
     "Operation",
+    "OperationFormatConfig",
     "OperationShape",
     "OperationShapeConfig",
     "OperationSpec",

@@ -3,7 +3,11 @@
 use std::sync::OnceLock;
 
 mod config;
-pub use config::{OperationShapeConfig, RegistryConfig, RegistryConfigError};
+mod format;
+pub use config::{
+    OperationFormatConfig, OperationShapeConfig, RegistryConfig, RegistryConfigError,
+};
+pub(crate) use format::{FormatBinding, FormatLiteral, FormatStep, OperationFormat};
 
 use crate::{
     SyntaxKind,
@@ -323,7 +327,9 @@ pub struct AttributeDescriptor {
 #[derive(Debug, PartialEq, Eq)]
 pub enum DeclarativeRegistryError {
     InvalidOperationName(String),
+    InvalidOperationFormat(String),
     ConflictingShape(String),
+    ConflictingFormat(String),
     UnknownOperation(String),
     DuplicateOperation(String),
     EmptyOperation,
@@ -339,8 +345,14 @@ impl std::fmt::Display for DeclarativeRegistryError {
             Self::ConflictingShape(name) => {
                 write!(formatter, "conflicting operation shapes for: {name}")
             }
+            Self::ConflictingFormat(name) => {
+                write!(formatter, "conflicting operation formats for: {name}")
+            }
             Self::InvalidOperationName(name) => {
                 write!(formatter, "invalid custom operation name: {name:?}")
+            }
+            Self::InvalidOperationFormat(name) => {
+                write!(formatter, "invalid operation format for: {name}")
             }
             Self::UnknownOperation(name) => {
                 write!(formatter, "unknown declarative operation: {name}")
@@ -349,13 +361,15 @@ impl std::fmt::Display for DeclarativeRegistryError {
                 write!(formatter, "duplicate declarative operation: {name}")
             }
             Self::EmptyOperation => write!(formatter, "operation name must not be empty"),
-            Self::CoreOperation(name) => write!(
-                formatter,
-                "operation shape conflicts with core operation: {name}"
-            ),
+            Self::CoreOperation(name) => {
+                write!(
+                    formatter,
+                    "custom operation conflicts with core operation: {name}"
+                )
+            }
             Self::RegisteredOperation(name) => write!(
                 formatter,
-                "operation shape conflicts with registered operation: {name}"
+                "custom operation conflicts with registered operation: {name}"
             ),
             Self::UnknownPreset(name) => write!(formatter, "unknown registry preset: {name}"),
             Self::DuplicatePreset(name) => write!(formatter, "duplicate registry preset: {name}"),
@@ -395,6 +409,7 @@ pub struct DialectRegistry {
     types: &'static [TypeDescriptor],
     attributes: &'static [AttributeDescriptor],
     operation_shapes: Option<Box<[(String, OperationShape)]>>,
+    operation_formats: Option<Box<[(String, OperationFormat)]>>,
     module_alias: bool,
 }
 
@@ -431,6 +446,7 @@ impl DialectRegistry {
             types,
             attributes,
             operation_shapes: None,
+            operation_formats: None,
             module_alias: false,
         };
         let mut index = 0;
@@ -587,6 +603,13 @@ impl DialectRegistry {
             .find_map(|(candidate, shape)| (candidate == name).then_some(*shape))
     }
 
+    pub(crate) fn operation_format(&self, name: &str) -> Option<&OperationFormat> {
+        self.operation_formats
+            .as_deref()?
+            .iter()
+            .find_map(|(candidate, format)| (candidate == name).then_some(format))
+    }
+
     /// Builds an owned registry containing the core operations plus caller-named operations
     /// assigned supported [`OperationShape`] variants.
     ///
@@ -601,6 +624,7 @@ impl DialectRegistry {
             types: &[],
             attributes: &[],
             operation_shapes: None,
+            operation_formats: None,
             module_alias: true,
         }
         .extend_operation_shapes(operation_shapes)
@@ -649,7 +673,9 @@ impl DialectRegistry {
                     name.to_owned(),
                 ));
             }
-            if shapes.iter().any(|(candidate, _)| candidate == name) {
+            if self.operation_format(name).is_some()
+                || shapes.iter().any(|(candidate, _)| candidate == name)
+            {
                 return Err(DeclarativeRegistryError::DuplicateOperation(
                     name.to_owned(),
                 ));
@@ -661,6 +687,40 @@ impl DialectRegistry {
             types: self.types,
             attributes: self.attributes,
             operation_shapes: Some(shapes.into_boxed_slice()),
+            operation_formats: self.operation_formats.clone(),
+            module_alias: self.module_alias,
+        })
+    }
+
+    pub(crate) fn extend_operation_formats(
+        &self,
+        operation_formats: &[(&str, &str)],
+    ) -> Result<Self, DeclarativeRegistryError> {
+        let mut formats = self
+            .operation_formats
+            .as_deref()
+            .unwrap_or_default()
+            .to_vec();
+        formats.reserve(operation_formats.len());
+        for &(name, description) in operation_formats {
+            validate_custom_operation_name(self, name)?;
+            if self.operation_shape(name).is_some()
+                || formats.iter().any(|(candidate, _)| candidate == name)
+            {
+                return Err(DeclarativeRegistryError::DuplicateOperation(
+                    name.to_owned(),
+                ));
+            }
+            let format = OperationFormat::parse(description)
+                .ok_or_else(|| DeclarativeRegistryError::InvalidOperationFormat(name.to_owned()))?;
+            formats.push((name.to_owned(), format));
+        }
+        Ok(Self {
+            operations: self.operations,
+            types: self.types,
+            attributes: self.attributes,
+            operation_shapes: self.operation_shapes.clone(),
+            operation_formats: Some(formats.into_boxed_slice()),
             module_alias: self.module_alias,
         })
     }
@@ -743,6 +803,7 @@ impl DialectRegistry {
             types: &[],
             attributes: &[],
             operation_shapes: None,
+            operation_formats: None,
             module_alias: operation_names.contains(&"builtin.module"),
         })
     }
@@ -774,6 +835,12 @@ impl DialectRegistry {
                 hash = mix(hash, &[*shape as u8]);
             }
         }
+        if let Some(formats) = &self.operation_formats {
+            for (name, format) in formats.iter() {
+                hash = mix(hash, name.as_bytes());
+                hash = mix(hash, &format.identity_bytes().collect::<Vec<_>>());
+            }
+        }
         for descriptor in self.types {
             hash = mix(hash, descriptor.name.as_bytes());
         }
@@ -782,6 +849,32 @@ impl DialectRegistry {
         }
         hash
     }
+}
+
+fn validate_custom_operation_name(
+    registry: &DialectRegistry,
+    name: &str,
+) -> Result<(), DeclarativeRegistryError> {
+    if name.is_empty() {
+        return Err(DeclarativeRegistryError::EmptyOperation);
+    }
+    let source = crate::source::Source::new(name.as_bytes())
+        .map_err(|_| DeclarativeRegistryError::InvalidOperationName(name.to_owned()))?;
+    let lexed = crate::lexer::lex(&source);
+    if !lexed.diagnostics().is_empty()
+        || lexed.tokens().len() != 2
+        || lexed.tokens()[0].kind() != crate::lexer::TokenKind::BareIdentifier
+    {
+        return Err(DeclarativeRegistryError::InvalidOperationName(
+            name.to_owned(),
+        ));
+    }
+    if registry.operation(name).is_some() || (name == "module" && registry.module_alias) {
+        return Err(DeclarativeRegistryError::RegisteredOperation(
+            name.to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn lower_arith_constant(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLowering> {
@@ -1093,6 +1186,43 @@ pub(crate) fn lower_operation_shape(
         OperationShape::VariadicOperands => lower_variadic_operands(operation, context),
         OperationShape::LiteralAttribute => lower_literal_attribute(operation, context),
     }
+}
+
+pub(crate) fn lower_operation_format(
+    format: &OperationFormat,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    if format.captures(FormatBinding::Operands) {
+        let (input, result) = split_top_level_to(context.function_type()?)?;
+        let input = input.trim();
+        let input_types = crate::semantic::split_registered_types(input);
+        let inputs = if input_types.len() == 1 {
+            std::iter::repeat_n(input_types[0].as_str(), context.operand_count())
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            input_types.join(", ")
+        };
+        let result = result.trim();
+        return Some(RegisteredLowering {
+            name: "zirium.format",
+            result_types: crate::semantic::split_registered_types(result),
+            function_type: format!("({inputs}) -> {result}"),
+            attributes: Vec::new(),
+        });
+    }
+
+    if format.captures(FormatBinding::Value) {
+        let value = context.literal_value()?.trim();
+        let result = context.function_type()?.trim();
+        return Some(RegisteredLowering {
+            name: "zirium.format",
+            result_types: crate::semantic::split_registered_types(result),
+            function_type: format!("() -> {result}"),
+            attributes: vec![("value", value.to_owned())],
+        });
+    }
+    None
 }
 
 fn verify_arith_constant(document: &Document, operation: OperationId) -> Result<(), &'static str> {
@@ -1765,5 +1895,6 @@ static CORE_REGISTRY: DialectRegistry = DialectRegistry {
     types: &[],
     attributes: &[],
     operation_shapes: None,
+    operation_formats: None,
     module_alias: true,
 };

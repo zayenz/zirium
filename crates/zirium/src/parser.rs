@@ -6,7 +6,10 @@
 //! size and compact-tree construction failures.
 
 use crate::{
-    dialect::{DialectRegistry, OperationDescriptor, OperationShape},
+    dialect::{
+        DialectRegistry, FormatBinding, FormatLiteral, FormatStep, OperationDescriptor,
+        OperationFormat, OperationShape,
+    },
     lexer::{Diagnostic as LexDiagnostic, Lexed, LexerLimits, TokenKind, lex_with_limits},
     representation::{
         CompactError, CompletedMarker, EventBuilder, Marker, NodeId, SyntaxKind, SyntaxTree,
@@ -403,6 +406,7 @@ pub enum ParseDiagnosticKind {
     Syntax,
     UnknownCustomOperation,
     ShapeMismatch(OperationShape),
+    FormatMismatch,
     ProgressLimit,
     DepthLimit,
 }
@@ -438,7 +442,7 @@ mod grammar;
 mod syntax;
 
 pub use custom::DialectParser;
-use custom::shaped_operation;
+use custom::{formatted_operation, shaped_operation};
 #[doc(hidden)]
 pub use grammar::parse_brace_fixture;
 use grammar::{Parser, close_for};

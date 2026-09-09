@@ -5,6 +5,7 @@ from os import PathLike
 from types import TracebackType
 from typing import Any, Literal, Self, TypeAlias
 
+from .config import OperationFormatConfig as OperationFormatConfig
 from .config import (
     OperationShapeConfig as OperationShapeConfig,
 )

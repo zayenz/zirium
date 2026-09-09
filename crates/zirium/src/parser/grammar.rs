@@ -220,6 +220,9 @@ impl Parser<'_> {
             if let Some(shape) = self.registry.operation_shape(name) {
                 return shaped_operation(self, marker, shape);
             }
+            if let Some(format) = self.registry.operation_format(name) {
+                return formatted_operation(self, marker, format);
+            }
             return self.unparsed_custom_operation(Some(marker));
         }
         self.expect(TokenKind::String)?;
@@ -1624,6 +1627,19 @@ impl Parser<'_> {
         self.diagnostics.truncate(diagnostics);
         self.nesting_depth = nesting_depth;
         self.diagnostic_kind(ParseDiagnosticKind::ShapeMismatch(shape));
+        self.recover_custom_operation(marker)
+    }
+    pub(super) fn recover_format_mismatch(
+        &mut self,
+        marker: Marker,
+        checkpoint: (usize, usize, usize, usize),
+    ) -> Result<(), CompactError> {
+        let (position, events, diagnostics, nesting_depth) = checkpoint;
+        self.position = position;
+        self.builder.rewind(events);
+        self.diagnostics.truncate(diagnostics);
+        self.nesting_depth = nesting_depth;
+        self.diagnostic_kind(ParseDiagnosticKind::FormatMismatch);
         self.recover_custom_operation(marker)
     }
     fn ensure_progress(&mut self, before: usize) -> Result<(), CompactError> {

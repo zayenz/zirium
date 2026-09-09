@@ -110,16 +110,27 @@ The CLI and Python accept the same complete registry configuration:
   "operation_shapes": [
     {"name": "vendor.function", "shape": "func_like"},
     {"name": "vendor.invoke", "shape": "call_like"}
+  ],
+  "operation_formats": [
+    {"name": "vendor.convert", "format": "$operands attr-dict `:` type($operands) `to` type($results)"}
   ]
 }
 ```
 
-`builtins` and `operation_shapes` are required and may be empty. The optional
-`presets` list adds bundled registries by name. `builtins` selects operations
-from the declarative catalog. `operation_shapes` assigns exact names to a
-supported grammar: `func_like`, `call_like`, `binary_operands`, or
-`optional_typed_operands`. This configuration replaces the caller's default
-registry; it does not implicitly add core or proving operations.
+`builtins` and `operation_shapes` are required and may be empty. `presets` and
+`operation_formats` default to empty. `presets` adds bundled registries by
+name. `builtins` selects operations from the declarative catalog.
+`operation_shapes` assigns exact names to a supported grammar: `func_like`,
+`call_like`, `binary_operands`, or `optional_typed_operands`.
+`unary_operand`, `variadic_operands`, and `literal_attribute` cover the smaller
+expression forms.
+
+`operation_formats` describes the order of operands or a literal value, an
+optional attribute dictionary, fixed `:` or `to` tokens, and type captures.
+The registry checks each description when it is constructed. The typed-literal
+form is ``$value `:` type($value) attr-dict `:` type($result)``.
+
+This configuration replaces the caller's default registry.
 
 For the bundled StableHLO subset:
 

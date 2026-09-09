@@ -399,6 +399,15 @@ fn lower_with_registry(
                 function_type: op
                     .function_type_range()
                     .map(|range| text(source.bytes(), range)),
+                literal_value: op
+                    .tree()
+                    .children(op.id())
+                    .into_iter()
+                    .flatten()
+                    .find(|child| op.tree().kind(*child) == Some(SyntaxKind::ArithConstantValue))
+                    .and_then(|child| op.tree().text_range(child))
+                    .map(|range| text(source.bytes(), range)),
+                operand_count: op.operands().count(),
             };
             if op.tree().kind(op.id()) == Some(SyntaxKind::Operation) {
                 return None;
@@ -410,6 +419,13 @@ fn lower_with_registry(
                         shape: Some(shape),
                         lowering,
                     }
+                });
+            }
+            if let Some(format) = registry.operation_format(mnemonic) {
+                return lower_operation_format(format, &context).map(|lowering| MatchedLowering {
+                    name: mnemonic.to_owned(),
+                    shape: None,
+                    lowering,
                 });
             }
             let descriptor = registry.custom_operation(mnemonic)?;

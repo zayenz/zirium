@@ -22,6 +22,15 @@ class OperationShapeConfig(BaseModel):
     ]
 
 
+class OperationFormatConfig(BaseModel):
+    """Assign a validated format description to an exact operation name."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    name: str
+    format: str
+
+
 class RegistryConfig(BaseModel):
     """A complete registry composed from presets and explicit entries."""
 
@@ -30,3 +39,4 @@ class RegistryConfig(BaseModel):
     presets: list[str] = Field(default_factory=list)
     builtins: list[str]
     operation_shapes: list[OperationShapeConfig]
+    operation_formats: list[OperationFormatConfig] = Field(default_factory=list)

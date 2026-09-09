@@ -11,6 +11,7 @@ EXAMPLES = Path(__file__).parents[2] / "examples" / "cli"
 def test_file_dict_and_pydantic_registry_agree():
     config = json.loads((EXAMPLES / "registry.json").read_text())
     model = zirium.RegistryConfig.model_validate(config)
+    config["operation_formats"] = []
     assert model.model_dump(mode="json") == config
     assert json.loads(model.model_dump_json()) == config
     assert model.model_json_schema()["additionalProperties"] is False
@@ -87,6 +88,88 @@ def test_extended_operation_shapes_are_configurable(spelling, classattr):
         {"builtins": [], "operation_shapes": [model.model_dump()]}
     )
     zirium.DialectRegistry.with_operation_shapes({"vendor.op": classattr})
+
+
+def test_operation_formats_round_trip_and_parse_captured_roles():
+    formats = [
+        zirium.OperationFormatConfig(
+            name="a.Op",
+            format=(
+                "$operands attr-dict `:` type($operands) `to` type($results)"
+            ),
+        ),
+        zirium.OperationFormatConfig(
+            name="a.Imm",
+            format="$value `:` type($value) attr-dict `:` type($result)",
+        ),
+    ]
+    config = zirium.RegistryConfig(
+        builtins=[], operation_shapes=[], operation_formats=formats
+    )
+    assert zirium.RegistryConfig.model_validate_json(config.model_dump_json()) == config
+    registry = zirium.DialectRegistry.from_config(config)
+    source = '''"builtin.module"() ({
+^bb0:
+  %a = "test.source"() : () -> i16
+  %b = "test.source"() : () -> i16
+  %r = a.Op %a, %b : i16 to i16
+  %0 = a.Imm 1 : i64 {k = 2 : i64} : i32
+}) : () -> ()'''
+    parsed = zirium.parse_text(source, registry=registry)
+    assert parsed.diagnostics == []
+    lowered = parsed.lower_strict()
+    assert lowered.diagnostics == []
+    assert lowered.document is not None
+    operation = lowered.document.operation_table("a.Op").operation(0)
+    assert operation.operand_count() == 2
+    assert operation.result_type(0).spelling == "i16"
+    literal = lowered.document.operation_table("a.Imm").operation(0)
+    assert literal.result_type(0).spelling == "i32"
+    value = literal.attribute_by_name("value")
+    key = literal.attribute_by_name("k")
+    assert value is not None and value.spelling == "1 : i64"
+    assert key is not None and key.spelling == "2 : i64"
+
+
+def test_invalid_operation_format_names_its_entry():
+    with pytest.raises(ValueError, match="a.Broken"):
+        zirium.DialectRegistry.from_config(
+            {
+                "builtins": [],
+                "operation_shapes": [],
+                "operation_formats": [
+                    {"name": "a.Broken", "format": "$value type($operands)"}
+                ],
+            }
+        )
+
+
+def test_operation_format_mismatch_uses_whole_operation_recovery():
+    registry = zirium.DialectRegistry.from_config(
+        {
+            "builtins": [],
+            "operation_shapes": [],
+            "operation_formats": [
+                {
+                    "name": "a.Op",
+                    "format": (
+                        "$operands attr-dict `:` type($operands) "
+                        "`to` type($results)"
+                    ),
+                }
+            ],
+        }
+    )
+    parsed = zirium.parse_text(
+        "%r = a.Op %arg : i16 -> i16\n\"test.after\"() : () -> ()\n",
+        registry=registry,
+    )
+    assert [diagnostic.kind for diagnostic in parsed.diagnostics] == [
+        "parser.FormatMismatch"
+    ]
+    document = parsed.lower_best_effort().document
+    assert document is not None
+    assert document.operation_table("test.after").count == 1
 
 
 @pytest.mark.parametrize(

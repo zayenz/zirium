@@ -15,7 +15,7 @@ use std::{
 
 use crate::{
     SyntaxKind,
-    dialect::{DialectRegistry, OperationShape, lower_operation_shape},
+    dialect::{DialectRegistry, OperationShape, lower_operation_format, lower_operation_shape},
     parser::ParsedFile,
     source::TextRange,
 };
@@ -428,6 +428,8 @@ pub struct RegisteredLoweringContext<'a> {
     arguments: Vec<RegisteredArgument<'a>>,
     function_results: Option<&'a str>,
     function_type: Option<&'a str>,
+    literal_value: Option<&'a str>,
+    operand_count: usize,
 }
 
 pub struct RegisteredArgument<'a> {
@@ -462,6 +464,12 @@ impl<'a> RegisteredLoweringContext<'a> {
     }
     pub fn function_type(&self) -> Option<&'a str> {
         self.function_type
+    }
+    pub(crate) fn literal_value(&self) -> Option<&'a str> {
+        self.literal_value
+    }
+    pub(crate) const fn operand_count(&self) -> usize {
+        self.operand_count
     }
 }
 
