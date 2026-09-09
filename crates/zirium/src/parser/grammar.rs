@@ -39,6 +39,23 @@ pub fn parse_operations_with_registry(
     })
 }
 
+pub(crate) fn parse_owned_operations_with_registry(
+    lexed: Lexed,
+    source: &[u8],
+    registry: &DialectRegistry,
+    limits: ParserLimits,
+) -> Result<(ParsedSyntax, Vec<LexDiagnostic>), CompactError> {
+    let (builder, diagnostics) = produce_operation_events(&lexed, source, registry, limits)?;
+    let (tokens, lexer_diagnostics) = lexed.into_parts();
+    Ok((
+        ParsedSyntax {
+            tree: std::sync::Arc::new(builder.finish_parser(tokens)?),
+            diagnostics,
+        },
+        lexer_diagnostics,
+    ))
+}
+
 fn produce_operation_events(
     lexed: &Lexed,
     source: &[u8],

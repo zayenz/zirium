@@ -87,7 +87,18 @@ Base-042 removes the second complete event vector. Forward-parent chains are res
 | primary 100 MiB | 46.467 | 1,183.73 / 2,152.08 | +81.8% | 194.41 | -27.1% |
 | block-rich 10 MiB | 68.244 | 70.16 / 146.53 | +108.8% | 213.57 | -29.1% |
 
-Decision: retain the direct compaction pass. Its peak reduction scales across both fixture shapes, and it also roughly halves compaction time without changing the event-based CST architecture. Retain the token copy into CST storage and the token-index `seen` bitmap. Together they preserve the public `from_events` contract for arbitrarily ordered token events, including invalid-index, duplicate, source-order, omission, and root-coverage checks. The bitmap is one byte per input token and the token copy is the final tree's required ordered storage; removing either safely would require constraining the public event contract or adding another construction path. After the event-vector removal, neither is a sufficiently isolated measured temporary to justify that complexity. Retain source-range token text and do not add parser-level interning for the reasons measured below.
+Decision: retain the direct compaction pass. Its peak reduction scales across both fixture shapes, and it also roughly halves compaction time without changing the event-based CST architecture.
+
+Base-043 adds a crate-internal construction path for events produced by Zirium's parser. Parser events reference every lexer token once in source order, so this path moves the lexer token vector into the CST and checks the sequential-index invariant without allocating a second token vector or a `seen` bitmap. The public `SyntaxTree::from_events` constructor is unchanged. It still accepts arbitrarily ordered token events and checks invalid indices, duplicates, source order, omissions, and root coverage.
+
+The table compares whole parsing immediately before and after the change. Both sides used the same generated fixture, release build, warm-up count, and three-run median. Shrinking the moved token vector keeps retained CST size unchanged.
+
+| fixture | before ms | after ms | time change | before peak MiB | after peak MiB | peak change | retained CST MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| primary 10 MiB | 17.367 | 13.582 | -21.8% | 30.62 | 19.10 | -37.6% | 7.10 |
+| block-rich 10 MiB | 127.976 | 118.075 | -7.7% | 269.85 | 173.05 | -35.9% | 77.05 |
+
+Retain the trusted parser path. The peak reduction is consistent across both fixture shapes, parse time also improves, and the CST remains the owning syntax representation. Retain source-range token text and do not add parser-level interning for the reasons measured below.
 
 String accounting includes `BareIdentifier`, `AtIdentifier`, `PercentIdentifier`, `CaretIdentifier`, `ExclamationIdentifier`, and `HashIdentifier`. Quoted `String` tokens count only when they are direct token elements of an `Operation` or `DialectOperation` CST node. This uses the CST boundary to skip an optional result child and excludes strings nested in attributes, regions, or other operation components. Current cost is the required eight-byte source range for each occurrence. The candidate retains that range because lossless reconstruction and syntax ranges still require source position, then adds a four-byte stable ID per occurrence and, per unique spelling, a four-byte ID, eight-byte stored hash, two machine-word range/pointer fields, and the unique spelling bytes. It deliberately does not claim that duplicate spelling bytes can be removed from the retained lossless source. Actual hash-table control bytes and spare capacity would make the candidate somewhat larger.
 

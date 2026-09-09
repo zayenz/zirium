@@ -161,6 +161,9 @@ impl EventBuilder {
     pub fn finish(self, tokens: Vec<Token>) -> Result<SyntaxTree, CompactError> {
         SyntaxTree::from_events(self.events, tokens)
     }
+    pub(crate) fn finish_parser(self, tokens: Vec<Token>) -> Result<SyntaxTree, CompactError> {
+        SyntaxTree::from_parser_events(self.events, tokens)
+    }
     #[cfg(test)]
     pub(crate) fn into_events(self) -> Vec<Event> {
         self.events
@@ -254,22 +257,34 @@ pub struct SyntaxTree {
 
 impl SyntaxTree {
     pub fn from_events(events: Vec<Event>, tokens: Vec<Token>) -> Result<Self, CompactError> {
-        let tree = Self::compact_events(events, tokens)?;
+        let tree = Self::compact_events(events, tokens, false)?;
         tree.verify()?;
         Ok(tree)
+    }
+    fn from_parser_events(
+        events: Vec<Event>,
+        mut tokens: Vec<Token>,
+    ) -> Result<Self, CompactError> {
+        tokens.shrink_to_fit();
+        Self::compact_events(events, tokens, true)
     }
     #[cfg(test)]
     pub(crate) fn from_events_unverified(
         events: Vec<Event>,
         tokens: Vec<Token>,
     ) -> Result<Self, CompactError> {
-        Self::compact_events(events, tokens)
+        Self::compact_events(events, tokens, false)
     }
-    fn compact_events(mut events: Vec<Event>, tokens: Vec<Token>) -> Result<Self, CompactError> {
+    fn compact_events(
+        mut events: Vec<Event>,
+        tokens: Vec<Token>,
+        trust_token_order: bool,
+    ) -> Result<Self, CompactError> {
         let mut nodes = Vec::<FlatNode>::new();
-        let mut stored = Vec::with_capacity(tokens.len());
+        let mut stored = (!trust_token_order).then(|| Vec::with_capacity(tokens.len()));
+        let mut token_position = 0usize;
         let mut stack = Vec::new();
-        let mut seen = vec![false; tokens.len()];
+        let mut seen = (!trust_token_order).then(|| vec![false; tokens.len()]);
         let mut root = false;
         let mut compact = |event| -> Result<(), CompactError> {
             match event {
@@ -284,7 +299,7 @@ impl SyntaxTree {
                         }
                         root = true;
                     }
-                    let first_token = u32::try_from(stored.len())
+                    let first_token = u32::try_from(token_position)
                         .map_err(|_| CompactError::RepresentationTooLarge)?;
                     nodes.push(FlatNode {
                         kind,
@@ -302,23 +317,32 @@ impl SyntaxTree {
                         return Err(CompactError::TokenOutsideNode);
                     }
                     let i = i as usize;
-                    let token = *tokens.get(i).ok_or(CompactError::InvalidTokenIndex)?;
-                    if std::mem::replace(&mut seen[i], true) {
-                        return Err(CompactError::DuplicateToken);
+                    if trust_token_order {
+                        if i != token_position || i >= tokens.len() {
+                            return Err(CompactError::InvalidTokenIndex);
+                        }
+                    } else {
+                        let token = *tokens.get(i).ok_or(CompactError::InvalidTokenIndex)?;
+                        let seen = seen.as_mut().expect("validation bitmap");
+                        if std::mem::replace(&mut seen[i], true) {
+                            return Err(CompactError::DuplicateToken);
+                        }
+                        let stored = stored.as_mut().expect("validated token storage");
+                        if stored
+                            .last()
+                            .is_some_and(|p: &Token| token.range().start() < p.range().end())
+                        {
+                            return Err(CompactError::TokensOutOfOrder);
+                        }
+                        stored.push(token);
                     }
-                    if stored
-                        .last()
-                        .is_some_and(|p: &Token| token.range().start() < p.range().end())
-                    {
-                        return Err(CompactError::TokensOutOfOrder);
-                    }
-                    stored.push(token);
+                    token_position += 1;
                 }
                 Event::Finish { local_error } => {
                     let (i, descendant_error) =
                         stack.pop().ok_or(CompactError::UnexpectedFinish)?;
                     nodes[i].token_count =
-                        u32::try_from(stored.len() - nodes[i].first_token as usize)
+                        u32::try_from(token_position - nodes[i].first_token as usize)
                             .map_err(|_| CompactError::RepresentationTooLarge)?;
                     nodes[i].subtree_end = u32::try_from(nodes.len())
                         .map_err(|_| CompactError::RepresentationTooLarge)?;
@@ -368,12 +392,16 @@ impl SyntaxTree {
         if !root {
             return Err(CompactError::Empty);
         }
-        if seen.iter().any(|s| !s) {
+        if token_position != tokens.len()
+            || seen
+                .as_ref()
+                .is_some_and(|seen| seen.iter().any(|seen| !seen))
+        {
             return Err(CompactError::InvalidRootCoverage);
         }
         Ok(Self {
             nodes,
-            tokens: stored,
+            tokens: stored.unwrap_or(tokens),
             parents: OnceLock::new(),
         })
     }
@@ -651,6 +679,22 @@ mod tests {
             )
             .unwrap_err(),
             CompactError::DuplicateToken
+        );
+    }
+
+    #[test]
+    fn parser_compaction_checks_its_token_order_invariant() {
+        let mut builder = EventBuilder::new();
+        let root = builder.start();
+        builder.token(1).unwrap();
+        builder.token(0).unwrap();
+        builder.complete(root, SyntaxKind::File).unwrap();
+
+        assert_eq!(
+            builder
+                .finish_parser(vec![token(0, 1), token(1, 2)])
+                .unwrap_err(),
+            CompactError::InvalidTokenIndex
         );
     }
 }

@@ -160,9 +160,8 @@ impl ParsedFile {
                 max_tokens: limits.max_tokens,
             },
         );
-        let lexer_diagnostics = lexed.diagnostics().to_vec();
-        let syntax = parse_operations_with_registry(
-            &lexed,
+        let (syntax, lexer_diagnostics) = grammar::parse_owned_operations_with_registry(
+            lexed,
             source.bytes(),
             registry,
             ParserLimits {

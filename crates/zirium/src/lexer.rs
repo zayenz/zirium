@@ -133,6 +133,9 @@ impl Lexed {
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }
+    pub(crate) fn into_parts(self) -> (Vec<Token>, Vec<Diagnostic>) {
+        (self.tokens, self.diagnostics)
+    }
     pub fn reconstruct(&self, source: &Source) -> Vec<u8> {
         let mut result = Vec::with_capacity(source.bytes().len());
         for token in &self.tokens {
