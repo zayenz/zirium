@@ -1,0 +1,23 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "async.func", "shape": "func_like"},
+    {"name": "async.call", "shape": "call_like"},
+    {"name": "async.return", "shape": "optional_typed_operands"},
+    {"name": "async.yield", "shape": "optional_typed_operands"},
+    {"name": "async.runtime.create", "shape": "variadic_operands"},
+    {"name": "async.runtime.set_available", "shape": "optional_typed_operands"},
+    {"name": "async.runtime.set_error", "shape": "optional_typed_operands"},
+    {"name": "async.runtime.await", "shape": "optional_typed_operands"},
+    {"name": "async.runtime.add_ref", "shape": "optional_typed_operands"},
+    {"name": "async.runtime.drop_ref", "shape": "optional_typed_operands"},
+    {"name": "async.runtime.num_worker_threads", "shape": "variadic_operands"}
+  ],
+  "operation_formats": []
+}

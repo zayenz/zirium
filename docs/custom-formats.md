@@ -23,6 +23,7 @@ It does not establish that the operation can be verified or rewritten.
 | ArmNeon preset | Core plus 1 of the 7 ArmNeon operations. |
 | ArmSME preset | Core plus 3 of the 68 ArmSME operations. |
 | ArmSVE preset | Core plus 9 of the 21 ArmSVE custom-form operations. |
+| Async preset | Core plus 11 of the 29 Async operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -56,7 +57,8 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, and `arm_sve` presets were checked against LLVM 22.1.0.
+`arm_neon`, `arm_sme`, `arm_sve`, and `async` presets were checked against
+LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
 its custom symbol/type form has no reusable structural signature. SCF registers
@@ -245,6 +247,36 @@ custom assembly format and is one of the 12 gaps above. ArmSVE defines no
 dialect types or attributes, and none of its operations have regions or
 successors. Transform-dialect pattern operations with `transform.*` names are
 outside the `arm_sve` operation namespace and this preset.
+
+Async registers 11 of its 29 operations. `async.func` and `async.call` expose
+their symbols, signatures, operands, wrapped result types, and function body;
+the structural shapes do not add Async symbol-use verification. `async.return`
+and `async.yield` expose their unwrapped, typed operands and no SSA results.
+The return form with both a leading attribute dictionary and operands remains
+on whole-operation recovery because that dictionary precedes the operand list;
+the ordinary yield dictionary follows it and is supported.
+
+The preset also registers `async.runtime.create`,
+`async.runtime.num_worker_threads`, `async.runtime.set_available`,
+`async.runtime.set_error`, `async.runtime.await`, `async.runtime.add_ref`, and
+`async.runtime.drop_ref`. These forms expose only types that their syntax
+actually spells: real result types for the two result-only operations, and
+operand types with no invented results for the other five. Reference-count
+attributes in the ordinary dictionary are retained.
+
+The other 18 operations remain on whole-operation recovery: `async.execute`,
+`async.await`, `async.create_group`, `async.add_to_group`, `async.await_all`,
+the six `async.coro.*` operations, `async.runtime.create_group`,
+`async.runtime.is_error`, `async.runtime.resume`,
+`async.runtime.await_and_resume`, `async.runtime.store`,
+`async.runtime.load`, and `async.runtime.add_to_group`. Their custom forms use
+execute-specific dependency and body bindings, infer token/value/group/coroutine/
+index/i1 results, omit some operand types, or (for `async.coro.suspend`) carry
+three successors. A nearby reusable shape would lose those roles or invent
+types. Async defines no dialect attributes. Its six `!async.*` types remain
+opaque, including the wrapped element type of `!async.value<...>`. The only
+operation regions are the supported function body and unsupported execute
+body; neither operation uses a post-region dictionary.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

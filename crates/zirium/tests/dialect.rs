@@ -1072,6 +1072,159 @@ fn arm_sve_preset_inventory_matches_llvm_22_1_structural_coverage() {
 }
 
 #[test]
+fn async_preset_exposes_function_call_and_runtime_structure() {
+    let registry = DialectRegistry::from_name("async").unwrap();
+    let source = br#"module {
+      async.func @produce(%arg: f32) -> (!async.token, !async.value<f32>) {
+        async.return %arg : f32
+      }
+      func.func @drive(%arg: f32) {
+        %token, %value = async.call @produce(%arg) : (f32) -> (!async.token, !async.value<f32>)
+        %created = async.runtime.create {tag = true} : !async.token
+        %threads = async.runtime.num_worker_threads : index
+        async.runtime.set_available %created : !async.token
+        async.runtime.set_error %created : !async.token
+        async.runtime.await %value : !async.value<f32>
+        async.runtime.add_ref %value {count = 1 : i64} : !async.value<f32>
+        async.runtime.drop_ref %value {count = 1 : i64} : !async.value<f32>
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    let function = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("async.func"))
+        .unwrap();
+    assert_eq!(
+        document.operation_symbol_name(function).as_deref(),
+        Some("produce")
+    );
+    assert_eq!(
+        document.operation_signature(function).as_deref(),
+        Some("(f32) -> (!async.token, !async.value<f32>)")
+    );
+    assert_eq!(document.operation_regions(function).unwrap().len(), 1);
+
+    let call = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("async.call"))
+        .unwrap();
+    assert_eq!(document.operation_callee(call).as_deref(), Some("produce"));
+    assert_eq!(document.operands(call).unwrap().len(), 1);
+    let call_results = document.result_types(call).unwrap();
+    assert_eq!(call_results.len(), 2);
+    assert_eq!(
+        document.type_spelling(call_results[0]),
+        Some("!async.token")
+    );
+    assert_eq!(
+        document.type_spelling(call_results[1]),
+        Some("!async.value<f32>")
+    );
+
+    for (name, operands, result) in [
+        ("async.runtime.create", 0, Some("!async.token")),
+        ("async.runtime.num_worker_threads", 0, Some("index")),
+        ("async.runtime.set_available", 1, None),
+        ("async.runtime.set_error", 1, None),
+        ("async.runtime.await", 1, None),
+        ("async.runtime.add_ref", 1, None),
+        ("async.runtime.drop_ref", 1, None),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), usize::from(result.is_some()), "{name}");
+        if let Some(expected) = result {
+            assert_eq!(document.type_spelling(results[0]), Some(expected), "{name}");
+        }
+    }
+
+    let add_ref = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("async.runtime.add_ref"))
+        .unwrap();
+    assert!(document.attribute_id(add_ref, "count").is_some());
+}
+
+#[test]
+fn async_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("async").unwrap();
+    for (name, shape) in [
+        ("async.func", OperationShape::FuncLike),
+        ("async.call", OperationShape::CallLike),
+        ("async.return", OperationShape::OptionalTypedOperands),
+        ("async.yield", OperationShape::OptionalTypedOperands),
+        ("async.runtime.create", OperationShape::VariadicOperands),
+        (
+            "async.runtime.set_available",
+            OperationShape::OptionalTypedOperands,
+        ),
+        (
+            "async.runtime.set_error",
+            OperationShape::OptionalTypedOperands,
+        ),
+        ("async.runtime.await", OperationShape::OptionalTypedOperands),
+        (
+            "async.runtime.add_ref",
+            OperationShape::OptionalTypedOperands,
+        ),
+        (
+            "async.runtime.drop_ref",
+            OperationShape::OptionalTypedOperands,
+        ),
+        (
+            "async.runtime.num_worker_threads",
+            OperationShape::VariadicOperands,
+        ),
+    ] {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+
+    let unsupported = [
+        "async.execute",
+        "async.await",
+        "async.create_group",
+        "async.add_to_group",
+        "async.await_all",
+        "async.coro.id",
+        "async.coro.begin",
+        "async.coro.free",
+        "async.coro.end",
+        "async.coro.save",
+        "async.coro.suspend",
+        "async.runtime.create_group",
+        "async.runtime.is_error",
+        "async.runtime.resume",
+        "async.runtime.await_and_resume",
+        "async.runtime.store",
+        "async.runtime.load",
+        "async.runtime.add_to_group",
+    ];
+    assert_eq!(11 + unsupported.len(), 29);
+    for name in unsupported {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])
