@@ -55,3 +55,29 @@ fn shared_type_list_does_not_turn_same_line_bare_syntax_into_a_boundary() {
         diagnostic.kind() == ParseDiagnosticKind::ShapeMismatch(OperationShape::OperandClauses)
     }));
 }
+
+#[test]
+fn variadic_shared_type_preserves_the_following_operation_boundary() {
+    let registry = DialectRegistry::with_operation_shapes(&[(
+        "test.results",
+        OperationShape::VariadicOperands,
+    )])
+    .unwrap();
+    let parsed = ParsedFile::parse_with_registry(
+        b"%result = test.results : index\nfunc.return".as_slice(),
+        &registry,
+    )
+    .unwrap();
+
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let operations = parsed.syntax().file().operations().collect::<Vec<_>>();
+    assert_eq!(operations.len(), 2);
+    assert_eq!(
+        operations[0].tree().kind(operations[0].id()),
+        Some(SyntaxKind::DialectOperation)
+    );
+}

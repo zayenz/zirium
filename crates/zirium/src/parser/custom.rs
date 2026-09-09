@@ -508,12 +508,11 @@ pub(super) fn shaped_operation(
                 ShapedTypeTrailer::Conversion => good &= conversion_type_trailer(parser)?,
                 ShapedTypeTrailer::Shared => {
                     good &= parser.type_syntax(0)?;
-                    parser.trivia()?;
-                    while parser.at(TokenKind::Comma) {
+                    while parser.nth_nontrivia(0) == Some(TokenKind::Comma) {
+                        parser.trivia()?;
                         parser.bump()?;
                         parser.trivia()?;
                         good &= parser.type_syntax(0)?;
-                        parser.trivia()?;
                     }
                 }
             }
