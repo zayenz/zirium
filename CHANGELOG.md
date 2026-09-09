@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.8
+
+Zirium 0.0.8 fills gaps in generic attribute and operation-signature parsing.
+
+- Parse trailing locations on every built-in declarative operation and preserve
+  them through semantic lowering and source-preserving edits, including on named
+  `builtin.module` operations.
+- Keep quoted attribute strings containing `->` as strings, including inside
+  arrays and nested dictionaries, while recognizing function types only from
+  arrows outside quoted and nested syntax.
+- Accept unit shorthand for every bare or quoted dictionary key in attributes,
+  properties, aliases, and nested dictionaries. Comments after keys no longer
+  become part of semantic names, and quoted keys are decoded consistently.
+
 ## 0.0.7
 
 Zirium 0.0.7 adds shared registry configuration, an initial StableHLO preset,

@@ -208,8 +208,14 @@ fn function_types_lower_as_attributes_and_inside_opaque_types() {
 #[test]
 fn strings_and_unit_shorthand_keep_their_lexical_attribute_kinds() {
     let parsed = ParsedFile::parse(
-        br#"#unit_dict = {"aliased=flag"}
-%result = "test"() <{property_flag}> {direct = "a->b", array = ["() -> ()"], dictionary = {text = "Reshape({128}->{1, 128, 1})", nested_flag}, alias = #unit_dict, plain_flag, dotted.flag, "quoted=flag", explicit = unit} : (!test.box<"a->b">) -> i32"#
+        br#"#unit_dict = {"aliased=flag" // alias-key comment
+}
+%result = "test"() <{property_flag // property-key comment
+}> {direct = "a->b", array = ["() -> ()"], dictionary = {text = "Reshape({128}->{1, 128, 1})", nested_flag // nested-key comment
+}, alias = #unit_dict, plain_flag // unit-key comment
+, dotted.flag, "quoted=flag" // quoted-key comment
+, explicit // explicit-key comment
+= unit} : (!test.box<"a->b">) -> i32"#
             .to_vec(),
     )
     .unwrap();
@@ -253,7 +259,7 @@ fn strings_and_unit_shorthand_keep_their_lexical_attribute_kinds() {
         document.attribute_value(alias),
         Some(AttributeValue::Dictionary(entries))
             if matches!(entries.as_slice(), [(name, AttributeValue::Opaque(unit))]
-                if name == "\"aliased=flag\"" && unit.as_ref() == b"unit")
+                if name == "aliased=flag" && unit.as_ref() == b"unit")
     ));
 
     for name in ["plain_flag", "dotted.flag", "explicit"] {
@@ -277,7 +283,7 @@ fn strings_and_unit_shorthand_keep_their_lexical_attribute_kinds() {
         document
             .attributes(operation)
             .unwrap()
-            .any(|(name, spelling)| name == "\"quoted=flag\"" && spelling == "unit")
+            .any(|(name, spelling)| name == "quoted=flag" && spelling == "unit")
     );
 }
 

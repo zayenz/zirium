@@ -1,4 +1,5 @@
 use super::lowering::Interner;
+use std::borrow::Cow;
 
 #[derive(Debug)]
 pub(super) struct AliasExpansionState {
@@ -1003,12 +1004,12 @@ fn resolve_attribute(
         ));
     }
     if let Some(inner) = bracket_inner(spelling, '{', '}') {
-        let mut entries = split_types(inner)
+        let mut entries = split_dictionary_entries(inner)
             .into_iter()
             .map(|entry| {
-                let (name, value) = split_dictionary_entry(&entry);
+                let (name, value) = split_dictionary_entry(entry);
                 Ok((
-                    name.trim().to_owned(),
+                    name.into_owned(),
                     resolve_attribute(
                         value.unwrap_or("unit"),
                         type_aliases,
@@ -1444,10 +1445,77 @@ fn bracket_inner(value: &str, open: char, close: char) -> Option<&str> {
     value.trim().strip_prefix(open)?.strip_suffix(close)
 }
 
-fn split_dictionary_entry(value: &str) -> (&str, Option<&str>) {
+fn strip_dictionary_trivia(mut value: &str) -> &str {
+    loop {
+        value = value.trim_start();
+        let Some(comment) = value.strip_prefix("//") else {
+            return value;
+        };
+        let Some(newline) = comment.find('\n') else {
+            return "";
+        };
+        value = &comment[newline + 1..];
+    }
+}
+
+fn split_dictionary_entry(value: &str) -> (Cow<'_, str>, Option<&str>) {
+    let value = value.trim_start();
+    let key_end = if value.starts_with('"') {
+        let mut escaped = false;
+        value
+            .bytes()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, byte)| {
+                if escaped {
+                    escaped = false;
+                    None
+                } else if byte == b'\\' {
+                    escaped = true;
+                    None
+                } else if byte == b'"' {
+                    Some(index + 1)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(value.len())
+    } else {
+        value
+            .char_indices()
+            .find_map(|(index, character)| {
+                (character.is_whitespace() || character == '=' || value[index..].starts_with("//"))
+                    .then_some(index)
+            })
+            .unwrap_or(value.len())
+    };
+    let spelling = &value[..key_end];
+    let name = decode_mlir_string(spelling)
+        .map(Cow::Owned)
+        .unwrap_or(Cow::Borrowed(spelling));
+    let remainder = strip_dictionary_trivia(&value[key_end..]);
+    (name, remainder.strip_prefix('='))
+}
+
+fn split_dictionary_entries(value: &str) -> Vec<&str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut depth = 0i32;
     let mut quoted = false;
     let mut escaped = false;
-    for (index, byte) in value.bytes().enumerate() {
+    let mut line_comment = false;
+    let bytes = value.as_bytes();
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if line_comment {
+            if byte == b'\n' {
+                line_comment = false;
+            }
+            continue;
+        }
         if quoted {
             if escaped {
                 escaped = false;
@@ -1456,13 +1524,29 @@ fn split_dictionary_entry(value: &str) -> (&str, Option<&str>) {
             } else if byte == b'"' {
                 quoted = false;
             }
-        } else if byte == b'"' {
+            continue;
+        }
+        if byte == b'"' {
             quoted = true;
-        } else if byte == b'=' {
-            return (&value[..index], Some(&value[index + 1..]));
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            line_comment = true;
+            continue;
+        }
+        match byte {
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'>' if index == 0 || bytes[index - 1] != b'-' => depth -= 1,
+            b',' if depth == 0 => {
+                result.push(value[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
         }
     }
-    (value, None)
+    result.push(value[start..].trim());
+    result
 }
 
 pub(crate) fn split_arrow(value: &str) -> Option<(&str, &str)> {
@@ -1599,7 +1683,7 @@ pub(super) fn lower_dictionary(
             let (name, value) = split_dictionary_entry(spelling);
             let implicit_unit = value.is_none();
             let value = value.unwrap_or("");
-            let name_id = strings.intern(name.trim());
+            let name_id = strings.intern(name.as_ref());
             let duplicate = seen.insert(name_id, attribute_range).map(|previous| {
                 push_diagnostic(
                     doc,
@@ -1607,7 +1691,7 @@ pub(super) fn lower_dictionary(
                     attribute_range,
                     format!(
                         "duplicate {kind} key `{}` (previous at {})",
-                        name.trim(),
+                        name,
                         previous.start()
                     ),
                 )
@@ -1809,11 +1893,11 @@ fn lower_attribute_value_with_depth(
             ));
         }
         let mut seen = HashMap::new();
-        let mut entries = split_types(inner)
+        let mut entries = split_dictionary_entries(inner)
             .into_iter()
             .map(|entry| {
-                let (name, value) = split_dictionary_entry(&entry);
-                let name = name.trim().to_owned();
+                let (name, value) = split_dictionary_entry(entry);
+                let name = name.into_owned();
                 let duplicate = seen.insert(name.clone(), ()).is_some();
                 let value = lower_attribute_value_with_depth(
                     value.unwrap_or("unit"),
