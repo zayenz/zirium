@@ -41,6 +41,7 @@ It does not establish that the operation can be verified or rewritten.
 | NVVM preset | Core plus 71 structurally exact forms among 185 NVVM operations. |
 | OpenMP preset | Core plus 8 structurally exact forms among 54 OpenMP operations. |
 | PDL preset | Core only; all 15 PDL operations remain on recovery. |
+| PDLInterp preset | Core only; all 39 PDLInterp operations remain on recovery. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -75,7 +76,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -838,6 +839,62 @@ balanced opaque dialect values without descriptors. PDL defines no dialect
 attributes; namespaced opaque attributes used by generic IR are handled by the
 same generic path. The preset does not implement PDL handle inference,
 operation-description constraints, rewrite semantics, or ODS interpretation.
+
+PDLInterp defines 39 concrete `pdl_interp.*` operations in LLVM 22.1. This is
+a core-only preset: all 39 operations remain on whole-operation recovery. The
+inventory is the concrete operation definitions in `PDLInterpOps.td`; the
+higher-level `pdl.*` dialect is covered by its separate preset.
+
+Eighteen operations carry CFG successors, and none can use a current reusable
+shape without discarding those edges. Nine two-way predicate terminators
+(`pdl_interp.apply_constraint`, `pdl_interp.are_equal`, the six
+`pdl_interp.check_*` operations, and `pdl_interp.is_not_null`) branch to true
+and false destinations. `pdl_interp.branch` and `pdl_interp.record_match` each
+have one destination. The six `pdl_interp.switch_*` terminators have a default
+destination plus variadic case destinations whose order corresponds to a
+positional case-values attribute. `pdl_interp.foreach` has one successor in
+addition to its operand and region. Registering any of these with a
+no-successor shape would erase real CFG structure.
+
+The remaining gaps are grouped by their semantic roles:
+
+- External calls and inferred handles: `pdl_interp.apply_constraint` and
+  `pdl_interp.apply_rewrite` have positional names, variadic typed arguments,
+  and variadic handle results. `pdl_interp.create_attribute`,
+  `pdl_interp.create_type`, and `pdl_interp.create_types` infer one handle
+  result from a positional attribute. `pdl_interp.create_operation` combines
+  an operation name, separately segmented operand, attribute-handle, and
+  result-type-handle operands, an optional `<inferred>` marker, and one inferred
+  operation-handle result. `pdl_interp.create_range` derives its range result
+  from a variadic typed input list or an explicitly printed empty-range type.
+- Navigation: `pdl_interp.extract` has a positional index, one range operand,
+  and one explicitly typed result. The nine `pdl_interp.get_*` operations each
+  have one operand and one inferred or explicitly printed result; attribute,
+  operand, and result lookup forms also carry required or optional positional
+  names or indices. No current shape preserves all of those roles without
+  inventing an ordinary function signature.
+- Rewrite and termination: `pdl_interp.erase` has one untyped operation-handle
+  operand, and `pdl_interp.replace` combines that operand with an optional
+  typed replacement list. `pdl_interp.continue` and `pdl_interp.finalize` are
+  zero-operand, zero-result terminators. The reusable optional-typed-operands
+  shape preserves zero results but accepts operands, so it is not an exact
+  registration for either operation.
+- Regions and symbols: `pdl_interp.foreach` binds one block argument whose type
+  is the element type of its range operand, owns a region terminated by
+  `pdl_interp.continue`, and then names its successor. `pdl_interp.func` defines
+  a symbol, owns an isolated SSACFG body, and derives entry-block arguments
+  from its function signature. `pdl_interp.record_match` uses a nested rewriter
+  symbol reference and combines two variadic operand segments with positional
+  benefit, location, root-kind, and generated-operation attributes before its
+  successor.
+
+The predicate and switch operands are PDL handles; their compared constants,
+counts, names, types, case lists, and optional modifiers are positional
+attributes rather than SSA values. PDL's `!pdl.attribute`, `!pdl.operation`,
+`!pdl.type`, `!pdl.value`, and `!pdl.range<...>` types remain balanced opaque
+dialect values, and unknown `#pdl_interp<...>` attributes remain available to
+generic quoted IR. The preset adds no PDL type inference, special CFG parser,
+ODS interpretation, verifier, rewrite behavior, or interpreter semantics.
 
 Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
 21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,

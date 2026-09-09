@@ -6548,3 +6548,137 @@ fn pdl_opaque_types_and_attributes_need_no_dialect_descriptors() {
             .any(|(name, value)| name == "marker" && value == "#pdl<opaque>")
     );
 }
+
+#[test]
+fn pdl_interp_preset_inventory_matches_llvm_22_1_recovery_coverage() {
+    assert!(DialectRegistry::preset_names().contains(&"pdl_interp"));
+    let registry = DialectRegistry::from_name("pdl_interp").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/pdl_interp.json")).unwrap();
+    assert!(config.operation_shapes.is_empty());
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(registry.operation_names().count(), 4);
+
+    let recovery = [
+        "pdl_interp.apply_constraint",
+        "pdl_interp.apply_rewrite",
+        "pdl_interp.are_equal",
+        "pdl_interp.branch",
+        "pdl_interp.check_attribute",
+        "pdl_interp.check_operand_count",
+        "pdl_interp.check_operation_name",
+        "pdl_interp.check_result_count",
+        "pdl_interp.check_type",
+        "pdl_interp.check_types",
+        "pdl_interp.continue",
+        "pdl_interp.create_attribute",
+        "pdl_interp.create_operation",
+        "pdl_interp.create_range",
+        "pdl_interp.create_type",
+        "pdl_interp.create_types",
+        "pdl_interp.erase",
+        "pdl_interp.extract",
+        "pdl_interp.finalize",
+        "pdl_interp.foreach",
+        "pdl_interp.func",
+        "pdl_interp.get_attribute",
+        "pdl_interp.get_attribute_type",
+        "pdl_interp.get_defining_op",
+        "pdl_interp.get_operand",
+        "pdl_interp.get_operands",
+        "pdl_interp.get_result",
+        "pdl_interp.get_results",
+        "pdl_interp.get_users",
+        "pdl_interp.get_value_type",
+        "pdl_interp.is_not_null",
+        "pdl_interp.record_match",
+        "pdl_interp.replace",
+        "pdl_interp.switch_attribute",
+        "pdl_interp.switch_operand_count",
+        "pdl_interp.switch_operation_name",
+        "pdl_interp.switch_result_count",
+        "pdl_interp.switch_type",
+        "pdl_interp.switch_types",
+    ];
+    assert_eq!(recovery.len(), 39);
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn pdl_interp_successors_regions_and_inferred_results_recover_at_cfg_boundaries() {
+    let registry = DialectRegistry::from_name("pdl_interp").unwrap();
+    let source = br#"module {
+      pdl_interp.func @matcher(%root: !pdl.operation) {
+        %type = pdl_interp.create_type i32
+        %attribute = pdl_interp.create_attribute 1 : i32
+        %operation = pdl_interp.create_operation "foo.op" -> <inferred>
+        %result = pdl_interp.get_result 0 of %operation
+        pdl_interp.apply_constraint "constraint"(%result : !pdl.value) -> ^match, ^failure
+      ^match:
+        pdl_interp.switch_operation_name of %operation to ["foo.op"](^case) -> ^failure
+      ^case:
+        pdl_interp.foreach %item : !pdl.operation in %items {
+          pdl_interp.continue
+        } -> ^after_loop
+      ^after_loop:
+        pdl_interp.record_match @rewriters::rewrite(%root : !pdl.operation) : benefit(1), loc([%root]) -> ^failure
+      ^failure:
+        pdl_interp.finalize
+      }
+      "test.after_cfg"() : () -> ()
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count()
+            >= 11,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after_cfg")),
+        "following generic operation should survive whole-operation recovery"
+    );
+}
+
+#[test]
+fn pdl_interp_opaque_values_need_no_dialect_descriptors() {
+    let registry = DialectRegistry::from_name("pdl_interp").unwrap();
+    let source = br#"module {
+      %handles = "test.source"() {marker = #pdl_interp<opaque>} : () -> tuple<!pdl.attribute, !pdl.operation, !pdl.type, !pdl.value, !pdl.range<operation>>
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.source"))
+        .unwrap();
+    assert_eq!(
+        document.type_spelling(document.result_types(operation).unwrap()[0]),
+        Some("tuple<!pdl.attribute, !pdl.operation, !pdl.type, !pdl.value, !pdl.range<operation>>")
+    );
+    assert!(
+        document
+            .attributes(operation)
+            .unwrap()
+            .any(|(name, value)| name == "marker" && value == "#pdl_interp<opaque>")
+    );
+}
