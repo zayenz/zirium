@@ -37,6 +37,7 @@ It does not establish that the operation can be verified or rewritten.
 | MemRef preset | Core plus 11 structurally exact forms among 32 MemRef operations. |
 | MLProgram preset | Core only; all 11 MLProgram operations remain on recovery. |
 | MPI preset | Core plus 4 structurally exact forms among 15 MPI operations. |
+| NVGPU preset | Core plus 7 structurally exact forms among 24 NVGPU operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -71,7 +72,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -644,6 +645,50 @@ None of the 15 operations owns regions, successors, or symbol roles. The
 MPI-specific descriptors. Bare reduction enum tokens such as `MPI_SUM` stay
 inside recovered custom operations. The preset adds no MPI type inference,
 error checking, communication semantics, or custom verification.
+
+NVGPU defines exactly 24 operations in LLVM 22.1. The preset registers seven
+forms whose concrete headers spell every operand and result role needed by the
+reusable shapes:
+
+- Matrix multiplication: `nvgpu.mma.sync` exposes its three parenthesized
+  operands and complete three-input-to-one-result vector signature.
+- Barrier and descriptor primitives: `nvgpu.mbarrier.create` and
+  `nvgpu.warpgroup.mma.init.accumulator` have no operands and spell their one
+  result type. `nvgpu.tma.fence.descriptor` and the predicate-free form of
+  `nvgpu.tma.prefetch.descriptor` each expose one typed descriptor operand and
+  no SSA result.
+- Warpgroup matrix operations: `nvgpu.warpgroup.generate.descriptor` and
+  `nvgpu.warpgroup.mma` spell complete two- and three-input signatures and one
+  descriptor or accumulator result.
+
+The other 17 operations remain on whole-operation recovery, grouped by the
+structure omitted or repurposed by their concrete headers:
+
+- Indexed and inferred roles: `nvgpu.ldmatrix`, all seven indexed
+  `nvgpu.mbarrier.*` operations other than `mbarrier.create`, and
+  `nvgpu.tma.create.descriptor` omit index operand types or infer a pointer,
+  token, or `i1` result. `nvgpu.tma.async.load` and
+  `nvgpu.tma.async.store` use `to` or an arrow to describe a destination while
+  producing no SSA result. Treating those trailers as result signatures would
+  fabricate results or assign container types to indices.
+- Asynchronous tokens: `nvgpu.device_async_copy` infers its token result and
+  mixes two bracketed index lists with a destination-style `to` signature;
+  `nvgpu.device_async_create_group` infers its token result and
+  `nvgpu.device_async_wait` has no type trailer.
+- Positional special cases: `nvgpu.mma.sp.sync` omits the metadata operand type
+  from its otherwise complete signature, `nvgpu.warpgroup.mma.store` uses `to`
+  between two operand types despite having no result, and `nvgpu.rcp` places a
+  bare rounding-mode enum in a custom brace clause. The predicated form of the
+  registered TMA prefetch also recovers because it spells one descriptor type
+  for two operands.
+
+No NVGPU operation owns a region or successor, and `transform.nvgpu.*`
+operations belong to the Transform dialect rather than this inventory. NVGPU
+types such as device tokens, barrier groups and tokens, tensor-map descriptors,
+and warpgroup descriptors and accumulators remain balanced opaque dialect
+values. Its enum attributes do likewise when used in generic attribute syntax.
+The preset adds no NVGPU verification, type inference, memory effects, or
+execution semantics.
 
 Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
 21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,

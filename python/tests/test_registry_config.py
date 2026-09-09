@@ -74,6 +74,7 @@ def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
         "ml_program",
         "mpi",
         "shard",
+        "nvgpu",
     )
     config = {"presets": ["stablehlo"], "builtins": [], "operation_shapes": []}
     path = tmp_path / "stablehlo.json"

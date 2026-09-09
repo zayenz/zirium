@@ -1,0 +1,19 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "nvgpu.mma.sync", "shape": "operand_clauses"},
+    {"name": "nvgpu.mbarrier.create", "shape": "operand_clauses"},
+    {"name": "nvgpu.tma.fence.descriptor", "shape": "optional_typed_operands"},
+    {"name": "nvgpu.tma.prefetch.descriptor", "shape": "optional_typed_operands"},
+    {"name": "nvgpu.warpgroup.generate.descriptor", "shape": "operand_clauses"},
+    {"name": "nvgpu.warpgroup.mma", "shape": "operand_clauses"},
+    {"name": "nvgpu.warpgroup.mma.init.accumulator", "shape": "operand_clauses"}
+  ],
+  "operation_formats": []
+}

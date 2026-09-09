@@ -5735,3 +5735,205 @@ fn shard_symbol_index_collective_and_destination_forms_recover() {
         );
     }
 }
+
+#[test]
+fn nvgpu_preset_exposes_only_fully_spelled_operand_and_result_roles() {
+    assert!(DialectRegistry::preset_names().contains(&"nvgpu"));
+    let registry = DialectRegistry::from_name("nvgpu").unwrap();
+    let source = br#"module {
+      func.func @families(
+          %a: vector<4x2xf16>, %b: vector<2x2xf16>, %c: vector<2x2xf16>,
+          %tensor: memref<16x16xf16, 3>,
+          %map: !nvgpu.tensormap.descriptor,
+          %desc_a: !nvgpu.warpgroup.descriptor,
+          %desc_b: !nvgpu.warpgroup.descriptor) {
+        %mma = nvgpu.mma.sync(%a, %b, %c) {mmaShape = [16, 8, 16]} :
+          (vector<4x2xf16>, vector<2x2xf16>, vector<2x2xf16>) -> vector<2x2xf16>
+        %barriers = nvgpu.mbarrier.create {tag = "barrier"} -> !nvgpu.mbarrier.group
+        nvgpu.tma.fence.descriptor %map {tag = "fence"} : !nvgpu.tensormap.descriptor
+        nvgpu.tma.prefetch.descriptor %map : !nvgpu.tensormap.descriptor
+        %desc = nvgpu.warpgroup.generate.descriptor %tensor, %map :
+          memref<16x16xf16, 3>, !nvgpu.tensormap.descriptor -> !nvgpu.warpgroup.descriptor
+        %zero = nvgpu.warpgroup.mma.init.accumulator -> !nvgpu.warpgroup.accumulator
+        %product = nvgpu.warpgroup.mma %desc_a, %desc_b, %zero {waitGroup = 1 : i64} : !nvgpu.warpgroup.descriptor, !nvgpu.warpgroup.descriptor, !nvgpu.warpgroup.accumulator -> !nvgpu.warpgroup.accumulator
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    document.verify_semantics(&registry).unwrap();
+
+    for (name, operands, results, signature) in [
+        (
+            "nvgpu.mma.sync",
+            3,
+            1,
+            "(vector<4x2xf16>, vector<2x2xf16>, vector<2x2xf16>) -> vector<2x2xf16>",
+        ),
+        ("nvgpu.mbarrier.create", 0, 1, "() -> !nvgpu.mbarrier.group"),
+        (
+            "nvgpu.tma.fence.descriptor",
+            1,
+            0,
+            "(!nvgpu.tensormap.descriptor) -> ()",
+        ),
+        (
+            "nvgpu.tma.prefetch.descriptor",
+            1,
+            0,
+            "(!nvgpu.tensormap.descriptor) -> ()",
+        ),
+        (
+            "nvgpu.warpgroup.generate.descriptor",
+            2,
+            1,
+            "memref<16x16xf16, 3>, !nvgpu.tensormap.descriptor -> !nvgpu.warpgroup.descriptor",
+        ),
+        (
+            "nvgpu.warpgroup.mma.init.accumulator",
+            0,
+            1,
+            "() -> !nvgpu.warpgroup.accumulator",
+        ),
+        (
+            "nvgpu.warpgroup.mma",
+            3,
+            1,
+            "!nvgpu.warpgroup.descriptor, !nvgpu.warpgroup.descriptor, !nvgpu.warpgroup.accumulator -> !nvgpu.warpgroup.accumulator",
+        ),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn nvgpu_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("nvgpu").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/nvgpu.json")).unwrap();
+    let supported = [
+        ("nvgpu.mma.sync", OperationShape::OperandClauses),
+        ("nvgpu.mbarrier.create", OperationShape::OperandClauses),
+        (
+            "nvgpu.tma.fence.descriptor",
+            OperationShape::OptionalTypedOperands,
+        ),
+        (
+            "nvgpu.tma.prefetch.descriptor",
+            OperationShape::OptionalTypedOperands,
+        ),
+        (
+            "nvgpu.warpgroup.generate.descriptor",
+            OperationShape::OperandClauses,
+        ),
+        ("nvgpu.warpgroup.mma", OperationShape::OperandClauses),
+        (
+            "nvgpu.warpgroup.mma.init.accumulator",
+            OperationShape::OperandClauses,
+        ),
+    ];
+    let recovery = [
+        "nvgpu.ldmatrix",
+        "nvgpu.mma.sp.sync",
+        "nvgpu.device_async_copy",
+        "nvgpu.device_async_create_group",
+        "nvgpu.device_async_wait",
+        "nvgpu.mbarrier.get",
+        "nvgpu.mbarrier.init",
+        "nvgpu.mbarrier.test.wait",
+        "nvgpu.mbarrier.arrive",
+        "nvgpu.mbarrier.arrive.nocomplete",
+        "nvgpu.mbarrier.arrive.expect_tx",
+        "nvgpu.mbarrier.try_wait.parity",
+        "nvgpu.tma.async.load",
+        "nvgpu.tma.async.store",
+        "nvgpu.tma.create.descriptor",
+        "nvgpu.warpgroup.mma.store",
+        "nvgpu.rcp",
+    ];
+    assert_eq!(supported.len() + recovery.len(), 24);
+    assert_eq!(config.operation_shapes.len(), supported.len());
+    for (name, shape) in supported {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn nvgpu_inferred_index_token_and_destination_forms_recover() {
+    let registry = DialectRegistry::from_name("nvgpu").unwrap();
+    let source = br#"module {
+      func.func @gaps(
+          %barriers: !nvgpu.mbarrier.group, %index: index,
+          %token: !nvgpu.device.async.token,
+          %map: !nvgpu.tensormap.descriptor, %predicate: i1,
+          %buffer: memref<16xf32, 3>) {
+        %pointer = nvgpu.mbarrier.get %barriers[%index] : !nvgpu.mbarrier.group -> i64
+        nvgpu.mbarrier.init %barriers[%index], %index : !nvgpu.mbarrier.group
+        %group = nvgpu.device_async_create_group %token
+        nvgpu.tma.async.store %buffer to %map[%index] : memref<16xf32, 3> -> !nvgpu.tensormap.descriptor
+        nvgpu.tma.prefetch.descriptor %map, predicate = %predicate : !nvgpu.tensormap.descriptor
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        5,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    assert!(parsed.syntax().diagnostics().iter().any(|diagnostic| {
+        diagnostic.kind()
+            == ParseDiagnosticKind::ShapeMismatch(OperationShape::OptionalTypedOperands)
+    }));
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}
