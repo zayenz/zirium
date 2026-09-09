@@ -58,6 +58,7 @@ const PRESET_NAMES: &[&str] = &[
     "async",
     "bufferization",
     "cf",
+    "complex",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -77,6 +78,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "async" => Some(include_str!("../../registries/async.json")),
         "bufferization" => Some(include_str!("../../registries/bufferization.json")),
         "cf" => Some(include_str!("../../registries/cf.json")),
+        "complex" => Some(include_str!("../../registries/complex.json")),
         _ => None,
     }
 }

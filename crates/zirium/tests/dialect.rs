@@ -1458,6 +1458,212 @@ fn cf_preset_inventory_and_recovery_match_llvm_22_1() {
 }
 
 #[test]
+fn complex_preset_exposes_default_unary_binary_and_bitcast_structure() {
+    let registry = DialectRegistry::from_name("complex").unwrap();
+    let source = br#"module {
+      func.func @calculate(%value: complex<f32>) -> i64 {
+        %cosine = complex.cos %value {tag = "unary"} : complex<f32>
+        %sum = complex.add %cosine, %value {tag = "binary"} : complex<f32>
+        %bits = complex.bitcast %sum {tag = "cast"} : complex<f32> to i64
+        %constant = complex.constant [0.1, -1.0] {tag = "constant"} : complex<f32>
+        "test.attribute"() {value = #complex.number<:f32 1.0, 2.0>} : () -> ()
+        func.return %bits : i64
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, result_type, tag) in [
+        ("complex.cos", 1, "complex<f32>", "\"unary\""),
+        ("complex.add", 2, "complex<f32>", "\"binary\""),
+        ("complex.bitcast", 1, "i64", "\"cast\""),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(results[0]),
+            Some(result_type),
+            "{name}"
+        );
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute, value)| attribute == "tag" && value == tag),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+
+    let constant = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("complex.constant"))
+        .unwrap();
+    assert!(document.operands(constant).unwrap().is_empty());
+    let results = document.result_types(constant).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(document.type_spelling(results[0]), Some("complex<f32>"));
+    assert!(
+        document
+            .attributes(constant)
+            .unwrap()
+            .any(|(name, value)| name == "value" && value == "[0.1, -1.0]")
+    );
+    assert!(
+        document
+            .attributes(constant)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "\"constant\"")
+    );
+
+    let attribute = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.attribute"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(attribute)
+            .unwrap()
+            .any(|(name, value)| { name == "value" && value == "#complex.number<:f32 1.0, 2.0>" })
+    );
+}
+
+#[test]
+fn complex_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("complex").unwrap();
+    let unary = [
+        "complex.cos",
+        "complex.exp",
+        "complex.expm1",
+        "complex.log",
+        "complex.log1p",
+        "complex.neg",
+        "complex.rsqrt",
+        "complex.sign",
+        "complex.sin",
+        "complex.sqrt",
+        "complex.tanh",
+        "complex.tan",
+        "complex.conj",
+        "complex.bitcast",
+    ];
+    let binary = [
+        "complex.add",
+        "complex.atan2",
+        "complex.div",
+        "complex.mul",
+        "complex.pow",
+        "complex.sub",
+    ];
+    for name in unary {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::UnaryOperand),
+            "{name}"
+        );
+    }
+    for name in binary {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::BinaryOperands),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        registry.operation_shape("complex.constant"),
+        Some(OperationShape::LiteralAttribute)
+    );
+
+    let unsupported = [
+        "complex.abs",
+        "complex.create",
+        "complex.eq",
+        "complex.im",
+        "complex.neq",
+        "complex.powi",
+        "complex.re",
+        "complex.angle",
+    ];
+    assert_eq!(unary.len() + binary.len() + 1, 21);
+    assert_eq!(unary.len() + binary.len() + 1 + unsupported.len(), 29);
+    for name in unsupported {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%part: f32, %value: complex<f32>, %power: i32) {
+        %created = complex.create %part, %part : complex<f32>
+        %absolute = complex.abs %value : complex<f32>
+        %imaginary = complex.im %value : complex<f32>
+        %real = complex.re %value : complex<f32>
+        %angle = complex.angle %value : complex<f32>
+        %equal = complex.eq %value, %value : complex<f32>
+        %unequal = complex.neq %value, %value : complex<f32>
+        %raised = complex.powi %value, %power : complex<f32>, i32
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        8
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after"))
+    );
+
+    let positional = br#"module {
+      func.func @fast(%value: complex<f32>) {
+        %sum = complex.add %value, %value fastmath<fast> : complex<f32>
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(positional.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().iter().any(|diagnostic| {
+        diagnostic.kind() == ParseDiagnosticKind::ShapeMismatch(OperationShape::BinaryOperands)
+    }));
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after"))
+    );
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])

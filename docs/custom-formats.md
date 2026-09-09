@@ -26,6 +26,7 @@ It does not establish that the operation can be verified or rewritten.
 | Async preset | Core plus 11 of the 29 Async operations. |
 | Bufferization preset | Core plus 5 of the 7 Bufferization operations. |
 | CF preset | Core plus `cf.br` and `cf.cond_br`. |
+| Complex preset | Core plus default forms of 21 of the 29 Complex operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -59,7 +60,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, and `cf` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, and `complex` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -315,6 +316,29 @@ current reusable formats. Switch combines a typed flag with a bracketed custom
 case list, variadic successors, successor operands, and case attributes.
 Approximating either operation with a broad shape would lose required semantic
 structure. CF defines no dialect types or attributes.
+
+Complex registers the default forms of 21 of its 29 operations. Thirteen unary
+operations whose operand and result have the same `complex<T>` type use the
+unary shape, and six arithmetic operations whose two operands and result share
+that type use the binary shape. `complex.bitcast` uses the unary shape's full
+source-`to`-destination trailer. `complex.constant` uses the literal shape to
+retain its positional array value and explicitly spelled result type. These
+forms expose their operands, real result types, values, and ordinary attribute
+dictionaries. Their optional positional `fastmath` modifiers are not part of
+the registered default spelling and continue through whole-operation recovery.
+
+Eight operations remain on whole-operation recovery. `complex.abs`,
+`complex.im`, `complex.re`, and `complex.angle` derive a floating-point result
+from the element type of their complex operand. `complex.create` spells its
+complex result type but infers the two floating-point operand types;
+`complex.eq` and `complex.neq` spell their operand type but infer an `i1`
+result; and `complex.powi` has independently typed complex and integer operands.
+Registering these with a nearby shape would assign incorrect types.
+
+The `complex<T>` type is a builtin MLIR type, not a Complex dialect type. The
+dialect's `#complex.number` attribute remains an opaque dialect value, as it
+does without the preset. None of the 29 operations have regions or successors;
+their declarative forms place ordinary dictionaries before the type trailer.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

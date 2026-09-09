@@ -1,0 +1,33 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "complex.cos", "shape": "unary_operand"},
+    {"name": "complex.exp", "shape": "unary_operand"},
+    {"name": "complex.expm1", "shape": "unary_operand"},
+    {"name": "complex.log", "shape": "unary_operand"},
+    {"name": "complex.log1p", "shape": "unary_operand"},
+    {"name": "complex.neg", "shape": "unary_operand"},
+    {"name": "complex.rsqrt", "shape": "unary_operand"},
+    {"name": "complex.sign", "shape": "unary_operand"},
+    {"name": "complex.sin", "shape": "unary_operand"},
+    {"name": "complex.sqrt", "shape": "unary_operand"},
+    {"name": "complex.tanh", "shape": "unary_operand"},
+    {"name": "complex.tan", "shape": "unary_operand"},
+    {"name": "complex.conj", "shape": "unary_operand"},
+    {"name": "complex.add", "shape": "binary_operands"},
+    {"name": "complex.atan2", "shape": "binary_operands"},
+    {"name": "complex.div", "shape": "binary_operands"},
+    {"name": "complex.mul", "shape": "binary_operands"},
+    {"name": "complex.pow", "shape": "binary_operands"},
+    {"name": "complex.sub", "shape": "binary_operands"},
+    {"name": "complex.bitcast", "shape": "unary_operand"},
+    {"name": "complex.constant", "shape": "literal_attribute"}
+  ],
+  "operation_formats": []
+}
