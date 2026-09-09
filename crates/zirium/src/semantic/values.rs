@@ -1037,6 +1037,9 @@ fn resolve_attribute(
     if is_valid_wide_number(spelling) {
         return Ok(AttributeValue::WideNumber(Arc::from(spelling.as_bytes())));
     }
+    if is_valid_hex_float_attribute(spelling) {
+        return Ok(AttributeValue::Float(compact(spelling)));
+    }
     if literal.parse::<f64>().is_ok() {
         return Ok(AttributeValue::Float(compact(spelling)));
     }
@@ -1108,6 +1111,22 @@ fn is_valid_wide_number(value: &str) -> bool {
         .or_else(|| suffix.strip_prefix("si"))
         .or_else(|| suffix.strip_prefix("ui"));
     width.is_some_and(|width| parse_width(width).is_some())
+}
+
+fn is_valid_hex_float_attribute(value: &str) -> bool {
+    let Some((literal, suffix)) = value.split_once(':') else {
+        return false;
+    };
+    let Some(digits) = literal.trim().strip_prefix("0x") else {
+        return false;
+    };
+    let expected_digits = match suffix.trim() {
+        "f16" | "bf16" => 4,
+        "f32" => 8,
+        "f64" => 16,
+        _ => return false,
+    };
+    digits.len() == expected_digits && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn parse_location(spelling: &str) -> Option<LocationValue> {

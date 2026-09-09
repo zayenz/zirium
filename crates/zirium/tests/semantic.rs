@@ -482,6 +482,72 @@ fn dense_arrays_accept_hexadecimal_literals_and_comments() {
 }
 
 #[test]
+fn scalar_float_attributes_accept_width_matched_hexadecimal_bit_patterns() {
+    let source = br#""test"() {
+      half = 0xFC00 : f16,
+      bfloat = 0xFF80 : bf16,
+      single = 0x7FC00000 : f32,
+      double = 0xC1E0000000000000 : f64,
+      nested = [0xFF800000 : f32, {value = 0xFFF0000000000000 : f64}],
+      decimal = 1.0 : f32,
+      integer = 0x1F : i32,
+      elements = dense<0xFF800000> : tensor<1xf32>
+    } : () -> ()"#;
+    let parsed = ParsedFile::parse(source.to_vec()).unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.root_operations()[0];
+
+    for (name, expected) in [
+        ("half", "0xFC00:f16"),
+        ("bfloat", "0xFF80:bf16"),
+        ("single", "0x7FC00000:f32"),
+        ("double", "0xC1E0000000000000:f64"),
+    ] {
+        let attribute = document.attribute_id(operation, name).unwrap();
+        assert!(matches!(
+            document.attribute_value(attribute),
+            Some(AttributeValue::Float(value)) if value == expected
+        ));
+    }
+
+    let nested = document.attribute_id(operation, "nested").unwrap();
+    assert!(matches!(
+        document.attribute_value(nested),
+        Some(AttributeValue::Array(values))
+            if matches!(values.as_slice(), [
+                AttributeValue::Float(single),
+                AttributeValue::Dictionary(entries),
+            ] if single == "0xFF800000:f32"
+                && matches!(entries.as_slice(), [(name, AttributeValue::Float(double))]
+                    if name == "value" && double == "0xFFF0000000000000:f64"))
+    ));
+}
+
+#[test]
+fn scalar_float_attributes_reject_hexadecimal_width_mismatches() {
+    for source in [
+        b"\"test\"() {value = 0x0000 : f32} : () -> ()".as_slice(),
+        b"\"test\"() {value = 0x00000000 : f16} : () -> ()".as_slice(),
+        b"\"test\"() {value = 0x00000000 : bf16} : () -> ()".as_slice(),
+        b"\"test\"() {value = 0x00000000 : f64} : () -> ()".as_slice(),
+    ] {
+        let parsed = ParsedFile::parse(source.to_vec()).unwrap();
+        let lowered =
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+        assert_eq!(
+            lowered.diagnostics.len(),
+            1,
+            "{}",
+            String::from_utf8_lossy(source)
+        );
+        assert!(lowered.document.is_none());
+    }
+}
+
+#[test]
 fn dense_integer_arrays_enforce_declared_width_boundaries() {
     let valid = ParsedFile::parse(
         b"\"width.samples\"() {bytes = array<i8: -100, 200>, shorts = array<i16: -30000, 60000>, words = array<i32: -2000000000, 4000000000>, longs = array<i64: -9000000000000000000, 18000000000000000000>} : () -> ()".to_vec(),

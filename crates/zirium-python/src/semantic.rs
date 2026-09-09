@@ -1131,10 +1131,7 @@ impl SemanticAttribute {
     #[getter]
     fn float_value(&self) -> PyResult<Option<f64>> {
         self.with_value(|value| match value {
-            AttributeValue::Float(value) => value
-                .split(':')
-                .next()
-                .and_then(|value| value.trim().parse().ok()),
+            AttributeValue::Float(value) => decode_float_attribute(value),
             _ => None,
         })
     }
@@ -1238,4 +1235,42 @@ impl SemanticAttribute {
         })?;
         Ok(bytes.map(|bytes| PyBytes::new(py, &bytes)))
     }
+}
+
+fn decode_float_attribute(value: &str) -> Option<f64> {
+    let (literal, ty) = value.split_once(':').unwrap_or((value, ""));
+    let literal = literal.trim();
+    let Some(digits) = literal.strip_prefix("0x") else {
+        return literal.parse().ok();
+    };
+    match ty.trim() {
+        "f16" if digits.len() == 4 => Some(decode_f16(u16::from_str_radix(digits, 16).ok()?)),
+        "bf16" if digits.len() == 4 => {
+            let bits = u16::from_str_radix(digits, 16).ok()?;
+            Some(f32::from_bits(u32::from(bits) << 16).into())
+        }
+        "f32" if digits.len() == 8 => {
+            let bits = u32::from_str_radix(digits, 16).ok()?;
+            Some(f32::from_bits(bits).into())
+        }
+        "f64" if digits.len() == 16 => {
+            let bits = u64::from_str_radix(digits, 16).ok()?;
+            Some(f64::from_bits(bits))
+        }
+        _ => None,
+    }
+}
+
+fn decode_f16(bits: u16) -> f64 {
+    let negative = bits & 0x8000 != 0;
+    let exponent = (bits >> 10) & 0x1f;
+    let fraction = bits & 0x03ff;
+    let magnitude = match exponent {
+        0 if fraction == 0 => 0.0,
+        0 => f64::from(fraction) * 2f64.powi(-24),
+        0x1f if fraction == 0 => f64::INFINITY,
+        0x1f => f64::NAN,
+        _ => (1.0 + f64::from(fraction) / 1024.0) * 2f64.powi(i32::from(exponent) - 15),
+    };
+    if negative { -magnitude } else { magnitude }
 }

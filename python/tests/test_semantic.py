@@ -644,6 +644,72 @@ def test_attributes_and_values_expose_scalar_and_document_identity():
     assert invalid.defining_operation is None
 
 
+def test_hexadecimal_scalar_float_attributes_decode_ieee_bit_patterns():
+    source = """"floats"() {
+      half = 0xFC00 : f16,
+      half_finite = 0x3E00 : f16,
+      bfloat = 0xFF80 : bf16,
+      positive = 0x7F800000 : f32,
+      negative = 0xFF800000 : f32,
+      nan = 0x7FC00000 : f32,
+      finite = 0xC1E0000000000000 : f64,
+      nested = [0xFF800000 : f32, {value = 0xFFF0000000000000 : f64}],
+      decimal = 1.5e-3 : f32,
+      integer = 0x1F : i32,
+      elements = dense<0xFF800000> : tensor<1xf32>
+    } : () -> ()"""
+    lowered = zirium.parse_text(source).lower_strict()
+    assert lowered.diagnostics == []
+    assert lowered.document is not None
+    operation = lowered.document.operation_table().operation(0)
+
+    expected = {
+        "half": float("-inf"),
+        "half_finite": 1.5,
+        "bfloat": float("-inf"),
+        "positive": float("inf"),
+        "negative": float("-inf"),
+        "finite": -2_147_483_648.0,
+    }
+    for name, value in expected.items():
+        attribute = operation.attribute_by_name(name)
+        assert attribute is not None
+        assert attribute.kind == "float"
+        assert attribute.float_value == value
+
+    nan = operation.attribute_by_name("nan")
+    assert nan is not None
+    assert nan.kind == "float"
+    assert nan.float_value != nan.float_value
+
+    nested = operation.attribute_by_name("nested")
+    assert nested is not None
+    nested_float = nested.element(0)
+    nested_dictionary = nested.element(1)
+    assert nested_float is not None
+    assert nested_float.kind == "float"
+    assert nested_float.float_value == float("-inf")
+    assert nested_dictionary is not None
+    nested_value = nested_dictionary.element(0)
+    assert nested_value is not None
+    assert nested_value.kind == "float"
+    assert nested_value.float_value == float("-inf")
+
+
+def test_hexadecimal_scalar_float_attributes_reject_width_mismatches():
+    for spelling in (
+        "0x0000 : f32",
+        "0x00000000 : f16",
+        "0x00000000 : bf16",
+        "0x00000000 : f64",
+    ):
+        lowered = zirium.parse_text(
+            f'"float"() {{value = {spelling}}} : () -> ()'
+        ).lower_strict()
+        assert lowered.document is None
+        assert len(lowered.diagnostics) == 1
+
+
 def test_registered_operation_shapes_lower_and_bind_function_arguments():
     registry = zirium.DialectRegistry.with_operation_shapes(
         {
