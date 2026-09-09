@@ -1,0 +1,32 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "shape.add", "shape": "binary_operands"},
+    {"name": "shape.broadcast", "shape": "variadic_operands"},
+    {"name": "shape.div", "shape": "binary_operands"},
+    {"name": "shape.rank", "shape": "unary_operand"},
+    {"name": "shape.to_extent_tensor", "shape": "unary_operand"},
+    {"name": "shape.dim", "shape": "binary_operands"},
+    {"name": "shape.get_extent", "shape": "binary_operands"},
+    {"name": "shape.max", "shape": "binary_operands"},
+    {"name": "shape.meet", "shape": "operand_clauses"},
+    {"name": "shape.min", "shape": "binary_operands"},
+    {"name": "shape.mul", "shape": "binary_operands"},
+    {"name": "shape.num_elements", "shape": "unary_operand"},
+    {"name": "shape.shape_of", "shape": "unary_operand"},
+    {"name": "shape.value_as_shape", "shape": "unary_operand"},
+    {"name": "shape.yield", "shape": "attr_first_optional_typed_operands"},
+    {"name": "shape.concat", "shape": "binary_operands"},
+    {"name": "shape.any", "shape": "variadic_operands"},
+    {"name": "shape.assuming_yield", "shape": "attr_first_optional_typed_operands"},
+    {"name": "shape.func", "shape": "func_like"},
+    {"name": "shape.return", "shape": "attr_first_optional_typed_operands"}
+  ],
+  "operation_formats": []
+}

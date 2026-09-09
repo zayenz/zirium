@@ -7430,3 +7430,298 @@ fn rocdl_inferred_immediate_range_and_qualified_forms_recover_at_boundaries() {
         );
     }
 }
+
+#[test]
+fn shape_preset_exposes_explicit_types_functions_and_zero_result_terminators() {
+    assert!(DialectRegistry::preset_names().contains(&"shape"));
+    let registry = DialectRegistry::from_name("shape").unwrap();
+    let source = br#"module {
+      func.func @families(
+          %size: !shape.size, %index: index, %shape: !shape.shape,
+          %extents: tensor<?xindex>, %value: tensor<?xi32>) {
+        %add = shape.add %size, %index {tag = "add"} : !shape.size, index -> !shape.size
+        %broadcast = shape.broadcast %shape, %extents {tag = "broadcast"} : !shape.shape, tensor<?xindex> -> !shape.shape
+        %div = shape.div %size, %index {tag = "div"} : !shape.size, index -> !shape.size
+        %rank = shape.rank %shape {tag = "rank"} : !shape.shape -> !shape.size
+        %extent_tensor = shape.to_extent_tensor %shape {tag = "to_extent_tensor"} : !shape.shape -> tensor<?xindex>
+        %dim = shape.dim %value, %index {tag = "dim"} : tensor<?xi32>, index -> index
+        %extent = shape.get_extent %shape, %index {tag = "get_extent"} : !shape.shape, index -> !shape.size
+        %max = shape.max %size, %size {tag = "max"} : !shape.size, !shape.size -> !shape.size
+        %meet = shape.meet %shape, %shape, error = "mismatch" {tag = "meet"} : !shape.shape, !shape.shape -> !shape.shape
+        %min = shape.min %size, %size {tag = "min"} : !shape.size, !shape.size -> !shape.size
+        %mul = shape.mul %size, %index {tag = "mul"} : !shape.size, index -> !shape.size
+        %elements = shape.num_elements %shape {tag = "num_elements"} : !shape.shape -> !shape.size
+        %shape_of = shape.shape_of %value {tag = "shape_of"} : tensor<?xi32> -> !shape.shape
+        %as_shape = shape.value_as_shape %value {tag = "value_as_shape"} : tensor<?xi32> -> !shape.shape
+        %concat = shape.concat %shape, %extents {tag = "concat"} : !shape.shape, tensor<?xindex> -> !shape.shape
+        %any = shape.any %shape, %extents {tag = "any"} : !shape.shape, tensor<?xindex> -> !shape.shape
+        func.return
+      }
+      shape.func @helper(%arg: !shape.shape) -> !shape.shape attributes {tag = "function"} {
+        shape.return {tag = "return"} %arg : !shape.shape
+      }
+      "test.yield_parent"() ({
+        shape.yield {tag = "yield"}
+      }) : () -> ()
+      "test.assuming_yield_parent"() ({
+        shape.assuming_yield {tag = "assuming_yield"}
+      }) : () -> ()
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, signature) in [
+        ("shape.add", 2, 1, "!shape.size, index -> !shape.size"),
+        (
+            "shape.broadcast",
+            2,
+            1,
+            "!shape.shape, tensor<?xindex> -> !shape.shape",
+        ),
+        ("shape.div", 2, 1, "!shape.size, index -> !shape.size"),
+        ("shape.rank", 1, 1, "(!shape.shape) -> !shape.size"),
+        (
+            "shape.to_extent_tensor",
+            1,
+            1,
+            "(!shape.shape) -> tensor<?xindex>",
+        ),
+        ("shape.dim", 2, 1, "tensor<?xi32>, index -> index"),
+        (
+            "shape.get_extent",
+            2,
+            1,
+            "!shape.shape, index -> !shape.size",
+        ),
+        ("shape.max", 2, 1, "!shape.size, !shape.size -> !shape.size"),
+        (
+            "shape.meet",
+            2,
+            1,
+            "!shape.shape, !shape.shape -> !shape.shape",
+        ),
+        ("shape.min", 2, 1, "!shape.size, !shape.size -> !shape.size"),
+        ("shape.mul", 2, 1, "!shape.size, index -> !shape.size"),
+        ("shape.num_elements", 1, 1, "(!shape.shape) -> !shape.size"),
+        ("shape.shape_of", 1, 1, "(tensor<?xi32>) -> !shape.shape"),
+        (
+            "shape.value_as_shape",
+            1,
+            1,
+            "(tensor<?xi32>) -> !shape.shape",
+        ),
+        (
+            "shape.concat",
+            2,
+            1,
+            "!shape.shape, tensor<?xindex> -> !shape.shape",
+        ),
+        (
+            "shape.any",
+            2,
+            1,
+            "!shape.shape, tensor<?xindex> -> !shape.shape",
+        ),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+
+    let shape_func = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("shape.func"))
+        .unwrap();
+    assert_eq!(document.operation_regions(shape_func).unwrap().len(), 1);
+    assert_eq!(
+        document.operation_symbol_name(shape_func),
+        Some("helper".into())
+    );
+    for name in ["shape.yield", "shape.assuming_yield"] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert!(document.operands(operation).unwrap().is_empty(), "{name}");
+        assert!(
+            document.result_types(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+    let shape_return = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("shape.return"))
+        .unwrap();
+    assert_eq!(document.operands(shape_return).unwrap().len(), 1);
+    assert!(document.result_types(shape_return).unwrap().is_empty());
+    assert_eq!(
+        document.type_spelling(document.function_type(shape_return).unwrap()),
+        Some("(!shape.shape) -> ()")
+    );
+}
+
+#[test]
+fn shape_preset_inventory_matches_llvm_22_1_conservative_coverage() {
+    let registry = DialectRegistry::from_name("shape").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/shape.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 20);
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(registry.operation_names().count(), 4);
+
+    for (name, shape) in [
+        ("shape.add", OperationShape::BinaryOperands),
+        ("shape.broadcast", OperationShape::VariadicOperands),
+        ("shape.div", OperationShape::BinaryOperands),
+        ("shape.rank", OperationShape::UnaryOperand),
+        ("shape.to_extent_tensor", OperationShape::UnaryOperand),
+        ("shape.dim", OperationShape::BinaryOperands),
+        ("shape.get_extent", OperationShape::BinaryOperands),
+        ("shape.max", OperationShape::BinaryOperands),
+        ("shape.meet", OperationShape::OperandClauses),
+        ("shape.min", OperationShape::BinaryOperands),
+        ("shape.mul", OperationShape::BinaryOperands),
+        ("shape.num_elements", OperationShape::UnaryOperand),
+        ("shape.shape_of", OperationShape::UnaryOperand),
+        ("shape.value_as_shape", OperationShape::UnaryOperand),
+        (
+            "shape.yield",
+            OperationShape::AttrFirstOptionalTypedOperands,
+        ),
+        ("shape.concat", OperationShape::BinaryOperands),
+        ("shape.any", OperationShape::VariadicOperands),
+        (
+            "shape.assuming_yield",
+            OperationShape::AttrFirstOptionalTypedOperands,
+        ),
+        ("shape.func", OperationShape::FuncLike),
+        (
+            "shape.return",
+            OperationShape::AttrFirstOptionalTypedOperands,
+        ),
+    ] {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+
+    let recovery = [
+        "shape.const_shape",
+        "shape.const_size",
+        "shape.shape_eq",
+        "shape.from_extents",
+        "shape.from_extent_tensor",
+        "shape.is_broadcastable",
+        "shape.index_to_size",
+        "shape.reduce",
+        "shape.value_of",
+        "shape.size_to_index",
+        "shape.with_shape",
+        "shape.debug_print",
+        "shape.split_at",
+        "shape.assuming_all",
+        "shape.assuming",
+        "shape.cstr_broadcastable",
+        "shape.cstr_eq",
+        "shape.const_witness",
+        "shape.cstr_require",
+        "shape.function_library",
+    ];
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 40);
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn shape_inferred_custom_region_and_symbol_forms_recover_at_boundaries() {
+    let registry = DialectRegistry::from_name("shape").unwrap();
+    let source = br#"module {
+      func.func @gaps(%shape: !shape.shape, %size: !shape.size, %index: index, %value_shape: !shape.value_shape) {
+        %constant = shape.const_size 1
+        %from = shape.from_extents %size, %index : !shape.size, index
+        %value = shape.value_of %value_shape : tensor<?xf32>
+        %with = shape.with_shape %value_shape, %shape : !shape.value_shape, !shape.shape
+        %reduced = shape.reduce(%shape, %size) : !shape.shape -> !shape.size {
+          ^bb0(%i: index, %extent: !shape.size, %acc: !shape.size):
+            shape.yield %acc : !shape.size
+        }
+        %witness = shape.const_witness true
+        %assumed = shape.assuming %witness -> !shape.size {
+          shape.assuming_yield %size : !shape.size
+        }
+        %split:2 = "shape.split_at"(%shape, %index) : (!shape.shape, index) -> (!shape.shape, !shape.shape)
+        %debug = "shape.debug_print"(%shape) : (!shape.shape) -> !shape.shape
+        "test.after"() : () -> ()
+        func.return
+      }
+      shape.function_library @library {
+      } mapping {}
+      shape.func private @qualified(%arg: !shape.shape) -> !shape.shape {
+        shape.return %arg : !shape.shape
+      }
+      "test.last"() : () -> ()
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind()
+                == ParseDiagnosticKind::ShapeMismatch(OperationShape::FuncLike)),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "test.last"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}

@@ -79,6 +79,7 @@ const PRESET_NAMES: &[&str] = &[
     "ptr",
     "quant",
     "rocdl",
+    "shape",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -119,6 +120,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "ptr" => Some(include_str!("../../registries/ptr.json")),
         "quant" => Some(include_str!("../../registries/quant.json")),
         "rocdl" => Some(include_str!("../../registries/rocdl.json")),
+        "shape" => Some(include_str!("../../registries/shape.json")),
         _ => None,
     }
 }

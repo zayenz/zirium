@@ -45,6 +45,7 @@ It does not establish that the operation can be verified or rewritten.
 | Ptr preset | Core plus default forms of 4 among 13 Ptr operations. |
 | ROCDL preset | Core plus 125 structurally exact forms among 323 ROCDL operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
+| Shape preset | Core plus 20 structurally exact forms among 40 Shape operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -78,7 +79,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, and `shape` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -1071,6 +1072,58 @@ has no results. `scf.reduce.return` and `scf.yield` use the typed-terminator sha
 so their typed SSA values are operands and both operations have zero results.
 The remaining registered operations preserve their SSA operands, result arity,
 and owned regions. None of the SCF operations has successors.
+
+Shape defines exactly 40 operations in LLVM 22.1. The preset registers 20
+forms whose printed types map exactly to their SSA roles. Sixteen are explicit
+typed-result forms: the binary `shape.add`, `shape.div`, `shape.dim`,
+`shape.get_extent`, `shape.max`, `shape.meet`, `shape.min`, `shape.mul`, and
+`shape.concat`; the unary `shape.rank`, `shape.to_extent_tensor`,
+`shape.num_elements`, `shape.shape_of`, and `shape.value_as_shape`; and the
+variadic `shape.broadcast` and `shape.any`. Every operand type and result type
+is present in these forms. `shape.meet` additionally preserves its optional
+positional `error` attribute and ordinary attribute dictionary.
+
+The unqualified `shape.func` form uses the reusable function shape and exposes
+its symbol, function signature, argument and result attributes, and optional
+body region. Visibility-qualified forms currently recover as whole operations
+because the reusable function shape expects the symbol immediately after the
+operation name. `shape.yield`, `shape.assuming_yield`, and `shape.return` use
+the attribute-first typed-terminator shape. Their optional dictionary remains
+before the optional typed operands, and they always have zero results. Empty
+attributed forms terminate cleanly at their enclosing region boundary.
+
+The other 20 operations remain on whole-operation recovery:
+
+- Nine inferred-result forms are `shape.shape_eq`, `shape.from_extents`,
+  `shape.from_extent_tensor`, `shape.is_broadcastable`, `shape.index_to_size`,
+  `shape.size_to_index`, `shape.assuming_all`, `shape.cstr_broadcastable`, and
+  `shape.cstr_eq`. Their trailers spell operand types, or no types, without
+  spelling the result type.
+- Four constant or assertion forms are `shape.const_shape`,
+  `shape.const_size`, `shape.const_witness`, and `shape.cstr_require`. They use
+  custom inline attributes while inferring all or part of their result
+  signature.
+- `shape.value_of` spells only its result type, while `shape.with_shape` spells
+  only its two input types. Registering either with a nearby operand shape
+  would assign a printed type to the wrong role.
+- `shape.reduce` and `shape.assuming` own regions but need more than the generic
+  region-clause shape can state honestly. Reduce types its initial values from
+  its result list and gives its entry block an index, an extent, and accumulator
+  arguments. Assuming prints result types before its body and has no region
+  arguments. Their result and block-argument relationships therefore remain
+  opaque during recovery.
+- `shape.function_library` combines a symbol, a body region, and a custom
+  operation-to-function `mapping` dictionary. `shape.debug_print` and
+  `shape.split_at` have no custom assembly format and use quoted generic syntax.
+
+Only `shape.reduce`, `shape.assuming`, `shape.function_library`, and
+`shape.func` own regions; no Shape operation has successors. The dialect
+defines four types: `!shape.shape`, `!shape.size`, `!shape.value_shape`, and
+`!shape.witness`. The frequently used `tensor<?xindex>` extent-tensor
+representation is a builtin tensor type, not a fifth Shape dialect type. All
+four dialect types and the extent-tensor representation work through the
+ordinary type parser; the preset adds no Shape verification, type inference,
+constraint semantics, or execution semantics.
 
 ## Python
 
