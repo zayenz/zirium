@@ -550,6 +550,59 @@ fn amdgpu_preset_lowers_only_structurally_honest_forms() {
 }
 
 #[test]
+fn amx_preset_lowers_only_the_structurally_honest_zero_form() {
+    let registry = DialectRegistry::from_name("amx").unwrap();
+    let source = br#"module {
+      func.func @zero() {
+        %tile = amx.tile_zero {tag = true} : !amx.tile<16x16xbf16>
+        "func.return"() : () -> ()
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let zero = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("amx.tile_zero"))
+        .unwrap();
+    assert!(document.operands(zero).unwrap().is_empty());
+    assert_eq!(
+        document
+            .result_types(zero)
+            .unwrap()
+            .iter()
+            .map(|ty| document.type_spelling(*ty).unwrap())
+            .collect::<Vec<_>>(),
+        ["!amx.tile<16x16xbf16>"]
+    );
+    assert!(
+        document
+            .attributes(zero)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "true")
+    );
+    assert!(document.operation_regions(zero).unwrap().is_empty());
+    assert!(document.successors(zero).unwrap().is_empty());
+
+    // These trailers describe operand roles or use syntax that the current
+    // reusable shapes cannot lower without inventing semantic results.
+    for name in [
+        "amx.tile_load",
+        "amx.tile_store",
+        "amx.tile_mulf",
+        "amx.tile_muli",
+    ] {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])

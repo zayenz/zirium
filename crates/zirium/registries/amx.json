@@ -1,0 +1,13 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "amx.tile_zero", "shape": "variadic_operands"}
+  ],
+  "operation_formats": []
+}
