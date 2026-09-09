@@ -1,0 +1,1 @@
+select(op("stablehlo.dot_general")) | count

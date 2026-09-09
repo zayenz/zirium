@@ -11,10 +11,10 @@ cargo build --bin zirium
 The [query language reference](query-language.md) lists every predicate,
 pipeline stage, and output rule.
 
-Every query and input used below is checked in under
+The input files and reusable `.zirium` programs used below are checked in under
 [`examples/cli`](../examples/cli/). Each section links to its corresponding
-`.zirium` program. The commands keep short queries inline so they can be read
-and changed without opening another file.
+files. The commands keep short queries inline so they can be read and changed
+without opening another file.
 
 The binary uses the proving registry and accepts ordinary, named, and nested
 `module` shorthand. Use `--registry registry.json` to load caller-defined operation shapes; repeat
@@ -87,25 +87,56 @@ The same query is available as
 
 `closure` adds transitive dependencies. For a `func.call`, that includes the
 resolved callee and its body, while unrelated sibling functions are omitted.
-This example loads the query from
-[`call-closure.zirium`](../examples/cli/call-closure.zirium):
 
 ```sh
-zirium --program-file examples/cli/call-closure.zirium examples/cli/calls.mlir
-```
-
-The program file contains:
-
-```zirium
-select(op("func.call")) | closure
+zirium 'select(op("func.call")) | closure' examples/cli/calls.mlir
 ```
 
 The output contains `@caller` and `@answer`, and omits `@unrelated`. Closure
 expands the selection, but its output is still a slice of the input rather than
 a promise that every selected fragment is independently valid MLIR.
+The same query is available as
+[`call-closure.zirium`](../examples/cli/call-closure.zirium).
 
-A program file contains only Zirium source. Surrounding whitespace and the
-final newline are ignored.
+## Count operations in a StableHLO decoder
+
+The larger [`stablelm-decode.mlir`](../examples/cli/stablelm-decode.mlir)
+example represents one token-generation step for a small two-layer StableLM.
+It contains rotary position handling, KV-cache updates, grouped-query
+attention, gated MLPs, and a language-model head.
+
+The example is adapted from MLXcel's Apache-2.0 licensed
+[StableLM decode program](https://github.com/lablup/mlxcel/blob/0accedd90ae9ea0679121bd087dafdd82882182a/src/lib/mlxcel-xla/assets/stablelm/decode.mlir).
+Its large embedded rotary tables are replaced by zero splats; the operation
+structure and tensor shapes are unchanged.
+
+The first query below counts every operation. The second counts reductions:
+
+```console
+$ zirium 'select(not op("__zirium_missing__")) | count' examples/cli/stablelm-decode.mlir
+237
+$ zirium 'select(op("stablehlo.reduce")) | count' examples/cli/stablelm-decode.mlir
+14
+```
+
+The first predicate is true for every operation because the input has no
+operation named `__zirium_missing__`.
+
+For a query that will be reused, put the program in a file. The checked-in
+[`stablehlo-matmul-count.zirium`](../examples/cli/stablehlo-matmul-count.zirium)
+counts `stablehlo.dot_general`, the StableHLO operation used for the decoder's
+matrix multiplications:
+
+```console
+$ cat examples/cli/stablehlo-matmul-count.zirium
+select(op("stablehlo.dot_general")) | count
+$ zirium --program-file examples/cli/stablehlo-matmul-count.zirium examples/cli/stablelm-decode.mlir
+19
+```
+
+The nineteen operations comprise nine matrix multiplications in each decoder
+layer and one final projection to logits. A program file contains only Zirium
+source; surrounding whitespace and the final newline are ignored.
 
 ## Tag selected operations
 
