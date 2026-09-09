@@ -773,6 +773,57 @@ def test_binary_operand_shape_recovers_from_arity_mismatches(
 
 
 @pytest.mark.parametrize(
+    ("trailer", "expected_result"),
+    [
+        ("i32", "i32"),
+        ("i32 -> i1", "i1"),
+        ("i32, i32 -> i1", "i1"),
+        ("(i32, i32) -> i1", "i1"),
+        ("i32 loc(unknown)", "i32"),
+        ("i32 -> i1 loc(unknown)", "i1"),
+    ],
+)
+def test_binary_operand_shape_accepts_result_and_function_type_trailers(
+    trailer: str, expected_result: str
+):
+    registry = zirium.DialectRegistry.with_operation_shapes(
+        {"a.Op": zirium.OperationShape.BINARY_OPERANDS}
+    )
+    source = f'''"builtin.module"() ({{
+^bb0:
+  %x0 = "test.source"() : () -> i32
+  %x1 = "test.source"() : () -> i32
+  %r = a.Op %x0, %x1 : {trailer}
+}}) : () -> ()'''
+    parsed = zirium.parse_text(source, registry=registry)
+    assert parsed.diagnostics == []
+    lowered = parsed.lower_best_effort()
+    assert lowered.diagnostics == []
+    operation = lowered.document.operation_table("a.Op").operation(0)
+    assert operation.operand_count() == 2
+    assert operation.result_count() == 1
+    assert operation.result_type(0).spelling == expected_result
+
+
+def test_binary_operand_shape_rejects_parenthesized_single_input_function_type():
+    registry = zirium.DialectRegistry.with_operation_shapes(
+        {"a.Op": zirium.OperationShape.BINARY_OPERANDS}
+    )
+    source = '''"builtin.module"() ({
+^bb0:
+  %x0 = "test.source"() : () -> i32
+  %x1 = "test.source"() : () -> i32
+  %r = a.Op %x0, %x1 : (i32) -> i1
+  "test.after"() : () -> ()
+}) : () -> ()'''
+    parsed = zirium.parse_text(source, registry=registry)
+    assert parsed.diagnostics
+    lowered = parsed.lower_best_effort()
+    assert lowered.diagnostics
+    assert lowered.document.operation_table("test.after").count == 1
+
+
+@pytest.mark.parametrize(
     "source",
     [
         '%x = "arith.addi"() : () -> i32',

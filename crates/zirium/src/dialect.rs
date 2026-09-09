@@ -1148,8 +1148,15 @@ fn lower_binary_operands(
     let ty = ty.trim();
     let (function_type, result_types) =
         if let Some((inputs, results)) = crate::semantic::split_arrow(ty) {
+            let inputs = inputs.trim();
+            let input_types = crate::semantic::split_registered_types(inputs);
+            let normalized_inputs = if !inputs.starts_with('(') && input_types.len() == 1 {
+                format!("({0}, {0})", input_types[0])
+            } else {
+                inputs.to_owned()
+            };
             (
-                format!("{} -> {}", inputs.trim(), results.trim()),
+                format!("{normalized_inputs} -> {}", results.trim()),
                 crate::semantic::split_registered_types(results),
             )
         } else {

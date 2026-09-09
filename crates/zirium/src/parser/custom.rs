@@ -435,8 +435,19 @@ pub(super) fn shaped_operation(
             }
             good &= parser.expect(TokenKind::Colon)?;
             parser.trivia()?;
-            if parser.at(TokenKind::LParen) {
-                parser.function_type()?;
+            if binary_trailer_has_arrow(parser) {
+                let parenthesized = parser.at(TokenKind::LParen);
+                let input_count = if parenthesized {
+                    parser.function_type_with_input_count()?
+                } else {
+                    bare_function_type(parser)?
+                };
+                if (parenthesized && input_count != 2)
+                    || (!parenthesized && !matches!(input_count, 1 | 2))
+                {
+                    parser.diagnostic();
+                    good = false;
+                }
             } else {
                 good &= parser.type_syntax(0)?;
             }
@@ -509,4 +520,58 @@ pub(super) fn shaped_operation(
         .builder
         .complete_with_error(marker, SyntaxKind::DialectOperation, !good)?;
     Ok(())
+}
+
+fn binary_trailer_has_arrow(parser: &Parser<'_>) -> bool {
+    let mut depth = 0usize;
+    for token in &parser.tokens[parser.position..] {
+        match token.kind() {
+            TokenKind::Whitespace
+                if depth == 0
+                    && parser.source
+                        [token.range().start() as usize..token.range().end() as usize]
+                        .contains(&b'\n') =>
+            {
+                return false;
+            }
+            TokenKind::Whitespace | TokenKind::LineComment => {}
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace | TokenKind::Less => {
+                depth += 1;
+            }
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Greater => {
+                let Some(next_depth) = depth.checked_sub(1) else {
+                    return false;
+                };
+                depth = next_depth;
+            }
+            TokenKind::Arrow if depth == 0 => return true,
+            TokenKind::Loc | TokenKind::Eof if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn bare_function_type(parser: &mut Parser<'_>) -> Result<usize, CompactError> {
+    let ty = parser.builder.start();
+    let mut input_count = 0;
+    loop {
+        parser.type_syntax(0)?;
+        input_count += 1;
+        parser.trivia()?;
+        if !parser.at(TokenKind::Comma) {
+            break;
+        }
+        parser.bump()?;
+        parser.trivia()?;
+    }
+    parser.expect(TokenKind::Arrow)?;
+    parser.trivia()?;
+    if parser.at_type_start() {
+        parser.type_syntax(0)?;
+    } else {
+        parser.type_list(0)?;
+    }
+    parser.builder.complete(ty, SyntaxKind::FunctionType)?;
+    Ok(input_count)
 }

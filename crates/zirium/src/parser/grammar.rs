@@ -468,8 +468,12 @@ impl Parser<'_> {
     }
 
     pub(super) fn function_type(&mut self) -> Result<(), CompactError> {
+        self.function_type_with_input_count().map(|_| ())
+    }
+
+    pub(super) fn function_type_with_input_count(&mut self) -> Result<usize, CompactError> {
         let ty = self.builder.start();
-        self.type_list(0)?;
+        let input_count = self.type_list_with_count(0)?;
         self.trivia()?;
         self.expect(TokenKind::Arrow)?;
         self.trivia()?;
@@ -479,14 +483,20 @@ impl Parser<'_> {
             self.type_list(0)?;
         }
         self.builder.complete(ty, SyntaxKind::FunctionType)?;
-        Ok(())
+        Ok(input_count)
     }
 
     pub(super) fn type_list(&mut self, depth: usize) -> Result<(), CompactError> {
+        self.type_list_with_count(depth).map(|_| ())
+    }
+
+    fn type_list_with_count(&mut self, depth: usize) -> Result<usize, CompactError> {
         self.expect(TokenKind::LParen)?;
         self.trivia()?;
+        let mut count = 0;
         while self.at_type_start() {
             self.type_syntax(depth)?;
+            count += 1;
             self.trivia()?;
             if self.at(TokenKind::LBrace) {
                 self.attribute_dict()?;
@@ -499,7 +509,7 @@ impl Parser<'_> {
             self.trivia()?;
         }
         self.expect(TokenKind::RParen)?;
-        Ok(())
+        Ok(count)
     }
 
     pub(super) fn at_type_start(&self) -> bool {

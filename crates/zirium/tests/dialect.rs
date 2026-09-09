@@ -168,6 +168,75 @@ fn binary_operand_shape_recovers_from_arity_mismatches() {
 }
 
 #[test]
+fn binary_operand_shape_accepts_result_and_function_type_trailers() {
+    let registry =
+        DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])
+            .unwrap();
+    for (trailer, expected_result) in [
+        ("i32", "i32"),
+        ("i32 -> i1", "i1"),
+        ("i32, i32 -> i1", "i1"),
+        ("(i32, i32) -> i1", "i1"),
+        ("i32 loc(unknown)", "i32"),
+        ("i32 -> i1 loc(unknown)", "i1"),
+    ] {
+        let source = format!(
+            r#""builtin.module"() ({{
+^bb0:
+  %x0 = "test.source"() : () -> i32
+  %x1 = "test.source"() : () -> i32
+  %r = a.Op %x0, %x1 : {trailer}
+}}) : () -> ()"#
+        );
+        let parsed = ParsedFile::parse_with_registry(source.as_bytes(), &registry).unwrap();
+        assert!(
+            parsed.syntax().diagnostics().is_empty(),
+            "unexpected syntax diagnostics for {trailer:?}: {:?}",
+            parsed.syntax().diagnostics()
+        );
+        let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected lowering diagnostics for {trailer:?}: {:?}",
+            lowered.diagnostics
+        );
+        let document = lowered.document.unwrap();
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some("a.Op"))
+            .unwrap();
+        assert_eq!(document.operands(operation).unwrap().len(), 2);
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(document.type_spelling(results[0]), Some(expected_result));
+    }
+}
+
+#[test]
+fn binary_operand_shape_rejects_parenthesized_single_input_function_type() {
+    let registry =
+        DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])
+            .unwrap();
+    let source = br#""builtin.module"() ({
+^bb0:
+  %x0 = "test.source"() : () -> i32
+  %x1 = "test.source"() : () -> i32
+  %r = a.Op %x0, %x1 : (i32) -> i1
+  "test.after"() : () -> ()
+}) : () -> ()"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(!parsed.syntax().diagnostics().is_empty());
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    assert!(!lowered.diagnostics.is_empty());
+    let document = lowered.document.unwrap();
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after"))
+    );
+}
+
+#[test]
 fn registry_presets_validate_names_and_compose_with_explicit_entries() {
     use zirium::dialect::RegistryConfig;
 
