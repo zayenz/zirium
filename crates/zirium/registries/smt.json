@@ -1,0 +1,28 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "smt.reset", "shape": "attr_first_optional_typed_operands"},
+    {"name": "smt.bv.not", "shape": "unary_operand"},
+    {"name": "smt.bv.neg", "shape": "unary_operand"},
+    {"name": "smt.bv.and", "shape": "binary_operands"},
+    {"name": "smt.bv.or", "shape": "binary_operands"},
+    {"name": "smt.bv.xor", "shape": "binary_operands"},
+    {"name": "smt.bv.add", "shape": "binary_operands"},
+    {"name": "smt.bv.mul", "shape": "binary_operands"},
+    {"name": "smt.bv.udiv", "shape": "binary_operands"},
+    {"name": "smt.bv.sdiv", "shape": "binary_operands"},
+    {"name": "smt.bv.urem", "shape": "binary_operands"},
+    {"name": "smt.bv.srem", "shape": "binary_operands"},
+    {"name": "smt.bv.smod", "shape": "binary_operands"},
+    {"name": "smt.bv.shl", "shape": "binary_operands"},
+    {"name": "smt.bv.lshr", "shape": "binary_operands"},
+    {"name": "smt.bv.ashr", "shape": "binary_operands"}
+  ],
+  "operation_formats": []
+}

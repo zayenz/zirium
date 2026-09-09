@@ -46,6 +46,7 @@ It does not establish that the operation can be verified or rewritten.
 | ROCDL preset | Core plus 125 structurally exact forms among 323 ROCDL operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Shape preset | Core plus 20 structurally exact forms among 40 Shape operations. |
+| SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -79,7 +80,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, and `shape` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, and `smt` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -1124,6 +1125,37 @@ representation is a builtin tensor type, not a fifth Shape dialect type. All
 four dialect types and the extent-tensor representation work through the
 ordinary type parser; the preset adds no Shape verification, type inference,
 constraint semantics, or execution semantics.
+
+SMT defines exactly 54 operations in LLVM 22.1: 21 core operations, 21
+bit-vector operations, nine integer operations, and three array operations.
+The preset registers 16 exact forms. `smt.bv.not` and `smt.bv.neg` are unary,
+and the 13 `smt.bv.and`, `smt.bv.or`, `smt.bv.xor`, `smt.bv.add`,
+`smt.bv.mul`, `smt.bv.udiv`, `smt.bv.sdiv`, `smt.bv.urem`, `smt.bv.srem`,
+`smt.bv.smod`, `smt.bv.shl`, `smt.bv.lshr`, and `smt.bv.ashr` operations are
+binary. Their explicit trailing bit-vector type is the type of every operand
+and the single result. Attribute dictionaries precede that type. `smt.reset`
+has no operands or results and puts its optional dictionary first.
+
+The remaining 38 custom forms stay on whole-operation recovery. The 20 core
+forms are `smt.declare_fun`, `smt.constant`, `smt.solver`, `smt.set_logic`,
+`smt.assert`, `smt.push`, `smt.pop`, `smt.check`, `smt.yield`,
+`smt.apply_func`, `smt.eq`, `smt.distinct`, `smt.ite`, `smt.not`, `smt.and`,
+`smt.or`, `smt.xor`,
+`smt.implies`, `smt.forall`, and `smt.exists`. This keeps inferred Boolean
+types, symbols and function applications, solver/check regions, and
+quantifier bindings opaque. `smt.yield` puts its dictionary after its optional
+typed operands, unlike the reusable typed-terminator shapes. The six bit-vector
+gaps are `smt.bv.constant`, `smt.bv.cmp`, `smt.bv.concat`, `smt.bv.extract`,
+`smt.bv.repeat`, and `smt.bv2int`; their attributes, partial type signatures,
+or inferred result types do not fit an exact reusable shape. All nine
+`smt.int.*` forms and the three `smt.array.*` forms likewise infer at least one
+SSA type or otherwise spell only a partial signature.
+
+Only `smt.solver`, `smt.check`, `smt.forall`, and `smt.exists` own regions; no
+SMT operation has successors. The six types `!smt.bool`, `!smt.int`,
+`!smt.bv`, `!smt.array`, `!smt.func`, and `!smt.sort`, and the `#smt.bv`
+attribute, remain balanced opaque dialect values. The preset adds no SMT
+verification, type inference, solver semantics, or execution semantics.
 
 ## Python
 

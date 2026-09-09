@@ -7725,3 +7725,140 @@ fn shape_inferred_custom_region_and_symbol_forms_recover_at_boundaries() {
         );
     }
 }
+
+#[test]
+fn smt_preset_exposes_exact_bitvector_and_reset_roles() {
+    assert!(DialectRegistry::preset_names().contains(&"smt"));
+    let registry = DialectRegistry::from_name("smt").unwrap();
+    let source = br#"module {
+      func.func @roles(%arg: !smt.bv<8>) {
+        %neg = smt.bv.neg %arg {tag = "unary"} : !smt.bv<8>
+        %sum = smt.bv.add %neg, %arg {tag = "binary"} : !smt.bv<8>
+        smt.reset {tag = "reset"}
+        "test.boundary"() : () -> ()
+        %types:6 = "test.types"() {value = #smt.bv<7>} : () -> (!smt.bool, !smt.int, !smt.bv<8>, !smt.array<[!smt.int -> !smt.bool]>, !smt.func<(!smt.int) !smt.bool>, !smt.sort<"S">)
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, tag) in [
+        ("smt.bv.neg", 1, 1, "\"unary\""),
+        ("smt.bv.add", 2, 1, "\"binary\""),
+        ("smt.reset", 0, 0, "\"reset\""),
+    ] {
+        let operation = document
+            .operations()
+            .find(|op| document.operation_name(*op) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(key, value)| key == "tag" && value == tag),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+
+    let types = document
+        .operations()
+        .find(|op| document.operation_name(*op) == Some("test.types"))
+        .unwrap();
+    assert_eq!(document.result_types(types).unwrap().len(), 6);
+    assert!(
+        document
+            .result_types(types)
+            .unwrap()
+            .iter()
+            .all(|ty| matches!(document.type_value(*ty), Some(TypeValue::Opaque(_))))
+    );
+    assert!(matches!(
+        document.attribute_value(document.attribute_id(types, "value").unwrap()),
+        Some(AttributeValue::Opaque(_))
+    ));
+}
+
+#[test]
+fn smt_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("smt").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/smt.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 16);
+    assert_eq!(registry.operation_names().count(), 4);
+
+    for operation in &config.operation_shapes {
+        assert_eq!(
+            registry.operation_shape(&operation.name),
+            Some(operation.shape)
+        );
+    }
+    for name in [
+        "smt.declare_fun",
+        "smt.solver",
+        "smt.check",
+        "smt.yield",
+        "smt.forall",
+        "smt.bv.concat",
+        "smt.int.add",
+        "smt.array.store",
+    ] {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%bv: !smt.bv<4>) {
+        %cat = smt.bv.concat %bv, %bv : !smt.bv<4>, !smt.bv<4>
+        %part = smt.bv.extract %bv from 1 : (!smt.bv<4>) -> !smt.bv<2>
+        %repeat = smt.bv.repeat 2 times %bv : !smt.bv<4>
+        %integer = smt.bv2int %bv signed : !smt.bv<4>
+        smt.solver() : () -> () {
+          smt.check sat {} unknown {} unsat {}
+        }
+        %quantified = smt.forall {
+          %truth = smt.constant true
+          smt.yield %truth : !smt.bool
+        }
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|op| document.operation_name(op) == Some("test.after"))
+    );
+}
