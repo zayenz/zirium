@@ -14,8 +14,8 @@ use zirium::{
     printer::{DialectPrintMode, PrintLayout},
     semantic::{
         ArithAddiOp, ArithConstantOp, AttributeValue, BuiltinModuleOp, CfBrOp, CfCondBrOp,
-        FuncCallOp, FuncFuncOp, FuncReturnOp, LoweringMode, SemanticVerificationError,
-        lower_with_dialect_registry,
+        FuncCallOp, FuncFuncOp, FuncReturnOp, LoweringMode, SemanticVerificationError, ValueId,
+        ValueReference, lower_with_dialect_registry,
     },
 };
 
@@ -1326,6 +1326,135 @@ fn bufferization_preset_inventory_matches_llvm_22_1_custom_forms() {
         assert_eq!(registry.operation_shape(name), None, "{name}");
         assert!(registry.operation(name).is_none(), "{name}");
     }
+}
+
+#[test]
+fn cf_preset_preserves_and_resolves_successors() {
+    let registry = DialectRegistry::from_name("cf").unwrap();
+    let source = br#"module {
+      func.func @route(%condition: i1, %value: i32) {
+        cf.cond_br %condition, ^left(%value : i32), ^right(%value : i32) {branch_weights = dense<[3, 2]> : vector<2xi32>, tag = "condition"}
+      ^left(%left_value: i32):
+        cf.br ^join(%left_value : i32) {tag = "left"}
+      ^right(%right_value: i32):
+        cf.br ^join(%right_value : i32)
+      ^join(%joined: i32):
+        "test.consume"(%joined) : (i32) -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    document.verify_semantics(&registry).unwrap();
+
+    let function = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("func.func"))
+        .unwrap();
+    let region = document.operation_regions(function).unwrap()[0];
+    let blocks = document.region(region).unwrap().blocks(&document).unwrap();
+    let condition = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("cf.cond_br"))
+        .unwrap();
+    let condition_successors = document.successors(condition).unwrap();
+    assert_eq!(condition_successors.len(), 2);
+    assert!(document.attribute_id(condition, "branch_weights").is_some());
+    assert!(document.attribute_id(condition, "tag").is_some());
+    assert_eq!(condition_successors[0].block(), blocks[1]);
+    assert_eq!(condition_successors[1].block(), blocks[2]);
+    for successor in condition_successors {
+        assert_eq!(
+            document.successor_arguments(*successor),
+            Some(
+                &[ValueReference::Resolved(ValueId::BlockArgument {
+                    block: blocks[0],
+                    argument: 1,
+                })][..]
+            )
+        );
+    }
+
+    let branches = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("cf.br"))
+        .collect::<Vec<_>>();
+    assert_eq!(branches.len(), 2);
+    for (branch, source_block) in branches.iter().copied().zip([blocks[1], blocks[2]]) {
+        assert!(document.result_types(branch).unwrap().is_empty());
+        assert!(document.operation_regions(branch).unwrap().is_empty());
+        let successor = document.successors(branch).unwrap()[0];
+        assert_eq!(successor.block(), blocks[3]);
+        assert_eq!(
+            document.successor_arguments(successor),
+            Some(
+                &[ValueReference::Resolved(ValueId::BlockArgument {
+                    block: source_block,
+                    argument: 0,
+                })][..]
+            )
+        );
+    }
+    assert!(
+        document
+            .attributes(branches[0])
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "\"left\"")
+    );
+    assert!(document.result_types(condition).unwrap().is_empty());
+    assert!(document.operation_regions(condition).unwrap().is_empty());
+}
+
+#[test]
+fn cf_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("cf").unwrap();
+    let supported = ["cf.br", "cf.cond_br"];
+    for name in supported {
+        assert!(registry.operation(name).is_some(), "{name}");
+    }
+    let unsupported = ["cf.assert", "cf.switch"];
+    assert_eq!(supported.len() + unsupported.len(), 4);
+    for name in unsupported {
+        assert!(registry.operation(name).is_none(), "{name}");
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%condition: i1, %flag: i32) {
+        cf.assert %condition, "condition failed" {tag = true}
+        cf.switch %flag : i32, [
+          default: ^exit,
+          7: ^exit
+        ] {tag = "switch"}
+      ^exit:
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        2
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after"))
+    );
 }
 
 #[test]

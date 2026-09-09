@@ -57,6 +57,7 @@ const PRESET_NAMES: &[&str] = &[
     "arm_sve",
     "async",
     "bufferization",
+    "cf",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -75,6 +76,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "arm_sve" => Some(include_str!("../../registries/arm_sve.json")),
         "async" => Some(include_str!("../../registries/async.json")),
         "bufferization" => Some(include_str!("../../registries/bufferization.json")),
+        "cf" => Some(include_str!("../../registries/cf.json")),
         _ => None,
     }
 }

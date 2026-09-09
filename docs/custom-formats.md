@@ -25,6 +25,7 @@ It does not establish that the operation can be verified or rewritten.
 | ArmSVE preset | Core plus 9 of the 21 ArmSVE custom-form operations. |
 | Async preset | Core plus 11 of the 29 Async operations. |
 | Bufferization preset | Core plus 5 of the 7 Bufferization operations. |
+| CF preset | Core plus `cf.br` and `cf.cond_br`. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -58,7 +59,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, and `bufferization` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, and `cf` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -300,6 +301,20 @@ memref. Registering either with the broad clause shape would assign incorrect
 operand or result types. All 7 operations use custom assembly; there are no
 additional default/generic concrete operations. The dialect defines no types
 or dialect attributes, and none of its operations have regions or successors.
+
+CF registers 2 of its 4 operations. The dedicated `cf.br` and `cf.cond_br`
+implementations retain successor targets, typed successor arguments, ordinary
+attribute dictionaries, and block resolution. All four CF operations have no
+results or regions. The `branch_weights` attribute on `cf.cond_br` is retained
+and checked by the built-in semantic verifier when written in the trailing
+dictionary; the positional `weights(...)` variant remains on recovery.
+
+`cf.assert` and `cf.switch` remain on whole-operation recovery. Assert has a
+required positional string attribute but no type trailer, which is outside the
+current reusable formats. Switch combines a typed flag with a bracketed custom
+case list, variadic successors, successor operands, and case attributes.
+Approximating either operation with a broad shape would lose required semantic
+structure. CF defines no dialect types or attributes.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block
