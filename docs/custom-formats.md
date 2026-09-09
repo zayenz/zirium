@@ -16,6 +16,7 @@ It does not establish that the operation can be verified or rewritten.
 | SCF preset | Core plus all 12 SCF operations, including structured regions and loop header bindings. |
 | Linalg preset | Core plus 97 core, structured, and generated named Linalg operations. |
 | OpenACC preset | Core plus 35 mapping, bounds-accessor, region, and terminator forms. |
+| Affine preset | Core plus 4 of the 16 Affine operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -48,7 +49,7 @@ definition. This surface was checked against StableHLO 1.20.1. The unversioned
 preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
-The `tosa`, `scf`, `linalg`, and `acc` presets were checked against LLVM 22.1.0.
+The `tosa`, `scf`, `linalg`, `acc`, and `affine` presets were checked against LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
 its custom symbol/type form has no reusable structural signature. SCF registers
@@ -70,6 +71,21 @@ operations remain on that recovery path: `acc.bounds`, `acc.atomic.read`,
 `acc.wait`. Their custom spellings either have no safe trailing boundary in
 the current shapes, require keyword-separated regions, or would incorrectly
 imply SSA result types.
+
+Affine registers 4 of its 16 operations: `affine.for`, `affine.if`,
+`affine.linearize_index`, and `affine.yield`. The two structured control-flow
+forms expose their regions, header bindings, operands, and result slots;
+trailing attribute dictionaries after the final region use whole-operation
+recovery. The linearization form exposes its index operands and single index
+result, while the terminator preserves its optional typed operands. The other
+12 operations remain on the recovery path: `affine.apply`, `affine.min`,
+`affine.max`, `affine.parallel`, `affine.load`, `affine.store`,
+`affine.vector_load`, `affine.vector_store`, `affine.prefetch`,
+`affine.delinearize_index`, `affine.dma_start`, and `affine.dma_wait`.
+Their custom forms either lack a safe trailing boundary, need parallel header
+bindings, derive a result type from a memref element type, or spell types for a
+no-result operation. Assigning the current clause shapes to those forms would
+lose structure or invent semantic result types.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

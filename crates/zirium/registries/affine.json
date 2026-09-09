@@ -1,0 +1,16 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "affine.for", "shape": "region_clauses"},
+    {"name": "affine.if", "shape": "region_clauses"},
+    {"name": "affine.linearize_index", "shape": "operand_clauses"},
+    {"name": "affine.yield", "shape": "optional_typed_operands"}
+  ],
+  "operation_formats": []
+}

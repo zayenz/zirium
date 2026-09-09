@@ -369,6 +369,90 @@ fn acc_preset_structures_mapping_accessors_and_regions() {
 }
 
 #[test]
+fn affine_preset_lowers_supported_forms_without_inventing_results() {
+    let registry = DialectRegistry::from_name("affine").unwrap();
+    let source = br#"module {
+      func.func @kernel(%n: index, %x: index, %y: index, %basis: index, %seed: index) -> index {
+        %linear = affine.linearize_index disjoint [%x, %y] by (4, %basis) : index
+        %result = affine.for %iv = 0 to %n iter_args(%carried = %seed) -> index {
+          %selected = affine.if affine_set<(d0) : (d0 >= 0)> (%iv) -> index {
+            affine.yield %carried : index
+          } else {
+            affine.yield %linear : index
+          }
+          affine.yield %selected : index
+        }
+        func.return %result : index
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    let linearize = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("affine.linearize_index"))
+        .unwrap();
+    assert_eq!(document.operands(linearize).unwrap().len(), 3);
+    assert_eq!(document.result_types(linearize).unwrap().len(), 1);
+    assert_eq!(
+        document.type_spelling(document.result_types(linearize).unwrap()[0]),
+        Some("index")
+    );
+
+    let for_op = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("affine.for"))
+        .unwrap();
+    assert_eq!(document.operands(for_op).unwrap().len(), 2);
+    assert_eq!(document.result_types(for_op).unwrap().len(), 1);
+    let for_region = document.operation_regions(for_op).unwrap()[0];
+    let for_block = document
+        .region(for_region)
+        .unwrap()
+        .blocks(&document)
+        .unwrap()[0];
+    assert_eq!(document.block_argument_types(for_block).unwrap().len(), 2);
+
+    let if_op = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("affine.if"))
+        .unwrap();
+    assert_eq!(document.operands(if_op).unwrap().len(), 1);
+    assert_eq!(document.result_types(if_op).unwrap().len(), 1);
+    assert_eq!(document.operation_regions(if_op).unwrap().len(), 2);
+
+    let yields = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("affine.yield"))
+        .collect::<Vec<_>>();
+    assert_eq!(yields.len(), 3);
+    assert!(
+        yields
+            .iter()
+            .all(|operation| document.result_types(*operation).unwrap().is_empty())
+    );
+
+    // Typed memory and DMA forms have no SSA results. Keeping them off the
+    // broad clause shape prevents their trailing memref types becoming results.
+    for name in [
+        "affine.store",
+        "affine.vector_store",
+        "affine.prefetch",
+        "affine.dma_start",
+        "affine.dma_wait",
+    ] {
+        assert_eq!(registry.operation_shape(name), None);
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])
