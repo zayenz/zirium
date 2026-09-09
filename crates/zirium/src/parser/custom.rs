@@ -690,7 +690,10 @@ fn operand_clauses(parser: &mut Parser<'_>) -> Result<bool, CompactError> {
             parser.trivia()?;
             continue;
         }
-        if delimiters.is_empty() && parser.inherent_attribute_starts() {
+        if delimiters.is_empty()
+            && parser.inherent_attribute_starts()
+            && !named_delimited_rhs_contains_operand(parser)
+        {
             good &= parser.inherent_attribute()?;
             parser.trivia()?;
             continue;
@@ -795,7 +798,10 @@ fn region_clauses(parser: &mut Parser<'_>, operation: &str) -> Result<bool, Comp
             parser.trivia()?;
             continue;
         }
-        if delimiters.is_empty() && parser.inherent_attribute_starts() {
+        if delimiters.is_empty()
+            && parser.inherent_attribute_starts()
+            && !named_delimited_rhs_contains_operand(parser)
+        {
             good &= parser.inherent_attribute()?;
             if regionless_reduce {
                 parser.trivia()?;
@@ -856,6 +862,53 @@ fn region_clauses(parser: &mut Parser<'_>, operation: &str) -> Result<bool, Comp
         parser.bump()?;
         parser.trivia()?;
     }
+}
+
+fn named_delimited_rhs_contains_operand(parser: &Parser<'_>) -> bool {
+    let mut tokens = parser.tokens[parser.position..]
+        .iter()
+        .filter(|token| !matches!(token.kind(), TokenKind::Whitespace | TokenKind::LineComment));
+    let Some(name) = tokens.next() else {
+        return false;
+    };
+    if !matches!(name.kind(), TokenKind::BareIdentifier | TokenKind::String)
+        || tokens.next().map(|token| token.kind()) != Some(TokenKind::Equal)
+    {
+        return false;
+    }
+    let Some(open) = tokens.next() else {
+        return false;
+    };
+    let Some(close) = close_for(open.kind()) else {
+        return false;
+    };
+
+    let mut delimiters = vec![close];
+    let mut contains_operand = false;
+    for token in tokens {
+        let current = token.kind();
+        if delimiters.last() == Some(&current) {
+            delimiters.pop();
+            if delimiters.is_empty() {
+                return contains_operand;
+            }
+        } else if let Some(close) = close_for(current) {
+            if delimiters.len() >= parser.limits.max_delimiter_depth {
+                return false;
+            }
+            delimiters.push(close);
+        } else if matches!(
+            current,
+            TokenKind::Greater | TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket
+        ) {
+            return false;
+        } else if current == TokenKind::PercentIdentifier {
+            contains_operand = true;
+        } else if current == TokenKind::Eof {
+            return false;
+        }
+    }
+    false
 }
 
 fn header_block_argument(parser: &mut Parser<'_>, typed: bool) -> Result<(), CompactError> {
