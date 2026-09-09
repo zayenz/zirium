@@ -81,7 +81,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, and `smt` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, and `spirv` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -1178,6 +1178,60 @@ SMT operation has successors. The six types `!smt.bool`, `!smt.int`,
 `!smt.bv`, `!smt.array`, `!smt.func`, and `!smt.sort`, and the `#smt.bv`
 attribute, remain balanced opaque dialect values. The preset adds no SMT
 verification, type inference, solver semantics, or execution semantics.
+
+SPIR-V defines 306 concrete operations in LLVM 22.1. The inventory expands
+the records included by every one of the 23 `SPIRV/IR/*Ops.td` files, rather
+than counting only definitions written directly in `SPIRVOps.td`. Grouped by
+operation namespace, it contains 195 core operations, 34 `spirv.CL.*`
+operations, 53 `spirv.GL.*` operations, seven `spirv.INTEL.*` operations, and
+17 KHR, EXT, or ARM extension operations. The preset registers 132 operations:
+55 core, 31 CL, 42 GL, three Intel, and the ARM graph-output terminator.
+
+The 122 expression forms are selected by shared ODS structure, not merely by
+similar printed text. They comprise 78 unary and 44 binary forms:
+
+- Same-typed arithmetic forms come from the SPIR-V arithmetic, bit, CL, and GL
+  unary/binary ODS base families. The ordinary arithmetic families put their
+  dictionaries before the type. Bit unary, GL unary, and logical forms put a
+  dictionary after the type; their dictionary-free form is registered, while
+  attributed variants use recovery.
+- Sixteen core and Intel casts expose both source and result types around `to`.
+  Eight dot, length, transpose, vector-times-scalar, and matrix operations expose
+  complete arrow signatures. Five Boolean logical forms are included because
+  their operands and result all have the same Boolean type; numeric comparisons
+  are deliberately excluded because their result type differs.
+- `spirv.Undef` exposes its sole result type without operands.
+  `spirv.FunctionCall` exposes its callee attribute, arguments, and complete
+  function type. The five attribute-dictionary-only operations and three
+  typed no-result forms preserve exact zero/result arity and operand types.
+
+The remaining 174 operations stay on whole-operation recovery, grouped by the
+missing structural role:
+
+- Numeric comparisons, select, extended arithmetic, ternary CL/GL operations,
+  composite construction, and several matrix/group forms infer or only
+  partially spell operand or result types. Assigning the broad clause shape
+  would manufacture types for these forms.
+- `spirv.func`, `spirv.module`, graph/spec-constant operations, and
+  `spirv.mlir.loop`, `spirv.mlir.selection`, and
+  `spirv.SpecConstantOperation` combine dialect-specific headers, symbols, or
+  regions. `spirv.Branch`, `spirv.BranchConditional`, and `spirv.Switch` carry
+  real CFG successors. The current reusable region and successor shapes cannot
+  retain all of those roles honestly.
+- Loads, stores, copies, barriers, and atomic operations interleave memory
+  scopes, memory semantics, optional memory operands, alignments, and typed SSA
+  operands. Image, cooperative-matrix, non-uniform/group, mesh, and other
+  extension operations likewise use optional positional clauses or partial
+  signatures. These families were audited separately from arithmetic forms and
+  are not treated as ordinary SSA operands just because their TableGen argument
+  lists also contain attributes.
+
+SPIR-V availability, version, capability, scope, and memory-semantics
+attributes remain opaque. So do `!spirv` types and `#spirv` attribute payloads;
+balanced payload syntax is retained by the ordinary opaque-value parser. This
+preset provides structural parsing and lowering only. It does not implement
+SPIR-V capability/version checks, symbol resolution, dialect verification,
+serialization, or execution.
 
 ## Python
 

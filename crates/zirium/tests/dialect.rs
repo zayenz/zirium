@@ -8044,3 +8044,203 @@ fn sparse_tensor_preset_inventory_and_recovery_match_llvm_22_1() {
             .any(|op| document.operation_name(op) == Some("test.after"))
     );
 }
+
+#[test]
+fn spirv_preset_exposes_safe_value_and_signature_roles() {
+    assert!(DialectRegistry::preset_names().contains(&"spirv"));
+    let registry = DialectRegistry::from_name("spirv").unwrap();
+    let source = br#"module {
+      func.func @forms(%x: f32, %y: f32, %bits: i32, %matrix: !spirv.matrix<vec4x4xf32>) {
+        %sum = spirv.FAdd %x, %y {tag = "arithmetic"} : f32
+        %absolute = spirv.GL.FAbs %sum : f32
+        %maximum = spirv.CL.fmax %absolute, %y : f32
+        %cast = spirv.ConvertFToS %maximum {tag = "cast"} : f32 to i32
+        %reversed = spirv.BitReverse %bits : i32
+        %dot = spirv.Dot %x, %y : f32 -> f32
+        %transposed = spirv.Transpose %matrix : !spirv.matrix<vec4x4xf32> -> !spirv.matrix<vec4x4xf32>
+        %undefined = spirv.Undef {tag = "result-only"} : !spirv.ptr<f32, Function>
+        "test.payload"() {requirements = #spirv.vce<v1.0, [Shader], [SPV_KHR_storage_buffer_storage_class]>} : () -> ()
+        spirv.FunctionCall @callee(%cast) : (i32) -> ()
+        spirv.ReturnValue %cast {tag = "terminator"} : i32
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, function_type) in [
+        ("spirv.FAdd", 2, 1, "(f32, f32) -> f32"),
+        ("spirv.GL.FAbs", 1, 1, "(f32) -> f32"),
+        ("spirv.CL.fmax", 2, 1, "(f32, f32) -> f32"),
+        ("spirv.ConvertFToS", 1, 1, "(f32) -> i32"),
+        ("spirv.BitReverse", 1, 1, "(i32) -> i32"),
+        ("spirv.Dot", 2, 1, "(f32, f32) -> f32"),
+        (
+            "spirv.Transpose",
+            1,
+            1,
+            "(!spirv.matrix<vec4x4xf32>) -> !spirv.matrix<vec4x4xf32>",
+        ),
+        ("spirv.Undef", 0, 1, "() -> !spirv.ptr<f32, Function>"),
+        ("spirv.FunctionCall", 1, 0, "(i32) -> ()"),
+        ("spirv.ReturnValue", 1, 0, "(i32) -> ()"),
+    ] {
+        let operation = document
+            .operations()
+            .find(|op| document.operation_name(*op) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(function_type),
+            "{name}"
+        );
+    }
+
+    let cast = document
+        .operations()
+        .find(|op| document.operation_name(*op) == Some("spirv.ConvertFToS"))
+        .unwrap();
+    assert!(matches!(
+        document.attribute_value(document.attribute_id(cast, "tag").unwrap()),
+        Some(AttributeValue::String(value)) if value == "\"cast\""
+    ));
+    assert!(matches!(
+        document.type_value(document.result_types(cast).unwrap()[0]),
+        Some(TypeValue::Integer { .. })
+    ));
+    let undefined = document
+        .operations()
+        .find(|op| document.operation_name(*op) == Some("spirv.Undef"))
+        .unwrap();
+    assert!(matches!(
+        document.type_value(document.result_types(undefined).unwrap()[0]),
+        Some(TypeValue::Opaque(_))
+    ));
+    let payload = document
+        .operations()
+        .find(|op| document.operation_name(*op) == Some("test.payload"))
+        .unwrap();
+    assert!(matches!(
+        document.attribute_value(document.attribute_id(payload, "requirements").unwrap()),
+        Some(AttributeValue::Opaque(_))
+    ));
+    let call = document
+        .operations()
+        .find(|op| document.operation_name(*op) == Some("spirv.FunctionCall"))
+        .unwrap();
+    assert_eq!(document.operation_callee(call).as_deref(), Some("callee"));
+}
+
+#[test]
+fn spirv_preset_inventory_and_grouped_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("spirv").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/spirv.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 132);
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(
+        config
+            .operation_shapes
+            .iter()
+            .filter(|operation| operation.shape == OperationShape::UnaryOperand)
+            .count(),
+        78
+    );
+    assert_eq!(
+        config
+            .operation_shapes
+            .iter()
+            .filter(|operation| operation.shape == OperationShape::BinaryOperands)
+            .count(),
+        44
+    );
+    for operation in &config.operation_shapes {
+        assert_eq!(
+            registry.operation_shape(&operation.name),
+            Some(operation.shape),
+            "{}",
+            operation.name
+        );
+    }
+
+    // Expanded llvm-tblgen records from all 23 SPIRV/IR/*Ops.td files.
+    let family_counts = [
+        22, 15, 2, 12, 34, 13, 6, 11, 4, 53, 4, 14, 9, 6, 5, 33, 5, 7, 2, 2, 31, 2, 14,
+    ];
+    assert_eq!(family_counts.iter().sum::<usize>(), 306);
+    assert_eq!(306 - config.operation_shapes.len(), 174);
+
+    for name in [
+        // Different-result comparisons and inferred mixed-type forms.
+        "spirv.FOrdEqual",
+        "spirv.Select",
+        "spirv.MatrixTimesScalar",
+        // Atomic/memory positions carry scopes, semantics, and optional operands.
+        "spirv.AtomicIAdd",
+        "spirv.Load",
+        "spirv.Store",
+        // Structured control flow and successors need dedicated roles.
+        "spirv.mlir.loop",
+        "spirv.mlir.selection",
+        "spirv.Branch",
+        "spirv.BranchConditional",
+        "spirv.Switch",
+        // Cooperative, image, grouped, and extension clauses remain custom.
+        "spirv.KHR.CooperativeMatrixLoad",
+        "spirv.ImageRead",
+        "spirv.GroupFAdd",
+        "spirv.EXT.EmitMeshTasks",
+        "spirv.module",
+        "spirv.func",
+    ] {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%pointer: !spirv.ptr<i32, Workgroup>, %value: i32, %condition: i1) {
+        %old = spirv.AtomicIAdd "Workgroup" "AcquireRelease" %pointer, %value : !spirv.ptr<i32, Workgroup>
+        spirv.mlir.selection {
+          ^bb0:
+            spirv.BranchConditional %condition, ^bb1, ^bb2
+          ^bb1:
+            spirv.Return
+          ^bb2:
+            spirv.Return
+        }
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|op| document.operation_name(op) == Some("test.after"))
+    );
+}
