@@ -39,6 +39,7 @@ It does not establish that the operation can be verified or rewritten.
 | MPI preset | Core plus 4 structurally exact forms among 15 MPI operations. |
 | NVGPU preset | Core plus 7 structurally exact forms among 24 NVGPU operations. |
 | NVVM preset | Core plus 71 structurally exact forms among 185 NVVM operations. |
+| OpenMP preset | Core plus 8 structurally exact forms among 54 OpenMP operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -73,7 +74,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -747,6 +748,54 @@ The dialect's `!nvvm.*` types and `#nvvm.*` attributes already parse as balanced
 opaque dialect values and need no descriptors. The preset adds no SM/version
 checks, memory effects, intrinsic selection, type inference, or other NVIDIA
 target semantics.
+
+OpenMP defines 54 concrete `omp.*` operations in LLVM 22.1. This inventory
+comes from the concrete `OpenMP_Op`, `OpenMPTransform_Op`, and
+`OpenMPTransformBase_Op` records in `OpenMPOps.td`, including the three loop
+transformation operations because they still define `omp.*` operations.
+OpenACC/OpenMP common interfaces and helpers, translation support, passes, and
+`transform.*` extensions do not add operations to this count.
+
+The preset registers eight conservative default forms. `omp.terminator`,
+`omp.taskyield`, and `omp.barrier` are attribute-only, no-operand operations.
+`omp.section`, `omp.workshare.loop_wrapper`, `omp.master`, and
+`omp.workdistribute` expose one plain region and its explicit block arguments;
+forms with an attribute dictionary after that region remain on recovery.
+`omp.threadprivate` exposes its one address operand and one result through the
+complete `input-type -> result-type` spelling. None of these forms has a
+successor or a symbol role. The region operations and control points have no
+results, while `omp.threadprivate` has no region.
+
+The remaining 46 operations stay on whole-operation recovery, grouped by the
+syntax that prevents a structurally exact registration:
+
+- Inferred-result and loop-transformation forms: `omp.new_cli`,
+  `omp.canonical_loop`, `omp.unroll_heuristic`, and `omp.tile`.
+- Clause-heavy, custom-bound, keyword-separated, or symbol-bearing region
+  forms: `omp.private`, `omp.parallel`, `omp.teams`, `omp.sections`,
+  `omp.single`, `omp.workshare`, `omp.loop_nest`, `omp.loop`, `omp.wsloop`,
+  `omp.simd`, `omp.distribute`, `omp.task`, `omp.taskloop`, `omp.taskgroup`,
+  `omp.target_data`, `omp.target`, `omp.critical`, `omp.ordered.region`,
+  `omp.atomic.update`, `omp.atomic.capture`, `omp.declare_mapper`,
+  `omp.declare_reduction`, and `omp.masked`. Their region arguments may be
+  inferred from private, reduction, map, or loop clauses, and several place
+  dictionaries after the final region.
+- Parenthesized operand/type clauses, depend/task clauses, mappings, and other
+  regionless custom forms: `omp.yield`, `omp.flush`, `omp.map.bounds`,
+  `omp.map.info`, `omp.target_enter_data`, `omp.target_exit_data`,
+  `omp.target_update`, `omp.critical.declare`, `omp.ordered`, `omp.taskwait`,
+  `omp.atomic.read`, `omp.atomic.write`, `omp.cancel`,
+  `omp.cancellation_point`, `omp.scan`, `omp.declare_mapper.info`, and
+  `omp.allocate_dir`.
+- Device allocation forms: `omp.target_allocmem` has handwritten syntax with
+  separated type-parameter and shape groups, while `omp.target_freemem` uses
+  an unparenthesized mixed operand-type list without an arrow. Treating either
+  as a shared or complete function signature would assign false roles.
+
+The `!omp.cli` and `!omp.map_bounds_ty` types and OpenMP attributes remain
+balanced opaque dialect values. The preset does not implement OpenMP clause
+semantics, private/reduction maps, offload mapping, symbol resolution, type or
+block-argument inference, verification, translation, or execution semantics.
 
 Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
 21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,

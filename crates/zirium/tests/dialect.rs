@@ -6009,6 +6009,220 @@ fn nvvm_preset_exposes_explicit_register_intrinsic_and_function_type_roles() {
 }
 
 #[test]
+fn omp_preset_exposes_plain_regions_control_points_and_threadprivate_types() {
+    assert!(DialectRegistry::preset_names().contains(&"omp"));
+    let registry = DialectRegistry::from_name("omp").unwrap();
+    let source = br#"module {
+      func.func @families(%address: !llvm.ptr) {
+        %tls = omp.threadprivate %address : !llvm.ptr -> !llvm.ptr
+        omp.master {
+          omp.barrier {tag = "control"}
+        }
+        omp.section {
+          omp.taskyield
+        }
+        omp.workshare.loop_wrapper {
+          omp.terminator
+        }
+        omp.workdistribute {
+          omp.terminator
+        }
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    let threadprivate = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("omp.threadprivate"))
+        .unwrap();
+    assert_eq!(document.operands(threadprivate).unwrap().len(), 1);
+    assert_eq!(document.result_types(threadprivate).unwrap().len(), 1);
+    assert_eq!(
+        document.type_spelling(document.function_type(threadprivate).unwrap()),
+        Some("(!llvm.ptr) -> !llvm.ptr")
+    );
+    assert!(
+        document
+            .operation_regions(threadprivate)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(document.successors(threadprivate).unwrap().is_empty());
+
+    for name in [
+        "omp.master",
+        "omp.section",
+        "omp.workshare.loop_wrapper",
+        "omp.workdistribute",
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert!(document.operands(operation).unwrap().is_empty(), "{name}");
+        assert!(
+            document.result_types(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert_eq!(
+            document.operation_regions(operation).unwrap().len(),
+            1,
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn omp_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("omp").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/omp.json")).unwrap();
+    let supported = [
+        ("omp.terminator", OperationShape::OptionalTypedOperands),
+        ("omp.section", OperationShape::RegionClauses),
+        ("omp.workshare.loop_wrapper", OperationShape::RegionClauses),
+        ("omp.taskyield", OperationShape::OptionalTypedOperands),
+        ("omp.master", OperationShape::RegionClauses),
+        ("omp.barrier", OperationShape::OptionalTypedOperands),
+        ("omp.threadprivate", OperationShape::UnaryOperand),
+        ("omp.workdistribute", OperationShape::RegionClauses),
+    ];
+    let recovery = [
+        "omp.private",
+        "omp.parallel",
+        "omp.teams",
+        "omp.sections",
+        "omp.single",
+        "omp.new_cli",
+        "omp.canonical_loop",
+        "omp.unroll_heuristic",
+        "omp.tile",
+        "omp.workshare",
+        "omp.loop_nest",
+        "omp.loop",
+        "omp.wsloop",
+        "omp.simd",
+        "omp.yield",
+        "omp.distribute",
+        "omp.task",
+        "omp.taskloop",
+        "omp.taskgroup",
+        "omp.flush",
+        "omp.map.bounds",
+        "omp.map.info",
+        "omp.target_data",
+        "omp.target_enter_data",
+        "omp.target_exit_data",
+        "omp.target_update",
+        "omp.target",
+        "omp.critical.declare",
+        "omp.critical",
+        "omp.ordered",
+        "omp.ordered.region",
+        "omp.taskwait",
+        "omp.atomic.read",
+        "omp.atomic.write",
+        "omp.atomic.update",
+        "omp.atomic.capture",
+        "omp.cancel",
+        "omp.cancellation_point",
+        "omp.scan",
+        "omp.declare_mapper",
+        "omp.declare_mapper.info",
+        "omp.declare_reduction",
+        "omp.masked",
+        "omp.allocate_dir",
+        "omp.target_allocmem",
+        "omp.target_freemem",
+    ];
+    assert_eq!(supported.len(), 8);
+    assert_eq!(supported.len() + recovery.len(), 54);
+    assert_eq!(config.operation_shapes.len(), supported.len());
+    for (name, shape) in supported {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn omp_clause_map_and_inferred_result_forms_recover_to_the_next_operation() {
+    let registry = DialectRegistry::from_name("omp").unwrap();
+    let source = br#"module {
+      func.func @gaps(%value: i32, %address: !llvm.ptr) {
+        %cli = omp.new_cli
+        omp.flush(%value : i32)
+        omp.atomic.write %address = %value : !llvm.ptr, i32
+        omp.target_freemem %value, %value : i32, i32
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count()
+            >= 4,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after"))
+    );
+}
+
+#[test]
+fn omp_opaque_types_and_attributes_need_no_dialect_descriptors() {
+    let registry = DialectRegistry::from_name("omp").unwrap();
+    let source = br#"module {
+      %cli = "test.source"() {kind = #omp<private>} : () -> !omp.cli
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.source"))
+        .unwrap();
+    assert_eq!(
+        document.type_spelling(document.result_types(operation).unwrap()[0]),
+        Some("!omp.cli")
+    );
+    assert!(
+        document
+            .attributes(operation)
+            .unwrap()
+            .any(|(name, value)| name == "kind" && value == "#omp<private>")
+    );
+}
+
+#[test]
 fn nvvm_preset_inventory_matches_expanded_llvm_22_1_structural_coverage() {
     let registry = DialectRegistry::from_name("nvvm").unwrap();
     let config = RegistryConfig::from_json(include_str!("../registries/nvvm.json")).unwrap();

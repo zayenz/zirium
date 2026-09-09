@@ -73,6 +73,7 @@ const PRESET_NAMES: &[&str] = &[
     "shard",
     "nvgpu",
     "nvvm",
+    "omp",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -107,6 +108,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "shard" => Some(include_str!("../../registries/shard.json")),
         "nvgpu" => Some(include_str!("../../registries/nvgpu.json")),
         "nvvm" => Some(include_str!("../../registries/nvvm.json")),
+        "omp" => Some(include_str!("../../registries/omp.json")),
         _ => None,
     }
 }

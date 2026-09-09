@@ -1,0 +1,20 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "omp.terminator", "shape": "optional_typed_operands"},
+    {"name": "omp.section", "shape": "region_clauses"},
+    {"name": "omp.workshare.loop_wrapper", "shape": "region_clauses"},
+    {"name": "omp.taskyield", "shape": "optional_typed_operands"},
+    {"name": "omp.master", "shape": "region_clauses"},
+    {"name": "omp.barrier", "shape": "optional_typed_operands"},
+    {"name": "omp.threadprivate", "shape": "unary_operand"},
+    {"name": "omp.workdistribute", "shape": "region_clauses"}
+  ],
+  "operation_formats": []
+}
