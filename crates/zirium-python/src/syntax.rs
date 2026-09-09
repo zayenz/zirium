@@ -489,6 +489,7 @@ pub(super) struct File {
     pub(super) parsed: Arc<ParsedFile>,
     pub(super) registry: RegistryKind,
     pub(super) line_starts: OnceLock<Vec<u32>>,
+    pub(super) operation_ids: OnceLock<Vec<NodeId>>,
 }
 
 #[pymethods]
@@ -600,17 +601,12 @@ impl File {
     }
     #[getter]
     fn operation_count(&self) -> usize {
-        self.parsed.syntax().file().operations().count()
+        self.operation_ids().len()
     }
     fn operation(&self, index: usize) -> PyResult<Operation> {
-        let id = self
-            .parsed
-            .syntax()
-            .file()
-            .operations()
-            .nth(index)
-            .ok_or_else(|| PyIndexError::new_err(format!("operation index out of range: {index}")))?
-            .id();
+        let id = self.operation_ids().get(index).copied().ok_or_else(|| {
+            PyIndexError::new_err(format!("operation index out of range: {index}"))
+        })?;
         Ok(Operation {
             file: self.parsed.clone(),
             id,
@@ -635,6 +631,17 @@ impl File {
 }
 
 impl File {
+    fn operation_ids(&self) -> &[NodeId] {
+        self.operation_ids.get_or_init(|| {
+            self.parsed
+                .syntax()
+                .file()
+                .operations()
+                .map(|operation| operation.id())
+                .collect()
+        })
+    }
+
     fn lower(
         &self,
         mode: LoweringMode,

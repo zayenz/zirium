@@ -94,6 +94,7 @@ fn parsed(bytes: Vec<u8>, limits: ParseLimits, registry: RegistryKind) -> PyResu
             parsed: Arc::new(parsed),
             registry,
             line_starts: OnceLock::new(),
+            operation_ids: OnceLock::new(),
         })
         .map_err(|error| match error {
             ParseFileError::ResourceLimit(_) => ResourceLimitError::new_err(error.to_string()),
