@@ -748,14 +748,7 @@ fn region_clauses(parser: &mut Parser<'_>, operation: &str) -> Result<bool, Comp
             if parser.region_shaped_body() || empty || region_count != 0 {
                 parser.region()?;
                 region_count += 1;
-                let continuation = matches!(parser.nth_nontrivia_text(0), Some("else" | "do"));
-                if continuation {
-                    parser.trivia()?;
-                    parser.bump()?;
-                    parser.trivia()?;
-                    continue;
-                }
-                if parser.nth_nontrivia(0) == Some(TokenKind::LBrace) {
+                if region_continuation_follows(parser) {
                     parser.trivia()?;
                     continue;
                 }
@@ -862,6 +855,78 @@ fn region_clauses(parser: &mut Parser<'_>, operation: &str) -> Result<bool, Comp
         parser.bump()?;
         parser.trivia()?;
     }
+}
+
+fn region_continuation_follows(parser: &Parser<'_>) -> bool {
+    let mut tokens = (parser.position..parser.tokens.len())
+        .filter(|index| !is_trivia(parser.tokens[*index].kind()));
+    let Some(first) = tokens.next() else {
+        return false;
+    };
+
+    let region = match parser.tokens[first].kind() {
+        TokenKind::LBrace => first,
+        TokenKind::Comma => match tokens.next() {
+            Some(index) if parser.tokens[index].kind() == TokenKind::LBrace => index,
+            _ => return false,
+        },
+        TokenKind::BareIdentifier => match parser.nth_nontrivia_text(0) {
+            Some("else" | "do" | "default") => match tokens.next() {
+                Some(index) if parser.tokens[index].kind() == TokenKind::LBrace => index,
+                _ => return false,
+            },
+            Some("case") => {
+                let Some(mut selector) = tokens.next() else {
+                    return false;
+                };
+                if parser.tokens[selector].kind() == TokenKind::Minus {
+                    let Some(value) = tokens.next() else {
+                        return false;
+                    };
+                    selector = value;
+                }
+                if !matches!(
+                    parser.tokens[selector].kind(),
+                    TokenKind::Integer | TokenKind::WideInteger
+                ) {
+                    return false;
+                }
+                match tokens.next() {
+                    Some(index) if parser.tokens[index].kind() == TokenKind::LBrace => index,
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        },
+        _ => return false,
+    };
+
+    balanced_region_follows(parser, region)
+}
+
+fn balanced_region_follows(parser: &Parser<'_>, start: usize) -> bool {
+    let mut delimiters = vec![TokenKind::RBrace];
+    for token in &parser.tokens[start + 1..] {
+        let current = token.kind();
+        if delimiters.last() == Some(&current) {
+            delimiters.pop();
+            if delimiters.is_empty() {
+                return true;
+            }
+        } else if let Some(close) = close_for(current) {
+            if delimiters.len() >= parser.limits.max_delimiter_depth {
+                return false;
+            }
+            delimiters.push(close);
+        } else if matches!(
+            current,
+            TokenKind::Greater | TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket
+        ) || current == TokenKind::Eof
+        {
+            return false;
+        }
+    }
+    false
 }
 
 fn named_delimited_rhs_contains_operand(parser: &Parser<'_>) -> bool {
