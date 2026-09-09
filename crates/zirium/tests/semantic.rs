@@ -1304,6 +1304,23 @@ fn aliases_diagnose_cycles_duplicates_wrong_kinds_and_unresolved_names() {
 }
 
 #[test]
+fn bare_namespaced_types_lower_as_opaque_dialect_types() {
+    let parsed =
+        ParsedFile::parse(b"%token = \"async.source\"() : () -> !async.token".to_vec()).unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.operations().next().unwrap();
+    let ty = document.result_types(operation).unwrap()[0];
+    assert!(matches!(
+        document.type_value(ty),
+        Some(TypeValue::Opaque(_))
+    ));
+    assert_eq!(document.type_spelling(ty), Some("!async.token"));
+}
+
+#[test]
 fn alias_expansion_limit_applies_to_each_alias_family() {
     let cases = [
         "!a = type !b\n!b = type i32\n%r = \"type.alias\"() : () -> !a",

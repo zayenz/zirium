@@ -784,7 +784,7 @@ fn resolve_type(
     stack: &mut AliasExpansionState,
 ) -> Result<TypeValue, String> {
     let spelling = spelling.trim();
-    if spelling.starts_with('!') && !spelling.contains('<') {
+    if spelling.starts_with('!') && !spelling.contains(['.', '<']) {
         let other = format!("#{}", &spelling[1..]);
         if attribute_aliases.contains_key(&other) {
             return Err(format!(
