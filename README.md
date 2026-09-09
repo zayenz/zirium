@@ -1,6 +1,6 @@
 # Zirium
 
-Zirium 0.0.8 is an experimental release. The API may change without a
+Zirium 0.0.9 is an experimental release. The API may change without a
 migration path.
 
 Zirium is a Rust library for reading, inspecting, transforming, and writing textual MLIR. It also provides typed Python bindings. The parser keeps the original bytes, including comments, whitespace, malformed syntax, and invalid UTF-8. A separate semantic layer provides a compact representation for verification and editing.

@@ -1,28 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.0.9
 
-- Add an opt-in release profiling test for query parsing and evaluation, with
-  direct-scan comparisons and separate document-width and dependency-depth
-  cases. Record the initial timings and the deep fixed-point scaling limit.
+Zirium 0.0.9 revises the experimental query language for composable selection,
+fragment editing, and intermediate output. Existing queries need updating;
+see the [query language reference](docs/query-language.md).
 
-- Reengineer the query language around an implicit input selection and output.
-  Empty programs print the input; `filter` replaces `select` and always tests
-  the current selection. `input` explicitly returns to the whole document.
-- Make `union`, `intersect`, and `except` infix operators on full selection
-  queries, with grouping and pipe precedence. Remove predicate-based set stages.
-- Make `closure` one dependency expansion step and add general
-  `fixpoint(query)` repetition until unchanged, with cycle detection.
+- Start from an implicit input selection and emit the final result implicitly.
+  Empty programs print the input. `filter` replaces `select` and always tests
+  the current selection; `input` returns to the whole document.
+- Combine complete selection queries with infix `union`, `intersect`, and
+  `except`. Pipes bind more tightly than set operators; parentheses group
+  queries. Predicate-based set stages are removed.
+- Make `closure` one dependency expansion step. Use `fixpoint(query)` to repeat
+  until unchanged, with cycle detection for nonconverging queries.
 - Make `root` expand the outermost selected operations and their descendants.
   Use `input | emit` for whole-document output after an edit.
-- Add `emit` as a pipeline tap, preserving intermediate output before later
-  edits. Omitted final emission is implicit; a trailing explicit emit is not
-  duplicated. The CLI buffers emissions until all inputs succeed.
+- Let `emit` print intermediate selections while passing them onward,
+  including inside fixed points. Emissions capture earlier edits without
+  being affected by later edits. The CLI buffers output until all inputs
+  succeed and avoids duplicating a trailing explicit emission.
 - Add boolean literals, `#` comments, and source carets in query diagnostics.
-  Rename string attribute equality to `string_attr_eq`.
+  Rename string attribute equality from `attr` to `string_attr_eq`.
 - Replace the Rust query's single-result evaluation API with an emission
-  callback. Query parsing exposes composable expressions rather than a
-  distinguished initial predicate.
+  callback and expose composable parsed expressions.
+- Add executable CLI examples, a query-language reference, and a compact
+  StableHLO decoder example.
+- Add opt-in release profiling for parsing and evaluation, with direct-scan
+  comparisons and width/depth scaling cases. Deep fixed-point closure still
+  has approximately quadratic chain-depth cost; the
+  [profiling baseline](docs/architecture/query-profiling.md) records this limit.
 
 ## 0.0.8
 

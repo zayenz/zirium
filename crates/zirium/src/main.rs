@@ -68,7 +68,6 @@ fn run() -> Result<(), String> {
     let query_text = if let Some(path) = program_path {
         fs::read_to_string(&path)
             .map_err(|error| format!("could not read program file {path}: {error}"))?
-            .to_owned()
     } else {
         inline_query.unwrap_or_default()
     };
