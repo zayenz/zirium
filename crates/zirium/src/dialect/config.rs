@@ -53,6 +53,7 @@ const PRESET_NAMES: &[&str] = &[
     "amx",
     "arith",
     "arm_neon",
+    "arm_sme",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -67,6 +68,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "amx" => Some(include_str!("../../registries/amx.json")),
         "arith" => Some(include_str!("../../registries/arith.json")),
         "arm_neon" => Some(include_str!("../../registries/arm_neon.json")),
+        "arm_sme" => Some(include_str!("../../registries/arm_sme.json")),
         _ => None,
     }
 }

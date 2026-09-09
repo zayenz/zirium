@@ -1,0 +1,15 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "arm_sme.get_tile", "shape": "variadic_operands"},
+    {"name": "arm_sme.zero", "shape": "variadic_operands"},
+    {"name": "arm_sme.copy_tile", "shape": "unary_operand"}
+  ],
+  "operation_formats": []
+}

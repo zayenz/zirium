@@ -21,6 +21,7 @@ It does not establish that the operation can be verified or rewritten.
 | AMX preset | Core plus 1 of the 5 AMX operations. |
 | Arith preset | Core plus default forms of 43 of the 51 Arith operations. |
 | ArmNeon preset | Core plus 1 of the 7 ArmNeon operations. |
+| ArmSME preset | Core plus 3 of the 68 ArmSME operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -53,8 +54,8 @@ definition. This surface was checked against StableHLO 1.20.1. The unversioned
 preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
-The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`, and
-`arm_neon` presets were checked against LLVM 22.1.0.
+The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
+`arm_neon`, and `arm_sme` presets were checked against LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
 its custom symbol/type form has no reusable structural signature. SCF registers
@@ -185,6 +186,34 @@ accumulator type from the result. The current variadic shape would therefore
 assign incorrect types to operands. ArmNeon defines no dialect types or
 attributes, and its operations have no regions or successors, so trailing
 region dictionaries do not apply.
+
+ArmSME registers 3 of its 68 concrete operations: `arm_sme.get_tile`,
+`arm_sme.zero`, and `arm_sme.copy_tile`. The first two expose their single
+tile result, and copy exposes its one same-typed tile operand and result.
+Ordinary attribute dictionaries are preserved. ArmSME defines no dialect
+types; its scalable vector tiles use the builtin vector type. Its three
+`#arm_sme.layout`, `#arm_sme.kind`, and `#arm_sme.type_size` enum attributes
+remain opaque dialect attributes, as they do without the preset.
+
+The other 22 high-level operations remain on whole-operation recovery. Tile
+loads and stores and the four slice operations interleave indexed operands,
+optional masks, and optional positional `layout` modifiers. Insert and extract
+use bracketed slice indices, optional `layout`, and `into` or `from` type
+trailers. `arm_sme.outerproduct` omits its derived result type and may add
+positional `kind`, accumulator, and mask clauses. The 14 widening outer-product
+operations have a structurally useful `into` trailer in their default form,
+but their optional accumulator type is inferred from the result and mask types
+are omitted. Registering their full forms with an existing shape would assign
+incorrect operand types. `arm_sme.streaming_vl` has a positional type-size
+attribute and an inferred `index` result, so it has no typed trailing boundary.
+
+The remaining 43 operations are LLVM intrinsic wrappers with generic quoted
+syntax and therefore need no custom-form registration. They comprise intrinsic
+zero, 16 MOP variants, 10 loads, 10 stores, `str`, two writes, two reads, and
+`cntsd`. None of ArmSME's operations have regions or successors, so
+post-region dictionaries do not apply. Declarative attribute dictionaries sit
+before typed trailers; `streaming_vl` instead permits a trailing dictionary,
+but still has no typed boundary from which to recover its inferred result.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

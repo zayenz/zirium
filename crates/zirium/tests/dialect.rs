@@ -813,6 +813,144 @@ fn arm_neon_preset_inventory_matches_llvm_22_1_structural_coverage() {
 }
 
 #[test]
+fn arm_sme_preset_exposes_result_only_and_same_typed_tile_forms() {
+    let registry = DialectRegistry::from_name("arm_sme").unwrap();
+    let source = br#"module {
+      func.func @tiles(%input: vector<[4]x[4]xf32>) -> vector<[4]x[4]xf32> {
+        %fresh = arm_sme.get_tile {origin = "fresh"} : vector<[4]x[4]xf32>
+        %zero = arm_sme.zero : vector<[4]x[4]xf32>
+        %copy = arm_sme.copy_tile %zero {tag = true} : vector<[4]x[4]xf32>
+        func.return %copy : vector<[4]x[4]xf32>
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for name in ["arm_sme.get_tile", "arm_sme.zero", "arm_sme.copy_tile"] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(document.result_types(operation).unwrap().len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(document.result_types(operation).unwrap()[0]),
+            Some("vector<[4]x[4]xf32>"),
+            "{name}"
+        );
+        assert!(document.operation_regions(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+    }
+
+    let copy = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("arm_sme.copy_tile"))
+        .unwrap();
+    assert_eq!(document.operands(copy).unwrap().len(), 1);
+    assert!(
+        document
+            .attributes(copy)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "true")
+    );
+}
+
+#[test]
+fn arm_sme_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("arm_sme").unwrap();
+    for name in ["arm_sme.get_tile", "arm_sme.zero"] {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::VariadicOperands),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        registry.operation_shape("arm_sme.copy_tile"),
+        Some(OperationShape::UnaryOperand)
+    );
+
+    let unsupported = [
+        "arm_sme.tile_load",
+        "arm_sme.tile_store",
+        "arm_sme.load_tile_slice",
+        "arm_sme.store_tile_slice",
+        "arm_sme.insert_tile_slice",
+        "arm_sme.extract_tile_slice",
+        "arm_sme.outerproduct",
+        "arm_sme.fmopa_2way",
+        "arm_sme.fmops_2way",
+        "arm_sme.smopa_2way",
+        "arm_sme.smops_2way",
+        "arm_sme.umopa_2way",
+        "arm_sme.umops_2way",
+        "arm_sme.smopa_4way",
+        "arm_sme.smops_4way",
+        "arm_sme.umopa_4way",
+        "arm_sme.umops_4way",
+        "arm_sme.sumopa_4way",
+        "arm_sme.sumops_4way",
+        "arm_sme.usmopa_4way",
+        "arm_sme.usmops_4way",
+        "arm_sme.streaming_vl",
+        "arm_sme.intr.zero",
+        "arm_sme.intr.mopa",
+        "arm_sme.intr.mops",
+        "arm_sme.intr.mopa.wide",
+        "arm_sme.intr.mops.wide",
+        "arm_sme.intr.smopa.wide",
+        "arm_sme.intr.smops.wide",
+        "arm_sme.intr.umopa.wide",
+        "arm_sme.intr.umops.wide",
+        "arm_sme.intr.sumopa.wide",
+        "arm_sme.intr.sumops.wide",
+        "arm_sme.intr.usmopa.wide",
+        "arm_sme.intr.usmops.wide",
+        "arm_sme.intr.smopa.za32",
+        "arm_sme.intr.umopa.za32",
+        "arm_sme.intr.smops.za32",
+        "arm_sme.intr.umops.za32",
+        "arm_sme.intr.ld1b.horiz",
+        "arm_sme.intr.ld1h.horiz",
+        "arm_sme.intr.ld1w.horiz",
+        "arm_sme.intr.ld1d.horiz",
+        "arm_sme.intr.ld1q.horiz",
+        "arm_sme.intr.ld1b.vert",
+        "arm_sme.intr.ld1h.vert",
+        "arm_sme.intr.ld1w.vert",
+        "arm_sme.intr.ld1d.vert",
+        "arm_sme.intr.ld1q.vert",
+        "arm_sme.intr.st1b.horiz",
+        "arm_sme.intr.st1h.horiz",
+        "arm_sme.intr.st1w.horiz",
+        "arm_sme.intr.st1d.horiz",
+        "arm_sme.intr.st1q.horiz",
+        "arm_sme.intr.st1b.vert",
+        "arm_sme.intr.st1h.vert",
+        "arm_sme.intr.st1w.vert",
+        "arm_sme.intr.st1d.vert",
+        "arm_sme.intr.st1q.vert",
+        "arm_sme.intr.str",
+        "arm_sme.intr.write.horiz",
+        "arm_sme.intr.write.vert",
+        "arm_sme.intr.read.horiz",
+        "arm_sme.intr.read.vert",
+        "arm_sme.intr.cntsd",
+    ];
+    assert_eq!(unsupported.len() + 3, 68);
+    for name in unsupported {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])
