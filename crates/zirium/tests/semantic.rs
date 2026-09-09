@@ -2,6 +2,7 @@ use std::{fs, path::PathBuf};
 use zirium::{
     dialect::DialectRegistry,
     parser::{ParseLimits, ParsedFile},
+    printer::PrintLayout,
     semantic::{
         LargeAttributeValue, LoweringMode, RetentionProfile, ValueId, ValueReference,
         lower_with_dialect_registry, lower_with_dialect_registry_and_retention,
@@ -1282,6 +1283,14 @@ fn aliases_diagnose_cycles_duplicates_wrong_kinds_and_unresolved_names() {
         ),
         ("#a = 1\n%r = \"x\"() : () -> !a", "has attribute kind"),
         ("%r = \"x\"() : () -> !missing", "unresolved type alias"),
+        (
+            "#a = #b\n#b = #a\n\"x\"() {value = #a} : () -> ()",
+            "cyclic attribute alias",
+        ),
+        (
+            "\"x\"() {value = #missing} : () -> ()",
+            "unresolved attribute alias",
+        ),
     ] {
         let parsed = ParsedFile::parse(source.as_bytes()).unwrap();
         let strict =
@@ -1318,6 +1327,49 @@ fn bare_namespaced_types_lower_as_opaque_dialect_types() {
         Some(TypeValue::Opaque(_))
     ));
     assert_eq!(document.type_spelling(ty), Some("!async.token"));
+}
+
+#[test]
+fn bare_namespaced_attributes_lower_as_opaque_dialect_attributes() {
+    let source = br#"#forward = #ub.poison
+%value = "test"() {direct = #ub.poison, same = #ub.poison, nested = {value = #ub.poison}, alias = #forward} : () -> tensor<1xi32, #ub.poison>"#;
+    let parsed = ParsedFile::parse(source.as_slice()).unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.operations().next().unwrap();
+
+    let direct = document.attribute_id(operation, "direct").unwrap();
+    assert_eq!(direct, document.attribute_id(operation, "same").unwrap());
+    assert!(matches!(
+        document.attribute_value(direct),
+        Some(AttributeValue::Opaque(value)) if value.as_ref() == b"#ub.poison"
+    ));
+    assert_eq!(
+        document.attribute_spelling_value(direct),
+        Some("#ub.poison")
+    );
+    assert!(matches!(
+        document.attribute_value(document.attribute_id(operation, "alias").unwrap()),
+        Some(AttributeValue::Opaque(value)) if value.as_ref() == b"#ub.poison"
+    ));
+    assert!(matches!(
+        document.attribute_value(document.attribute_id(operation, "nested").unwrap()),
+        Some(AttributeValue::Dictionary(entries))
+            if matches!(entries.as_slice(), [(name, AttributeValue::Opaque(value))]
+                if name == "value" && value.as_ref() == b"#ub.poison")
+    ));
+    let ty = document.result_types(operation).unwrap()[0];
+    assert!(matches!(
+        document.type_value(ty),
+        Some(TypeValue::Tensor { encoding: Some(encoding), .. })
+            if matches!(encoding.as_ref(), AttributeValue::Opaque(value)
+                if value.as_ref() == b"#ub.poison")
+    ));
+    let mut printed = String::new();
+    document.print(&mut printed, PrintLayout::Compact).unwrap();
+    assert!(printed.contains("#ub.poison"), "{printed}");
 }
 
 #[test]

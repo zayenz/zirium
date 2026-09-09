@@ -998,7 +998,7 @@ fn resolve_attribute(
             elements,
         });
     }
-    if spelling.starts_with('#') && !spelling.contains('<') {
+    if spelling.starts_with('#') && !spelling.contains(['.', '<']) {
         let other = format!("!{}", &spelling[1..]);
         if type_aliases.contains_key(&other) {
             return Err(format!(
@@ -1070,16 +1070,18 @@ fn resolve_attribute(
         return Ok(AttributeValue::Float(compact(spelling)));
     }
     if spelling.starts_with('#') {
-        let Some(open) = spelling.find('<') else {
-            return Err(format!("malformed opaque attribute `{spelling}`"));
-        };
-        let Some(close) = matching_delimiter(&spelling[open + 1..], '<', '>') else {
-            return Err(format!("malformed opaque attribute `{spelling}`"));
-        };
-        if !spelling[open + 1 + close + 1..].trim().is_empty() {
-            return Err(format!(
-                "trailing garbage after opaque attribute `{spelling}`"
-            ));
+        if spelling.contains('<') {
+            let Some(open) = spelling.find('<') else {
+                unreachable!()
+            };
+            let Some(close) = matching_delimiter(&spelling[open + 1..], '<', '>') else {
+                return Err(format!("malformed opaque attribute `{spelling}`"));
+            };
+            if !spelling[open + 1 + close + 1..].trim().is_empty() {
+                return Err(format!(
+                    "trailing garbage after opaque attribute `{spelling}`"
+                ));
+            }
         }
         return Ok(AttributeValue::Opaque(Arc::from(spelling.as_bytes())));
     }
