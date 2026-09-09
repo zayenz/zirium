@@ -75,6 +75,11 @@ impl OperationShape {
 #[pymethods]
 impl DialectRegistryHandle {
     #[staticmethod]
+    fn preset_names<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, DialectRegistry::preset_names())
+    }
+
+    #[staticmethod]
     fn from_name(name: &str) -> PyResult<Self> {
         let registry = DialectRegistry::from_name(name).map_err(py_error)?;
         Ok(Self {

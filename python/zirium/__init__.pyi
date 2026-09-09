@@ -71,6 +71,8 @@ class DialectRegistry:
     """Dialect syntax and semantic rules retained through parse and lower."""
 
     @staticmethod
+    def preset_names() -> tuple[str, ...]: ...
+    @staticmethod
     def from_name(name: str) -> DialectRegistry: ...
     @staticmethod
     def from_config(

@@ -26,9 +26,11 @@ pub struct OperationShapeConfig {
     pub shape: OperationShape,
 }
 
+const PRESET_NAMES: &[&str] = &["stablehlo"];
+
 fn preset_json(name: &str) -> Option<&'static str> {
     match name {
-        "stablehlo" => Some(include_str!("../../registries/stablehlo.json")),
+        name if name == PRESET_NAMES[0] => Some(include_str!("../../registries/stablehlo.json")),
         _ => None,
     }
 }
@@ -176,6 +178,11 @@ impl std::error::Error for RegistryConfigError {
 }
 
 impl DialectRegistry {
+    /// Names of the registry presets bundled with this Zirium release.
+    pub const fn preset_names() -> &'static [&'static str] {
+        PRESET_NAMES
+    }
+
     /// Builds one registry preset bundled with this Zirium release.
     pub fn from_name(name: &str) -> Result<Self, DeclarativeRegistryError> {
         RegistryConfig {

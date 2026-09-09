@@ -44,6 +44,7 @@ def test_file_dict_and_pydantic_registry_agree():
 
 
 def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
+    assert zirium.DialectRegistry.preset_names() == ("stablehlo",)
     config = {"presets": ["stablehlo"], "builtins": [], "operation_shapes": []}
     path = tmp_path / "stablehlo.json"
     path.write_text(json.dumps(config))
