@@ -14,7 +14,7 @@ It does not establish that the operation can be verified or rewritten.
 | StableHLO preset | Core plus 96 common StableHLO custom forms. |
 | TOSA preset | Core plus 93 TOSA tensor, shape, control-flow, and utility forms. |
 | SCF preset | Core plus all 12 SCF operations, including structured regions and loop header bindings. |
-| Linalg preset | Core plus 97 core, structured, and generated named Linalg operations. |
+| Linalg preset | Core plus all 99 core, structured, relayout, and generated named Linalg operations. |
 | OpenACC preset | Core plus 35 mapping, bounds-accessor, region, and terminator forms. |
 | Affine preset | Core plus 4 of the 16 Affine operations. |
 | AMDGPU preset | Core plus 4 of the 33 AMDGPU operations. |
@@ -71,10 +71,11 @@ LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
 its custom symbol/type form has no reusable structural signature. SCF registers
-all 12 operations. Linalg registers its 16 core/structured operations and 81
-generated named operations. Tensor-result named Linalg forms expose their
-trailing result types; buffer forms without a result signature remain usable
-through recovery where their custom spelling has no safe structural boundary.
+all 12 operations. Linalg registers all 99 operations: its 16 core/structured
+operations, both relayout operations, and 81 generated named operations.
+Tensor-result forms expose their trailing result types; buffer forms without a
+result signature remain usable through recovery where their custom spelling has
+no safe structural boundary.
 
 OpenACC registers 35 of its 54 operations. This includes all 16 data-entry
 mapping operations, the four bounds accessors, 12 single-region constructs,

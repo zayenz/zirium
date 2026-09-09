@@ -261,7 +261,7 @@ fn scf_preset_exposes_regions_and_header_block_arguments() {
 }
 
 #[test]
-fn linalg_preset_keeps_generic_regions_and_explicit_block_arguments() {
+fn linalg_preset_keeps_regions_block_arguments_and_relayout_operands() {
     let registry = DialectRegistry::from_name("linalg").unwrap();
     let source = br#"module {
       func.func @kernel(%input: memref<4xf32>, %output: memref<4xf32>) {
@@ -274,6 +274,13 @@ fn linalg_preset_keeps_generic_regions_and_explicit_block_arguments() {
       func.func @tensor_copy(%input: tensor<4xf32>, %init: tensor<4xf32>) -> tensor<4xf32> {
         %result = linalg.copy ins(%input : tensor<4xf32>) outs(%init : tensor<4xf32>) -> tensor<4xf32>
         func.return %result : tensor<4xf32>
+      }
+      func.func @relayout(%input: tensor<7x16xf32>, %packed: tensor<4x16x2xf32>, %tile: index, %pad: f32) -> tensor<7x16xf32> {
+        %dynamic_pack = linalg.pack %input padding_value(%pad : f32) inner_dims_pos = [0] inner_tiles = [%tile] into %packed : tensor<7x16xf32> -> tensor<4x16x2xf32>
+        %static_pack = linalg.pack %input outer_dims_perm = [0, 1] inner_dims_pos = [0] inner_tiles = [2] into %packed : tensor<7x16xf32> -> tensor<4x16x2xf32>
+        %static_unpack = linalg.unpack %dynamic_pack outer_dims_perm = [0, 1] inner_dims_pos = [0] inner_tiles = [2] into %input : tensor<4x16x2xf32> -> tensor<7x16xf32>
+        %dynamic_unpack = linalg.unpack %static_pack inner_dims_pos = [0] inner_tiles = [%tile] into %input : tensor<4x16x2xf32> -> tensor<7x16xf32>
+        func.return %dynamic_unpack : tensor<7x16xf32>
       }
     }"#;
     let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
@@ -314,6 +321,35 @@ fn linalg_preset_keeps_generic_regions_and_explicit_block_arguments() {
         .unwrap();
     assert_eq!(document.operands(copy).unwrap().len(), 2);
     assert_eq!(document.result_types(copy).unwrap().len(), 1);
+    let packs = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("linalg.pack"))
+        .collect::<Vec<_>>();
+    assert_eq!(packs.len(), 2);
+    assert_eq!(document.operands(packs[0]).unwrap().len(), 4);
+    assert_eq!(document.operands(packs[1]).unwrap().len(), 2);
+    let unpacks = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("linalg.unpack"))
+        .collect::<Vec<_>>();
+    assert_eq!(unpacks.len(), 2);
+    assert_eq!(document.operands(unpacks[0]).unwrap().len(), 2);
+    assert_eq!(document.operands(unpacks[1]).unwrap().len(), 3);
+    for operation in packs.into_iter().chain(unpacks) {
+        assert!(document.attribute_id(operation, "inner_dims_pos").is_some());
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            document.type_spelling(results[0]),
+            Some(
+                if document.operation_name(operation) == Some("linalg.pack") {
+                    "tensor<4x16x2xf32>"
+                } else {
+                    "tensor<7x16xf32>"
+                }
+            )
+        );
+    }
 }
 
 #[test]
