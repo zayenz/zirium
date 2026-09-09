@@ -1034,7 +1034,8 @@ fn split_top_level_keyword<'a>(value: &'a str, separator: &str) -> Option<(&'a s
         }
         match byte {
             b'(' | b'[' | b'{' | b'<' => depth += 1,
-            b')' | b']' | b'}' | b'>' => depth -= 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'>' if index == 0 || bytes[index - 1] != b'-' => depth -= 1,
             _ => {}
         }
         if depth == 0

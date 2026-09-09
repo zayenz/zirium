@@ -58,6 +58,42 @@ fn into_result_separator_parses_and_lowers_widening_operands() {
 }
 
 #[test]
+fn conversion_separator_follows_nested_affine_arrow_in_operand_type() {
+    let registry = registry("$operands attr-dict `:` type($operands) `to` type($results)")
+        .build()
+        .unwrap();
+    let source = br#""builtin.module"() ({
+^bb0:
+  %input = "test.source"() : () -> !test.opaque<affine_map<(d0) -> (d0)>>
+  %result = test.widen %input : !test.opaque<affine_map<(d0) -> (d0)>> to !test.opaque<affine_map<(d0) -> (d0 + 1)>>
+}) : () -> ()"#;
+
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.widen"))
+        .unwrap();
+
+    assert_eq!(
+        document
+            .result_types(operation)
+            .unwrap()
+            .iter()
+            .map(|ty| document.type_spelling(*ty).unwrap())
+            .collect::<Vec<_>>(),
+        ["!test.opaque<affine_map<(d0) -> (d0 + 1)>>"]
+    );
+}
+
+#[test]
 fn into_and_to_are_distinct_format_literals() {
     let to = registry("$operands attr-dict `:` type($operands) `to` type($results)");
     let into = registry(INTO_FORMAT);
