@@ -207,5 +207,6 @@ other syntax errors and semantic lowering diagnostics. Whole-document output
 and semantic mutations require a complete document. `closure` additionally
 requires registered reference semantics; configuring a func-like or call-like
 shape alone does not supply vendor dependency semantics. See
-[CLI examples](cli-examples.md) for the query language and selected-fragment
-output contract.
+the [query language reference](query-language.md) for the query syntax and
+selected-fragment output contract, or the [CLI examples](cli-examples.md) for
+worked commands.

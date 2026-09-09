@@ -25,8 +25,10 @@ For example, this selects every `arith.addi` operation in `input.mlir`:
 zirium 'select(op("arith.addi"))' input.mlir
 ```
 
-The [CLI examples](https://github.com/zayenz/zirium/blob/main/docs/cli-examples.md)
-cover more queries, dependency slices, and edits.
+The [query language reference](https://github.com/zayenz/zirium/blob/main/docs/query-language.md)
+lists every predicate and pipeline stage. The
+[CLI examples](https://github.com/zayenz/zirium/blob/main/docs/cli-examples.md)
+show complete queries, dependency slices, and edits.
 
 You can also run the binary from a source checkout with Cargo:
 
