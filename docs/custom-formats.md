@@ -28,6 +28,7 @@ It does not establish that the operation can be verified or rewritten.
 | CF preset | Core plus `cf.br` and `cf.cond_br`. |
 | Complex preset | Core plus default forms of 21 of the 29 Complex operations. |
 | DLTI preset | Core only; all 6 DLTI attributes remain opaque dialect values. |
+| EmitC preset | Core plus 20 of the 45 EmitC custom-form operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -61,7 +62,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, and `dlti` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, and `emitc` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -349,6 +350,42 @@ balanced spellings as opaque dialect attributes, so the `dlti` preset adds core
 syntax without registering operations or claiming attribute verification.
 `transform.dlti.query` belongs to the Transform dialect and is outside this
 preset.
+
+EmitC defines 49 concrete operations in LLVM 22.1. Four of them use only the
+generic quoted operation form: `emitc.constant`, `emitc.variable`,
+`emitc.member`, and `emitc.member_of_ptr`. They need no custom registration.
+The preset registers 20 of the remaining 45 custom forms. Thirteen ordinary
+unary or binary operators (`emitc.add`, the six `emitc.bitwise_*` operations,
+`emitc.div`, `emitc.mul`, `emitc.rem`, `emitc.sub`, `emitc.unary_minus`, and
+`emitc.unary_plus`) expose their complete functional type. `emitc.cast` also
+exposes its source and destination types. `emitc.literal` retains its string
+value and result type, while `emitc.call` retains its symbol callee, operands,
+and complete function type. `emitc.subscript` retains the container and index
+operands plus its complete function type. `emitc.return` and `emitc.yield`
+expose their optional typed operand without inventing a result.
+
+The ordinary public spelling of `emitc.func` is registered as a function-like
+form, including its signature, argument and result dictionaries, operation
+attributes, and optional body. Visibility-prefixed variants such as
+`emitc.func private` remain on whole-operation recovery. A leading attribute
+dictionary before a typed `emitc.return` or `emitc.yield` operand also remains
+on recovery; the attribute-free forms and dictionary-only zero-operand forms
+are covered.
+
+The other 25 custom forms remain on whole-operation recovery: `emitc.file`,
+`emitc.address_of`, `emitc.apply`, `emitc.call_opaque`, `emitc.cmp`,
+`emitc.dereference`, `emitc.expression`, `emitc.for`, `emitc.declare_func`,
+`emitc.include`, the three `emitc.logical_*` operations, `emitc.load`,
+`emitc.conditional`, `emitc.global`, `emitc.get_global`, `emitc.verbatim`,
+`emitc.assign`, `emitc.if`, `emitc.switch`, `emitc.class`, `emitc.field`,
+`emitc.get_field`, and `emitc.do`. Their syntax either infers an operand or
+result type, carries a required positional attribute or symbol outside the
+current semantic captures, or uses operation-specific region structure.
+Registering a nearby broad shape would lose a required role or assign an
+incorrect type. EmitC defines seven dialect types and two attributes; their
+balanced `!emitc.*` and `#emitc.*` spellings already remain lossless opaque
+values. None of the operations has successors. The only registered region is
+the ordinary `emitc.func` body; all operation-specific region forms recover.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

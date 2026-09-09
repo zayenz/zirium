@@ -1664,6 +1664,222 @@ fn complex_preset_inventory_and_recovery_match_llvm_22_1() {
 }
 
 #[test]
+fn emitc_preset_exposes_spelled_values_types_symbols_and_function_regions() {
+    let registry = DialectRegistry::from_name("emitc").unwrap();
+    let source = br#"module {
+      emitc.func @calculate(%lhs: i32, %rhs: i32, %array: !emitc.array<4xf32>, %index: index) -> i64 attributes {tag = "function"} {
+        %sum = emitc.add %lhs, %rhs {tag = "binary"} : (i32, i32) -> i32
+        %wide = emitc.cast %sum {tag = "cast"} : i32 to i64
+        %literal = emitc.literal "M_PI" {tag = "literal"} : f32
+        %element = emitc.subscript %array[%index] {tag = "subscript"} : (!emitc.array<4xf32>, index) -> !emitc.lvalue<f32>
+        %called = emitc.call @callee(%wide) {tag = "call"} : (i64) -> i64
+        %constant = "emitc.constant"() {value = #emitc.opaque<"VALUE">} : () -> !emitc.opaque<"T">
+        emitc.return %called : i64
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    let function = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("emitc.func"))
+        .unwrap();
+    assert_eq!(
+        document.operation_symbol_name(function).as_deref(),
+        Some("calculate")
+    );
+    assert_eq!(document.operation_regions(function).unwrap().len(), 1);
+
+    for (name, operand_count, result_type, tag) in [
+        ("emitc.add", 2, "i32", "\"binary\""),
+        ("emitc.cast", 1, "i64", "\"cast\""),
+        ("emitc.call", 1, "i64", "\"call\""),
+        ("emitc.subscript", 2, "!emitc.lvalue<f32>", "\"subscript\""),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operand_count,
+            "{name}"
+        );
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(results[0]),
+            Some(result_type),
+            "{name}"
+        );
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute, value)| { attribute == "tag" && value == tag })
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+
+    let call = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("emitc.call"))
+        .unwrap();
+    assert_eq!(document.operation_callee(call).as_deref(), Some("callee"));
+
+    let literal = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("emitc.literal"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(literal)
+            .unwrap()
+            .any(|(name, value)| { name == "value" && value == "\"M_PI\"" })
+    );
+    let results = document.result_types(literal).unwrap();
+    assert_eq!(document.type_spelling(results[0]), Some("f32"));
+
+    let return_op = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("emitc.return"))
+        .unwrap();
+    assert_eq!(document.operands(return_op).unwrap().len(), 1);
+    assert!(document.result_types(return_op).unwrap().is_empty());
+}
+
+#[test]
+fn emitc_preset_inventory_and_recovery_match_llvm_22_1() {
+    assert!(DialectRegistry::preset_names().contains(&"emitc"));
+    let registry = DialectRegistry::from_name("emitc").unwrap();
+    let binary = [
+        "emitc.add",
+        "emitc.bitwise_and",
+        "emitc.bitwise_left_shift",
+        "emitc.bitwise_or",
+        "emitc.bitwise_right_shift",
+        "emitc.bitwise_xor",
+        "emitc.div",
+        "emitc.mul",
+        "emitc.rem",
+        "emitc.sub",
+    ];
+    let unary = [
+        "emitc.bitwise_not",
+        "emitc.cast",
+        "emitc.unary_minus",
+        "emitc.unary_plus",
+    ];
+    for name in binary {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::BinaryOperands),
+            "{name}"
+        );
+    }
+    for name in unary {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::UnaryOperand),
+            "{name}"
+        );
+    }
+    for (name, shape) in [
+        ("emitc.call", OperationShape::CallLike),
+        ("emitc.func", OperationShape::FuncLike),
+        ("emitc.return", OperationShape::OptionalTypedOperands),
+        ("emitc.literal", OperationShape::LiteralAttribute),
+        ("emitc.yield", OperationShape::OptionalTypedOperands),
+        ("emitc.subscript", OperationShape::OperandClauses),
+    ] {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+
+    let unsupported_custom = [
+        "emitc.file",
+        "emitc.address_of",
+        "emitc.apply",
+        "emitc.call_opaque",
+        "emitc.cmp",
+        "emitc.dereference",
+        "emitc.expression",
+        "emitc.for",
+        "emitc.declare_func",
+        "emitc.include",
+        "emitc.logical_and",
+        "emitc.logical_not",
+        "emitc.logical_or",
+        "emitc.load",
+        "emitc.conditional",
+        "emitc.global",
+        "emitc.get_global",
+        "emitc.verbatim",
+        "emitc.assign",
+        "emitc.if",
+        "emitc.switch",
+        "emitc.class",
+        "emitc.field",
+        "emitc.get_field",
+        "emitc.do",
+    ];
+    let generic_only = [
+        "emitc.constant",
+        "emitc.variable",
+        "emitc.member",
+        "emitc.member_of_ptr",
+    ];
+    assert_eq!(binary.len() + unary.len() + 6, 20);
+    assert_eq!(
+        binary.len() + unary.len() + 6 + unsupported_custom.len(),
+        45
+    );
+    assert_eq!(45 + generic_only.len(), 49);
+    for name in unsupported_custom.into_iter().chain(generic_only) {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%reference: !emitc.lvalue<i32>, %lhs: i32, %rhs: i32) {
+        %address = emitc.address_of %reference : !emitc.lvalue<i32>
+        %logical = emitc.logical_and %lhs, %rhs : i32, i32
+        %call = emitc.call_opaque "callee"(%lhs) : (i32) -> i32
+        emitc.if %logical {
+          emitc.yield
+        }
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| { diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation })
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(
+        document
+            .operations()
+            .any(|operation| { document.operation_name(operation) == Some("test.after") })
+    );
+}
+
+#[test]
 fn dlti_preset_preserves_llvm_22_1_attributes_without_claiming_operations() {
     let registry = DialectRegistry::from_name("dlti").unwrap();
     assert_eq!(registry.operation_names().count(), 4);

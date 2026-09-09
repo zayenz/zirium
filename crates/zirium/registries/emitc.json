@@ -1,0 +1,32 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "emitc.add", "shape": "binary_operands"},
+    {"name": "emitc.bitwise_and", "shape": "binary_operands"},
+    {"name": "emitc.bitwise_left_shift", "shape": "binary_operands"},
+    {"name": "emitc.bitwise_not", "shape": "unary_operand"},
+    {"name": "emitc.bitwise_or", "shape": "binary_operands"},
+    {"name": "emitc.bitwise_right_shift", "shape": "binary_operands"},
+    {"name": "emitc.bitwise_xor", "shape": "binary_operands"},
+    {"name": "emitc.call", "shape": "call_like"},
+    {"name": "emitc.cast", "shape": "unary_operand"},
+    {"name": "emitc.div", "shape": "binary_operands"},
+    {"name": "emitc.func", "shape": "func_like"},
+    {"name": "emitc.return", "shape": "optional_typed_operands"},
+    {"name": "emitc.literal", "shape": "literal_attribute"},
+    {"name": "emitc.mul", "shape": "binary_operands"},
+    {"name": "emitc.rem", "shape": "binary_operands"},
+    {"name": "emitc.sub", "shape": "binary_operands"},
+    {"name": "emitc.unary_minus", "shape": "unary_operand"},
+    {"name": "emitc.unary_plus", "shape": "unary_operand"},
+    {"name": "emitc.yield", "shape": "optional_typed_operands"},
+    {"name": "emitc.subscript", "shape": "operand_clauses"}
+  ],
+  "operation_formats": []
+}
