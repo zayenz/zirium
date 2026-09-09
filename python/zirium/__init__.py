@@ -1,5 +1,7 @@
 """Lossless MLIR syntax and mutable semantic documents backed by Zirium."""
 
+from importlib.metadata import version as _distribution_version
+
 from ._zirium import (  # ty: ignore[unresolved-import]
     AttributeSpecHandle,
     Diagnostic,
@@ -37,6 +39,8 @@ from ._zirium import (  # ty: ignore[unresolved-import]
 )
 from .config import OperationShapeConfig, RegistryConfig
 
+__version__ = _distribution_version("zirium")
+
 __all__ = [
     "AttributeSpecHandle",
     "Diagnostic",
@@ -70,6 +74,7 @@ __all__ = [
     "SyntaxOperationTable",
     "SyntaxTable",
     "Token",
+    "__version__",
     "parse_bytes",
     "parse_file",
     "parse_text",

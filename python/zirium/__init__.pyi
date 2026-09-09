@@ -12,6 +12,8 @@ from .config import (
     RegistryConfig as RegistryConfig,
 )
 
+__version__: str
+
 _TextRange: TypeAlias = tuple[int, int]
 _Path: TypeAlias = str | PathLike[str]
 _Retention: TypeAlias = Literal[

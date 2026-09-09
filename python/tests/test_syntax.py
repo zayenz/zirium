@@ -1,4 +1,5 @@
 from collections import UserDict
+from importlib.metadata import version
 from pathlib import Path
 from types import MappingProxyType
 
@@ -6,6 +7,10 @@ import pytest
 import zirium
 
 VALID = b'"builtin.module"() : () -> ()\n'
+
+
+def test_package_exposes_distribution_version():
+    assert zirium.__version__ == version("zirium")
 
 
 def test_keyword_resource_limits_are_lossless_except_file_size(tmp_path: Path):
