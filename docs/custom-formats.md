@@ -305,7 +305,7 @@ The CLI and Python accept the same complete registry configuration:
     {"name": "vendor.invoke", "shape": "call_like"}
   ],
   "operation_formats": [
-    {"name": "vendor.convert", "format": "$operands attr-dict `:` type($operands) `to` type($results)"}
+    {"name": "vendor.widen", "format": "$operands attr-dict `:` type($operands) `into` type($results)"}
   ]
 }
 ```
@@ -321,9 +321,12 @@ operands before a trailing type signature. `region_clauses` additionally parses
 operation regions and their block arguments.
 
 `operation_formats` describes the order of operands or a literal value, an
-optional attribute dictionary, fixed `:` or `to` tokens, and type captures.
-The registry checks each description when it is constructed. The typed-literal
-form is ``$value `:` type($value) attr-dict `:` type($result)``.
+optional attribute dictionary, fixed tokens, and type captures. Operand forms
+accept `to` or `into` as the result-type separator; the JSON example above uses
+`into`. The supported literals are `:`, `to`, and `into`; other ODS format
+literals are rejected. The registry checks each description when it is
+constructed. The typed-literal form is
+``$value `:` type($value) attr-dict `:` type($result)``.
 
 This configuration replaces the caller's default registry.
 
