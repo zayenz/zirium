@@ -1,0 +1,22 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "gpu.subgroup_id", "shape": "variadic_operands"},
+    {"name": "gpu.num_subgroups", "shape": "variadic_operands"},
+    {"name": "gpu.subgroup_size", "shape": "variadic_operands"},
+    {"name": "gpu.dynamic_shared_memory", "shape": "variadic_operands"},
+    {"name": "gpu.return", "shape": "optional_typed_operands"},
+    {"name": "gpu.terminator", "shape": "optional_typed_operands"},
+    {"name": "gpu.yield", "shape": "optional_typed_operands"},
+    {"name": "gpu.barrier", "shape": "optional_typed_operands"},
+    {"name": "gpu.host_register", "shape": "optional_typed_operands"},
+    {"name": "gpu.host_unregister", "shape": "optional_typed_operands"}
+  ],
+  "operation_formats": []
+}

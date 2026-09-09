@@ -1983,6 +1983,202 @@ fn func_preset_preserves_exact_semantics_and_recovers_the_two_remaining_ops() {
 }
 
 #[test]
+fn gpu_preset_exposes_only_explicit_operand_and_result_types() {
+    assert!(DialectRegistry::preset_names().contains(&"gpu"));
+    let registry = DialectRegistry::from_name("gpu").unwrap();
+    let source = br#"module {
+      func.func @host(%buffer: memref<*xf32>, %value: i32) {
+        gpu.barrier {tag = "barrier"}
+        %subgroup = gpu.subgroup_id {tag = "id"} : index
+        %count = gpu.num_subgroups : index
+        %size = gpu.subgroup_size : index
+        %shared = gpu.dynamic_shared_memory {tag = "shared"} : memref<?xi8, #gpu.address_space<workgroup>>
+        gpu.host_register %buffer {tag = "register"} : memref<*xf32>
+        gpu.host_unregister %buffer : memref<*xf32>
+        gpu.yield %value : i32
+        gpu.return
+      }
+      func.func @terminator() {
+        gpu.terminator
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, expected_type) in [
+        ("gpu.subgroup_id", "index"),
+        ("gpu.num_subgroups", "index"),
+        ("gpu.subgroup_size", "index"),
+        (
+            "gpu.dynamic_shared_memory",
+            "memref<?xi8, #gpu.address_space<workgroup>>",
+        ),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert!(document.operands(operation).unwrap().is_empty(), "{name}");
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(results[0]),
+            Some(expected_type),
+            "{name}"
+        );
+    }
+
+    for name in ["gpu.host_register", "gpu.host_unregister"] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(document.operands(operation).unwrap().len(), 1, "{name}");
+        assert!(
+            document.result_types(operation).unwrap().is_empty(),
+            "{name}"
+        );
+    }
+    for name in ["gpu.return", "gpu.terminator", "gpu.yield", "gpu.barrier"] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert!(
+            document.result_types(operation).unwrap().is_empty(),
+            "{name}"
+        );
+    }
+
+    let yield_op = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("gpu.yield"))
+        .unwrap();
+    assert_eq!(document.operands(yield_op).unwrap().len(), 1);
+    let shared = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("gpu.dynamic_shared_memory"))
+        .unwrap();
+    assert!(document.attribute_id(shared, "tag").is_some());
+}
+
+#[test]
+fn gpu_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("gpu").unwrap();
+    let supported = [
+        ("gpu.subgroup_id", OperationShape::VariadicOperands),
+        ("gpu.num_subgroups", OperationShape::VariadicOperands),
+        ("gpu.subgroup_size", OperationShape::VariadicOperands),
+        (
+            "gpu.dynamic_shared_memory",
+            OperationShape::VariadicOperands,
+        ),
+        ("gpu.return", OperationShape::OptionalTypedOperands),
+        ("gpu.terminator", OperationShape::OptionalTypedOperands),
+        ("gpu.yield", OperationShape::OptionalTypedOperands),
+        ("gpu.barrier", OperationShape::OptionalTypedOperands),
+        ("gpu.host_register", OperationShape::OptionalTypedOperands),
+        ("gpu.host_unregister", OperationShape::OptionalTypedOperands),
+    ];
+    for (name, shape) in supported {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+
+    let unsupported = [
+        "gpu.cluster_dim",
+        "gpu.cluster_dim_blocks",
+        "gpu.cluster_id",
+        "gpu.cluster_block_id",
+        "gpu.block_dim",
+        "gpu.block_id",
+        "gpu.grid_dim",
+        "gpu.thread_id",
+        "gpu.lane_id",
+        "gpu.global_id",
+        "gpu.func",
+        "gpu.launch_func",
+        "gpu.launch",
+        "gpu.printf",
+        "gpu.all_reduce",
+        "gpu.subgroup_reduce",
+        "gpu.shuffle",
+        "gpu.rotate",
+        "gpu.module",
+        "gpu.binary",
+        "gpu.wait",
+        "gpu.alloc",
+        "gpu.dealloc",
+        "gpu.memcpy",
+        "gpu.memset",
+        "gpu.set_default_device",
+        "gpu.subgroup_mma_load_matrix",
+        "gpu.subgroup_mma_store_matrix",
+        "gpu.subgroup_mma_compute",
+        "gpu.subgroup_mma_constant_matrix",
+        "gpu.subgroup_mma_extract_thread_local",
+        "gpu.subgroup_mma_insert_thread_local",
+        "gpu.subgroup_mma_elementwise",
+        "gpu.create_dn_tensor",
+        "gpu.destroy_dn_tensor",
+        "gpu.create_coo",
+        "gpu.create_coo_aos",
+        "gpu.create_csr",
+        "gpu.create_csc",
+        "gpu.create_bsr",
+        "gpu.create_2to4_spmat",
+        "gpu.destroy_sp_mat",
+        "gpu.spmv_buffer_size",
+        "gpu.spmv",
+        "gpu.spmm_buffer_size",
+        "gpu.spmm",
+        "gpu.sddmm_buffer_size",
+        "gpu.sddmm",
+        "gpu.spgemm_create_descr",
+        "gpu.spgemm_destroy_descr",
+        "gpu.spgemm_work_estimation_or_compute",
+        "gpu.spgemm_copy",
+        "gpu.spmat_get_size",
+        "gpu.set_csr_pointers",
+        "gpu.warp_execute_on_lane_0",
+        "gpu.subgroup_broadcast",
+    ];
+    assert_eq!(supported.len() + unsupported.len(), 66);
+    for name in unsupported {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn gpu_optional_upper_bound_variant_recovers_without_swallowing_the_next_operation() {
+    let registry = DialectRegistry::from_name("gpu").unwrap();
+    let source = br#"module {
+      func.func @query() {
+        %id = gpu.subgroup_id upper_bound 32 : index
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().iter().any(|diagnostic| {
+        diagnostic.kind() == ParseDiagnosticKind::ShapeMismatch(OperationShape::VariadicOperands)
+    }));
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("func.return"))
+    );
+}
+
+#[test]
 fn dlti_preset_preserves_llvm_22_1_attributes_without_claiming_operations() {
     let registry = DialectRegistry::from_name("dlti").unwrap();
     assert_eq!(registry.operation_names().count(), 4);

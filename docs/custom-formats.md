@@ -30,6 +30,7 @@ It does not establish that the operation can be verified or rewritten.
 | DLTI preset | Core only; all 6 DLTI attributes remain opaque dialect values. |
 | EmitC preset | Core plus 20 of the 45 EmitC custom-form operations. |
 | Func preset | Exact custom forms for 3 of the 5 Func operations. |
+| GPU preset | Core plus default forms of 10 of the 66 GPU operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -63,7 +64,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, and `func` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, and `gpu` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -401,6 +402,61 @@ operands, while its result types are derived from the callee's function type.
 Current broad operation shapes would lose those distinct roles or claim the
 wrong result structure. Func defines no dialect types or attributes, and none
 of its operations has successors.
+
+GPU defines 66 concrete operations in LLVM 22.1, all with custom assembly;
+there are no generic-only operation definitions to count separately. The
+preset registers 10 exact default forms. `gpu.subgroup_id`,
+`gpu.num_subgroups`, `gpu.subgroup_size`, and
+`gpu.dynamic_shared_memory` expose their explicitly spelled result type and no
+operands. The optional `upper_bound` variants of the first three remain on
+recovery. `gpu.return` and `gpu.yield` expose typed operands and no results;
+`gpu.terminator` and `gpu.barrier` expose their dictionary-only zero-operand,
+zero-result forms. `gpu.host_register` and `gpu.host_unregister` expose their
+single typed memref operand without inventing an SSA result.
+
+The other 56 operations remain on whole-operation recovery. Ten index-query
+forms (`gpu.cluster_dim`, `gpu.cluster_dim_blocks`, `gpu.cluster_id`,
+`gpu.cluster_block_id`, `gpu.block_dim`, `gpu.block_id`, `gpu.grid_dim`,
+`gpu.thread_id`, `gpu.global_id`, and `gpu.lane_id`) infer their index result
+instead of spelling its type. Six symbol, launch, and region forms (`gpu.func`,
+`gpu.launch_func`, `gpu.launch`, `gpu.module`, `gpu.binary`, and
+`gpu.warp_execute_on_lane_0`) need GPU-specific symbols, async dependency
+segments, grid/block/cluster clauses, workgroup/private attributions, or region
+header bindings. Their roles do not match the conventional function, call, or
+module shapes.
+
+Seven miscellaneous forms (`gpu.printf`, `gpu.all_reduce`,
+`gpu.subgroup_reduce`, `gpu.shuffle`, `gpu.rotate`, `gpu.set_default_device`,
+and `gpu.subgroup_broadcast`) use literal strings, positional enum or integer
+attributes, inferred result types, indexed clauses, or optional reduction
+regions. The five async memory forms (`gpu.wait`, `gpu.alloc`, `gpu.dealloc`,
+`gpu.memcpy`, and `gpu.memset`) couple bracketed dependency lists to optional
+token results; alloc additionally separates dynamic and symbol operands. The
+seven subgroup-MMA forms (`gpu.subgroup_mma_load_matrix`,
+`gpu.subgroup_mma_store_matrix`, `gpu.subgroup_mma_compute`,
+`gpu.subgroup_mma_constant_matrix`, `gpu.subgroup_mma_extract_thread_local`,
+`gpu.subgroup_mma_insert_thread_local`, and
+`gpu.subgroup_mma_elementwise`) use indexed operands, positional operation
+attributes, or compact trailers that infer matrix operand/result types.
+
+The remaining 21 sparse-runtime forms are `gpu.create_dn_tensor`,
+`gpu.destroy_dn_tensor`, `gpu.create_coo`, `gpu.create_coo_aos`,
+`gpu.create_csr`, `gpu.create_csc`, `gpu.create_bsr`,
+`gpu.create_2to4_spmat`, `gpu.destroy_sp_mat`, `gpu.spmv_buffer_size`,
+`gpu.spmv`, `gpu.spmm_buffer_size`, `gpu.spmm`, `gpu.sddmm_buffer_size`,
+`gpu.sddmm`, `gpu.spgemm_create_descr`, `gpu.spgemm_destroy_descr`,
+`gpu.spgemm_work_estimation_or_compute`, `gpu.spgemm_copy`,
+`gpu.spmat_get_size`, and `gpu.set_csr_pointers`. These forms combine async
+tokens with sparse handles, compute types and transpose/action enums, and in
+some cases multiple inferred index or token results. Together with the
+preceding groups, this is the complete 56-operation gap.
+
+GPU's five dialect types (`!gpu.async.token`, `!gpu.mma_matrix`, and the three
+sparse handle types) and its dialect attributes remain balanced opaque values.
+The ten operations in `GPUTransformOps.td` have `transform.*` names, including
+the `transform.gpu.*` mapping operations and the GPU conversion/rewrite pattern
+descriptors; they belong to the Transform dialect and are outside the 66-op
+GPU namespace inventory and this preset.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block
