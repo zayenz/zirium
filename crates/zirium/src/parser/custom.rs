@@ -436,21 +436,23 @@ pub(super) fn shaped_operation(
             }
             good &= parser.expect(TokenKind::Colon)?;
             parser.trivia()?;
-            if binary_trailer_has_arrow(parser) {
-                let parenthesized = parser.at(TokenKind::LParen);
-                let input_count = if parenthesized {
-                    parser.function_type_with_input_count()?
-                } else {
-                    bare_function_type(parser)?
-                };
-                if (parenthesized && input_count != 2)
-                    || (!parenthesized && !matches!(input_count, 1 | 2))
-                {
-                    parser.diagnostic();
-                    good = false;
+            match shaped_type_trailer(parser) {
+                ShapedTypeTrailer::Function => {
+                    let parenthesized = parser.at(TokenKind::LParen);
+                    let input_count = if parenthesized {
+                        parser.function_type_with_input_count()?
+                    } else {
+                        bare_function_type(parser)?
+                    };
+                    if (parenthesized && input_count != 2)
+                        || (!parenthesized && !matches!(input_count, 1 | 2))
+                    {
+                        parser.diagnostic();
+                        good = false;
+                    }
                 }
-            } else {
-                good &= parser.type_syntax(0)?;
+                ShapedTypeTrailer::Conversion => good &= conversion_type_trailer(parser)?,
+                ShapedTypeTrailer::Shared => good &= parser.type_syntax(0)?,
             }
         }
         OperationShape::UnaryOperand => {
@@ -462,18 +464,20 @@ pub(super) fn shaped_operation(
             }
             good &= parser.expect(TokenKind::Colon)?;
             parser.trivia()?;
-            if binary_trailer_has_arrow(parser) {
-                let input_count = if parser.at(TokenKind::LParen) {
-                    parser.function_type_with_input_count()?
-                } else {
-                    bare_function_type(parser)?
-                };
-                if input_count != 1 {
-                    parser.diagnostic();
-                    good = false;
+            match shaped_type_trailer(parser) {
+                ShapedTypeTrailer::Function => {
+                    let input_count = if parser.at(TokenKind::LParen) {
+                        parser.function_type_with_input_count()?
+                    } else {
+                        bare_function_type(parser)?
+                    };
+                    if input_count != 1 {
+                        parser.diagnostic();
+                        good = false;
+                    }
                 }
-            } else {
-                good &= parser.type_syntax(0)?;
+                ShapedTypeTrailer::Conversion => good &= conversion_type_trailer(parser)?,
+                ShapedTypeTrailer::Shared => good &= parser.type_syntax(0)?,
             }
         }
         OperationShape::VariadicOperands => {
@@ -492,20 +496,24 @@ pub(super) fn shaped_operation(
             }
             good &= parser.expect(TokenKind::Colon)?;
             parser.trivia()?;
-            if binary_trailer_has_arrow(parser) {
-                if parser.at(TokenKind::LParen) {
-                    parser.function_type_with_input_count()?;
-                } else {
-                    bare_function_type(parser)?;
+            match shaped_type_trailer(parser) {
+                ShapedTypeTrailer::Function => {
+                    if parser.at(TokenKind::LParen) {
+                        parser.function_type_with_input_count()?;
+                    } else {
+                        bare_function_type(parser)?;
+                    }
                 }
-            } else {
-                good &= parser.type_syntax(0)?;
-                parser.trivia()?;
-                while parser.at(TokenKind::Comma) {
-                    parser.bump()?;
-                    parser.trivia()?;
+                ShapedTypeTrailer::Conversion => good &= conversion_type_trailer(parser)?,
+                ShapedTypeTrailer::Shared => {
                     good &= parser.type_syntax(0)?;
                     parser.trivia()?;
+                    while parser.at(TokenKind::Comma) {
+                        parser.bump()?;
+                        parser.trivia()?;
+                        good &= parser.type_syntax(0)?;
+                        parser.trivia()?;
+                    }
                 }
             }
         }
@@ -619,7 +627,14 @@ fn shaped_operand(parser: &mut Parser<'_>) -> Result<bool, CompactError> {
     Ok(good)
 }
 
-fn binary_trailer_has_arrow(parser: &Parser<'_>) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShapedTypeTrailer {
+    Shared,
+    Function,
+    Conversion,
+}
+
+fn shaped_type_trailer(parser: &Parser<'_>) -> ShapedTypeTrailer {
     let mut depth = 0usize;
     for token in &parser.tokens[parser.position..] {
         match token.kind() {
@@ -629,7 +644,7 @@ fn binary_trailer_has_arrow(parser: &Parser<'_>) -> bool {
                         [token.range().start() as usize..token.range().end() as usize]
                         .contains(&b'\n') =>
             {
-                return false;
+                return ShapedTypeTrailer::Shared;
             }
             TokenKind::Whitespace | TokenKind::LineComment => {}
             TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace | TokenKind::Less => {
@@ -637,16 +652,38 @@ fn binary_trailer_has_arrow(parser: &Parser<'_>) -> bool {
             }
             TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Greater => {
                 let Some(next_depth) = depth.checked_sub(1) else {
-                    return false;
+                    return ShapedTypeTrailer::Shared;
                 };
                 depth = next_depth;
             }
-            TokenKind::Arrow if depth == 0 => return true,
-            TokenKind::Loc | TokenKind::Eof if depth == 0 => return false,
+            TokenKind::Arrow if depth == 0 => return ShapedTypeTrailer::Function,
+            TokenKind::BareIdentifier if depth == 0 => {
+                let range = token.range();
+                if parser.source[range.start() as usize..range.end() as usize] == *b"to" {
+                    return ShapedTypeTrailer::Conversion;
+                }
+            }
+            TokenKind::Loc | TokenKind::Eof if depth == 0 => {
+                return ShapedTypeTrailer::Shared;
+            }
             _ => {}
         }
     }
-    false
+    ShapedTypeTrailer::Shared
+}
+
+fn conversion_type_trailer(parser: &mut Parser<'_>) -> Result<bool, CompactError> {
+    let mut good = parser.type_syntax(0)?;
+    parser.trivia()?;
+    if parser.at(TokenKind::BareIdentifier) && parser.current_text() == "to" {
+        parser.bump()?;
+    } else {
+        parser.diagnostic();
+        good = false;
+    }
+    parser.trivia()?;
+    good &= parser.type_syntax(0)?;
+    Ok(good)
 }
 
 fn bare_function_type(parser: &mut Parser<'_>) -> Result<usize, CompactError> {

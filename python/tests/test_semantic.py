@@ -784,8 +784,10 @@ def test_binary_operand_shape_recovers_from_arity_mismatches(
         ("i32 -> i1", "i1"),
         ("i32, i32 -> i1", "i1"),
         ("(i32, i32) -> i1", "i1"),
+        ("i32 to i1", "i1"),
         ("i32 loc(unknown)", "i32"),
         ("i32 -> i1 loc(unknown)", "i1"),
+        ("i32 to i1 loc(unknown)", "i1"),
     ],
 )
 def test_binary_operand_shape_accepts_result_and_function_type_trailers(
@@ -809,6 +811,68 @@ def test_binary_operand_shape_accepts_result_and_function_type_trailers(
     assert operation.operand_count() == 2
     assert operation.result_count() == 1
     assert operation.result_type(0).spelling == expected_result
+
+
+@pytest.mark.parametrize(
+    ("name", "operation", "shape", "operand_count", "result_type"),
+    [
+        (
+            "stir.bitwise_and",
+            "%r = stir.bitwise_and %a, %b : i16 to i32",
+            zirium.OperationShape.BINARY_OPERANDS,
+            2,
+            "i32",
+        ),
+        (
+            "arith.index_cast",
+            "%r = arith.index_cast %a : i16 to i64",
+            zirium.OperationShape.UNARY_OPERAND,
+            1,
+            "i64",
+        ),
+        (
+            "stir.bitwise_or",
+            "%r = stir.bitwise_or %a, %b : i16 to i16",
+            zirium.OperationShape.VARIADIC_OPERANDS,
+            2,
+            "i16",
+        ),
+        (
+            "memref.cast",
+            "%r = memref.cast %m : memref<4xf32> to memref<?xf32>",
+            zirium.OperationShape.UNARY_OPERAND,
+            1,
+            "memref<?xf32>",
+        ),
+    ],
+)
+def test_operation_shapes_accept_conversion_type_trailers(
+    name: str,
+    operation: str,
+    shape: zirium.OperationShape,
+    operand_count: int,
+    result_type: str,
+):
+    registry = zirium.DialectRegistry.core().extend_operation_shapes({name: shape})
+    source = f'''"builtin.module"() ({{
+^bb0:
+  %a = "test.source"() : () -> i16
+  %b = "test.source"() : () -> i16
+  %m = "test.source"() : () -> memref<4xf32>
+  {operation}
+}}) : () -> ()'''
+    parsed = zirium.parse_text(source, registry=registry)
+    assert parsed.diagnostics == []
+
+    lowered = parsed.lower_strict()
+    assert lowered.diagnostics == []
+    assert lowered.document is not None
+    assert lowered.document.operation_table("to").count == 0
+    shaped = lowered.document.operation_table(name).operation(0)
+    assert shaped.is_unparsed is False
+    assert shaped.operand_count() == operand_count
+    assert shaped.result_count() == 1
+    assert shaped.result_type(0).spelling == result_type
 
 
 def test_binary_operand_shape_rejects_parenthesized_single_input_function_type():

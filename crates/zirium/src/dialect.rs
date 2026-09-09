@@ -905,6 +905,44 @@ fn split_top_level(value: &str) -> Vec<&str> {
     result
 }
 
+fn split_top_level_to(value: &str) -> Option<(&str, &str)> {
+    let mut depth = 0i32;
+    let mut quoted = false;
+    let mut escaped = false;
+    let bytes = value.as_bytes();
+    for index in 0..bytes.len().saturating_sub(1) {
+        let byte = bytes[index];
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            continue;
+        }
+        if byte == b'"' {
+            quoted = true;
+            continue;
+        }
+        match byte {
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b')' | b']' | b'}' | b'>' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0
+            && index > 0
+            && &bytes[index..index + 2] == b"to"
+            && bytes[index - 1].is_ascii_whitespace()
+            && bytes.get(index + 2).is_some_and(u8::is_ascii_whitespace)
+        {
+            return Some((&value[..index], &value[index + 2..]));
+        }
+    }
+    None
+}
+
 fn attribute_groups<'a>(groups: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
     let groups = groups
         .into_iter()
@@ -1170,30 +1208,36 @@ fn lower_typed_operands(
     let tail = context.assembly_spelling().split_once(operation)?.1;
     let (_, ty) = tail.rsplit_once(':')?;
     let ty = ty.trim();
-    let (function_type, result_types) =
-        if let Some((inputs, results)) = crate::semantic::split_arrow(ty) {
-            let inputs = inputs.trim();
-            let input_types = crate::semantic::split_registered_types(inputs);
-            let normalized_inputs = if !inputs.starts_with('(') && input_types.len() == 1 {
-                format!(
-                    "({})",
-                    std::iter::repeat_n(input_types[0].as_str(), operand_count)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            } else {
-                inputs.to_owned()
-            };
-            (
-                format!("{normalized_inputs} -> {}", results.trim()),
-                crate::semantic::split_registered_types(results),
+    let (function_type, result_types) = if let Some((input, result)) = split_top_level_to(ty) {
+        let input = input.trim();
+        let inputs = std::iter::repeat_n(input, operand_count)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let result = result.trim();
+        (format!("({inputs}) -> {result}"), vec![result.into()])
+    } else if let Some((inputs, results)) = crate::semantic::split_arrow(ty) {
+        let inputs = inputs.trim();
+        let input_types = crate::semantic::split_registered_types(inputs);
+        let normalized_inputs = if !inputs.starts_with('(') && input_types.len() == 1 {
+            format!(
+                "({})",
+                std::iter::repeat_n(input_types[0].as_str(), operand_count)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         } else {
-            let inputs = std::iter::repeat_n(ty, operand_count)
-                .collect::<Vec<_>>()
-                .join(", ");
-            (format!("({inputs}) -> {ty}"), vec![ty.into()])
+            inputs.to_owned()
         };
+        (
+            format!("{normalized_inputs} -> {}", results.trim()),
+            crate::semantic::split_registered_types(results),
+        )
+    } else {
+        let inputs = std::iter::repeat_n(ty, operand_count)
+            .collect::<Vec<_>>()
+            .join(", ");
+        (format!("({inputs}) -> {ty}"), vec![ty.into()])
+    };
     Some(RegisteredLowering {
         name: "arith.addi",
         result_types,
@@ -1217,6 +1261,10 @@ fn lower_variadic_operands(
             function_type: format!("{} -> {}", inputs.trim(), results.trim()),
             attributes: Vec::new(),
         });
+    }
+    if split_top_level_to(ty).is_some() {
+        let operand_count = tail.bytes().filter(|byte| *byte == b'%').count();
+        return lower_typed_operands(operation, context, operand_count);
     }
     if prefix.contains('=') {
         let operand_count = tail.bytes().filter(|byte| *byte == b'%').count();

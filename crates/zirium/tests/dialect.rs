@@ -180,8 +180,10 @@ fn binary_operand_shape_accepts_result_and_function_type_trailers() {
         ("i32 -> i1", "i1"),
         ("i32, i32 -> i1", "i1"),
         ("(i32, i32) -> i1", "i1"),
+        ("i32 to i1", "i1"),
         ("i32 loc(unknown)", "i32"),
         ("i32 -> i1 loc(unknown)", "i1"),
+        ("i32 to i1 loc(unknown)", "i1"),
     ] {
         let source = format!(
             r#""builtin.module"() ({{
@@ -212,6 +214,81 @@ fn binary_operand_shape_accepts_result_and_function_type_trailers() {
         let results = document.result_types(operation).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(document.type_spelling(results[0]), Some(expected_result));
+    }
+}
+
+#[test]
+fn operation_shapes_accept_conversion_type_trailers_without_fabricated_siblings() {
+    for (name, shape, spelling, operand_count, result) in [
+        (
+            "stir.bitwise_and",
+            OperationShape::BinaryOperands,
+            "%r = stir.bitwise_and %a, %b : i16 to i32",
+            2,
+            "i32",
+        ),
+        (
+            "arith.index_cast",
+            OperationShape::UnaryOperand,
+            "%r = arith.index_cast %a : i16 to i64",
+            1,
+            "i64",
+        ),
+        (
+            "stir.bitwise_or",
+            OperationShape::VariadicOperands,
+            "%r = stir.bitwise_or %a, %b : i16 to i16",
+            2,
+            "i16",
+        ),
+        (
+            "memref.cast",
+            OperationShape::UnaryOperand,
+            "%r = memref.cast %m : memref<4xf32> to memref<?xf32>",
+            1,
+            "memref<?xf32>",
+        ),
+    ] {
+        let registry = DialectRegistry::core()
+            .extend_operation_shapes(&[(name, shape)])
+            .unwrap();
+        let source = format!(
+            r#""builtin.module"() ({{
+^bb0:
+  %a = "test.source"() : () -> i16
+  %b = "test.source"() : () -> i16
+  %m = "test.source"() : () -> memref<4xf32>
+  {spelling}
+}}) : () -> ()"#
+        );
+        let parsed = ParsedFile::parse_with_registry(source.as_bytes(), &registry).unwrap();
+        assert!(
+            parsed.syntax().diagnostics().is_empty(),
+            "unexpected syntax diagnostics for {name}: {:?}",
+            parsed.syntax().diagnostics()
+        );
+        assert!(parsed.syntax().file().operations().all(|operation| {
+            operation
+                .mnemonic_range()
+                .and_then(|range| source.get(range.start() as usize..range.end() as usize))
+                != Some("to")
+        }));
+
+        let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected lowering diagnostics for {name}: {:?}",
+            lowered.diagnostics
+        );
+        let document = lowered.document.unwrap();
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(document.operands(operation).unwrap().len(), operand_count);
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(document.type_spelling(results[0]), Some(result));
     }
 }
 
@@ -856,10 +933,10 @@ fn mismatched_operation_shapes_recover_the_whole_operation() {
         (
             "a.Op",
             OperationShape::VariadicOperands,
-            "module { %a = a.Src : i16\n  %b = a.Src : i16\n  %r = a.Op %a, %b : i16 to i16 }",
+            "module { %a = a.Src : i16\n  %b = a.Src : i16\n  %r = a.Op %a, %b : i16 toward i16 }",
             4,
-            "%r = a.Op %a, %b : i16 to i16 ",
-            "to",
+            "%r = a.Op %a, %b : i16 toward i16 ",
+            "toward",
         ),
         (
             "a.Imm",
