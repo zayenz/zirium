@@ -1,8 +1,8 @@
 # Production-shaped stress benchmark
 
-`python/benchmarks/stress_instance_benchmark.py` generates a deterministic approximation of the private build described in usability brief 28. It keeps the properties useful during development: forward-referenced locations, a very wide block-argument line, shallow fan-out, varied symbols, representative `stir.*` forms, both type trailers, and hexadecimal floats.
+`python/benchmarks/stress_instance_benchmark.py` generates deterministic MLIR shaped like the production build described in usability brief 28. The input has forward-referenced locations, a 100 KiB block-argument line, shallow fan-out, varied symbols, representative `stir.*` forms, both type trailers, and hexadecimal floats.
 
-It compares the old registry, where only `stir.lambda` is recognized, with the complete shape registry. Generation is excluded from the timings; parsing and lowering have one warm-up and three measured runs.
+The benchmark times two registries against the same input. The legacy registry recognizes `stir.lambda`. The full registry recognizes every generated `stir.*` form. Parsing and lowering each run once to warm up, then three times for measurement. Input generation happens before timing starts.
 
 ```sh
 uv run maturin develop --release
@@ -11,9 +11,7 @@ uv run python python/benchmarks/stress_instance_benchmark.py
 uv run python python/benchmarks/stress_instance_benchmark.py --full
 ```
 
-The default is 16 MiB. `--smoke` uses 2 MiB and `--full` uses 268 MiB. Pass `--output PATH` to keep the generated input. Results are JSON on stdout.
-
-This is a development workload, not a scientific reproduction of the private corpus. Its purpose is to catch scaling regressions and confirm that registering the added shapes removes recovered `stir.*` operations without materially changing parse or lowering cost.
+The default is 16 MiB. `--smoke` uses 2 MiB and `--full` uses 268 MiB. Pass `--output PATH` to keep the generated input. Results are JSON on stdout. Use it to check parser scaling and the cost of registering the added operation shapes.
 
 ## Development baseline
 
@@ -24,4 +22,4 @@ Measured on 2026-09-09 with the release Python extension, one warm-up and three 
 | legacy | 0.384 s | 0.715 s | 8,670 | 8,670 |
 | full | 0.494 s | 0.728 s | 0 | 0 |
 
-Recognizing the additional custom forms costs about 29% in the parse stage on this synthetic mix; lowering changes by about 2%. The useful result is that the new registry reaches complete parsing without a lowering regression or semantic diagnostics. The absolute times are much lower than the private corpus because most bulk operations here are intentionally simple padding operations.
+Recognizing the additional custom forms adds about 29% to parse time on this input. Lowering adds about 2%. The full registry parses every generated `stir.*` operation and emits no syntax or semantic diagnostics.
