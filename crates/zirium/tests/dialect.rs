@@ -7,7 +7,7 @@ use zirium::{
     SyntaxKind,
     dialect::{
         AssemblyProgram, AttributeDescriptor, DialectRegistry, OperandCount, OperationDescriptor,
-        OperationSchema, OperationShape, RegionDescriptor, RegionKind, ResultCount,
+        OperationSchema, OperationShape, RegionDescriptor, RegionKind, RegistryConfig, ResultCount,
         SymbolDescriptor, TypeDescriptor,
     },
     parser::{ParseDiagnosticKind, ParsedFile},
@@ -2470,6 +2470,218 @@ fn llvm_unsupported_indexed_and_atomic_forms_recover_at_operation_boundaries() {
     let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
     let document = lowered.document.unwrap();
     assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn math_preset_exposes_unary_binary_and_ternary_structure() {
+    assert!(DialectRegistry::preset_names().contains(&"math"));
+    let registry = DialectRegistry::from_name("math").unwrap();
+    let source = br#"module {
+      func.func @families(%float: f32, %integer: i32) -> f32 {
+        %root = math.sqrt %float {tag = "unary"} : f32
+        %power = math.ipowi %integer, %integer : i32
+        %raised = math.powf %root, %float {tag = "binary"} : f32
+        %clamped = math.clampf %raised to [%float, %root] {tag = "clamp"} : f32
+        %fused = math.fma %clamped, %float, %root {tag = "ternary"} : f32
+        func.return %fused : f32
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, signature) in [
+        ("math.sqrt", 1, "(f32) -> f32"),
+        ("math.ipowi", 2, "(i32, i32) -> i32"),
+        ("math.powf", 2, "(f32, f32) -> f32"),
+        ("math.clampf", 3, "(f32, f32, f32) -> f32"),
+        ("math.fma", 3, "(f32, f32, f32) -> f32"),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(document.result_types(operation).unwrap().len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(document.operation_regions(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+    }
+
+    for (name, tag) in [
+        ("math.sqrt", "\"unary\""),
+        ("math.powf", "\"binary\""),
+        ("math.clampf", "\"clamp\""),
+        ("math.fma", "\"ternary\""),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute, value)| attribute == "tag" && value == tag),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn math_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("math").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/math.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 40);
+    let unary = [
+        "math.absf",
+        "math.absi",
+        "math.acosh",
+        "math.asin",
+        "math.asinh",
+        "math.atan",
+        "math.atanh",
+        "math.cbrt",
+        "math.ceil",
+        "math.cos",
+        "math.acos",
+        "math.cosh",
+        "math.sin",
+        "math.sinh",
+        "math.ctlz",
+        "math.cttz",
+        "math.ctpop",
+        "math.erf",
+        "math.erfc",
+        "math.exp",
+        "math.exp2",
+        "math.expm1",
+        "math.floor",
+        "math.log",
+        "math.log10",
+        "math.log1p",
+        "math.log2",
+        "math.rsqrt",
+        "math.sqrt",
+        "math.tan",
+        "math.tanh",
+        "math.roundeven",
+        "math.round",
+        "math.trunc",
+    ];
+    let binary = ["math.atan2", "math.copysign", "math.ipowi", "math.powf"];
+    let ternary = ["math.clampf", "math.fma"];
+    let recovery = [
+        "math.isfinite",
+        "math.isinf",
+        "math.isnan",
+        "math.isnormal",
+        "math.sincos",
+        "math.fpowi",
+    ];
+    assert_eq!(
+        unary.len() + binary.len() + ternary.len() + recovery.len(),
+        46
+    );
+    for name in unary {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::UnaryOperand),
+            "{name}"
+        );
+    }
+    for name in binary {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::BinaryOperands),
+            "{name}"
+        );
+    }
+    for name in ternary {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::OperandClauses),
+            "{name}"
+        );
+    }
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn math_inferred_and_mixed_type_forms_and_positional_modifiers_recover() {
+    let registry = DialectRegistry::from_name("math").unwrap();
+    let source = br#"module {
+      func.func @gaps(%scalar: f32, %tensor: tensor<2xf32>, %power: i32) {
+        %finite = math.isfinite %tensor : tensor<2xf32>
+        %sin, %cos = math.sincos %scalar : f32
+        %raised = math.fpowi %scalar, %power : f32, i32
+        %root = math.sqrt %scalar fastmath<fast> : f32
+        %sum = math.powf %scalar, %scalar fastmath<contract> : f32
+        %clamped = math.clampf %scalar to [%scalar, %scalar] fastmath<fast> : f32
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        3
+    );
+    assert!(parsed.syntax().diagnostics().iter().any(|diagnostic| {
+        diagnostic.kind() == ParseDiagnosticKind::ShapeMismatch(OperationShape::UnaryOperand)
+    }));
+    assert!(parsed.syntax().diagnostics().iter().any(|diagnostic| {
+        diagnostic.kind() == ParseDiagnosticKind::ShapeMismatch(OperationShape::BinaryOperands)
+    }));
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    let clamped = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("math.clampf"))
+        .unwrap();
+    assert_eq!(document.operands(clamped).unwrap().len(), 3);
+    assert_eq!(document.result_types(clamped).unwrap().len(), 1);
+    assert_eq!(
+        document.type_spelling(document.function_type(clamped).unwrap()),
+        Some("(f32, f32, f32) -> f32")
+    );
+    assert!(
+        document
+            .attributes(clamped)
+            .unwrap()
+            .all(|(name, _)| name != "fastmath")
+    );
     for name in ["test.after", "func.return"] {
         assert!(
             document

@@ -67,7 +67,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, and `llvm` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, and `math` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -553,6 +553,32 @@ would assign the wrong structural meaning, so the preset stays conservative.
 LLVM attributes, metadata, and types remain balanced opaque dialect values;
 the preset does not apply LLVM verification, data-layout rules, or execution
 semantics.
+
+Math defines 46 concrete operations in LLVM 22.1, all with generated custom
+assembly. The preset registers 40 structurally exact forms: 34 integer or
+floating unary operations, four integer or floating binary operations, and the
+two floating ternary operations `math.clampf` and `math.fma`. The unary and
+binary forms use narrow shapes because their default spelling gives every
+operand and the single result the same trailing type. The ternary forms use
+`operand_clauses`; their single trailing type likewise maps exactly to all three
+operands and the one result, including `clampf`'s `to [min, max]` punctuation.
+Ordinary trailing attribute dictionaries remain queryable. Positional
+`fastmath<...>` variants of the narrow unary and binary forms recover as whole
+operations. The ternary clause shape accepts that positional spelling while
+retaining its operands and type signature, but does not interpret the modifier
+as a semantic attribute.
+
+Six operations remain on whole-operation recovery. `math.isfinite`,
+`math.isinf`, `math.isnan`, and `math.isnormal` print only their floating
+operand type; their scalar `i1` or shaped boolean result is derived from the
+operand shape. `math.sincos` similarly prints one operand type while inferring
+two same-typed results. `math.fpowi` prints distinct floating base and integer
+power types while inferring one result matching the base. The broad clause
+lowering would turn its two printed types into two result slots, so registering
+it would be structurally false. Math defines no dialect types or attributes;
+its fast-math attribute belongs to Arith and otherwise remains an opaque
+balanced value. None of the 46 operations has regions or successors, and the
+preset adds no Math-specific verification, inference, or execution semantics.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block
