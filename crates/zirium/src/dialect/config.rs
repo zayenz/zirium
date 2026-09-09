@@ -74,6 +74,7 @@ const PRESET_NAMES: &[&str] = &[
     "nvgpu",
     "nvvm",
     "omp",
+    "pdl",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -109,6 +110,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "nvgpu" => Some(include_str!("../../registries/nvgpu.json")),
         "nvvm" => Some(include_str!("../../registries/nvvm.json")),
         "omp" => Some(include_str!("../../registries/omp.json")),
+        "pdl" => Some(include_str!("../../registries/pdl.json")),
         _ => None,
     }
 }

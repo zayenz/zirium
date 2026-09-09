@@ -6437,3 +6437,114 @@ fn nvvm_optional_positional_and_inferred_forms_recover_to_the_next_operation() {
         );
     }
 }
+
+#[test]
+fn pdl_preset_inventory_matches_llvm_22_1_recovery_coverage() {
+    assert!(DialectRegistry::preset_names().contains(&"pdl"));
+    let registry = DialectRegistry::from_name("pdl").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/pdl.json")).unwrap();
+    assert!(config.operation_shapes.is_empty());
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(registry.operation_names().count(), 4);
+
+    let recovery = [
+        "pdl.apply_native_constraint",
+        "pdl.apply_native_rewrite",
+        "pdl.attribute",
+        "pdl.erase",
+        "pdl.operand",
+        "pdl.operands",
+        "pdl.operation",
+        "pdl.pattern",
+        "pdl.range",
+        "pdl.replace",
+        "pdl.result",
+        "pdl.results",
+        "pdl.rewrite",
+        "pdl.type",
+        "pdl.types",
+    ];
+    assert_eq!(recovery.len(), 15);
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn pdl_inferred_handle_and_rewrite_forms_recover_to_following_operations() {
+    let registry = DialectRegistry::from_name("pdl").unwrap();
+    let source = br#"module {
+      %type = pdl.type : i32
+      %types = pdl.types : [i32, i64]
+      %attribute = pdl.attribute : %type
+      %operand = pdl.operand : %type
+      %operands = pdl.operands : %types
+      %operation = pdl.operation "foo.op"(%operand : !pdl.value) {"value" = %attribute} -> (%type : !pdl.type)
+      %result = pdl.result 0 of %operation
+      %results = pdl.results of %operation
+      pdl.apply_native_constraint "constraint"(%operation : !pdl.operation)
+      %rewritten = pdl.apply_native_rewrite "rewrite"(%attribute : !pdl.attribute) : !pdl.attribute
+      %range = pdl.range %operand, %operands : !pdl.value, !pdl.range<value>
+      pdl.erase %operation
+      pdl.replace %operation with (%result : !pdl.value)
+      "test.after_handles"() : () -> ()
+      pdl.pattern @named : benefit(1) attributes {tag = "pattern"} { "test.match"() : () -> () }
+      pdl.rewrite %operation with "external"(%operand : !pdl.value) attributes {tag = "rewrite"}
+      "test.after_regions"() : () -> ()
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count()
+            >= 15,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after_handles", "test.after_regions"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn pdl_opaque_types_and_attributes_need_no_dialect_descriptors() {
+    let registry = DialectRegistry::from_name("pdl").unwrap();
+    let source = br#"module {
+      %handles = "test.source"() {marker = #pdl<opaque>} : () -> tuple<!pdl.attribute, !pdl.operation, !pdl.type, !pdl.value, !pdl.range<value>>
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.source"))
+        .unwrap();
+    assert_eq!(
+        document.type_spelling(document.result_types(operation).unwrap()[0]),
+        Some("tuple<!pdl.attribute, !pdl.operation, !pdl.type, !pdl.value, !pdl.range<value>>")
+    );
+    assert!(
+        document
+            .attributes(operation)
+            .unwrap()
+            .any(|(name, value)| name == "marker" && value == "#pdl<opaque>")
+    );
+}

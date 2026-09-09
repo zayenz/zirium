@@ -40,6 +40,7 @@ It does not establish that the operation can be verified or rewritten.
 | NVGPU preset | Core plus 7 structurally exact forms among 24 NVGPU operations. |
 | NVVM preset | Core plus 71 structurally exact forms among 185 NVVM operations. |
 | OpenMP preset | Core plus 8 structurally exact forms among 54 OpenMP operations. |
+| PDL preset | Core only; all 15 PDL operations remain on recovery. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -74,7 +75,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -796,6 +797,47 @@ The `!omp.cli` and `!omp.map_bounds_ty` types and OpenMP attributes remain
 balanced opaque dialect values. The preset does not implement OpenMP clause
 semantics, private/reduction maps, offload mapping, symbol resolution, type or
 block-argument inference, verification, translation, or execution semantics.
+
+PDL defines 15 concrete `pdl.*` operations in LLVM 22.1. This is a core-only
+preset: all 15 operations remain on whole-operation recovery. The inventory is
+limited to `PDLOps.td`; the separate `pdl_interp.*` execution dialect and
+`transform.*` PDL extension are not included.
+
+The gaps are grouped by the information omitted or given a positional role by
+their concrete headers:
+
+- Inferred constraint and handle results: `pdl.attribute`, `pdl.operand`,
+  `pdl.operands`, `pdl.operation`, `pdl.result`, `pdl.results`, `pdl.type`, and
+  `pdl.types` infer their `!pdl.attribute`, `!pdl.value`, `!pdl.operation`,
+  `!pdl.type`, or `!pdl.range<...>` result. Their optional type constraints,
+  operation names, result-group indices, attribute bindings, and result-type
+  handles do not form complete SSA operand/result signatures.
+- Native calls and range construction: `pdl.apply_native_constraint` and
+  `pdl.apply_native_rewrite` place a positional string name before a typed
+  argument list and spell only their optional result types. `pdl.range` has a
+  typed operand list but derives the range result type from those operands or
+  an explicitly printed range type. These are not complete function
+  signatures.
+- Rewrite actions: `pdl.erase` has one untyped operation handle, while
+  `pdl.replace` selects between an untyped replacement operation and a typed
+  replacement-value list after `with`. They produce no SSA results, so treating
+  their operand types as result slots or registering them as typed terminators
+  would be structurally false.
+- Symbols and regions: `pdl.pattern` optionally defines a symbol, carries a
+  positional benefit attribute, and owns an isolated single-block region.
+  `pdl.rewrite` is the pattern terminator and may combine an optional root
+  operation, a named external rewrite with typed arguments, or an inline
+  single-block region. A region-only shape would lose those operand, symbol,
+  attribute, and terminator roles.
+
+No PDL operation has successors. `pdl.pattern` is the only symbol definition;
+PDL's quoted native function and operation names are positional string
+attributes, not MLIR symbol references. Its `!pdl.attribute`,
+`!pdl.operation`, `!pdl.type`, `!pdl.value`, and `!pdl.range<...>` types remain
+balanced opaque dialect values without descriptors. PDL defines no dialect
+attributes; namespaced opaque attributes used by generic IR are handled by the
+same generic path. The preset does not implement PDL handle inference,
+operation-description constraints, rewrite semantics, or ODS interpretation.
 
 Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
 21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,
