@@ -28,12 +28,12 @@ The lossless CST remains part of Zirium's core design. Memory work will focus on
 ## 4. Make registry capabilities discoverable (brief 33)
 
 - Expose the valid preset names through the Python API and type stubs.
-- Define the smallest format-description vocabulary that covers the reported operand, literal, dictionary, type, region, and symbol forms.
+- Define a small typed capture program for operands, literals, dictionaries, types, regions, symbols, and fixed tokens.
 - Validate format descriptions when the registry is built.
-- Compile accepted descriptions into the existing shaped parser and lowering model.
+- Emit the existing CST node kinds from captured parts and lower their declared semantic roles.
 - Keep `OperationShape` as the concise built-in vocabulary.
 
-The format-description implementation starts after parts 1–3 establish safe fallback and the shared grammar pieces it will compose.
+The format-description implementation starts after parts 1–3 establish safe fallback and the shared grammar pieces it will compose. Its literal example must first settle whether `attr-dict` comes before or after `type($value)`; the note's format string and acceptance spelling use different orders.
 
 ## 5. Reduce CST construction memory (brief 34)
 
