@@ -453,6 +453,103 @@ fn affine_preset_lowers_supported_forms_without_inventing_results() {
 }
 
 #[test]
+fn amdgpu_preset_lowers_only_structurally_honest_forms() {
+    let registry = DialectRegistry::from_name("amdgpu").unwrap();
+    let source = br#"module {
+      func.func @kernel(%packed: vector<4xf8E4M3FNUZ>, %matrix: vector<8xf4E2M1FN>, %scale: vector<4xf8E8M0FNU>) {
+        %extended = amdgpu.ext_packed_fp8 {tag = true} %packed[0] : vector<4xf8E4M3FNUZ> to f32
+        %scaled = amdgpu.scaled_ext_packed_matrix %matrix scale(%scale) blockSize(32) firstScaleLane(0) firstScaleByte(0) : vector<8xf4E2M1FN>, vector<4xf8E8M0FNU> -> vector<8xf32>
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results) in [
+        ("amdgpu.ext_packed_fp8", 1, 1),
+        ("amdgpu.scaled_ext_packed_matrix", 2, 1),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+    }
+
+    let extended = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("amdgpu.ext_packed_fp8"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(extended)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "true")
+    );
+
+    let opaque_source = br#"module {
+      func.func @tensor(%desc: !amdgpu.tdm_descriptor) {
+        amdgpu.tensor_load_to_lds %desc : !amdgpu.tdm_descriptor
+        amdgpu.tensor_store_from_lds %desc : !amdgpu.tdm_descriptor
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(opaque_source.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let opaque_document = lowered.document.unwrap();
+    for name in ["amdgpu.tensor_load_to_lds", "amdgpu.tensor_store_from_lds"] {
+        let operation = opaque_document
+            .operations()
+            .find(|operation| opaque_document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(opaque_document.operands(operation).unwrap().len(), 1);
+        assert!(opaque_document.result_types(operation).unwrap().is_empty());
+        assert!(
+            opaque_document
+                .operation_regions(operation)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    for name in [
+        "amdgpu.dpp",
+        "amdgpu.packed_trunc_2xfp8",
+        "amdgpu.permlane_swap",
+        "amdgpu.swizzle_bitmode",
+        "amdgpu.lds_barrier",
+        "amdgpu.raw_buffer_store",
+        "amdgpu.mfma",
+        "amdgpu.gather_to_lds",
+        "amdgpu.make_dma_descriptor",
+        "amdgpu.memory_counter_wait",
+    ] {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])

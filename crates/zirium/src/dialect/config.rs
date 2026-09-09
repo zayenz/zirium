@@ -42,7 +42,15 @@ type ExpandedRegistry = (
     BTreeMap<String, String>,
 );
 
-const PRESET_NAMES: &[&str] = &["stablehlo", "tosa", "scf", "linalg", "acc", "affine"];
+const PRESET_NAMES: &[&str] = &[
+    "stablehlo",
+    "tosa",
+    "scf",
+    "linalg",
+    "acc",
+    "affine",
+    "amdgpu",
+];
 
 fn preset_json(name: &str) -> Option<&'static str> {
     match name {
@@ -52,6 +60,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "linalg" => Some(include_str!("../../registries/linalg.json")),
         "acc" => Some(include_str!("../../registries/acc.json")),
         "affine" => Some(include_str!("../../registries/affine.json")),
+        "amdgpu" => Some(include_str!("../../registries/amdgpu.json")),
         _ => None,
     }
 }

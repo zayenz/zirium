@@ -17,6 +17,7 @@ It does not establish that the operation can be verified or rewritten.
 | Linalg preset | Core plus 97 core, structured, and generated named Linalg operations. |
 | OpenACC preset | Core plus 35 mapping, bounds-accessor, region, and terminator forms. |
 | Affine preset | Core plus 4 of the 16 Affine operations. |
+| AMDGPU preset | Core plus 4 of the 33 AMDGPU operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -49,7 +50,7 @@ definition. This surface was checked against StableHLO 1.20.1. The unversioned
 preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
-The `tosa`, `scf`, `linalg`, `acc`, and `affine` presets were checked against LLVM 22.1.0.
+The `tosa`, `scf`, `linalg`, `acc`, `affine`, and `amdgpu` presets were checked against LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
 its custom symbol/type form has no reusable structural signature. SCF registers
@@ -86,6 +87,37 @@ Their custom forms either lack a safe trailing boundary, need parallel header
 bindings, derive a result type from a memref element type, or spell types for a
 no-result operation. Assigning the current clause shapes to those forms would
 lose structure or invent semantic result types.
+
+AMDGPU registers 4 of its 33 concrete operations: `amdgpu.ext_packed_fp8`,
+`amdgpu.scaled_ext_packed_matrix`,
+`amdgpu.tensor_load_to_lds`, and `amdgpu.tensor_store_from_lds`. These expose
+their SSA operands and real result slots without treating accumulator,
+container, or index types as results. The three `!amdgpu.tdm_*` types and the
+`#amdgpu.address_space`, `#amdgpu.dpp_perm`,
+`#amdgpu.sched_barrier_opt`, and `#amdgpu.mfma_perm_b` attributes remain opaque
+dialect values, as they do without the preset.
+
+The other 29 operations remain on whole-operation recovery:
+`amdgpu.scaled_ext_packed`, `amdgpu.packed_trunc_2xfp8`,
+`amdgpu.packed_scaled_trunc`, `amdgpu.packed_stoch_round_fp8`,
+`amdgpu.fat_raw_buffer_cast`, `amdgpu.raw_buffer_load`,
+`amdgpu.raw_buffer_store`, the five `amdgpu.raw_buffer_atomic_*` operations,
+`amdgpu.dpp`, `amdgpu.swizzle_bitmode`, `amdgpu.permlane_swap`,
+`amdgpu.lds_barrier`, `amdgpu.sched_barrier`,
+`amdgpu.memory_counter_wait`, `amdgpu.mfma`, `amdgpu.wmma`,
+`amdgpu.sparse_mfma`, `amdgpu.gather_to_lds`, `amdgpu.transpose_load`,
+`amdgpu.scaled_mfma`, `amdgpu.scaled_wmma`,
+`amdgpu.make_gather_dma_base`, `amdgpu.make_dma_base`,
+`amdgpu.make_gather_dma_descriptor`, and `amdgpu.make_dma_descriptor`.
+Their compact type trailers omit inferred operand types or name container and
+accumulator types rather than SSA results, or their required positional
+attributes and attribute-only forms lack a matching reusable shape.
+`amdgpu.sched_barrier` and `amdgpu.memory_counter_wait` also lack a typed
+trailing boundary. Registering these operations with the current broad clause
+shape would therefore assign incorrect semantic types or results. AMDGPU
+defines no regions or successors; none of its operations need post-region
+dictionaries or tuple/custom header bindings. The dependent `rocdl` namespace
+is a separate LLVM IR dialect and is not part of the 33-operation AMDGPU count.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

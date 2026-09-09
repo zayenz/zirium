@@ -1,0 +1,16 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "amdgpu.ext_packed_fp8", "shape": "operand_clauses"},
+    {"name": "amdgpu.scaled_ext_packed_matrix", "shape": "operand_clauses"},
+    {"name": "amdgpu.tensor_load_to_lds", "shape": "optional_typed_operands"},
+    {"name": "amdgpu.tensor_store_from_lds", "shape": "optional_typed_operands"}
+  ],
+  "operation_formats": []
+}
