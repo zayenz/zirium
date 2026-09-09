@@ -169,6 +169,15 @@ def timed(runs: int, action):
     return statistics.median(samples), samples, result
 
 
+def parse_and_count_errors(
+    path: Path, selected: zirium.DialectRegistry
+) -> tuple[int, int]:
+    parsed = zirium.parse_file(path, registry=selected)
+    count = parsed.operation_count
+    errors = sum(parsed.operation(index).has_error for index in range(count))
+    return count, errors
+
+
 def measure(path: Path, registry_name: str, runs: int) -> dict[str, object]:
     selected = registry(full=registry_name == "full")
     zirium.parse_file(path, registry=selected)
@@ -176,6 +185,12 @@ def measure(path: Path, registry_name: str, runs: int) -> dict[str, object]:
         runs, lambda: zirium.parse_file(path, registry=selected)
     )
     assert parsed is not None
+    parse_and_count_errors(path, selected)
+    walk_median, walk_samples, walk_result = timed(
+        runs, lambda: parse_and_count_errors(path, selected)
+    )
+    assert walk_result is not None
+    walked_operations, error_operations = walk_result
     parsed.lower_best_effort("semantic")
     lower_median, lower_samples, lowered = timed(
         runs, lambda: parsed.lower_best_effort("semantic")
@@ -197,10 +212,14 @@ def measure(path: Path, registry_name: str, runs: int) -> dict[str, object]:
         "registry": registry_name,
         "parse_seconds": parse_samples,
         "parse_median_seconds": parse_median,
+        "parse_and_walk_seconds": walk_samples,
+        "parse_and_walk_median_seconds": walk_median,
         "lower_seconds": lower_samples,
         "lower_median_seconds": lower_median,
         "throughput_mib_s": path.stat().st_size / MIB / parse_median,
         "operations": parsed.operation_count,
+        "walked_operations": walked_operations,
+        "operations_with_errors": error_operations,
         "parse_diagnostics": dict(Counter(item.kind for item in parsed.diagnostics)),
         "semantic_diagnostics": dict(
             Counter(item.kind for item in lowered.diagnostics)
