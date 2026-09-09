@@ -1,0 +1,6 @@
+interface:
+  display_name: "Zirium Custom Format"
+  short_description: "Research MLIR dialects for Zirium formats"
+  default_prompt: "Use $zirium-custom-format to research this repository’s MLIR dialects and create a Zirium registry configuration."
+policy:
+  allow_implicit_invocation: false
