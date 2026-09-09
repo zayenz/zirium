@@ -6682,3 +6682,209 @@ fn pdl_interp_opaque_values_need_no_dialect_descriptors() {
             .any(|(name, value)| name == "marker" && value == "#pdl_interp<opaque>")
     );
 }
+
+#[test]
+fn ptr_preset_exposes_explicit_default_signatures() {
+    assert!(DialectRegistry::preset_names().contains(&"ptr"));
+    let registry = DialectRegistry::from_name("ptr").unwrap();
+    let source = br#"module {
+      func.func @forms(%memref: memref<f32>, %ptr: !ptr.ptr<#ptr.generic_space>) {
+        %to = ptr.to_ptr %memref {tag = "to"} : memref<f32> -> !ptr.ptr<#ptr.generic_space>
+        %from = ptr.from_ptr %ptr {tag = "from"} : !ptr.ptr<#ptr.generic_space> -> memref<f32>
+        %loaded = ptr.load %ptr {tag = "load"} : !ptr.ptr<#ptr.generic_space> -> i32
+        %difference = ptr.ptr_diff %ptr, %ptr {tag = "diff"} : !ptr.ptr<#ptr.generic_space> -> i64
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, signature, tag) in [
+        (
+            "ptr.to_ptr",
+            1,
+            "(memref<f32>) -> !ptr.ptr<#ptr.generic_space>",
+            "\"to\"",
+        ),
+        (
+            "ptr.from_ptr",
+            1,
+            "(!ptr.ptr<#ptr.generic_space>) -> memref<f32>",
+            "\"from\"",
+        ),
+        (
+            "ptr.load",
+            1,
+            "(!ptr.ptr<#ptr.generic_space>) -> i32",
+            "\"load\"",
+        ),
+        (
+            "ptr.ptr_diff",
+            2,
+            "(!ptr.ptr<#ptr.generic_space>, !ptr.ptr<#ptr.generic_space>) -> i64",
+            "\"diff\"",
+        ),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(document.operands(operation).unwrap().len(), operands);
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature)
+        );
+        assert!(document.operation_regions(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute, value)| attribute == "tag" && value == tag)
+        );
+    }
+}
+
+#[test]
+fn ptr_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("ptr").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/ptr.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 4);
+
+    for name in ["ptr.from_ptr", "ptr.load", "ptr.to_ptr"] {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::UnaryOperand),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        registry.operation_shape("ptr.ptr_diff"),
+        Some(OperationShape::BinaryOperands)
+    );
+    let recovery = [
+        "ptr.constant",
+        "ptr.gather",
+        "ptr.get_metadata",
+        "ptr.masked_load",
+        "ptr.masked_store",
+        "ptr.ptr_add",
+        "ptr.scatter",
+        "ptr.store",
+        "ptr.type_offset",
+    ];
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 13);
+    for name in recovery {
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn ptr_modifier_inference_and_partial_type_forms_recover_to_the_next_operation() {
+    let registry = DialectRegistry::from_name("ptr").unwrap();
+    let source = br#"module {
+      func.func @gaps(
+          %ptr: !ptr.ptr<#ptr.generic_space>,
+          %metadata: !ptr.ptr_metadata<memref<f32, #ptr.generic_space>>,
+          %ptrs: vector<4x!ptr.ptr<#ptr.generic_space>>,
+          %mask: vector<4xi1>, %values: vector<4xf32>, %value: i32,
+          %offset: index) {
+        %from = ptr.from_ptr %ptr metadata %metadata : !ptr.ptr<#ptr.generic_space> -> memref<f32, #ptr.generic_space>
+        %load = ptr.load volatile %ptr : !ptr.ptr<#ptr.generic_space> -> i32
+        %difference = ptr.ptr_diff nuw %ptr, %ptr : !ptr.ptr<#ptr.generic_space> -> i64
+        %null = ptr.constant {tag = "leading"} #ptr.null : !ptr.ptr<#ptr.generic_space>
+        %type_offset = ptr.type_offset f32 : index
+        %gathered = ptr.gather %ptrs, %mask, %values : vector<4x!ptr.ptr<#ptr.generic_space>> -> vector<4xf32>
+        %metadata_result = ptr.get_metadata %ptr : !ptr.ptr<#ptr.generic_space>
+        %masked = ptr.masked_load %ptr, %mask, %values : !ptr.ptr<#ptr.generic_space> -> vector<4xf32>
+        ptr.masked_store %values, %ptr, %mask : vector<4xf32>, !ptr.ptr<#ptr.generic_space>
+        %added = ptr.ptr_add %ptr, %offset : !ptr.ptr<#ptr.generic_space>, index
+        ptr.scatter %values, %ptrs, %mask : vector<4xf32>, vector<4x!ptr.ptr<#ptr.generic_space>>
+        ptr.store %value, %ptr : i32, !ptr.ptr<#ptr.generic_space>
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count()
+            >= 10,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| matches!(
+                diagnostic.kind(),
+                ParseDiagnosticKind::ShapeMismatch(
+                    OperationShape::UnaryOperand
+                        | OperationShape::BinaryOperands
+                        | OperationShape::LiteralAttribute
+                )
+            ))
+            .count(),
+        3,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn ptr_opaque_types_and_attributes_need_no_dialect_descriptors() {
+    let registry = DialectRegistry::from_name("ptr").unwrap();
+    let source = br#"module {
+      %pointer = "test.source"() {
+        layout = #ptr.spec<size = 64, abi = 64, preferred = 64>
+      } : () -> !ptr.ptr<#ptr.generic_space>
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.source"))
+        .unwrap();
+    assert_eq!(
+        document.type_spelling(document.result_types(operation).unwrap()[0]),
+        Some("!ptr.ptr<#ptr.generic_space>")
+    );
+    assert!(
+        document
+            .attributes(operation)
+            .unwrap()
+            .any(|(name, value)| name == "layout"
+                && value == "#ptr.spec<size = 64, abi = 64, preferred = 64>")
+    );
+}

@@ -42,6 +42,7 @@ It does not establish that the operation can be verified or rewritten.
 | OpenMP preset | Core plus 8 structurally exact forms among 54 OpenMP operations. |
 | PDL preset | Core only; all 15 PDL operations remain on recovery. |
 | PDLInterp preset | Core only; all 39 PDLInterp operations remain on recovery. |
+| Ptr preset | Core plus default forms of 4 among 13 Ptr operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -76,7 +77,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -895,6 +896,33 @@ attributes rather than SSA values. PDL's `!pdl.attribute`, `!pdl.operation`,
 dialect values, and unknown `#pdl_interp<...>` attributes remain available to
 generic quoted IR. The preset adds no PDL type inference, special CFG parser,
 ODS interpretation, verifier, rewrite behavior, or interpreter semantics.
+
+Ptr defines 13 operations in LLVM 22.1. The preset registers four default
+forms. `ptr.to_ptr`, metadata-free `ptr.from_ptr`, and unmodified `ptr.load`
+have one operand and an explicit input-to-result signature. Unflagged
+`ptr.ptr_diff` has two same-typed pointer inputs and one explicitly typed
+integer or index result. Their ordinary attribute dictionaries are preserved.
+
+Nine operations remain unregistered. `ptr.gather` and `ptr.masked_load` omit
+the mask and passthrough operand types from their conversion trailers.
+`ptr.store`, `ptr.scatter`, and `ptr.masked_store` have no results and print
+types for only a subset of their operands. `ptr.ptr_add` infers its result from
+the base and offset shapes, while `ptr.get_metadata` derives a metadata result
+from its input type. `ptr.constant` uses a typed dialect attribute and places
+its ordinary dictionary before that positional value; the current literal
+shape does not accept either the dictionary-free `#ptr.null` default or that
+dictionary placement. `ptr.type_offset` has a positional type attribute rather
+than a literal attribute. Registering these forms with nearby shapes would
+invent missing types or result slots, or misclassify an attribute category.
+
+Optional syntax on otherwise registered operations remains explicit recovery:
+the metadata operand on `ptr.from_ptr`; volatile, atomic, synchronization,
+ordering, invariant, nontemporal, and alignment clauses on `ptr.load`; and
+wrap flags on `ptr.ptr_diff`. These clauses occur before the stable type
+boundary and do not match the narrow default shapes. The Ptr operations have
+no regions, successors, or symbol roles. `!ptr.*` types and `#ptr.*`
+attributes remain balanced opaque dialect values; the preset adds no pointer
+type inference, data-layout behavior, memory semantics, or verification.
 
 Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
 21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,

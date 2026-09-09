@@ -1,0 +1,16 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "ptr.from_ptr", "shape": "unary_operand"},
+    {"name": "ptr.load", "shape": "unary_operand"},
+    {"name": "ptr.ptr_diff", "shape": "binary_operands"},
+    {"name": "ptr.to_ptr", "shape": "unary_operand"}
+  ],
+  "operation_formats": []
+}
