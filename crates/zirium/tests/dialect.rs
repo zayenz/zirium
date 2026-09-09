@@ -5327,6 +5327,109 @@ fn memref_inferred_index_and_mixed_index_list_forms_recover() {
 }
 
 #[test]
+fn ml_program_preset_inventory_matches_llvm_22_1_recovery_coverage() {
+    assert!(DialectRegistry::preset_names().contains(&"ml_program"));
+    let registry = DialectRegistry::from_name("ml_program").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/ml_program.json")).unwrap();
+    assert!(config.operation_shapes.is_empty());
+    assert_eq!(registry.operation_names().count(), 4);
+
+    let recovery = [
+        "ml_program.func",
+        "ml_program.global",
+        "ml_program.global_load",
+        "ml_program.global_load_const",
+        "ml_program.global_load_graph",
+        "ml_program.global_store",
+        "ml_program.global_store_graph",
+        "ml_program.output",
+        "ml_program.return",
+        "ml_program.subgraph",
+        "ml_program.token",
+    ];
+    assert_eq!(recovery.len(), 11);
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn ml_program_symbol_inference_region_and_dictionary_forms_recover() {
+    let registry = DialectRegistry::from_name("ml_program").unwrap();
+    let source = br#"module {
+      ml_program.func private @external(i32) -> i32
+      ml_program.subgraph private @external_graph(i32) -> i32
+      ml_program.global private mutable @state : tensor<?xi32>
+      func.func @gaps(%value: tensor<?xi32>, %token: !ml_program.token) {
+        %loaded = ml_program.global_load @state : tensor<?xi32>
+        %constant = ml_program.global_load_const @state : tensor<?xi32>
+        ml_program.global_store @state = %value : tensor<?xi32>
+        %graph_loaded, %ordered = ml_program.global_load_graph @state ordering(%token -> !ml_program.token) : tensor<?xi32>
+        %stored = ml_program.global_store_graph @state = %value ordering(%token -> !ml_program.token) : tensor<?xi32>
+        %fresh = ml_program.token
+        ml_program.return {tag = "before-operands"} %value : tensor<?xi32>
+        ml_program.output {tag = "before-operands"} %value : tensor<?xi32>
+      }
+      "test.after"() : () -> ()
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        11,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|operation| { document.operation_name(operation) == Some("test.after") })
+    );
+}
+
+#[test]
+fn ml_program_opaque_type_and_attribute_need_no_dialect_descriptors() {
+    let registry = DialectRegistry::from_name("ml_program").unwrap();
+    let source = br#"module {
+      %token = "test.source"() {value = #ml_program.extern<tensor<4xi32>>}
+        : () -> !ml_program.token
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.source"))
+        .unwrap();
+    assert_eq!(
+        document.type_spelling(document.result_types(operation).unwrap()[0]),
+        Some("!ml_program.token")
+    );
+    assert!(
+        document
+            .attributes(operation)
+            .unwrap()
+            .any(|(name, value)| {
+                name == "value" && value == "#ml_program.extern<tensor<4xi32>>"
+            })
+    );
+}
+
+#[test]
 fn shard_preset_exposes_the_explicit_get_sharding_signature() {
     assert!(DialectRegistry::preset_names().contains(&"shard"));
     let registry = DialectRegistry::from_name("shard").unwrap();

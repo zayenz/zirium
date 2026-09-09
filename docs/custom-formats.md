@@ -35,6 +35,7 @@ It does not establish that the operation can be verified or rewritten.
 | IRDL preset | Core only; all 17 IRDL operations remain on recovery. |
 | LLVM preset | Core plus 138 explicit core and intrinsic forms among 284 LLVM operations. |
 | MemRef preset | Core plus 11 structurally exact forms among 32 MemRef operations. |
+| MLProgram preset | Core only; all 11 MLProgram operations remain on recovery. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -69,7 +70,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -633,6 +634,35 @@ definition; every operation with a `grid` attribute is a symbol user. The
 grid-axis attributes remain opaque balanced namespaced values. The preset does
 not implement grid-symbol resolution, collective semantics, destination-style
 semantics, or Shard-specific verification.
+
+MLProgram defines 11 operations in LLVM 22.1. This is a core-only preset: all
+11 operations remain on whole-operation recovery, grouped by the structure
+that the current registry cannot represent faithfully:
+
+- Symbol definitions and regions: `ml_program.func`, `ml_program.subgraph`, and
+  `ml_program.global`. The two callable operations differ in region kind, and
+  the global combines a symbol with an optional typed program-variable
+  initializer. A name-only shape cannot supply their symbol or region metadata.
+- Symbol users and program-variable access: `ml_program.global_load`,
+  `ml_program.global_load_const`, `ml_program.global_store`,
+  `ml_program.global_load_graph`, and `ml_program.global_store_graph`. Their
+  leading global references are attributes rather than SSA operands, and the
+  graph forms add custom token-ordering clauses with inferred token types.
+- Inferred result type: `ml_program.token` spells neither its
+  `!ml_program.token` result type nor a type signature.
+- Terminators: `ml_program.output` and `ml_program.return` have ordinary
+  optional typed SSA operands, but their attribute dictionary precedes that
+  optional clause. The reusable typed-terminator shape accepts its dictionary
+  after the operands, so registering it would reject valid attributed forms.
+
+None of the 11 operations has successors. Only `ml_program.func` and
+`ml_program.subgraph` own regions; their region kinds are SSACFG and Graph,
+respectively. The declarative global and access forms put attribute dictionaries
+after their final typed clause, while the terminators put them before their
+optional operands. The `!ml_program.token` type and `#ml_program.extern`
+attribute remain opaque balanced dialect values. The preset does not implement
+global-symbol resolution, callable semantics, program-variable type inference,
+token ordering, or MLProgram verification.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block
