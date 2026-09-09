@@ -68,6 +68,7 @@ const PRESET_NAMES: &[&str] = &[
     "llvm",
     "math",
     "memref",
+    "shard",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -97,6 +98,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "llvm" => Some(include_str!("../../registries/llvm.json")),
         "math" => Some(include_str!("../../registries/math.json")),
         "memref" => Some(include_str!("../../registries/memref.json")),
+        "shard" => Some(include_str!("../../registries/shard.json")),
         _ => None,
     }
 }

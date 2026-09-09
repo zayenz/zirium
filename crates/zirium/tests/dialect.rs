@@ -5325,3 +5325,125 @@ fn memref_inferred_index_and_mixed_index_list_forms_recover() {
             .any(|operation| { document.operation_name(operation) == Some("test.after") })
     );
 }
+
+#[test]
+fn shard_preset_exposes_the_explicit_get_sharding_signature() {
+    assert!(DialectRegistry::preset_names().contains(&"shard"));
+    let registry = DialectRegistry::from_name("shard").unwrap();
+    let source = br#"module {
+      func.func @get(%input: tensor<4x8xf32>) -> !shard.sharding {
+        %sharding = shard.get_sharding %input {tag = "queryable"}
+          : tensor<4x8xf32> -> !shard.sharding
+        func.return %sharding : !shard.sharding
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("shard.get_sharding"))
+        .unwrap();
+    assert_eq!(document.operands(operation).unwrap().len(), 1);
+    assert_eq!(document.result_types(operation).unwrap().len(), 1);
+    assert_eq!(
+        document.type_spelling(document.function_type(operation).unwrap()),
+        Some("(tensor<4x8xf32>) -> !shard.sharding")
+    );
+    assert!(document.operation_regions(operation).unwrap().is_empty());
+    assert!(document.successors(operation).unwrap().is_empty());
+    assert!(
+        document
+            .attributes(operation)
+            .unwrap()
+            .any(|(name, value)| { name == "tag" && value == "\"queryable\"" })
+    );
+}
+
+#[test]
+fn shard_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("shard").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/shard.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 1);
+    assert_eq!(
+        registry.operation_shape("shard.get_sharding"),
+        Some(OperationShape::UnaryOperand)
+    );
+    let recovery = [
+        "shard.grid",
+        "shard.grid_shape",
+        "shard.process_multi_index",
+        "shard.process_linear_index",
+        "shard.neighbors_linear_indices",
+        "shard.sharding",
+        "shard.shard_shape",
+        "shard.shard",
+        "shard.all_gather",
+        "shard.all_reduce",
+        "shard.all_slice",
+        "shard.all_to_all",
+        "shard.broadcast",
+        "shard.gather",
+        "shard.recv",
+        "shard.reduce",
+        "shard.reduce_scatter",
+        "shard.scatter",
+        "shard.send",
+        "shard.shift",
+        "shard.update_halo",
+    ];
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 22);
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn shard_symbol_index_collective_and_destination_forms_recover() {
+    let registry = DialectRegistry::from_name("shard").unwrap();
+    let source = br#"module {
+      shard.grid @grid(shape = 2x2)
+      func.func @gaps(%input: tensor<4x8xf32>, %index: index, %sharding: !shard.sharding) {
+        %shape:2 = shard.grid_shape @grid axes = [0, 1] : index, index
+        %made = shard.sharding @grid split_axes = [[0]] : !shard.sharding
+        %dims:2 = shard.shard_shape dims = [8, %index] sharding = %sharding device = [%index] : index, index
+        %annotated = shard.shard %input to %sharding annotate_for_users : tensor<4x8xf32>
+        %reduced = shard.all_reduce %input on @grid grid_axes = [0] reduction = max : tensor<4x8xf32> -> tensor<4x8xf64>
+        %halo = shard.update_halo %input on @grid split_axes = [[0]] halo_sizes = [1, %index] : tensor<4x8xf32>
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    // Each unsupported Shard operation diagnoses recovery. The unregistered
+    // shard.shard conversion also diagnoses its `to` continuation separately.
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        8,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}

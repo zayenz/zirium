@@ -35,6 +35,7 @@ It does not establish that the operation can be verified or rewritten.
 | IRDL preset | Core only; all 17 IRDL operations remain on recovery. |
 | LLVM preset | Core plus 138 explicit core and intrinsic forms among 284 LLVM operations. |
 | MemRef preset | Core plus 11 structurally exact forms among 32 MemRef operations. |
+| Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -68,7 +69,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, and `memref` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -604,6 +605,34 @@ types to index operands or turn operand-only trailers into result slots. MemRef
 defines no dialect types or attributes: `memref<...>` is a builtin type, so no
 value descriptors are added. The preset does not apply MemRef verification,
 aliasing, layout, memory-space, or execution semantics.
+
+Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
+21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,
+one `!shard.sharding` result, and explicit input-to-result conversion signature
+fit the unary shape exactly. Its ordinary attribute dictionary remains
+queryable. The operation has no regions, successors, or symbol roles. The
+preset adds no Shard-specific type inference or same-type verification.
+
+The other 21 operations remain on whole-operation recovery. `shard.grid`
+defines a symbol using a custom dimension list. `shard.grid_shape`, the two
+process-index operations, `shard.neighbors_linear_indices`, and all 12
+collectives use positional grid symbols; their forms also combine inferred
+index results, grid-axis arrays, tensor-axis or reduction clauses, dynamic
+root/source/destination index lists, and differing input/result tensor types.
+`shard.sharding` and `shard.shard_shape` use mixed static/dynamic index lists;
+`shard.shard` has an optional unit clause and a same-input/result-type
+relationship; `shard.update_halo` combines a destination operand, a grid
+symbol, split axes, and optional mixed halo sizes while spelling only the
+result type. Registering these forms with the broad clause shape would leave
+grid references without symbol-use semantics and would infer incorrect types
+or result slots for several families.
+
+No Shard operation owns a region or successor. `shard.grid` is the sole symbol
+definition; every operation with a `grid` attribute is a symbol user. The
+`!shard.sharding` type, `#shard.partial` reduction attribute, and Shard
+grid-axis attributes remain opaque balanced namespaced values. The preset does
+not implement grid-symbol resolution, collective semantics, destination-style
+semantics, or Shard-specific verification.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

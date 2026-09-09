@@ -1,0 +1,13 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "shard.get_sharding", "shape": "unary_operand"}
+  ],
+  "operation_formats": []
+}
