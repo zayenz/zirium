@@ -7056,3 +7056,175 @@ fn quant_partial_modifier_and_removed_statistics_forms_recover_at_boundaries() {
         );
     }
 }
+
+#[test]
+fn rocdl_preset_exposes_explicit_intrinsic_families() {
+    assert!(DialectRegistry::preset_names().contains(&"rocdl"));
+    let registry = DialectRegistry::from_name("rocdl").unwrap();
+    let source = br#"module {
+      func.func @families(%a: i32, %b: i32, %ptr: !llvm.ptr<3>, %x: f32, %y: f32, %acc: vector<4xf32>) {
+        rocdl.barrier {tag = "barrier"}
+        %count = rocdl.mbcnt.lo %a, %b {tag = "wave"} : (i32, i32) -> i32
+        %read = rocdl.ds.read.tr4.b64 %ptr {tag = "read"} : !llvm.ptr<3> -> vector<2xi32>
+        %lane = rocdl.readfirstlane %a {tag = "lane"} : i32
+        %mfma = rocdl.mfma.f32.4x4x1f32 %x, %y, %acc, %a, %a, %a {tag = "mfma"} : (f32, f32, vector<4xf32>, i32, i32, i32) -> vector<4xf32>
+        %wmma = rocdl.wmma.f16.16x16x16.f16 %a, %b, %acc {opsel = false} : (i32, i32, vector<4xf32>) -> vector<4xf32>
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, signature) in [
+        ("rocdl.barrier", 0, 0, "() -> ()"),
+        ("rocdl.mbcnt.lo", 2, 1, "(i32, i32) -> i32"),
+        (
+            "rocdl.ds.read.tr4.b64",
+            1,
+            1,
+            "!llvm.ptr<3> -> vector<2xi32>",
+        ),
+        ("rocdl.readfirstlane", 1, 1, "(i32) -> i32"),
+        (
+            "rocdl.mfma.f32.4x4x1f32",
+            6,
+            1,
+            "(f32, f32, vector<4xf32>, i32, i32, i32) -> vector<4xf32>",
+        ),
+        (
+            "rocdl.wmma.f16.16x16x16.f16",
+            3,
+            1,
+            "(i32, i32, vector<4xf32>) -> vector<4xf32>",
+        ),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+}
+#[test]
+fn rocdl_preset_inventory_matches_expanded_llvm_22_1_coverage() {
+    let registry = DialectRegistry::from_name("rocdl").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/rocdl.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 125);
+    assert!(config.operation_formats.is_empty());
+
+    let supported = config
+        .operation_shapes
+        .iter()
+        .map(|operation| operation.name.as_str())
+        .collect::<Vec<_>>();
+    for (prefix, expected) in [
+        ("rocdl.mfma.", 47),
+        ("rocdl.smfmac.", 28),
+        ("rocdl.wmma.", 38),
+    ] {
+        assert_eq!(
+            supported
+                .iter()
+                .filter(|name| name.starts_with(prefix))
+                .count(),
+            expected,
+            "{prefix}"
+        );
+    }
+
+    for (name, shape) in [
+        ("rocdl.barrier", OperationShape::OptionalTypedOperands),
+        ("rocdl.s.barrier", OperationShape::OptionalTypedOperands),
+        ("rocdl.mbcnt.lo", OperationShape::OperandClauses),
+        ("rocdl.mbcnt.hi", OperationShape::OperandClauses),
+        ("rocdl.ds_swizzle", OperationShape::OperandClauses),
+        ("rocdl.ds_bpermute", OperationShape::OperandClauses),
+        ("rocdl.readlane", OperationShape::OperandClauses),
+        ("rocdl.readfirstlane", OperationShape::UnaryOperand),
+        ("rocdl.ds.read.tr4.b64", OperationShape::OperandClauses),
+        ("rocdl.ds.read.tr6.b96", OperationShape::OperandClauses),
+        ("rocdl.ds.read.tr8.b64", OperationShape::OperandClauses),
+        ("rocdl.ds.read.tr16.b64", OperationShape::OperandClauses),
+    ] {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+
+    for name in [
+        "rocdl.workitem.id.x",
+        "rocdl.s.barrier.signal",
+        "rocdl.s.barrier.init",
+        "rocdl.raw.buffer.load",
+        "rocdl.tensor.load.to.lds",
+        "rocdl.cvt.scalef32.pk8.fp8.f32",
+        "rocdl.update.dpp",
+        "rocdl.ballot",
+        "rocdl.cos",
+    ] {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+#[test]
+fn rocdl_inferred_immediate_range_and_qualified_forms_recover_at_boundaries() {
+    let registry = DialectRegistry::from_name("rocdl").unwrap();
+    let source = br#"module {
+      func.func @gaps(%ptr: !llvm.ptr<3>, %value: i32, %scale: i32) {
+        %id = rocdl.workitem.id.x range #llvm.constant_range<0, 64> : i32
+        rocdl.s.barrier.signal id = 1
+        rocdl.s.barrier.init %ptr member_cnt = 4 : !llvm.ptr<3>
+        %cos = rocdl.cos %value i32 -> i32
+        %converted = rocdl.cvt.scalef32.pk8.fp8.f32 {round = 0 : i32} %value, %scale : i32
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count()
+            >= 5,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}

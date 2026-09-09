@@ -1,0 +1,512 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {
+      "name": "rocdl.barrier",
+      "shape": "optional_typed_operands"
+    },
+    {
+      "name": "rocdl.s.barrier",
+      "shape": "optional_typed_operands"
+    },
+    {
+      "name": "rocdl.readfirstlane",
+      "shape": "unary_operand"
+    },
+    {
+      "name": "rocdl.ds.read.tr16.b64",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.ds.read.tr4.b64",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.ds.read.tr6.b96",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.ds.read.tr8.b64",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.ds_bpermute",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.ds_swizzle",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mbcnt.hi",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mbcnt.lo",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x16bf16.1k",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x16f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x1f32",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x2bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x32.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x32.bf8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x32.bf8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x32.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x32.fp8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x32.fp8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x4bf16.1k",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x4f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x4f32",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x8.xf32",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.16x16x8bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x16.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x16.bf8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x16.bf8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x16.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x16.fp8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x16.fp8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x1f32",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x2bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x2f32",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x4.xf32",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x4bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x4bf16.1k",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x4f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x8bf16.1k",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.32x32x8f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.4x4x1f32",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.4x4x2bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.4x4x4bf16.1k",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f32.4x4x4f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f64.16x16x4f64",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.f64.4x4x4f64",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.i32.16x16x16i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.i32.16x16x32.i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.i32.16x16x4i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.i32.16x16x64.i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.i32.32x32x16.i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.i32.32x32x32.i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.i32.32x32x4i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.i32.32x32x8i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.i32.4x4x4i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.scale.f32.16x16x128.f8f6f4",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.mfma.scale.f32.32x32x64.f8f6f4",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.readlane",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x128.bf8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x128.bf8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x128.fp8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x128.fp8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x32.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x32.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x64.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x64.bf8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x64.bf8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x64.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x64.fp8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.16x16x64.fp8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x16.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x16.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x32.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x32.bf8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x32.bf8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x32.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x32.fp8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x32.fp8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x64.bf8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x64.bf8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x64.fp8.bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.f32.32x32x64.fp8.fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.i32.16x16x128.i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.i32.16x16x64.i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.i32.32x32x32.i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.smfmac.i32.32x32x64.i8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.bf16.16x16x16.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.bf16.16x16x32.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.bf16f32.16x16x32.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x128.bf8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x128.bf8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x128.fp8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x128.fp8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x16.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x32.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x64.bf8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x64.bf8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x64.fp8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f16.16x16x64.fp8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x128.bf8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x128.bf8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x128.fp8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x128.fp8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x16.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x16.bf8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x16.bf8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x16.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x16.fp8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x16.fp8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x32.bf16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x32.f16",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x4.f32",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x64.bf8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x64.bf8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x64.fp8_bf8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.f32.16x16x64.fp8_fp8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.i32.16x16x16.iu4",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.i32.16x16x16.iu8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.i32.16x16x32.iu4",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.i32.16x16x64.iu8",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.scale.f32.16x16x128.f8f6f4",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.scale.f32.32x16x128.f4",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.scale16.f32.16x16x128.f8f6f4",
+      "shape": "operand_clauses"
+    },
+    {
+      "name": "rocdl.wmma.scale16.f32.32x16x128.f4",
+      "shape": "operand_clauses"
+    }
+  ],
+  "operation_formats": []
+}

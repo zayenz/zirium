@@ -43,6 +43,7 @@ It does not establish that the operation can be verified or rewritten.
 | PDL preset | Core only; all 15 PDL operations remain on recovery. |
 | PDLInterp preset | Core only; all 39 PDLInterp operations remain on recovery. |
 | Ptr preset | Core plus default forms of 4 among 13 Ptr operations. |
+| ROCDL preset | Core plus 125 structurally exact forms among 323 ROCDL operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -77,7 +78,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -941,6 +942,58 @@ balanced opaque values and need no dialect descriptors. The preset preserves
 the structural operand/result signatures and ordinary dictionary attributes;
 it does not implement Quant's expressed/storage type checks, shape checks,
 per-axis integrity rules, folding, or quantization semantics.
+
+ROCDL has 323 concrete `rocdl.*` operations in LLVM 22.1. The inventory was
+produced by expanding `ROCDLOps.td` with LLVM TableGen's JSON backend and
+selecting concrete `Op` records whose dialect is `ROCDL_Dialect`. This matters
+for the generated MFMA, SMFMAC, WMMA, scaled-WMMA, conversion, and memory
+families: counting visible `def` statements is not an exact inventory.
+ROCDL target attributes and GPU/Transform operations that consume them are
+not operations in this namespace and are outside the count.
+
+The preset registers 125 operations in assembly families whose complete SSA
+operand and result types are spelled by the custom form:
+
+- All 47 MFMA and 28 SMFMAC operations use a variadic operand list and a full
+  functional type. All 38 WMMA operations do the same for three or five SSA
+  operands. Named WMMA parameters such as sign, clamp, reuse, format, scale
+  type, and `opsel` are attributes in the ordinary dictionary; they are not
+  counted as SSA operands. MFMA's variadic `$args`, including intrinsic
+  immediate arguments represented by SSA constants, remain operands.
+- `rocdl.mbcnt.lo`, `rocdl.mbcnt.hi`, `rocdl.ds_swizzle`,
+  `rocdl.ds_bpermute`, and `rocdl.readlane` spell complete two-input function
+  types. `rocdl.readfirstlane` has one same-typed input and result.
+- The four `rocdl.ds.read.tr*.b*` operations spell an unqualified pointer type
+  and a result type on opposite sides of an arrow. `rocdl.barrier` and
+  `rocdl.s.barrier` are exact zero-operand, zero-result forms.
+
+The remaining 198 operations stay on whole-operation recovery, grouped by the
+reason a nearby shape would be structurally dishonest:
+
+- Sixteen special-register and dimension operations have an optional
+  positional `range` attribute. The preset does not register only their
+  dictionary-and-result suffix because that would reject a valid range.
+- Twenty-three synchronization and scheduling operations use positional
+  immediate attributes such as `id =`, `member_cnt =`, count, mask, priority,
+  bitfield, size, group, scope, or variant. Some also use qualified pointer
+  types or an arrow without a complete SSA function signature.
+- Forty-two raw-buffer, pointer-buffer, LDS/tensor load-store, prefetch, and
+  asynchronous memory operations use custom C++ assembly, qualified pointer
+  types, cache-policy attributes, or signatures that omit or infer some SSA
+  operand or result types.
+- One hundred nine conversion, permutation, DPP, ballot, and median operations
+  mix SSA values with positional selector, scale, seed, destination, and
+  modifier attributes, while spelling only a result type or another partial
+  signature. These positional fields are not modeled as operands.
+- Eight scalar math operations use `qualified(type(...))` on both sides of a
+  one-off arrow form. The current preset does not broaden the format system
+  solely for this family.
+
+No concrete ROCDL operation owns a region or successor, and none defines or
+uses an MLIR symbol. LLVM pointer/vector types and ROCDL/LLVM attributes remain
+balanced opaque values. The preset adds no target-availability checks,
+intrinsic verification, immediate validation, type inference, memory effects,
+or execution semantics.
 
 Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
 21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,
