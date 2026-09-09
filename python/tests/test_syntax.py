@@ -129,6 +129,23 @@ def test_malformed_input_has_ranged_diagnostics():
     parsed = zirium.parse_bytes(b'"broken"(')
     assert parsed.diagnostics
     assert all(start <= end for start, end in (d.range for d in parsed.diagnostics))
+    assert all(d.kind and d.message for d in parsed.diagnostics)
+
+
+def test_diagnostic_offsets_convert_to_one_based_line_and_column():
+    source = '"ok"() : () -> ()\n\u00e5 vendor.unknown\n'.encode()
+    parsed = zirium.parse_bytes(source)
+    diagnostic = next(
+        item
+        for item in parsed.diagnostics
+        if item.kind == "parser.UnknownCustomOperation"
+    )
+    assert parsed.line_column(diagnostic.range[0]) == (2, 3)
+    assert "vendor.unknown" in diagnostic.message
+    assert source[slice(*diagnostic.range)] == b"vendor.unknown"
+    assert parsed.line_column(len(source)) == (3, 1)
+    with pytest.raises(ValueError, match="exceeds file length"):
+        parsed.line_column(len(source) + 1)
 
 
 def _columns(parsed):

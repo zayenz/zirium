@@ -5,7 +5,45 @@ pub(super) struct Diagnostic {
     #[pyo3(get)]
     kind: String,
     #[pyo3(get)]
+    message: String,
+    #[pyo3(get)]
     range: (u32, u32),
+}
+
+fn lexer_diagnostic_message(kind: zirium::lexer::DiagnosticKind) -> &'static str {
+    use zirium::lexer::DiagnosticKind;
+    match kind {
+        DiagnosticKind::FileLimit => "file size limit exceeded",
+        DiagnosticKind::TokenLimit => "token limit exceeded",
+        DiagnosticKind::InvalidByte => "invalid byte in input",
+        DiagnosticKind::UnterminatedString => "unterminated string literal",
+        DiagnosticKind::InvalidEscape => "invalid escape sequence",
+        DiagnosticKind::InvalidIdentifier => "invalid identifier",
+    }
+}
+
+fn parser_diagnostic_message(
+    kind: zirium::parser::ParseDiagnosticKind,
+    source: &[u8],
+    range: TextRange,
+) -> String {
+    use zirium::parser::ParseDiagnosticKind;
+    match kind {
+        ParseDiagnosticKind::Syntax => "invalid syntax".to_owned(),
+        ParseDiagnosticKind::UnknownCustomOperation => {
+            let name = source
+                .get(range.start() as usize..range.end() as usize)
+                .map(String::from_utf8_lossy)
+                .unwrap_or_default();
+            if name.is_empty() {
+                "unknown custom operation".to_owned()
+            } else {
+                format!("unknown custom operation `{name}`")
+            }
+        }
+        ParseDiagnosticKind::ProgressLimit => "parser recovery made no progress".to_owned(),
+        ParseDiagnosticKind::DepthLimit => "delimiter nesting depth limit exceeded".to_owned(),
+    }
 }
 
 #[pyclass(frozen, module = "zirium._zirium")]
@@ -450,6 +488,7 @@ impl Operation {
 pub(super) struct File {
     pub(super) parsed: Arc<ParsedFile>,
     pub(super) registry: RegistryKind,
+    pub(super) line_starts: OnceLock<Vec<u32>>,
 }
 
 #[pymethods]
@@ -469,6 +508,7 @@ impl File {
             .iter()
             .map(|diagnostic| Diagnostic {
                 kind: format!("lexer.{:?}", diagnostic.kind()),
+                message: lexer_diagnostic_message(diagnostic.kind()).to_owned(),
                 range: (diagnostic.range().start(), diagnostic.range().end()),
             });
         let parser = self
@@ -478,9 +518,45 @@ impl File {
             .iter()
             .map(|diagnostic| Diagnostic {
                 kind: format!("parser.{:?}", diagnostic.kind()),
+                message: parser_diagnostic_message(
+                    diagnostic.kind(),
+                    self.parsed.original_bytes(),
+                    diagnostic.range(),
+                ),
                 range: (diagnostic.range().start(), diagnostic.range().end()),
             });
         lexer.chain(parser).collect()
+    }
+    /// Converts a byte offset into a one-based `(line, column)` pair.
+    ///
+    /// Columns count Unicode characters after replacing invalid UTF-8, so this
+    /// also works for files parsed with `parse_bytes`.
+    fn line_column(&self, offset: u32) -> PyResult<(usize, usize)> {
+        let source = self.parsed.original_bytes();
+        if offset as usize > source.len() {
+            return Err(PyValueError::new_err(format!(
+                "byte offset {offset} exceeds file length {}",
+                source.len()
+            )));
+        }
+        let line_starts = self.line_starts.get_or_init(|| {
+            std::iter::once(0)
+                .chain(
+                    source
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, byte)| **byte == b'\n')
+                        .map(|(index, _)| index as u32 + 1),
+                )
+                .collect()
+        });
+        let line = line_starts.partition_point(|&start| start <= offset);
+        let line_start = line_starts[line - 1] as usize;
+        let column = String::from_utf8_lossy(&source[line_start..offset as usize])
+            .chars()
+            .count()
+            + 1;
+        Ok((line, column))
     }
     fn original_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, self.parsed.original_bytes())
@@ -575,6 +651,7 @@ impl File {
             .diagnostics
             .into_iter()
             .map(|diagnostic| SemanticDiagnostic {
+                kind: diagnostic.code.as_str(),
                 code: diagnostic.code.as_str(),
                 range: (diagnostic.range.start(), diagnostic.range.end()),
                 message: diagnostic.message,

@@ -9,7 +9,7 @@ use std::{
     io::Read,
     mem::size_of,
     path::PathBuf,
-    sync::{Arc, RwLock},
+    sync::{Arc, OnceLock, RwLock},
 };
 use zirium::lexer::TokenKind;
 use zirium::{
@@ -93,6 +93,7 @@ fn parsed(bytes: Vec<u8>, limits: ParseLimits, registry: RegistryKind) -> PyResu
         .map(|parsed| File {
             parsed: Arc::new(parsed),
             registry,
+            line_starts: OnceLock::new(),
         })
         .map_err(|error| match error {
             ParseFileError::ResourceLimit(_) => ResourceLimitError::new_err(error.to_string()),

@@ -170,7 +170,8 @@ parsed = zirium.parse_bytes(source)
 assert parsed.original_bytes() == source
 
 for diagnostic in parsed.diagnostics:
-    print(diagnostic.kind, diagnostic.range)
+    line, column = parsed.line_column(diagnostic.range[0])
+    print(f"{line}:{column}: {diagnostic.kind}: {diagnostic.message}")
 
 for index in range(parsed.operation_count):
     operation = parsed.operation(index)
@@ -204,6 +205,9 @@ checked scalar conversion. `File.node()` and `File.token()` create wrappers
 only when requested.
 
 Use `parse_text` for Python strings, `parse_bytes` for arbitrary bytes, and `parse_file` for a path. `parse_text` encodes its input as UTF-8. The other two paths preserve raw bytes, including invalid UTF-8.
+Diagnostic ranges are half-open byte offsets. `File.line_column()` converts an
+offset to a one-based line and column; columns count Unicode characters, with
+invalid UTF-8 replaced as it is when decoding Python-facing diagnostic text.
 
 ## Lower and verify semantic data
 
@@ -220,7 +224,8 @@ parsed = zirium.parse_text('''\
 result = parsed.lower_strict("semantic")
 if result.document is None:
     for diagnostic in result.diagnostics:
-        print(diagnostic.code, diagnostic.range, diagnostic.message)
+        line, column = parsed.line_column(diagnostic.range[0])
+        print(line, column, diagnostic.kind, diagnostic.message)
     raise SystemExit(1)
 
 document = result.document

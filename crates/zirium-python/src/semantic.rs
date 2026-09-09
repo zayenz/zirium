@@ -113,6 +113,7 @@ impl Document {
             .diagnostics()
             .iter()
             .map(|diagnostic| SemanticDiagnostic {
+                kind: diagnostic.code.as_str(),
                 code: diagnostic.code.as_str(),
                 range: (diagnostic.range.start(), diagnostic.range.end()),
                 message: diagnostic.message.clone(),
@@ -502,6 +503,8 @@ pub(super) struct LoweringResult {
 #[pyclass(frozen, module = "zirium._zirium")]
 #[derive(Clone)]
 pub(super) struct SemanticDiagnostic {
+    #[pyo3(get)]
+    pub(super) kind: &'static str,
     #[pyo3(get)]
     pub(super) code: &'static str,
     #[pyo3(get)]
