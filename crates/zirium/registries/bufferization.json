@@ -1,0 +1,17 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "bufferization.clone", "shape": "unary_operand"},
+    {"name": "bufferization.materialize_in_destination", "shape": "operand_clauses"},
+    {"name": "bufferization.dealloc_tensor", "shape": "optional_typed_operands"},
+    {"name": "bufferization.to_tensor", "shape": "operand_clauses"},
+    {"name": "bufferization.to_buffer", "shape": "operand_clauses"}
+  ],
+  "operation_formats": []
+}

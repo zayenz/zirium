@@ -1225,6 +1225,110 @@ fn async_preset_inventory_matches_llvm_22_1_structural_coverage() {
 }
 
 #[test]
+fn bufferization_preset_exposes_only_spelled_operand_and_result_types() {
+    let registry = DialectRegistry::from_name("bufferization").unwrap();
+    let source = br#"module {
+      func.func @bufferize(%tensor: tensor<4xf32>, %buffer: memref<4xf32>) {
+        %clone = bufferization.clone %buffer {tag = "clone"} : memref<4xf32> to memref<4xf32>
+        %from_buffer = bufferization.to_tensor %buffer restrict writable {tag = "tensor"} : memref<4xf32> to tensor<4xf32>
+        %to_buffer = bufferization.to_buffer %tensor read_only : tensor<4xf32> to memref<4xf32>
+        %materialized = bufferization.materialize_in_destination %tensor in %from_buffer : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xf32>
+        bufferization.materialize_in_destination %tensor in restrict writable %buffer : (tensor<4xf32>, memref<4xf32>) -> ()
+        bufferization.dealloc_tensor %materialized : tensor<4xf32>
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results) in [
+        ("bufferization.clone", 1, &["memref<4xf32>"][..]),
+        ("bufferization.to_tensor", 1, &["tensor<4xf32>"][..]),
+        ("bufferization.to_buffer", 1, &["memref<4xf32>"][..]),
+        (
+            "bufferization.materialize_in_destination",
+            2,
+            &["tensor<4xf32>"][..],
+        ),
+        ("bufferization.dealloc_tensor", 1, &[][..]),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document
+                .result_types(operation)
+                .unwrap()
+                .iter()
+                .map(|ty| document.type_spelling(*ty).unwrap())
+                .collect::<Vec<_>>(),
+            results,
+            "{name}"
+        );
+    }
+
+    let materializations = document
+        .operations()
+        .filter(|operation| {
+            document.operation_name(*operation) == Some("bufferization.materialize_in_destination")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(materializations.len(), 2);
+    assert_eq!(document.result_types(materializations[1]).unwrap().len(), 0);
+
+    let clone = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("bufferization.clone"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(clone)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "\"clone\"")
+    );
+}
+
+#[test]
+fn bufferization_preset_inventory_matches_llvm_22_1_custom_forms() {
+    let registry = DialectRegistry::from_name("bufferization").unwrap();
+    for (name, shape) in [
+        ("bufferization.clone", OperationShape::UnaryOperand),
+        (
+            "bufferization.materialize_in_destination",
+            OperationShape::OperandClauses,
+        ),
+        (
+            "bufferization.dealloc_tensor",
+            OperationShape::OptionalTypedOperands,
+        ),
+        ("bufferization.to_tensor", OperationShape::OperandClauses),
+        ("bufferization.to_buffer", OperationShape::OperandClauses),
+    ] {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+
+    let unsupported = ["bufferization.alloc_tensor", "bufferization.dealloc"];
+    assert_eq!(5 + unsupported.len(), 7);
+    for name in unsupported {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])

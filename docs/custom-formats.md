@@ -24,6 +24,7 @@ It does not establish that the operation can be verified or rewritten.
 | ArmSME preset | Core plus 3 of the 68 ArmSME operations. |
 | ArmSVE preset | Core plus 9 of the 21 ArmSVE custom-form operations. |
 | Async preset | Core plus 11 of the 29 Async operations. |
+| Bufferization preset | Core plus 5 of the 7 Bufferization operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -57,7 +58,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, and `async` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, and `bufferization` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -277,6 +278,28 @@ types. Async defines no dialect attributes. Its six `!async.*` types remain
 opaque, including the wrapped element type of `!async.value<...>`. The only
 operation regions are the supported function body and unsupported execute
 body; neither operation uses a post-region dictionary.
+
+Bufferization registers 5 of its 7 operations. `bufferization.clone` exposes
+its memref operand and its independently spelled memref result type.
+`bufferization.dealloc_tensor` exposes one typed tensor operand and no SSA
+result. `bufferization.to_tensor` and `bufferization.to_buffer` expose their
+single operand and real conversion result; their optional `restrict`,
+`writable`, and `read_only` unit-keyword clauses remain source-preserved rather
+than becoming semantic dictionary attributes. `bufferization.materialize_in_destination`
+exposes its source and destination operands and uses its full function-type
+trailer, so tensor destinations have the explicitly spelled tensor result and
+memref destinations correctly have no result. Ordinary attribute dictionaries
+on these forms remain available to semantic queries.
+
+The other two operations remain on whole-operation recovery.
+`bufferization.alloc_tensor` mixes index-valued dynamic sizes, an optional
+tensor copy, and an optional index size hint, but its trailer spells only the
+inferred tensor result. `bufferization.dealloc` types its memref lists while
+omitting the `i1` condition types and inferring one `i1` result per retained
+memref. Registering either with the broad clause shape would assign incorrect
+operand or result types. All 7 operations use custom assembly; there are no
+additional default/generic concrete operations. The dialect defines no types
+or dialect attributes, and none of its operations have regions or successors.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block
