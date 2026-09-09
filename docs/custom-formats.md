@@ -32,6 +32,7 @@ It does not establish that the operation can be verified or rewritten.
 | Func preset | Exact custom forms for 3 of the 5 Func operations. |
 | GPU preset | Core plus default forms of 10 of the 66 GPU operations. |
 | Index preset | Core plus the 2 explicitly typed casts among 26 Index operations. |
+| IRDL preset | Core only; all 17 IRDL operations remain on recovery. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -481,6 +482,33 @@ All 26 operations admit ordinary attribute dictionaries, and none has regions
 or successors. Dictionaries on unsupported operations remain lossless inside
 whole-operation recovery; the preset does not interpret the predicate or
 constant attributes.
+
+IRDL defines 17 operations in LLVM 22.1. The preset adds core syntax but no
+operation registrations. Its four symbol-bearing definitions (`irdl.dialect`,
+`irdl.type`, `irdl.attribute`, and `irdl.operation`) combine a symbol, an
+optional `attributes` dictionary, and a custom single-block region. Mapping
+them to the superficially similar function or region shapes would misstate
+their header and region structure.
+
+The five definition-list operations (`irdl.parameters`, `irdl.operands`,
+`irdl.results`, `irdl.attributes`, and `irdl.regions`) use custom named-value
+lists or a custom string-to-value map; the operand and result lists also carry
+per-entry `single`, `optional`, or `variadic` markers. `irdl.region` has four
+printed variants for optional entry-block constraints and block count, while
+its `!irdl.region` result is inferred rather than printed. The seven constraint
+operations (`irdl.is`, `irdl.base`, `irdl.parametric`, `irdl.any`,
+`irdl.any_of`, `irdl.all_of`, and `irdl.c_pred`) likewise infer their
+`!irdl.attribute` results; several additionally use positional attributes,
+symbol references, or untyped operand lists. Registering any of these with a
+nearby typed shape would invent result types or discard meaningful clauses, so
+all 17 custom forms remain on whole-operation recovery.
+
+IRDL separately defines two types, `!irdl.attribute` and `!irdl.region`, and
+two attributes, the `irdl.variadicity` enum and its
+`irdl.variadicity_array` container. Their namespaced spellings remain balanced
+opaque dialect values, including the generic `#irdl<...>` attribute spelling;
+the preset does not interpret an IRDL definition as an ODS schema and does not
+apply declarations to later operations.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

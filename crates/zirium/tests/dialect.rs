@@ -14,8 +14,8 @@ use zirium::{
     printer::{DialectPrintMode, PrintLayout},
     semantic::{
         ArithAddiOp, ArithConstantOp, AttributeValue, BuiltinModuleOp, CfBrOp, CfCondBrOp,
-        FuncCallOp, FuncFuncOp, FuncReturnOp, LoweringMode, SemanticVerificationError, ValueId,
-        ValueReference, lower_with_dialect_registry,
+        FuncCallOp, FuncFuncOp, FuncReturnOp, LoweringMode, SemanticVerificationError, TypeValue,
+        ValueId, ValueReference, lower_with_dialect_registry,
     },
 };
 
@@ -2312,6 +2312,105 @@ fn index_preset_inventory_and_inferred_forms_match_llvm_22_1() {
             .operations()
             .any(|operation| document.operation_name(operation) == Some("func.return"))
     );
+}
+
+#[test]
+fn irdl_preset_inventory_and_custom_forms_match_llvm_22_1() {
+    assert!(DialectRegistry::preset_names().contains(&"irdl"));
+    let registry = DialectRegistry::from_name("irdl").unwrap();
+    let unsupported = [
+        "irdl.dialect",
+        "irdl.type",
+        "irdl.attribute",
+        "irdl.parameters",
+        "irdl.operation",
+        "irdl.operands",
+        "irdl.results",
+        "irdl.attributes",
+        "irdl.region",
+        "irdl.regions",
+        "irdl.is",
+        "irdl.base",
+        "irdl.parametric",
+        "irdl.any",
+        "irdl.any_of",
+        "irdl.all_of",
+        "irdl.c_pred",
+    ];
+    assert_eq!(unsupported.len(), 17);
+    assert_eq!(registry.operation_names().count(), 4);
+    for name in unsupported {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      irdl.dialect @example attributes {tag = "definition"} {
+        irdl.operation @variadic {
+          %constraint = irdl.any
+          irdl.operands(input: optional %constraint)
+          irdl.results(output: variadic %constraint)
+        }
+      }
+      "test.after"() : () -> ()
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| { diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation })
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("irdl.dialect"))
+    );
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after"))
+    );
+}
+
+#[test]
+fn irdl_preset_preserves_handle_types_and_variadicity_attributes_as_opaque_values() {
+    let registry = DialectRegistry::from_name("irdl").unwrap();
+    let source = br#"%attribute, %region = "test.irdl_values"() {
+      variadicity = #irdl<variadicity_array[single, optional, variadic]>
+    } : () -> (!irdl.attribute, !irdl.region)"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.operations().next().unwrap();
+    let types = document.result_types(operation).unwrap();
+    assert_eq!(document.type_spelling(types[0]), Some("!irdl.attribute"));
+    assert_eq!(document.type_spelling(types[1]), Some("!irdl.region"));
+    assert!(matches!(
+        document.type_value(types[0]),
+        Some(TypeValue::Opaque(_))
+    ));
+    assert!(matches!(
+        document.type_value(types[1]),
+        Some(TypeValue::Opaque(_))
+    ));
+    let attribute = document.attribute_id(operation, "variadicity").unwrap();
+    let spelling = "#irdl<variadicity_array[single, optional, variadic]>";
+    assert_eq!(document.attribute_spelling_value(attribute), Some(spelling));
+    assert!(matches!(
+        document.attribute_value(attribute),
+        Some(AttributeValue::Opaque(value)) if value.as_ref() == spelling.as_bytes()
+    ));
 }
 
 #[test]
