@@ -77,6 +77,7 @@ const PRESET_NAMES: &[&str] = &[
     "pdl",
     "pdl_interp",
     "ptr",
+    "quant",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -115,6 +116,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "pdl" => Some(include_str!("../../registries/pdl.json")),
         "pdl_interp" => Some(include_str!("../../registries/pdl_interp.json")),
         "ptr" => Some(include_str!("../../registries/ptr.json")),
+        "quant" => Some(include_str!("../../registries/quant.json")),
         _ => None,
     }
 }

@@ -6888,3 +6888,171 @@ fn ptr_opaque_types_and_attributes_need_no_dialect_descriptors() {
                 && value == "#ptr.spec<size = 64, abi = 64, preferred = 64>")
     );
 }
+
+#[test]
+fn quant_preset_exposes_complete_explicit_cast_signatures() {
+    assert!(DialectRegistry::preset_names().contains(&"quant"));
+    let registry = DialectRegistry::from_name("quant").unwrap();
+    let source = br#"module {
+      func.func @forms(
+          %quantized: !quant.uniform<i8:f32, 2.0>,
+          %expressed: f32,
+          %integer: i8) {
+        %dequantized = quant.dcast %quantized {tag = "dcast", metadata = #quant<opaque>} : !quant.uniform<i8:f32, 2.0> to f32
+        %quantized_result = quant.qcast %expressed {tag = "qcast"} : f32 to !quant.uniform<i8:f32, 2.0>
+        %stored = quant.scast %quantized {tag = "storage"} : !quant.uniform<i8:f32, 2.0> to i8
+        %requantized = quant.scast %integer {tag = "requantized"} : i8 to !quant.uniform<i8:f32, 2.0>
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, signature, tag) in [
+        (
+            "quant.dcast",
+            "(!quant.uniform<i8:f32, 2.0>) -> f32",
+            "\"dcast\"",
+        ),
+        (
+            "quant.qcast",
+            "(f32) -> !quant.uniform<i8:f32, 2.0>",
+            "\"qcast\"",
+        ),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(document.operands(operation).unwrap().len(), 1, "{name}");
+        assert_eq!(document.result_types(operation).unwrap().len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute, value)| attribute == "tag" && value == tag),
+            "{name}"
+        );
+    }
+
+    let storage_casts = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("quant.scast"))
+        .collect::<Vec<_>>();
+    assert_eq!(storage_casts.len(), 2);
+    assert_eq!(
+        document.type_spelling(document.function_type(storage_casts[0]).unwrap()),
+        Some("(!quant.uniform<i8:f32, 2.0>) -> i8")
+    );
+    assert_eq!(
+        document.type_spelling(document.function_type(storage_casts[1]).unwrap()),
+        Some("(i8) -> !quant.uniform<i8:f32, 2.0>")
+    );
+
+    let dequantize = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("quant.dcast"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(dequantize)
+            .unwrap()
+            .any(|(name, value)| name == "metadata" && value == "#quant<opaque>")
+    );
+}
+
+#[test]
+fn quant_preset_inventory_matches_llvm_22_1_complete_coverage() {
+    let registry = DialectRegistry::from_name("quant").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/quant.json")).unwrap();
+    assert!(config.operation_shapes.is_empty());
+    assert_eq!(config.operation_formats.len(), 3);
+    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(
+        config
+            .operation_formats
+            .iter()
+            .map(|operation| operation.name.as_str())
+            .collect::<Vec<_>>(),
+        ["quant.dcast", "quant.qcast", "quant.scast"]
+    );
+    for operation in &config.operation_formats {
+        assert_eq!(
+            operation.format,
+            "$operands attr-dict `:` type($operands) `to` type($results)"
+        );
+    }
+
+    // These older spellings are deliberately not claimed by the LLVM 22.1 preset.
+    for name in ["quant.stats", "quant.stats_ref"] {
+        assert!(registry.operation(name).is_none(), "{name}");
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+    }
+}
+
+#[test]
+fn quant_partial_modifier_and_removed_statistics_forms_recover_at_boundaries() {
+    let registry = DialectRegistry::from_name("quant").unwrap();
+    let source = br#"module {
+      func.func @gaps(%quantized: !quant.uniform<i8:f32, 2.0>, %expressed: f32, %storage: i8) {
+        %bad_dcast = quant.dcast %quantized rounding nearest : !quant.uniform<i8:f32, 2.0> to f32
+        %bad_qcast = quant.qcast %expressed saturating : f32 to !quant.uniform<i8:f32, 2.0>
+        %bad_scast = quant.scast %storage signed : i8 to !quant.uniform<i8:f32, 2.0>
+        %missing_input_type = quant.qcast %expressed to !quant.uniform<i8:f32, 2.0>
+        quant.stats %expressed : f32
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::FormatMismatch)
+            .count(),
+        4,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        1,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}

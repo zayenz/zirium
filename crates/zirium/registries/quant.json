@@ -1,0 +1,15 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [],
+  "operation_formats": [
+    {"name": "quant.dcast", "format": "$operands attr-dict `:` type($operands) `to` type($results)"},
+    {"name": "quant.qcast", "format": "$operands attr-dict `:` type($operands) `to` type($results)"},
+    {"name": "quant.scast", "format": "$operands attr-dict `:` type($operands) `to` type($results)"}
+  ]
+}

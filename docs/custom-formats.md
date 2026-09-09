@@ -924,6 +924,24 @@ no regions, successors, or symbol roles. `!ptr.*` types and `#ptr.*`
 attributes remain balanced opaque dialect values; the preset adds no pointer
 type inference, data-layout behavior, memory semantics, or verification.
 
+Quant defines exactly three operations in LLVM 22.1: `quant.dcast`,
+`quant.qcast`, and `quant.scast`. All three are registered with their complete
+declarative format: one SSA operand, an optional ordinary attribute dictionary,
+and explicit operand and result types separated by `to`. `quant.dcast` converts
+a quantized input to its expressed floating-point type, `quant.qcast` converts
+an expressed floating-point input to a quantized result, and `quant.scast`
+converts between a quantized value and its integer storage representation.
+Their scalar, ranked-tensor, and unranked-tensor spellings use the same header.
+
+No Quant operation infers a result type, owns a region or successor, or has a
+symbol role. Statistics operations found in older descriptions of the dialect
+are not part of the pinned LLVM 22.1 `QuantOps.td` inventory. Quantized types
+such as `!quant.uniform<...>` and namespaced `#quant.*` attributes remain
+balanced opaque values and need no dialect descriptors. The preset preserves
+the structural operand/result signatures and ordinary dictionary attributes;
+it does not implement Quant's expressed/storage type checks, shape checks,
+per-axis integrity rules, folding, or quantization semantics.
+
 Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
 21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,
 one `!shard.sharding` result, and explicit input-to-result conversion signature
