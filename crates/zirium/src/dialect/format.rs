@@ -12,6 +12,7 @@ pub(crate) enum FormatBinding {
 pub(crate) enum FormatLiteral {
     Colon,
     To,
+    Into,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +68,7 @@ fn scan(description: &str) -> Option<Vec<FormatStep>> {
             "attr-dict" => FormatStep::AttributeDictionary,
             "`:`" => FormatStep::Literal(FormatLiteral::Colon),
             "`to`" => FormatStep::Literal(FormatLiteral::To),
+            "`into`" => FormatStep::Literal(FormatLiteral::Into),
             "type($operands)" => FormatStep::Type(FormatBinding::Operands),
             "type($value)" => FormatStep::Type(FormatBinding::Value),
             "type($results)" => FormatStep::Type(FormatBinding::Results),
@@ -134,12 +136,23 @@ fn validate(steps: &[FormatStep]) -> Option<()> {
         let operand_type = position(steps, FormatStep::Type(FormatBinding::Operands))?;
         let result_type = position(steps, FormatStep::Type(FormatBinding::Results))?;
         let colon = position(steps, FormatStep::Literal(FormatLiteral::Colon))?;
-        let to = position(steps, FormatStep::Literal(FormatLiteral::To))?;
+        let separators = steps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                matches!(
+                    step,
+                    FormatStep::Literal(FormatLiteral::To | FormatLiteral::Into)
+                )
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
         (capture < attributes
             && attributes < colon
             && colon < operand_type
-            && operand_type < to
-            && to < result_type)
+            && separators.len() == 1
+            && operand_type < separators[0]
+            && separators[0] < result_type)
             .then_some(())
     } else {
         let capture = value_capture?;
@@ -178,14 +191,27 @@ mod tests {
 
     #[test]
     fn compiles_supported_formats_and_rejects_invalid_bindings() {
-        assert!(
+        let to =
             OperationFormat::parse("$operands attr-dict `:` type($operands) `to` type($results)")
-                .is_some()
+                .unwrap();
+        let into =
+            OperationFormat::parse("$operands attr-dict `:` type($operands) `into` type($results)")
+                .unwrap();
+        assert_ne!(to, into);
+        assert_ne!(
+            to.identity_bytes().collect::<Vec<_>>(),
+            into.identity_bytes().collect::<Vec<_>>()
         );
         assert!(
             OperationFormat::parse("$value `:` type($value) attr-dict `:` type($result)").is_some()
         );
         assert!(OperationFormat::parse("$value `:` type($operands)").is_none());
         assert!(OperationFormat::parse("$operands `to` type($results)").is_none());
+        assert!(
+            OperationFormat::parse(
+                "$operands attr-dict `:` type($operands) `to` `into` type($results)"
+            )
+            .is_none()
+        );
     }
 }

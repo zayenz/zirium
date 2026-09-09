@@ -951,6 +951,14 @@ pub(super) fn formatted_operation(
                     good = false;
                 }
             }
+            FormatStep::Literal(FormatLiteral::Into) => {
+                if parser.at(TokenKind::BareIdentifier) && parser.current_text() == "into" {
+                    parser.bump()?;
+                } else {
+                    parser.diagnostic();
+                    good = false;
+                }
+            }
             FormatStep::Type(binding) => {
                 if matches!(binding, FormatBinding::Operands | FormatBinding::Results)
                     && parser.at(TokenKind::LParen)

@@ -1009,12 +1009,12 @@ fn split_top_level(value: &str) -> Vec<&str> {
     result
 }
 
-fn split_top_level_to(value: &str) -> Option<(&str, &str)> {
+fn split_top_level_keyword<'a>(value: &'a str, separator: &str) -> Option<(&'a str, &'a str)> {
     let mut depth = 0i32;
     let mut quoted = false;
     let mut escaped = false;
     let bytes = value.as_bytes();
-    for index in 0..bytes.len().saturating_sub(1) {
+    for index in 0..bytes.len().saturating_sub(separator.len() - 1) {
         let byte = bytes[index];
         if quoted {
             if escaped {
@@ -1037,14 +1037,20 @@ fn split_top_level_to(value: &str) -> Option<(&str, &str)> {
         }
         if depth == 0
             && index > 0
-            && &bytes[index..index + 2] == b"to"
+            && &bytes[index..index + separator.len()] == separator.as_bytes()
             && bytes[index - 1].is_ascii_whitespace()
-            && bytes.get(index + 2).is_some_and(u8::is_ascii_whitespace)
+            && bytes
+                .get(index + separator.len())
+                .is_some_and(u8::is_ascii_whitespace)
         {
-            return Some((&value[..index], &value[index + 2..]));
+            return Some((&value[..index], &value[index + separator.len()..]));
         }
     }
     None
+}
+
+fn split_top_level_to(value: &str) -> Option<(&str, &str)> {
+    split_top_level_keyword(value, "to")
 }
 
 fn attribute_groups<'a>(groups: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
@@ -1206,7 +1212,15 @@ pub(crate) fn lower_operation_format(
     context: &RegisteredLoweringContext<'_>,
 ) -> Option<RegisteredLowering> {
     if format.captures(FormatBinding::Operands) {
-        let (input, result) = split_top_level_to(context.function_type()?)?;
+        let separator = if format
+            .steps()
+            .contains(&FormatStep::Literal(FormatLiteral::Into))
+        {
+            "into"
+        } else {
+            "to"
+        };
+        let (input, result) = split_top_level_keyword(context.function_type()?, separator)?;
         let input = input.trim();
         let input_types = crate::semantic::split_registered_types(input);
         let inputs = if input_types.len() == 1 {
