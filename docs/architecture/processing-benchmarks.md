@@ -44,7 +44,23 @@ ZIRIUM_PARSER_BENCH_SHAPE=block-rich ZIRIUM_PARSER_BENCH_SIZE_MIB=10 ZIRIUM_PARS
 
 The smoke fixture is 64 KiB with one warm-up and one run. The other controls default to a 10 MiB primary fixture, one warm-up, and three runs; `ZIRIUM_PARSER_BENCH_WARMUPS` and `ZIRIUM_PARSER_BENCH_RUNS` override those counts. These measurements used the same machine described below: Apple M1 Max, Darwin 25.5.0, `aarch64-apple-darwin`, release profile, rustc 1.97.1. Fixtures are deterministic and generated in memory; no generated fixture is retained in the repository.
 
-Each row is the median of three runs. Peak allocation is incremental above a baseline taken while the input and prerequisite outputs are live. Lexing retains the source; event production retains the source and token tape; compaction also retains the event tape and measures the input clones and working allocations required by destructive compaction; verification retains the completed unverified CST. The measured output remains live through a black-box observation. These peaks describe separate lifetimes and are not additive.
+Each run first reports an integrated `parser_whole` row with the input size,
+token and node counts, exact retained CST bytes, and peak allocation for the
+complete parse. It then reports the individual construction phases. Values are
+medians of three runs. Peak allocation is incremental above a baseline taken
+while the input and prerequisite outputs are live. Lexing retains the source;
+event production retains the source and token tape; compaction also retains the
+event tape and measures the input clones and working allocations required by
+destructive compaction; verification retains the completed unverified CST. The
+measured output remains live through a black-box observation. The phase peaks
+describe separate lifetimes and are not additive.
+
+The integrated rows recorded on the current measurement machine are:
+
+| fixture | input MiB | median ms | peak live MiB | tokens | nodes | retained CST MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| primary 10 MiB | 10 | 17.862 | 30.62 | 445,433 | 92,801 | 7.10 |
+| block-rich 10 MiB | 10 | 125.355 | 269.85 | 3,936,313 | 1,864,570 | 77.05 |
 
 The following table is the base-041 baseline, before changing compaction:
 

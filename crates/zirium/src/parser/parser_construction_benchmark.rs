@@ -128,6 +128,7 @@ fn measure_parser_construction_and_string_identity() {
 
     let source = Source::new(source_bytes.clone()).unwrap();
     let registry = DialectRegistry::proving();
+    report_whole_parse(shape.name(), source_bytes.clone(), registry, warmups, runs);
     report_phase("lex", warmups, runs, || {
         let (started, baseline) = begin_measurement();
         let output = lex(&source);
@@ -172,6 +173,41 @@ fn measure_parser_construction_and_string_identity() {
         black_box(&tree);
         (result, tree.node_count())
     });
+}
+
+fn report_whole_parse(
+    fixture: &str,
+    source: Arc<[u8]>,
+    registry: &DialectRegistry,
+    warmups: usize,
+    runs: usize,
+) {
+    let measure = || {
+        let (started, baseline) = begin_measurement();
+        let parsed = ParsedFile::parse_with_registry(source.clone(), registry).unwrap();
+        let (elapsed, peak) = finish_measurement(started, baseline);
+        let tree = parsed.syntax().tree();
+        let sample = (
+            elapsed,
+            peak,
+            tree.token_count(),
+            tree.node_count(),
+            tree.exact_retained_bytes(),
+        );
+        black_box(&parsed);
+        sample
+    };
+    for _ in 0..warmups {
+        black_box(measure());
+    }
+    let mut samples = (0..runs).map(|_| measure()).collect::<Vec<_>>();
+    samples.sort_by_key(|sample| sample.0);
+    let (elapsed, peak, tokens, nodes, retained) = samples[samples.len() / 2];
+    println!(
+        "parser_whole fixture={fixture} input_bytes={} median_ns={} incremental_peak_live_bytes={peak} tokens={tokens} nodes={nodes} exact_cst_retained_bytes={retained}",
+        source.len(),
+        elapsed.as_nanos(),
+    );
 }
 
 fn report_phase(
