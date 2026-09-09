@@ -370,6 +370,17 @@ fn tosa_preset_structures_operands_attributes_and_constants() {
     let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     let document = lowered.document.unwrap();
+    let constant = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("tosa.const"))
+        .unwrap();
+    assert!(document.operands(constant).unwrap().is_empty());
+    assert_eq!(document.result_types(constant).unwrap().len(), 1);
+    let value = document.attribute_id(constant, "value").unwrap();
+    assert_eq!(
+        document.attribute_spelling_value(value),
+        Some("dense<0.000000e+00> : tensor<2xf32>")
+    );
     let add = document
         .operations()
         .find(|operation| document.operation_name(*operation) == Some("tosa.add"))
@@ -377,6 +388,100 @@ fn tosa_preset_structures_operands_attributes_and_constants() {
     assert_eq!(document.operands(add).unwrap().len(), 2);
     assert!(document.attribute_id(add, "shift").is_some());
     assert_eq!(document.result_types(add).unwrap().len(), 1);
+}
+
+#[test]
+fn tosa_preset_preserves_control_flow_regions_and_zero_result_yields() {
+    let registry = DialectRegistry::from_name("tosa").unwrap();
+    let source =
+        br#"func.func @control(%condition: tensor<i1>, %value: tensor<i32>) -> tensor<i32> {
+      %selected = tosa.cond_if %condition : tensor<i1> -> tensor<i32> {
+        tosa.yield %value {branch = "then"} : tensor<i32>
+      } else {
+        tosa.yield %value : tensor<i32>
+      }
+      %looped = tosa.while_loop (%iter = %selected) : (tensor<i32>) -> tensor<i32> {
+        %true = tosa.const dense<true> : tensor<i1>
+        tosa.yield %true : tensor<i1>
+      } do {
+      ^bb0(%body: tensor<i32>):
+        tosa.yield %body : tensor<i32>
+      }
+      func.return %looped : tensor<i32>
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, block_arguments) in [
+        ("tosa.cond_if", 1, 1, [0, 0]),
+        ("tosa.while_loop", 1, 1, [1, 1]),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.operation_regions(operation).unwrap().len(),
+            2,
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+        for (region, expected) in document
+            .operation_regions(operation)
+            .unwrap()
+            .iter()
+            .zip(block_arguments)
+        {
+            let block = document.region(*region).unwrap().blocks(&document).unwrap()[0];
+            assert_eq!(
+                document.block_argument_types(block).unwrap().len(),
+                expected,
+                "{name}"
+            );
+        }
+    }
+    let yields = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("tosa.yield"))
+        .collect::<Vec<_>>();
+    assert_eq!(yields.len(), 4);
+    for operation in yields {
+        assert_eq!(document.operands(operation).unwrap().len(), 1);
+        assert!(document.result_types(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+    }
+    let tagged_yield = document
+        .operations()
+        .find(|operation| document.attribute_id(*operation, "branch").is_some())
+        .unwrap();
+    assert_eq!(document.operation_name(tagged_yield), Some("tosa.yield"));
+}
+
+#[test]
+fn tosa_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("tosa").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/tosa.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 91);
+    for recovery in ["tosa.variable", "tosa.variable_read", "tosa.variable_write"] {
+        assert_eq!(registry.operation_shape(recovery), None, "{recovery}");
+    }
 }
 
 #[test]

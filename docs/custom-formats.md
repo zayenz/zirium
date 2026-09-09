@@ -84,10 +84,12 @@ StableHLO 1.20.1 opset or its portable artifact format.
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
 `arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, and `tensor` presets were checked against
 LLVM 22.1.0.
-TOSA registers 93 of the 94 operations defined by its main, utility, and shape
-operation files; `tosa.variable` remains on the generic recovery path because
-its custom symbol/type form has no reusable structural signature. SCF registers
-all 12 operations. Linalg registers all 99 operations: its 16 core/structured
+TOSA registers 91 of the 94 operations defined by its main, utility, and shape
+operation files. `tosa.variable`, `tosa.variable_read`, and
+`tosa.variable_write` remain on the generic recovery path because their custom
+forms carry positional symbols that the reusable structural signatures cannot
+preserve; treating `variable_write` as an operand-clause form would also invent
+a result. SCF registers all 12 operations. Linalg registers all 99 operations: its 16 core/structured
 operations, both relayout operations, and 81 generated named operations.
 Tensor-result forms expose their trailing result types; buffer forms without a
 result signature remain usable through recovery where their custom spelling has

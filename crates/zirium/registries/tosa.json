@@ -96,8 +96,6 @@
     {"name": "tosa.tile", "shape": "operand_clauses"},
     {"name": "tosa.transpose", "shape": "operand_clauses"},
     {"name": "tosa.transpose_conv2d", "shape": "operand_clauses"},
-    {"name": "tosa.variable_read", "shape": "operand_clauses"},
-    {"name": "tosa.variable_write", "shape": "operand_clauses"},
     {"name": "tosa.while_loop", "shape": "region_clauses"},
     {"name": "tosa.yield", "shape": "optional_typed_operands"}
   ],
