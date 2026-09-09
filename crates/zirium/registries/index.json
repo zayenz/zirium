@@ -1,0 +1,14 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "index.casts", "shape": "unary_operand"},
+    {"name": "index.castu", "shape": "unary_operand"}
+  ],
+  "operation_formats": []
+}

@@ -31,6 +31,7 @@ It does not establish that the operation can be verified or rewritten.
 | EmitC preset | Core plus 20 of the 45 EmitC custom-form operations. |
 | Func preset | Exact custom forms for 3 of the 5 Func operations. |
 | GPU preset | Core plus default forms of 10 of the 66 GPU operations. |
+| Index preset | Core plus the 2 explicitly typed casts among 26 Index operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -64,7 +65,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, and `gpu` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, and `index` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -457,6 +458,29 @@ The ten operations in `GPUTransformOps.td` have `transform.*` names, including
 the `transform.gpu.*` mapping operations and the GPU conversion/rewrite pattern
 descriptors; they belong to the Transform dialect and are outside the 66-op
 GPU namespace inventory and this preset.
+
+Index defines 26 operations in LLVM 22.1. The preset registers `index.casts`
+and `index.castu`: each exposes one operand, its source type, its destination
+result type, and an ordinary attribute dictionary. The source-to-destination
+syntax matches the reusable unary shape exactly. Signed versus unsigned
+extension is dialect semantics rather than a difference in structural shape.
+
+The other 24 operations remain on whole-operation recovery. All 20 arithmetic
+and bitwise binary operations (`index.add`, `index.sub`, `index.mul`, the five
+division forms, the two remainder forms, the four min/max forms, the three
+shift forms, and `index.and`, `index.or`, and `index.xor`) omit their operand
+and inferred index result types. `index.cmp` has a positional predicate and an
+inferred `i1` result. `index.sizeof` infers its index result, while
+`index.constant` and `index.bool.constant` combine inferred result types with
+positional attributes. A nearby typed shape would invent semantics for these
+forms, so the preset does not register them.
+
+Index defines no dialect types; `index` is a builtin MLIR type. Its one dialect
+attribute is the comparison-predicate enum used positionally by `index.cmp`.
+All 26 operations admit ordinary attribute dictionaries, and none has regions
+or successors. Dictionaries on unsupported operations remain lossless inside
+whole-operation recovery; the preset does not interpret the predicate or
+constant attributes.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

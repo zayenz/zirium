@@ -2179,6 +2179,142 @@ fn gpu_optional_upper_bound_variant_recovers_without_swallowing_the_next_operati
 }
 
 #[test]
+fn index_preset_exposes_exact_cast_source_and_destination_types() {
+    assert!(DialectRegistry::preset_names().contains(&"index"));
+    let registry = DialectRegistry::from_name("index").unwrap();
+    let source = br#"module {
+      func.func @casts(%idx: index) -> index {
+        %integer = index.casts %idx {tag = "signed"} : index to i32
+        %result = index.castu %integer {tag = "unsigned"} : i32 to index
+        func.return %result : index
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    document.verify_semantics(&registry).unwrap();
+
+    for (name, signature, result_type, tag) in [
+        ("index.casts", "(index) -> i32", "i32", "\"signed\""),
+        ("index.castu", "(i32) -> index", "index", "\"unsigned\""),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(document.operands(operation).unwrap().len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(results[0]),
+            Some(result_type),
+            "{name}"
+        );
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute, value)| attribute == "tag" && value == tag),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn index_preset_inventory_and_inferred_forms_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("index").unwrap();
+    for name in ["index.casts", "index.castu"] {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::UnaryOperand),
+            "{name}"
+        );
+    }
+
+    let unsupported = [
+        "index.add",
+        "index.sub",
+        "index.mul",
+        "index.divs",
+        "index.divu",
+        "index.ceildivs",
+        "index.ceildivu",
+        "index.floordivs",
+        "index.rems",
+        "index.remu",
+        "index.maxs",
+        "index.maxu",
+        "index.mins",
+        "index.minu",
+        "index.shl",
+        "index.shrs",
+        "index.shru",
+        "index.and",
+        "index.or",
+        "index.xor",
+        "index.cmp",
+        "index.sizeof",
+        "index.constant",
+        "index.bool.constant",
+    ];
+    assert_eq!(2 + unsupported.len(), 26);
+    for name in unsupported {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%lhs: index, %rhs: index) {
+        %sum = index.add %lhs, %rhs {tag = "binary"}
+        %comparison = index.cmp eq(%lhs, %rhs) {tag = "predicate"}
+        %width = index.sizeof {tag = "sizeof"}
+        %number = index.constant {tag = "integer"} 42
+        %boolean = index.bool.constant {tag = "boolean"} true
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        5
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after"))
+    );
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("func.return"))
+    );
+}
+
+#[test]
 fn dlti_preset_preserves_llvm_22_1_attributes_without_claiming_operations() {
     let registry = DialectRegistry::from_name("dlti").unwrap();
     assert_eq!(registry.operation_names().count(), 4);
