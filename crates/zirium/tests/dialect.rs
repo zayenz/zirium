@@ -5937,3 +5937,289 @@ fn nvgpu_inferred_index_token_and_destination_forms_recover() {
         );
     }
 }
+
+#[test]
+fn nvvm_preset_exposes_explicit_register_intrinsic_and_function_type_roles() {
+    assert!(DialectRegistry::preset_names().contains(&"nvvm"));
+    let registry = DialectRegistry::from_name("nvvm").unwrap();
+    let source = br#"module {
+      func.func @families(%x: f32, %mask: i32, %barrier: !llvm.ptr<3>, %count: i32) {
+        %clock = nvvm.read.ptx.sreg.clock64 {tag = "clock"} : i64
+        nvvm.barrier0 {tag = "barrier"}
+        %reciprocal = nvvm.rcp.approx.ftz.f %x {tag = "unary"} : f32
+        nvvm.bar.warp.sync %mask {tag = "warp"} : i32
+        nvvm.mbarrier.inval %barrier {tag = "invalidate"} : !llvm.ptr<3>
+        %state = nvvm.mbarrier.arrive.nocomplete %barrier, %count {tag = "arrive"}
+          : !llvm.ptr<3>, i32 -> i64
+        %matrix = nvvm.ldmatrix %barrier
+          {num = 1 : i32, layout = #nvvm.mma_layout<row>}
+          : (!llvm.ptr<3>) -> i32
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, signature) in [
+        ("nvvm.read.ptx.sreg.clock64", 0, 1, "() -> i64"),
+        ("nvvm.barrier0", 0, 0, "() -> ()"),
+        ("nvvm.rcp.approx.ftz.f", 1, 1, "(f32) -> f32"),
+        ("nvvm.bar.warp.sync", 1, 0, "(i32) -> ()"),
+        ("nvvm.mbarrier.inval", 1, 0, "(!llvm.ptr<3>) -> ()"),
+        (
+            "nvvm.mbarrier.arrive.nocomplete",
+            2,
+            1,
+            "!llvm.ptr<3>, i32 -> i64",
+        ),
+        ("nvvm.ldmatrix", 1, 1, "(!llvm.ptr<3>) -> i32"),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn nvvm_preset_inventory_matches_expanded_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("nvvm").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/nvvm.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 71);
+
+    for name in [
+        "nvvm.read.ptx.sreg.clock",
+        "nvvm.read.ptx.sreg.envreg0",
+        "nvvm.read.ptx.sreg.envreg31",
+        "nvvm.read.ptx.sreg.lanemask.eq",
+    ] {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::VariadicOperands),
+            "{name}"
+        );
+    }
+    for name in [
+        "nvvm.barrier0",
+        "nvvm.cp.async.bulk.commit.group",
+        "nvvm.fence.proxy",
+        "nvvm.tcgen05.relinquish_alloc_permit",
+        "nvvm.bar.warp.sync",
+        "nvvm.mbarrier.inval",
+        "nvvm.tcgen05.shift",
+    ] {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::OptionalTypedOperands),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        registry.operation_shape("nvvm.rcp.approx.ftz.f"),
+        Some(OperationShape::UnaryOperand)
+    );
+    for name in [
+        "nvvm.ldmatrix",
+        "nvvm.mbarrier.arrive.nocomplete",
+        "nvvm.mbarrier.test.wait",
+        "nvvm.tcgen05.mma_smem_desc",
+        "nvvm.wmma.mma",
+    ] {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::OperandClauses),
+            "{name}"
+        );
+    }
+
+    let recovery = [
+        "nvvm.barrier",
+        "nvvm.barrier.arrive",
+        "nvvm.clusterlaunchcontrol.query.cancel",
+        "nvvm.clusterlaunchcontrol.try.cancel",
+        "nvvm.convert.bf16x2.to.f8x2",
+        "nvvm.convert.f16x2.to.f8x2",
+        "nvvm.convert.f32x2.to.bf16x2",
+        "nvvm.convert.f32x2.to.f16x2",
+        "nvvm.convert.f32x2.to.f4x2",
+        "nvvm.convert.f32x2.to.f6x2",
+        "nvvm.convert.f32x2.to.f8x2",
+        "nvvm.convert.f32x4.to.f4x4",
+        "nvvm.convert.f32x4.to.f6x4",
+        "nvvm.convert.f32x4.to.f8x4",
+        "nvvm.convert.f4x2.to.f16x2",
+        "nvvm.convert.f6x2.to.f16x2",
+        "nvvm.convert.f8x2.to.bf16x2",
+        "nvvm.convert.f8x2.to.f16x2",
+        "nvvm.convert.float.to.tf32",
+        "nvvm.cp.async.bulk.global.shared.cta",
+        "nvvm.cp.async.bulk.prefetch",
+        "nvvm.cp.async.bulk.shared.cluster.global",
+        "nvvm.cp.async.bulk.shared.cluster.shared.cta",
+        "nvvm.cp.async.bulk.tensor.global.shared.cta",
+        "nvvm.cp.async.bulk.tensor.prefetch",
+        "nvvm.cp.async.bulk.tensor.reduce",
+        "nvvm.cp.async.bulk.tensor.shared.cluster.global",
+        "nvvm.cp.async.bulk.wait_group",
+        "nvvm.cp.async.shared.global",
+        "nvvm.cp.async.wait.group",
+        "nvvm.dot.accumulate.2way",
+        "nvvm.dot.accumulate.4way",
+        "nvvm.elect.sync",
+        "nvvm.fence.proxy.acquire",
+        "nvvm.fence.proxy.release",
+        "nvvm.griddepcontrol",
+        "nvvm.inline_ptx",
+        "nvvm.mapa",
+        "nvvm.match.sync",
+        "nvvm.mbarrier.arrive",
+        "nvvm.mbarrier.arrive.expect_tx",
+        "nvvm.mbarrier.arrive_drop",
+        "nvvm.mbarrier.arrive_drop.expect_tx",
+        "nvvm.mbarrier.complete_tx",
+        "nvvm.mbarrier.expect_tx",
+        "nvvm.mbarrier.init",
+        "nvvm.mbarrier.try_wait.parity",
+        "nvvm.mbarrier.try_wait",
+        "nvvm.memory.barrier",
+        "nvvm.mma.block_scale",
+        "nvvm.mma.sp.block_scale",
+        "nvvm.mma.sp.sync",
+        "nvvm.mma.sync",
+        "nvvm.nanosleep",
+        "nvvm.pmevent",
+        "nvvm.prefetch",
+        "nvvm.prmt",
+        "nvvm.read.ptx.sreg.cluster.ctaid.x",
+        "nvvm.read.ptx.sreg.cluster.ctaid.y",
+        "nvvm.read.ptx.sreg.cluster.ctaid.z",
+        "nvvm.read.ptx.sreg.cluster.ctarank",
+        "nvvm.read.ptx.sreg.cluster.nctaid.x",
+        "nvvm.read.ptx.sreg.cluster.nctaid.y",
+        "nvvm.read.ptx.sreg.cluster.nctaid.z",
+        "nvvm.read.ptx.sreg.cluster.nctarank",
+        "nvvm.read.ptx.sreg.clusterid.x",
+        "nvvm.read.ptx.sreg.clusterid.y",
+        "nvvm.read.ptx.sreg.clusterid.z",
+        "nvvm.read.ptx.sreg.ctaid.x",
+        "nvvm.read.ptx.sreg.ctaid.y",
+        "nvvm.read.ptx.sreg.ctaid.z",
+        "nvvm.read.ptx.sreg.gridid",
+        "nvvm.read.ptx.sreg.laneid",
+        "nvvm.read.ptx.sreg.nclusterid.x",
+        "nvvm.read.ptx.sreg.nclusterid.y",
+        "nvvm.read.ptx.sreg.nclusterid.z",
+        "nvvm.read.ptx.sreg.nctaid.x",
+        "nvvm.read.ptx.sreg.nctaid.y",
+        "nvvm.read.ptx.sreg.nctaid.z",
+        "nvvm.read.ptx.sreg.nsmid",
+        "nvvm.read.ptx.sreg.ntid.x",
+        "nvvm.read.ptx.sreg.ntid.y",
+        "nvvm.read.ptx.sreg.ntid.z",
+        "nvvm.read.ptx.sreg.nwarpid",
+        "nvvm.read.ptx.sreg.smid",
+        "nvvm.read.ptx.sreg.tid.x",
+        "nvvm.read.ptx.sreg.tid.y",
+        "nvvm.read.ptx.sreg.tid.z",
+        "nvvm.read.ptx.sreg.warpid",
+        "nvvm.read.ptx.sreg.warpsize",
+        "nvvm.redux.sync",
+        "nvvm.setmaxregister",
+        "nvvm.shfl.sync",
+        "nvvm.st.bulk",
+        "nvvm.stmatrix",
+        "nvvm.tcgen05.alloc",
+        "nvvm.tcgen05.commit",
+        "nvvm.tcgen05.cp",
+        "nvvm.tcgen05.dealloc",
+        "nvvm.tcgen05.fence",
+        "nvvm.tcgen05.ld",
+        "nvvm.tcgen05.mma",
+        "nvvm.tcgen05.mma.block_scale",
+        "nvvm.tcgen05.mma.sp",
+        "nvvm.tcgen05.mma.sp.block_scale",
+        "nvvm.tcgen05.mma.ws",
+        "nvvm.tcgen05.mma.ws.sp",
+        "nvvm.tcgen05.st",
+        "nvvm.tcgen05.wait",
+        "nvvm.vote.sync",
+        "nvvm.wgmma.mma_async",
+        "nvvm.wgmma.wait.group.sync.aligned",
+        "nvvm.wmma.load",
+        "nvvm.wmma.store",
+    ];
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 185);
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn nvvm_optional_positional_and_inferred_forms_recover_to_the_next_operation() {
+    let registry = DialectRegistry::from_name("nvvm").unwrap();
+    let source = br#"module {
+      func.func @gaps(%x: i32, %ptr: !llvm.ptr<3>, %predicate: i1) {
+        %tid = nvvm.read.ptx.sreg.tid.x range <0, 1024> : i32
+        nvvm.memory.barrier #nvvm.mem_scope<cta>
+        nvvm.setmaxregister #nvvm.action<increase> 64
+        %state = nvvm.mbarrier.arrive %ptr : !llvm.ptr<3> -> i64
+        nvvm.mbarrier.init %ptr, %x, predicate = %predicate : !llvm.ptr<3>, i32, i1
+        nvvm.cp.async.shared.global %ptr, %ptr, %x, cache = #nvvm.load_cache_modifier<ca>
+          : !llvm.ptr<3>, !llvm.ptr, i32
+        %converted = nvvm.convert.float.to.tf32 %x
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count()
+            >= 7,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}

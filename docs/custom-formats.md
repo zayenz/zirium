@@ -38,6 +38,7 @@ It does not establish that the operation can be verified or rewritten.
 | MLProgram preset | Core only; all 11 MLProgram operations remain on recovery. |
 | MPI preset | Core plus 4 structurally exact forms among 15 MPI operations. |
 | NVGPU preset | Core plus 7 structurally exact forms among 24 NVGPU operations. |
+| NVVM preset | Core plus 71 structurally exact forms among 185 NVVM operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -72,7 +73,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -689,6 +690,63 @@ and warpgroup descriptors and accumulators remain balanced opaque dialect
 values. Its enum attributes do likewise when used in generic attribute syntax.
 The preset adds no NVGPU verification, type inference, memory effects, or
 execution semantics.
+
+NVVM has 185 concrete operations in LLVM 22.1. This inventory comes from
+expanding `NVVMOps.td` with LLVM TableGen and selecting concrete `Op` records,
+then prefixing their `opName` with `nvvm.`. Counting handwritten `def`
+statements is not sufficient: the expansion includes all 32
+`nvvm.read.ptx.sreg.envreg0` through `envreg31` operations created by a
+`foreach`, as well as records assembled through shared classes. GPU target
+attributes and `transform.*` extensions are separate namespaces and are not
+part of the 185-operation count.
+
+The preset registers 71 operations in five structurally exact families:
+
+- Result-only registers: 44 non-rangeable forms use
+  `attr-dict : type(result)`. This includes clock and timer registers, all 32
+  environment registers, lane-mask registers, and the three shared-memory-size
+  registers.
+- Attribute-only instructions: 16 no-result barriers, fences, group commits,
+  cluster controls, exit/breakpoint operations, and allocation-permit release
+  forms use only `attr-dict`.
+- Same-typed unary intrinsic: `nvvm.rcp.approx.ftz.f` spells its operand and
+  shared operand/result type explicitly.
+- Typed no-result instructions: `nvvm.bar.warp.sync`,
+  `nvvm.cp.async.mbarrier.arrive`, `nvvm.mbarrier.inval`, and
+  `nvvm.tcgen05.shift` each spell one SSA operand and its type.
+- Complete signatures: `nvvm.ldmatrix`, `nvvm.wmma.mma`,
+  `nvvm.mbarrier.arrive.nocomplete`,
+  `nvvm.mbarrier.arrive_drop.nocomplete`, `nvvm.mbarrier.test.wait`, and
+  `nvvm.tcgen05.mma_smem_desc` spell every operand type and result type in a
+  function-type or equivalent arrow signature.
+
+The remaining 114 operations stay on whole-operation recovery. Their gaps are
+grouped by the information their assembly omits or gives a positional meaning:
+
+- Thirty-three rangeable special-register operations add an optional
+  positional `range` clause to the otherwise reusable result-only form.
+- Barrier, memory-barrier, mbarrier, proxy-fence, shuffle, vote, match, redux,
+  grid-dependency, and register-control forms use positional scope, action,
+  kind, reduction, or predicate fields. Several mbarrier operations also make
+  their result arrow or operand list optional. These forms are not registered
+  as simpler defaults because that would make valid variants fail under the
+  preset.
+- The conversion, dot, matrix load/store, and tcgen05 families use mixed type
+  lists, type tags in parentheses, inferred operand or result types, or lists
+  that omit an SSA operand such as a stride. In particular,
+  `nvvm.wmma.load`'s functional type omits its stride operand, so it is not part
+  of the complete-signature family.
+- Inline PTX, MMA and sparse/block-scale MMA, WGMMA, prefetch, bulk store,
+  cluster-launch control, and asynchronous copy/TMA forms combine custom
+  delimiters, positional attributes, predicates, or inferred results. Commit
+  and fence operations are registered only where their full syntax is the
+  attribute dictionary itself.
+
+No NVVM operation in this inventory owns a region, successor, or symbol role.
+The dialect's `!nvvm.*` types and `#nvvm.*` attributes already parse as balanced
+opaque dialect values and need no descriptors. The preset adds no SM/version
+checks, memory effects, intrinsic selection, type inference, or other NVIDIA
+target semantics.
 
 Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
 21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,
