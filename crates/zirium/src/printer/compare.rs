@@ -297,6 +297,9 @@ fn equal_types(
         (TypeValue::Float(l), TypeValue::Float(r)) => l == r,
         (TypeValue::Opaque(l), TypeValue::Opaque(r)) => l == r,
         (TypeValue::Index, TypeValue::Index) => true,
+        (TypeValue::Complex(l), TypeValue::Complex(r)) => {
+            equal_types(left_doc, right_doc, l, r, maps)
+        }
         (TypeValue::Tuple(l), TypeValue::Tuple(r)) => {
             l.len() == r.len()
                 && l.iter()

@@ -337,6 +337,25 @@ fn lower_type_value_with_stack(
                 .collect(),
         };
     }
+    if let Some(inner) = angle_inner(spelling, "complex") {
+        let element = lower_type_value_with_stack(
+            inner,
+            range,
+            type_aliases,
+            attribute_aliases,
+            alias_stack,
+            doc,
+        );
+        if matches!(element, TypeValue::Integer { .. } | TypeValue::Float(_)) {
+            return TypeValue::Complex(Box::new(element));
+        }
+        return TypeValue::Invalid(push_diagnostic(
+            doc,
+            SemanticDiagnosticCode::Type,
+            range,
+            "invalid element type for complex".into(),
+        ));
+    }
     if let Some(inner) = angle_inner(spelling, "tuple") {
         return TypeValue::Tuple(
             split_types(inner)
@@ -619,7 +638,7 @@ fn resolve_memref_layout(
 fn is_composite_type(spelling: &str) -> bool {
     let spelling = spelling.trim();
     split_arrow(spelling).is_some()
-        || ["tuple<", "tensor<", "vector<", "memref<"]
+        || ["complex<", "tuple<", "tensor<", "vector<", "memref<"]
             .iter()
             .any(|prefix| spelling.starts_with(prefix))
 }
@@ -834,6 +853,13 @@ fn resolve_type(
                 .map(|s| resolve_type(s, type_aliases, attribute_aliases, stack))
                 .collect::<Result<_, _>>()?,
         });
+    }
+    if let Some(inner) = angle_inner(spelling, "complex") {
+        let element = resolve_type(inner, type_aliases, attribute_aliases, stack)?;
+        if !matches!(element, TypeValue::Integer { .. } | TypeValue::Float(_)) {
+            return Err("invalid element type for complex".into());
+        }
+        return Ok(TypeValue::Complex(Box::new(element)));
     }
     if let Some(inner) = angle_inner(spelling, "tuple") {
         return Ok(TypeValue::Tuple(
@@ -1610,7 +1636,15 @@ fn split_top_level_x(value: &str) -> Vec<&str> {
             b'<' | b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
             b'>' if i == 0 || value.as_bytes()[i - 1] != b'-' => depth -= 1,
-            b'x' if depth == 0 => {
+            b'x' if depth == 0
+                && value.as_bytes()[..i]
+                    .iter()
+                    .rev()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    .is_some_and(|byte| {
+                        byte.is_ascii_digit() || matches!(byte, b'?' | b'*' | b']')
+                    }) =>
+            {
                 result.push(value[start..i].trim());
                 start = i + 1;
             }

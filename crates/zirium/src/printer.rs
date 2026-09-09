@@ -1246,6 +1246,11 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             ),
             TypeValue::Float(name) => self.sink.write_str(name),
             TypeValue::Index => self.sink.write_str("index"),
+            TypeValue::Complex(element) => {
+                self.sink.write_str("complex<")?;
+                self.type_value(element)?;
+                self.sink.write_str(" >")
+            }
             TypeValue::Tuple(values) => {
                 self.sink.write_str("tuple<")?;
                 self.types(values)?;

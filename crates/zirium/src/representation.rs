@@ -47,6 +47,7 @@ pub enum SyntaxKind {
     FusedLocation,
     TrailingLocation,
     FunctionType,
+    ComplexType,
     TupleType,
     TensorType,
     VectorType,

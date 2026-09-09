@@ -949,6 +949,7 @@ impl SemanticType {
                 TypeValue::Integer { .. } => "integer",
                 TypeValue::Float(_) => "float",
                 TypeValue::Index => "index",
+                TypeValue::Complex(_) => "complex",
                 TypeValue::Tuple(_) => "tuple",
                 TypeValue::Tensor { .. } => "tensor",
                 TypeValue::Vector { .. } => "vector",

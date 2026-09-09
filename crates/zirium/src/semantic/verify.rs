@@ -1182,6 +1182,18 @@ fn verify_type_value<'a>(
         return Ok(());
     }
     match value {
+        TypeValue::Complex(element) => {
+            verify_type_value(element, registry, types, attributes)?;
+            if !matches!(
+                element.as_ref(),
+                TypeValue::Integer { .. } | TypeValue::Float(_)
+            ) {
+                return Err(SemanticVerificationError::Type {
+                    spelling: "complex".into(),
+                    message: "invalid element type for complex",
+                });
+            }
+        }
         TypeValue::Tuple(values) => {
             for value in values {
                 verify_type_value(value, registry, types, attributes)?;
@@ -1322,6 +1334,7 @@ fn valid_diagnostic(document: &Document, diagnostic: DiagnosticId) -> bool {
 
 pub(super) fn valid_type_value(document: &Document, value: &TypeValue) -> bool {
     match value {
+        TypeValue::Complex(element) => valid_type_value(document, element),
         TypeValue::Tuple(values) => values.iter().all(|value| valid_type_value(document, value)),
         TypeValue::Function { inputs, results } => inputs
             .iter()

@@ -235,6 +235,7 @@ pub enum TypeValue {
     },
     Float(String),
     Index,
+    Complex(Box<TypeValue>),
     Tuple(Vec<TypeValue>),
     Tensor {
         dimensions: Vec<ShapedDimension>,

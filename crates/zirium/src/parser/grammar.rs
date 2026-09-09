@@ -578,6 +578,7 @@ impl Parser<'_> {
             TokenKind::IntType
                 | TokenKind::FloatType
                 | TokenKind::IndexType
+                | TokenKind::Complex
                 | TokenKind::ExclamationIdentifier
                 | TokenKind::Tuple
                 | TokenKind::Tensor
@@ -602,6 +603,7 @@ impl Parser<'_> {
                 return self.opaque(SyntaxKind::OpaqueType);
             }
             TokenKind::ExclamationIdentifier => SyntaxKind::TypeAlias,
+            TokenKind::Complex => return self.single_element_type(depth + 1),
             TokenKind::Tuple => return self.tuple_type(depth + 1),
             TokenKind::Tensor => return self.shaped_type(SyntaxKind::TensorType, depth + 1),
             TokenKind::Vector => return self.shaped_type(SyntaxKind::VectorType, depth + 1),
@@ -614,6 +616,26 @@ impl Parser<'_> {
         self.bump()?;
         self.builder.complete(marker, kind)?;
         Ok(true)
+    }
+
+    fn single_element_type(&mut self, depth: usize) -> Result<bool, CompactError> {
+        let marker = self.builder.start();
+        self.bump()?;
+        self.trivia()?;
+        let mut good = self.expect(TokenKind::Less)?;
+        self.trivia()?;
+        if self.at_type_start() {
+            good &= self.type_syntax(depth)?;
+        } else {
+            good = false;
+            self.diagnostic();
+            self.recover_type_boundary()?;
+        }
+        self.trivia()?;
+        good &= self.expect(TokenKind::Greater)?;
+        self.builder
+            .complete_with_error(marker, SyntaxKind::ComplexType, !good)?;
+        Ok(good)
     }
 
     fn tuple_type(&mut self, depth: usize) -> Result<bool, CompactError> {

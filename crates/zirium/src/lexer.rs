@@ -25,6 +25,7 @@ pub enum TokenKind {
     IntType,
     FloatType,
     IndexType,
+    Complex,
     Loc,
     Unknown,
     CallSite,
@@ -249,6 +250,7 @@ impl Lexer<'_> {
                         b"unknown" => TokenKind::Unknown,
                         b"callsite" => TokenKind::CallSite,
                         b"fused" => TokenKind::Fused,
+                        b"complex" => TokenKind::Complex,
                         b"tuple" => TokenKind::Tuple,
                         b"tensor" => TokenKind::Tensor,
                         b"vector" => TokenKind::Vector,
@@ -464,7 +466,7 @@ fn is_dimension_x_suffix(next: Option<u8>) -> bool {
             || matches!(byte, b'?' | b'*' | b'[')
             || matches!(
                 byte,
-                b'i' | b's' | b'u' | b'f' | b'b' | b'!' | b't' | b'v' | b'm'
+                b'i' | b's' | b'u' | b'f' | b'b' | b'!' | b'c' | b't' | b'v' | b'm'
             )
     })
 }

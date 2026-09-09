@@ -107,6 +107,7 @@ impl<'a> FileSyntax<'a> {
                     self.tree.kind(*id),
                     Some(
                         SyntaxKind::TupleType
+                            | SyntaxKind::ComplexType
                             | SyntaxKind::TensorType
                             | SyntaxKind::VectorType
                             | SyntaxKind::MemRefType
@@ -298,6 +299,7 @@ base_syntax_views!(
     FusedLocation,
     TrailingLocation,
     FunctionType,
+    ComplexType,
     TupleType,
     TensorType,
     VectorType,
