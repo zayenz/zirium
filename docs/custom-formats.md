@@ -19,6 +19,7 @@ It does not establish that the operation can be verified or rewritten.
 | Affine preset | Core plus 4 of the 16 Affine operations. |
 | AMDGPU preset | Core plus 4 of the 33 AMDGPU operations. |
 | AMX preset | Core plus 1 of the 5 AMX operations. |
+| Arith preset | Core plus default forms of 43 of the 51 Arith operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -51,7 +52,7 @@ definition. This surface was checked against StableHLO 1.20.1. The unversioned
 preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
-The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, and `amx` presets were checked against LLVM 22.1.0.
+The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, and `arith` presets were checked against LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
 its custom symbol/type form has no reusable structural signature. SCF registers
@@ -132,6 +133,39 @@ keywords on `amx.tile_muli` add a second unsupported header detail. AMX defines
 the single `!amx.tile` type and no attributes; the type remains an opaque
 dialect value, as it does without the preset. AMX operations have no regions or
 successors, so post-region dictionaries do not apply.
+
+Arith registers the default forms of 43 of its 51 operations. This includes
+the built-in proving implementations of `arith.constant` and `arith.addi`, 28
+ordinary binary operations, and 13 unary or cast operations. The reusable
+unary and binary shapes expose exact operand counts and real result types,
+including the source and destination types of casts. The preset does not add
+Arith type registrations because the dialect defines no types. Its
+`#arith.fastmath` and `#arith.overflow` attributes remain opaque dialect values;
+the built-in `arith.addi` implementation additionally exposes its positional
+overflow flags as the `overflowFlags` attribute.
+
+Eight operations remain on whole-operation recovery: `arith.addui_extended`,
+`arith.mulsi_extended`, `arith.mului_extended`, `arith.scaling_extf`,
+`arith.scaling_truncf`, `arith.cmpi`, `arith.cmpf`, and `arith.select`. The
+three extended integer operations have two results whose relationship to the
+compact type trailer is not representable by the current unary and binary
+shapes. The scaling casts spell two independently typed operands before a
+single result type. Comparisons place a predicate before their operands and
+infer an `i1`-shaped result from the operand type. Select has three operands,
+and its one- or two-type trailer does not always spell the condition type.
+Using the broad clause shape for these operations would therefore assign
+incorrect semantic types or omit a required positional attribute.
+
+The registered default forms of `arith.subi`, `arith.muli`, `arith.shli`, and
+`arith.trunci` do not include positional `overflow` clauses. The default forms
+of `arith.divui`, `arith.divsi`, `arith.shrui`, and `arith.shrsi` do not include
+`exact`; and the floating-point operations do not include positional
+`fastmath` or rounding-mode modifiers. Those variants continue through
+whole-operation recovery. `arith.constant` supports the proving implementation's
+typed scalar spelling; inferred boolean constants, shaped constants, and a
+dictionary printed before the value may require recovery or fail strict Arith
+verification. Arith operations have no regions or successors, so post-region
+dictionaries do not apply.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

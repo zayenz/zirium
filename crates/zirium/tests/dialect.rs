@@ -603,6 +603,155 @@ fn amx_preset_lowers_only_the_structurally_honest_zero_form() {
 }
 
 #[test]
+fn arith_preset_exposes_default_unary_binary_and_cast_structure() {
+    let registry = DialectRegistry::from_name("arith").unwrap();
+    let source = br#"module {
+      func.func @calculate(%lhs: i32, %rhs: i32, %float: f32) -> i64 {
+        %one = arith.constant 1 : i32
+        %sum = arith.addi %lhs, %one overflow<nsw> : i32
+        %difference = arith.subi %sum, %rhs {tag = true} : i32
+        %negated = arith.negf %float : f32
+        %wide = arith.extsi %difference : i32 to i64
+        func.return %wide : i64
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, result) in [
+        ("arith.constant", 0, "i32"),
+        ("arith.addi", 2, "i32"),
+        ("arith.subi", 2, "i32"),
+        ("arith.negf", 1, "f32"),
+        ("arith.extsi", 1, "i64"),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), 1, "{name}");
+        assert_eq!(document.type_spelling(results[0]), Some(result), "{name}");
+        assert!(document.operation_regions(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+    }
+
+    let add = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("arith.addi"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(add)
+            .unwrap()
+            .any(|(name, value)| { name == "overflowFlags" && value == "#arith.overflow<nsw>" })
+    );
+    let sub = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("arith.subi"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(sub)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "true")
+    );
+}
+
+#[test]
+fn arith_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("arith").unwrap();
+    let binary = [
+        "arith.subi",
+        "arith.muli",
+        "arith.divui",
+        "arith.divsi",
+        "arith.ceildivui",
+        "arith.ceildivsi",
+        "arith.floordivsi",
+        "arith.remui",
+        "arith.remsi",
+        "arith.andi",
+        "arith.ori",
+        "arith.xori",
+        "arith.shli",
+        "arith.shrui",
+        "arith.shrsi",
+        "arith.addf",
+        "arith.subf",
+        "arith.maximumf",
+        "arith.maxnumf",
+        "arith.maxsi",
+        "arith.maxui",
+        "arith.minimumf",
+        "arith.minnumf",
+        "arith.minsi",
+        "arith.minui",
+        "arith.mulf",
+        "arith.divf",
+        "arith.remf",
+    ];
+    let unary = [
+        "arith.negf",
+        "arith.extui",
+        "arith.extsi",
+        "arith.extf",
+        "arith.trunci",
+        "arith.truncf",
+        "arith.uitofp",
+        "arith.sitofp",
+        "arith.fptoui",
+        "arith.fptosi",
+        "arith.index_cast",
+        "arith.index_castui",
+        "arith.bitcast",
+    ];
+    for name in binary {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::BinaryOperands),
+            "{name}"
+        );
+    }
+    for name in unary {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::UnaryOperand),
+            "{name}"
+        );
+    }
+    assert!(registry.operation("arith.constant").is_some());
+    assert!(registry.operation("arith.addi").is_some());
+    assert_eq!(binary.len() + unary.len() + 2, 43);
+
+    for name in [
+        "arith.addui_extended",
+        "arith.mulsi_extended",
+        "arith.mului_extended",
+        "arith.scaling_extf",
+        "arith.scaling_truncf",
+        "arith.cmpi",
+        "arith.cmpf",
+        "arith.select",
+    ] {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])
