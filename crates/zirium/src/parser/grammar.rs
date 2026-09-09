@@ -218,7 +218,8 @@ impl Parser<'_> {
                 }
             }
             if let Some(shape) = self.registry.operation_shape(name) {
-                return shaped_operation(self, marker, shape);
+                let name = name.to_owned();
+                return shaped_operation(self, marker, shape, &name);
             }
             if let Some(format) = self.registry.operation_format(name) {
                 return formatted_operation(self, marker, format);
@@ -442,6 +443,45 @@ impl Parser<'_> {
         self.builder
             .complete_with_error(dict, SyntaxKind::AttributeDict, bad)?;
         Ok(())
+    }
+
+    pub(super) fn inherent_attribute_starts(&self) -> bool {
+        (self.at_identifier() || self.at(TokenKind::String))
+            && self.nth_nontrivia(1) == Some(TokenKind::Equal)
+    }
+
+    pub(super) fn inherent_attribute(&mut self) -> Result<bool, CompactError> {
+        let attribute = self.builder.start();
+        let mut good = self.at_identifier() || self.at(TokenKind::String);
+        if good {
+            self.bump()?;
+        } else {
+            self.diagnostic();
+        }
+        self.trivia()?;
+        good &= self.expect(TokenKind::Equal)?;
+        self.trivia()?;
+        good &= if self.at(TokenKind::BareIdentifier)
+            && !matches!(
+                self.current_text(),
+                "array" | "false" | "true" | "type" | "unit"
+            ) {
+            self.leaf(SyntaxKind::OpaqueAttribute)?
+        } else if matches!(
+            self.current(),
+            TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Integer
+                | TokenKind::WideInteger
+                | TokenKind::Float
+        ) {
+            self.constant_value()?
+        } else {
+            self.attribute_value()?
+        };
+        self.builder
+            .complete_with_error(attribute, SyntaxKind::Attribute, !good)?;
+        Ok(good)
     }
 
     fn dictionary_entries(&mut self) -> Result<bool, CompactError> {
@@ -1783,7 +1823,7 @@ impl Parser<'_> {
             .get(range.start() as usize..range.end() as usize)
             != Some(b"attributes")
     }
-    fn region_shaped_body(&self) -> bool {
+    pub(super) fn region_shaped_body(&self) -> bool {
         let mut index = self.position + 1;
         while self
             .tokens
@@ -1966,7 +2006,7 @@ impl Parser<'_> {
         self.position += 1;
         Ok(())
     }
-    fn current(&self) -> TokenKind {
+    pub(super) fn current(&self) -> TokenKind {
         self.tokens[self.position].kind()
     }
     pub(super) fn current_text(&self) -> &str {
@@ -2010,6 +2050,18 @@ impl Parser<'_> {
             .filter(|token| !matches!(token.kind(), TokenKind::Whitespace | TokenKind::LineComment))
             .nth(n)
             .map(|token| token.kind())
+    }
+    pub(super) fn nth_nontrivia_text(&self, n: usize) -> Option<&str> {
+        let token = self.tokens[self.position..]
+            .iter()
+            .filter(|token| !matches!(token.kind(), TokenKind::Whitespace | TokenKind::LineComment))
+            .nth(n)?;
+        let range = token.range();
+        std::str::from_utf8(
+            self.source
+                .get(range.start() as usize..range.end() as usize)?,
+        )
+        .ok()
     }
 }
 

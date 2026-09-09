@@ -70,6 +70,16 @@ impl OperationShape {
     const LITERAL_ATTRIBUTE: Self = Self {
         shape: CoreOperationShape::LiteralAttribute,
     };
+
+    #[classattr]
+    const OPERAND_CLAUSES: Self = Self {
+        shape: CoreOperationShape::OperandClauses,
+    };
+
+    #[classattr]
+    const REGION_CLAUSES: Self = Self {
+        shape: CoreOperationShape::RegionClauses,
+    };
 }
 
 #[pymethods]

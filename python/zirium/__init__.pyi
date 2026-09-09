@@ -67,6 +67,8 @@ class OperationShape:
     UNARY_OPERAND: OperationShape
     VARIADIC_OPERANDS: OperationShape
     LITERAL_ATTRIBUTE: OperationShape
+    OPERAND_CLAUSES: OperationShape
+    REGION_CLAUSES: OperationShape
 
 class DialectRegistry:
     """Dialect syntax and semantic rules retained through parse and lower."""

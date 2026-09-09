@@ -1,6 +1,6 @@
 # Zirium
 
-Zirium 0.0.10 is an experimental release. The API may change without a
+Zirium 0.0.11 is an experimental release. The API may change without a
 migration path.
 
 Zirium is a Rust library for reading, inspecting, transforming, and writing textual MLIR. It also provides typed Python bindings. The parser keeps the original bytes, including comments, whitespace, malformed syntax, and invalid UTF-8. A separate semantic layer provides a compact representation for verification and editing.
@@ -131,7 +131,7 @@ Canonical output intentionally does not preserve comments, whitespace, aliases, 
 
 Generic quoted operations are handled without a dialect registry. Unknown dialect types and attributes keep their balanced bodies as opaque values.
 
-Registered custom syntax is currently a proving surface rather than broad MLIR dialect coverage. The built-in proving registry covers a fixed subset of Builtin, Func, Arith, and CF operations. A declarative registry can select from that same fixed set. The named `stablehlo` preset adds an initial custom-syntax subset for binary elementwise operations and `stablehlo.return`; it is not complete StableHLO support. Zirium does not load LLVM dialect definitions, interpret arbitrary ODS/TableGen files, or run Python callbacks while parsing.
+Registered custom syntax is currently a proving surface rather than broad MLIR dialect coverage. The built-in proving registry covers a fixed subset of Builtin, Func, Arith, and CF operations. Declarative `stablehlo`, `tosa`, `scf`, and `linalg` presets expose common operands, results, named clauses, regions, and block arguments for structural queries. They do not implement dialect verification or execution. Zirium does not load LLVM dialect definitions, interpret arbitrary ODS/TableGen files, or run Python callbacks while parsing.
 
 The [custom-format guide](docs/custom-formats.md) explains operation shapes,
 registry ownership, and the differences between Rust, Python, and the binary.

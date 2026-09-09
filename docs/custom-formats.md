@@ -11,7 +11,10 @@ It does not establish that the operation can be verified or rewritten.
 | Empty, including the default Python parser | Unknown operations are recovered; generic quoted operations are parsed normally. |
 | Core | `builtin.module`, `func.func`, `func.call`, and `func.return`. |
 | Proving | Core plus `arith.constant`, `arith.addi`, `cf.br`, and `cf.cond_br`. |
-| StableHLO preset | Core plus the binary elementwise and return custom forms listed below. |
+| StableHLO preset | Core plus 96 common StableHLO custom forms. |
+| TOSA preset | Core plus 93 TOSA tensor, shape, control-flow, and utility forms. |
+| SCF preset | Core plus all 12 SCF operations, including structured regions and loop header bindings. |
+| Linalg preset | Core plus 97 core, structured, and generated named Linalg operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -24,16 +27,42 @@ interpret arbitrary MLIR assembly-format strings or load ODS/TableGen files.
 Rust callers can also construct static descriptors with parser, lowering,
 verification, and printing callbacks. Python does not expose those callbacks.
 
-The bundled `stablehlo` preset is an initial syntax subset, not a complete
-StableHLO implementation. It parses and lowers the standard binary forms for
-`add`, `and`, `atan2`, `divide`, `maximum`, `minimum`, `multiply`, `or`,
-`power`, `remainder`, the three shifts, `subtract`, and `xor`, along with typed
-`stablehlo.return`. Other StableHLO operations remain available in generic
-quoted form or through best-effort custom-syntax recovery. The embedded
+The bundled `stablehlo` preset provides structural lowering for 96 custom
+forms: unary and binary elementwise operations, constants, typed returns,
+ordinary variadic signatures, and operations that mix operands with fixed or
+named clauses before a trailing type signature. The latter group includes
+`broadcast_in_dim`, `compare`, `concatenate`, `convolution`, `custom_call`,
+`dot_general`, dynamic slices, `iota`, `pad`, `select`, `slice`, and
+`transpose`. Their operands, result types, ordinary attribute dictionaries,
+and simple `name = value` clauses are available to semantic and CLI queries.
+
+The preset also retains the regions and block arguments of 14 region-bearing
+forms, including `reduce`, `reduce_window`, `scatter`, `sort`, and `while`.
+This is structural support, not a StableHLO implementation: Zirium does not
+apply StableHLO verification, type inference, execution semantics, VHLO, or
+portable-artifact compatibility. Unsupported custom forms continue through
+best-effort recovery, and generic quoted StableHLO operations need no preset. The embedded
 [registry file](../crates/zirium/registries/stablehlo.json) is the exact preset
-definition. This subset was checked against StableHLO 1.20.1. The unversioned
+definition. This surface was checked against StableHLO 1.20.1. The unversioned
 preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
+
+The `tosa`, `scf`, and `linalg` presets were checked against LLVM 22.1.0.
+TOSA registers 93 of the 94 operations defined by its main, utility, and shape
+operation files; `tosa.variable` remains on the generic recovery path because
+its custom symbol/type form has no reusable structural signature. SCF registers
+all 12 operations. Linalg registers its 16 core/structured operations and 81
+generated named operations. Tensor-result named Linalg forms expose their
+trailing result types; buffer forms without a result signature remain usable
+through recovery where their custom spelling has no safe structural boundary.
+
+`region_clauses` is used for operations such as `scf.for`, `scf.if`,
+`tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block
+labels, and typed block arguments use Zirium's ordinary semantic region model.
+Header bindings written as `%argument = %initial` are attached to implicit entry
+blocks as opaque-typed arguments when the custom syntax does not spell their
+types locally. This preserves definition/use structure without claiming dialect
+type inference.
 
 ## Python
 
@@ -71,7 +100,12 @@ registry. Both accept Python mappings and return a new registry.
 `FUNC_LIKE` and `CALL_LIKE` provide the existing symbol-oriented forms.
 `BINARY_OPERANDS` accepts two SSA operands followed by either one shared type or
 a function type. `OPTIONAL_TYPED_OPERANDS` accepts a variadic operand list with
-a matching optional type list.
+a matching optional type list. `OPERAND_CLAUSES` captures SSA operands and
+simple named attributes around otherwise opaque fixed clauses, followed by a
+shared, conversion, or function-type signature. It is useful for inspection;
+it does not interpret the clauses' dialect-specific meaning. `REGION_CLAUSES`
+adds one or more parsed operation regions and entry-block header bindings to
+that structural model.
 
 Shapes supply parsing and lowering conventions. They do not define a vendor
 operation's verifier, symbol-table rules, or custom printer. In particular,
@@ -123,7 +157,9 @@ name. `builtins` selects operations from the declarative catalog.
 `operation_shapes` assigns exact names to a supported grammar: `func_like`,
 `call_like`, `binary_operands`, or `optional_typed_operands`.
 `unary_operand`, `variadic_operands`, and `literal_attribute` cover the smaller
-expression forms.
+expression forms. `operand_clauses` accepts fixed and named clauses around SSA
+operands before a trailing type signature. `region_clauses` additionally parses
+operation regions and their block arguments.
 
 `operation_formats` describes the order of operands or a literal value, an
 optional attribute dictionary, fixed `:` or `to` tokens, and type captures.

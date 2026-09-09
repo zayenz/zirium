@@ -19,6 +19,8 @@ class OperationShapeConfig(BaseModel):
         "unary_operand",
         "variadic_operands",
         "literal_attribute",
+        "operand_clauses",
+        "region_clauses",
     ]
 
 

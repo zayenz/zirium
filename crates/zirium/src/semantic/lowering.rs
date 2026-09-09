@@ -408,6 +408,22 @@ fn lower_with_registry(
                     .and_then(|child| op.tree().text_range(child))
                     .map(|range| text(source.bytes(), range)),
                 operand_count: op.operands().count(),
+                result_count: op
+                    .results()
+                    .map(|result| {
+                        result
+                            .number()
+                            .and_then(|number| {
+                                text(source.bytes(), result.tree().text_range(number)?)
+                                    .bytes()
+                                    .filter(u8::is_ascii_digit)
+                                    .fold(None, |value, digit| {
+                                        Some(value.unwrap_or(0usize) * 10 + (digit - b'0') as usize)
+                                    })
+                            })
+                            .unwrap_or(1)
+                    })
+                    .sum(),
             };
             if op.tree().kind(op.id()) == Some(SyntaxKind::Operation) {
                 return None;
@@ -552,8 +568,10 @@ fn lower_with_registry(
                 (registered[operation.index()]
                     .as_ref()
                     .is_some_and(|matched| {
-                        matched.shape == Some(OperationShape::FuncLike)
-                            || matched.name == "func.func"
+                        matches!(
+                            matched.shape,
+                            Some(OperationShape::FuncLike | OperationShape::RegionClauses)
+                        ) || matched.name == "func.func"
                     }))
                 .then_some(ops[operation.index()].arguments())
             });
@@ -571,7 +589,11 @@ fn lower_with_registry(
             );
             let name = first_identifier(spelling, b'%').unwrap_or_default();
             names.push(strings.intern(&name));
-            let ty = argument_type(spelling);
+            let ty = if spelling.contains(':') {
+                argument_type(spelling)
+            } else {
+                "!zirium.unparsed<>"
+            };
             let ty_id = intern_type(
                 ty,
                 syntax_argument
@@ -699,6 +721,26 @@ fn lower_with_registry(
             "attribute",
             &mut doc,
         );
+        if registered[i].as_ref().is_some_and(|matched| {
+            matches!(
+                matched.shape,
+                Some(OperationShape::OperandClauses | OperationShape::RegionClauses)
+            )
+        }) {
+            attributes.extend(lower_dictionary(
+                Some(op.id()),
+                op.tree(),
+                source.bytes(),
+                &mut strings,
+                &mut attrs,
+                &mut attribute_spellings,
+                &type_aliases,
+                &attribute_aliases,
+                generation,
+                "inherent attribute",
+                &mut doc,
+            ));
+        }
         if is_unparsed {
             doc.complete = false;
             if let Some(spelling) = op

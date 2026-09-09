@@ -54,6 +54,8 @@ fn parser_diagnostic_message(
                 zirium::dialect::OperationShape::UnaryOperand => "unary_operand",
                 zirium::dialect::OperationShape::VariadicOperands => "variadic_operands",
                 zirium::dialect::OperationShape::LiteralAttribute => "literal_attribute",
+                zirium::dialect::OperationShape::OperandClauses => "operand_clauses",
+                zirium::dialect::OperationShape::RegionClauses => "region_clauses",
             };
             format!("custom operation `{name}` does not match registered shape `{shape}`")
         }

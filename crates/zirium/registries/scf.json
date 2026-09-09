@@ -1,0 +1,24 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "scf.condition", "shape": "operand_clauses"},
+    {"name": "scf.execute_region", "shape": "region_clauses"},
+    {"name": "scf.for", "shape": "region_clauses"},
+    {"name": "scf.forall", "shape": "region_clauses"},
+    {"name": "scf.forall.in_parallel", "shape": "region_clauses"},
+    {"name": "scf.if", "shape": "region_clauses"},
+    {"name": "scf.index_switch", "shape": "region_clauses"},
+    {"name": "scf.parallel", "shape": "region_clauses"},
+    {"name": "scf.reduce", "shape": "region_clauses"},
+    {"name": "scf.reduce.return", "shape": "operand_clauses"},
+    {"name": "scf.while", "shape": "region_clauses"},
+    {"name": "scf.yield", "shape": "optional_typed_operands"}
+  ],
+  "operation_formats": []
+}

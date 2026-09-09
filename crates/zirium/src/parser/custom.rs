@@ -372,6 +372,7 @@ pub(super) fn shaped_operation(
     parser: &mut Parser<'_>,
     marker: Marker,
     shape: OperationShape,
+    operation: &str,
 ) -> Result<(), CompactError> {
     let checkpoint = parser.shaped_operation_checkpoint();
     let mut good = parser.expect(TokenKind::BareIdentifier)?;
@@ -532,23 +533,27 @@ pub(super) fn shaped_operation(
                 parser.attribute_dict()?;
                 parser.trivia()?;
             }
-            good &= parser.expect(TokenKind::Colon)?;
-            parser.trivia()?;
-            good &= parser.type_syntax(0)?;
-            parser.trivia()?;
-            if !dictionary_before_type {
-                let dictionary_after_type = parser.at(TokenKind::LBrace);
-                if dictionary_after_type {
-                    parser.attribute_dict()?;
-                    parser.trivia()?;
-                }
-                if dictionary_after_type || parser.at(TokenKind::Colon) {
-                    good &= parser.expect(TokenKind::Colon)?;
-                    parser.trivia()?;
-                    good &= parser.type_syntax(0)?;
+            if parser.at(TokenKind::Colon) {
+                parser.bump()?;
+                parser.trivia()?;
+                good &= parser.type_syntax(0)?;
+                parser.trivia()?;
+                if !dictionary_before_type {
+                    let dictionary_after_type = parser.at(TokenKind::LBrace);
+                    if dictionary_after_type {
+                        parser.attribute_dict()?;
+                        parser.trivia()?;
+                    }
+                    if dictionary_after_type || parser.at(TokenKind::Colon) {
+                        good &= parser.expect(TokenKind::Colon)?;
+                        parser.trivia()?;
+                        good &= parser.type_syntax(0)?;
+                    }
                 }
             }
         }
+        OperationShape::OperandClauses => good &= operand_clauses(parser)?,
+        OperationShape::RegionClauses => good &= region_clauses(parser, operation)?,
         OperationShape::OptionalTypedOperands => {
             let mut operand_count = 0;
             while parser.at(TokenKind::PercentIdentifier) {
@@ -624,6 +629,273 @@ pub(super) fn shaped_operation(
         .builder
         .complete_with_error(marker, SyntaxKind::DialectOperation, !good)?;
     Ok(())
+}
+
+fn operand_clauses(parser: &mut Parser<'_>) -> Result<bool, CompactError> {
+    let mut good = true;
+    let mut delimiters = Vec::new();
+    loop {
+        if parser.at(TokenKind::Eof)
+            || (delimiters.is_empty()
+                && matches!(
+                    parser.current(),
+                    TokenKind::RBrace | TokenKind::CaretIdentifier
+                ))
+        {
+            parser.diagnostic();
+            return Ok(false);
+        }
+
+        if delimiters.is_empty() && parser.at(TokenKind::Colon) && signature_type_follows(parser) {
+            parser.bump()?;
+            parser.trivia()?;
+            match shaped_type_trailer(parser) {
+                ShapedTypeTrailer::Function => {
+                    if parser.at(TokenKind::LParen) {
+                        parser.function_type_with_input_count()?;
+                    } else {
+                        bare_function_type(parser)?;
+                    }
+                }
+                ShapedTypeTrailer::Conversion => good &= conversion_type_trailer(parser)?,
+                ShapedTypeTrailer::Shared => {
+                    good &= parser.type_syntax(0)?;
+                    parser.trivia()?;
+                    while parser.at(TokenKind::Comma) {
+                        parser.bump()?;
+                        parser.trivia()?;
+                        good &= parser.type_syntax(0)?;
+                        parser.trivia()?;
+                    }
+                }
+            }
+            return Ok(good);
+        }
+        if delimiters.is_empty() && parser.at(TokenKind::Arrow) {
+            parser.bump()?;
+            parser.trivia()?;
+            if parser.at(TokenKind::LParen) {
+                parser.type_list(0)?;
+            } else {
+                good &= parser.type_syntax(0)?;
+            }
+            return Ok(good);
+        }
+
+        if parser.at(TokenKind::PercentIdentifier) {
+            good &= shaped_operand(parser)?;
+            parser.trivia()?;
+            continue;
+        }
+        if delimiters.is_empty() && parser.at(TokenKind::LBrace) {
+            parser.attribute_dict()?;
+            parser.trivia()?;
+            continue;
+        }
+        if delimiters.is_empty() && parser.inherent_attribute_starts() {
+            good &= parser.inherent_attribute()?;
+            parser.trivia()?;
+            continue;
+        }
+
+        let current = parser.current();
+        if delimiters.last() == Some(&current) {
+            delimiters.pop();
+        } else if let Some(close) = close_for(current) {
+            if delimiters.len() >= parser.limits.max_delimiter_depth {
+                parser.diagnostic();
+                good = false;
+            } else {
+                delimiters.push(close);
+            }
+        } else if matches!(
+            current,
+            TokenKind::Greater | TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket
+        ) && delimiters.is_empty()
+        {
+            parser.diagnostic();
+            return Ok(false);
+        }
+        parser.bump()?;
+        parser.trivia()?;
+    }
+}
+
+fn region_clauses(parser: &mut Parser<'_>, operation: &str) -> Result<bool, CompactError> {
+    let mut good = true;
+    let mut delimiters = Vec::new();
+    let mut region_count = 0usize;
+    let mut positional_bindings = matches!(operation, "scf.forall" | "scf.parallel");
+    let mut regionless_reduce = false;
+    loop {
+        if parser.at(TokenKind::Eof)
+            || (delimiters.is_empty()
+                && matches!(
+                    parser.current(),
+                    TokenKind::RBrace | TokenKind::CaretIdentifier
+                ))
+        {
+            if region_count == 0 {
+                parser.diagnostic();
+                return Ok(false);
+            }
+            return Ok(good);
+        }
+
+        if delimiters.is_empty() && parser.at(TokenKind::LBrace) {
+            let empty = parser.nth_nontrivia(1) == Some(TokenKind::RBrace);
+            if parser.region_shaped_body() || empty || region_count != 0 {
+                parser.region()?;
+                region_count += 1;
+                let continuation = matches!(parser.nth_nontrivia_text(0), Some("else" | "do"));
+                if continuation {
+                    parser.trivia()?;
+                    parser.bump()?;
+                    parser.trivia()?;
+                    continue;
+                }
+                if parser.nth_nontrivia(0) == Some(TokenKind::LBrace) {
+                    parser.trivia()?;
+                    continue;
+                }
+                return Ok(good);
+            }
+            parser.attribute_dict()?;
+            parser.trivia()?;
+            continue;
+        }
+
+        if delimiters.is_empty() && parser.at(TokenKind::Colon) && signature_type_follows(parser) {
+            parser.bump()?;
+            parser.trivia()?;
+            match shaped_type_trailer(parser) {
+                ShapedTypeTrailer::Function => {
+                    if parser.at(TokenKind::LParen) {
+                        parser.function_type_with_input_count()?;
+                    } else {
+                        bare_function_type(parser)?;
+                    }
+                }
+                ShapedTypeTrailer::Conversion => good &= conversion_type_trailer(parser)?,
+                ShapedTypeTrailer::Shared => good &= parser.type_syntax(0)?,
+            }
+            parser.trivia()?;
+            continue;
+        }
+
+        if parser.at(TokenKind::PercentIdentifier) {
+            let typed_binding = operation.starts_with("stablehlo.")
+                && parser.nth_nontrivia(1) == Some(TokenKind::Colon);
+            let binding = typed_binding
+                || parser.nth_nontrivia(1) == Some(TokenKind::Equal)
+                || (positional_bindings && !delimiters.is_empty());
+            if binding {
+                header_block_argument(parser, typed_binding)?;
+            } else {
+                good &= shaped_operand(parser)?;
+            }
+            parser.trivia()?;
+            continue;
+        }
+        if delimiters.is_empty() && parser.inherent_attribute_starts() {
+            good &= parser.inherent_attribute()?;
+            if regionless_reduce {
+                parser.trivia()?;
+                if parser.at(TokenKind::Colon) && signature_type_follows(parser) {
+                    parser.bump()?;
+                    parser.trivia()?;
+                    match shaped_type_trailer(parser) {
+                        ShapedTypeTrailer::Function => {
+                            if parser.at(TokenKind::LParen) {
+                                parser.function_type_with_input_count()?;
+                            } else {
+                                bare_function_type(parser)?;
+                            }
+                        }
+                        ShapedTypeTrailer::Conversion => good &= conversion_type_trailer(parser)?,
+                        ShapedTypeTrailer::Shared => good &= parser.type_syntax(0)?,
+                    }
+                }
+                return Ok(good);
+            }
+            parser.trivia()?;
+            continue;
+        }
+
+        let current = parser.current();
+        if operation == "stablehlo.reduce"
+            && delimiters.is_empty()
+            && current == TokenKind::BareIdentifier
+            && parser.current_text() == "applies"
+        {
+            regionless_reduce = true;
+        }
+        if delimiters.is_empty()
+            && ((operation == "scf.forall"
+                && current == TokenKind::BareIdentifier
+                && parser.current_text() == "in")
+                || (operation == "scf.parallel" && current == TokenKind::Equal))
+        {
+            positional_bindings = false;
+        }
+        if delimiters.last() == Some(&current) {
+            delimiters.pop();
+        } else if let Some(close) = close_for(current) {
+            if delimiters.len() >= parser.limits.max_delimiter_depth {
+                parser.diagnostic();
+                good = false;
+            } else {
+                delimiters.push(close);
+            }
+        } else if matches!(
+            current,
+            TokenKind::Greater | TokenKind::RParen | TokenKind::RBracket
+        ) && delimiters.is_empty()
+        {
+            parser.diagnostic();
+            return Ok(false);
+        }
+        parser.bump()?;
+        parser.trivia()?;
+    }
+}
+
+fn header_block_argument(parser: &mut Parser<'_>, typed: bool) -> Result<(), CompactError> {
+    let list = parser.builder.start();
+    let argument = parser.builder.start();
+    parser.bump()?;
+    if typed {
+        parser.trivia()?;
+        parser.expect(TokenKind::Colon)?;
+        parser.trivia()?;
+        parser.type_syntax(0)?;
+    }
+    parser
+        .builder
+        .complete(argument, SyntaxKind::BlockArgument)?;
+    parser
+        .builder
+        .complete(list, SyntaxKind::BlockArgumentList)?;
+    Ok(())
+}
+
+fn signature_type_follows(parser: &Parser<'_>) -> bool {
+    matches!(
+        parser.nth_nontrivia(1),
+        Some(
+            TokenKind::LParen
+                | TokenKind::IntType
+                | TokenKind::FloatType
+                | TokenKind::IndexType
+                | TokenKind::ExclamationIdentifier
+                | TokenKind::Tuple
+                | TokenKind::Tensor
+                | TokenKind::Vector
+                | TokenKind::MemRef
+                | TokenKind::AffineMap
+                | TokenKind::AffineSet
+        )
+    )
 }
 
 pub(super) fn formatted_operation(
@@ -720,6 +992,9 @@ fn shaped_operand(parser: &mut Parser<'_>) -> Result<bool, CompactError> {
     let operand = parser.builder.start();
     let use_marker = parser.builder.start();
     let good = parser.expect(TokenKind::PercentIdentifier)?;
+    if parser.at(TokenKind::HashIdentifier) {
+        parser.bump()?;
+    }
     parser
         .builder
         .complete_with_error(use_marker, SyntaxKind::OperandUse, !good)?;

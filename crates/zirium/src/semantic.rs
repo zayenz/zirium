@@ -430,6 +430,7 @@ pub struct RegisteredLoweringContext<'a> {
     function_type: Option<&'a str>,
     literal_value: Option<&'a str>,
     operand_count: usize,
+    result_count: usize,
 }
 
 pub struct RegisteredArgument<'a> {
@@ -470,6 +471,9 @@ impl<'a> RegisteredLoweringContext<'a> {
     }
     pub(crate) const fn operand_count(&self) -> usize {
         self.operand_count
+    }
+    pub(crate) const fn result_count(&self) -> usize {
+        self.result_count
     }
 }
 

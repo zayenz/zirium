@@ -20,6 +20,28 @@ fn run_stdin(query: &str, input: &str) -> std::process::Output {
     child.wait_with_output().unwrap()
 }
 
+fn run_stdin_with_registry(registry: &str, query: &str, input: &str) -> std::process::Output {
+    let registry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("registries")
+        .join(registry);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--registry")
+        .arg(registry)
+        .arg(query)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
 fn temporary_path(name: &str, extension: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "zirium-cli-{}-{name}.{extension}",
@@ -90,6 +112,79 @@ fn builtin_dense_array_attributes_support_queries_and_ownership() {
         assert!(
             output.status.success(),
             "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+}
+
+#[test]
+fn stablehlo_preset_exposes_model_structure_to_queries() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/cli");
+    let registry =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("registries/stablehlo.json");
+    let input = root.join("stablelm-decode.mlir");
+    for (query, expected) in [
+        (
+            r#"filter(op("stablehlo.broadcast_in_dim") and has_attr("dims")) | count"#,
+            "31\n",
+        ),
+        (
+            r#"filter(op("stablehlo.dot_general") and has_attr("contracting_dims")) | count"#,
+            "19\n",
+        ),
+        (
+            r#"filter(op("stablehlo.dynamic_slice") and has_attr("sizes")) | count"#,
+            "3\n",
+        ),
+        (
+            r#"filter(op("stablehlo.reduce") and has_attr("dimensions")) | count"#,
+            "14\n",
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .arg("--registry")
+            .arg(&registry)
+            .arg(query)
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+}
+
+#[test]
+fn tosa_scf_and_linalg_presets_expose_queryable_structure() {
+    let cases = [
+        (
+            "tosa.json",
+            r#"filter(op("tosa.add") and has_attr("shift")) | count"#,
+            "module {\n  %lhs = \"test.source\"() : () -> tensor<2xf32>\n  %rhs = \"test.source\"() : () -> tensor<2xf32>\n  %sum = tosa.add %lhs, %rhs {shift = 0 : i32} : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>\n}\n",
+            "1\n",
+        ),
+        (
+            "scf.json",
+            r#"filter(op("scf.for")) | children | count"#,
+            "module {\n  %lower = \"test.index\"() : () -> index\n  %upper = \"test.index\"() : () -> index\n  %step = \"test.index\"() : () -> index\n  scf.for %iv = %lower to %upper step %step {\n    \"test.use\"(%iv) : (index) -> ()\n    scf.yield\n  }\n}\n",
+            "2\n",
+        ),
+        (
+            "linalg.json",
+            r#"filter(op("linalg.generic") and has_attr("indexing_maps")) | children | count"#,
+            "module {\n  %input = \"test.source\"() : () -> memref<4xf32>\n  %output = \"test.source\"() : () -> memref<4xf32>\n  linalg.generic indexing_maps = [], iterator_types = [] ins(%input : memref<4xf32>) outs(%output : memref<4xf32>) {\n  ^bb0(%element: f32, %accumulator: f32):\n    linalg.yield %element : f32\n  }\n}\n",
+            "1\n",
+        ),
+    ];
+    for (registry, query, input, expected) in cases {
+        let output = run_stdin_with_registry(registry, query, input);
+        assert!(
+            output.status.success(),
+            "{registry}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);

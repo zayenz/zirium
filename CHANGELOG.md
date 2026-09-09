@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.0.11
+
+Zirium 0.0.11 broadens structural custom-operation support for compiler and
+machine-learning dialects without claiming their execution semantics.
+
+- Expand the StableHLO preset from 16 to 96 forms, including constants,
+  attribute-heavy operations, compact reductions, and all region-bearing
+  definitions reviewed in StableHLO 1.20.1.
+- Add `tosa`, `scf`, and `linalg` presets. Their common operands, result types,
+  attributes, regions, block arguments, and ownership relationships are
+  available to Rust, Python, and binary queries.
+- Add reusable operand-clause and region-clause operation shapes. Region
+  clauses retain explicit block arguments and loop-style header bindings
+  without implementing dialect-specific type inference.
+- Add validated configurable operation formats for common operand and literal
+  layouts, available through JSON registry files and Python configuration.
+- Accept conversion type trailers and literal-attribute dictionaries, expose
+  bundled preset names, and recover complete operations after registered-shape
+  mismatches.
+- Reuse lexer tokens while compacting the CST and extend the parser benchmark
+  with whole-parser peak-memory measurements.
+- Add a Zirium custom-format research skill grounded in the current user
+  documentation.
+
 ## 0.0.10
 
 Zirium 0.0.10 expands custom-operation support and improves Python inspection

@@ -769,8 +769,7 @@ def test_binary_operand_shape_recovers_from_arity_mismatches(
     parsed = zirium.parse_text(source, registry=registry)
     lowered = parsed.lower_best_effort()
     has_shape_mismatch = any(
-        diagnostic.kind == "parser.ShapeMismatch"
-        for diagnostic in parsed.diagnostics
+        diagnostic.kind == "parser.ShapeMismatch" for diagnostic in parsed.diagnostics
     )
     assert (has_shape_mismatch or bool(lowered.diagnostics)) is expect_diagnostics
     assert lowered.document is not None
@@ -854,13 +853,13 @@ def test_operation_shapes_accept_conversion_type_trailers(
     result_type: str,
 ):
     registry = zirium.DialectRegistry.core().extend_operation_shapes({name: shape})
-    source = f'''"builtin.module"() ({{
+    source = f""""builtin.module"() ({{
 ^bb0:
   %a = "test.source"() : () -> i16
   %b = "test.source"() : () -> i16
   %m = "test.source"() : () -> memref<4xf32>
   {operation}
-}}) : () -> ()'''
+}}) : () -> ()"""
     parsed = zirium.parse_text(source, registry=registry)
     assert parsed.diagnostics == []
 
@@ -888,8 +887,7 @@ def test_binary_operand_shape_rejects_parenthesized_single_input_function_type()
 }) : () -> ()"""
     parsed = zirium.parse_text(source, registry=registry)
     assert any(
-        diagnostic.kind == "parser.ShapeMismatch"
-        for diagnostic in parsed.diagnostics
+        diagnostic.kind == "parser.ShapeMismatch" for diagnostic in parsed.diagnostics
     )
     lowered = parsed.lower_best_effort()
     assert lowered.document is not None
@@ -1041,10 +1039,10 @@ def test_literal_attribute_shape_accepts_attribute_dictionaries(
     registry = zirium.DialectRegistry.with_operation_shapes(
         {"stir.arg_in": zirium.OperationShape.LITERAL_ATTRIBUTE}
     )
-    source = f'''"builtin.module"() ({{
+    source = f""""builtin.module"() ({{
 ^bb0:
   {operation}
-}}) : () -> ()'''
+}}) : () -> ()"""
     parsed = zirium.parse_text(source, registry=registry)
     assert parsed.diagnostics == []
     assert parsed.root.range == (0, len(source.encode()))

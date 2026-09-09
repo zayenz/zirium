@@ -45,7 +45,12 @@ def test_file_dict_and_pydantic_registry_agree():
 
 
 def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
-    assert zirium.DialectRegistry.preset_names() == ("stablehlo",)
+    assert zirium.DialectRegistry.preset_names() == (
+        "stablehlo",
+        "tosa",
+        "scf",
+        "linalg",
+    )
     config = {"presets": ["stablehlo"], "builtins": [], "operation_shapes": []}
     path = tmp_path / "stablehlo.json"
     path.write_text(json.dumps(config))
@@ -80,6 +85,8 @@ def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
         ("unary_operand", zirium.OperationShape.UNARY_OPERAND),
         ("variadic_operands", zirium.OperationShape.VARIADIC_OPERANDS),
         ("literal_attribute", zirium.OperationShape.LITERAL_ATTRIBUTE),
+        ("operand_clauses", zirium.OperationShape.OPERAND_CLAUSES),
+        ("region_clauses", zirium.OperationShape.REGION_CLAUSES),
     ],
 )
 def test_extended_operation_shapes_are_configurable(spelling, classattr):
@@ -94,9 +101,7 @@ def test_operation_formats_round_trip_and_parse_captured_roles():
     formats = [
         zirium.OperationFormatConfig(
             name="a.Op",
-            format=(
-                "$operands attr-dict `:` type($operands) `to` type($results)"
-            ),
+            format=("$operands attr-dict `:` type($operands) `to` type($results)"),
         ),
         zirium.OperationFormatConfig(
             name="a.Imm",
@@ -108,13 +113,13 @@ def test_operation_formats_round_trip_and_parse_captured_roles():
     )
     assert zirium.RegistryConfig.model_validate_json(config.model_dump_json()) == config
     registry = zirium.DialectRegistry.from_config(config)
-    source = '''"builtin.module"() ({
+    source = """"builtin.module"() ({
 ^bb0:
   %a = "test.source"() : () -> i16
   %b = "test.source"() : () -> i16
   %r = a.Op %a, %b : i16 to i16
   %0 = a.Imm 1 : i64 {k = 2 : i64} : i32
-}) : () -> ()'''
+}) : () -> ()"""
     parsed = zirium.parse_text(source, registry=registry)
     assert parsed.diagnostics == []
     lowered = parsed.lower_strict()
@@ -153,15 +158,14 @@ def test_operation_format_mismatch_uses_whole_operation_recovery():
                 {
                     "name": "a.Op",
                     "format": (
-                        "$operands attr-dict `:` type($operands) "
-                        "`to` type($results)"
+                        "$operands attr-dict `:` type($operands) `to` type($results)"
                     ),
                 }
             ],
         }
     )
     parsed = zirium.parse_text(
-        "%r = a.Op %arg : i16 -> i16\n\"test.after\"() : () -> ()\n",
+        '%r = a.Op %arg : i16 -> i16\n"test.after"() : () -> ()\n',
         registry=registry,
     )
     assert [diagnostic.kind for diagnostic in parsed.diagnostics] == [

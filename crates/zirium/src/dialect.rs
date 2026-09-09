@@ -394,6 +394,17 @@ pub enum OperationShape {
     VariadicOperands,
     /// One inline literal attribute followed by one result type.
     LiteralAttribute,
+    /// Operands mixed with fixed clauses, named attributes, and a trailing type signature.
+    ///
+    /// This shape is intended for operation syntaxes whose semantic structure is ordinary
+    /// SSA operands plus a result signature, but whose presentation includes dialect-specific
+    /// keywords or punctuation before that signature.
+    OperandClauses,
+    /// Operands and fixed clauses followed by one or more operation regions.
+    ///
+    /// Explicit block labels and their arguments are parsed by the ordinary region grammar.
+    /// Header bindings such as loop induction variables are exposed as entry-block arguments.
+    RegionClauses,
 }
 
 impl std::error::Error for DeclarativeRegistryError {}
@@ -1185,6 +1196,8 @@ pub(crate) fn lower_operation_shape(
         OperationShape::UnaryOperand => lower_unary_operand(operation, context),
         OperationShape::VariadicOperands => lower_variadic_operands(operation, context),
         OperationShape::LiteralAttribute => lower_literal_attribute(operation, context),
+        OperationShape::OperandClauses => lower_operand_clauses(operation, context),
+        OperationShape::RegionClauses => lower_region_clauses(operation, context),
     }
 }
 
@@ -1413,13 +1426,132 @@ fn lower_variadic_operands(
     })
 }
 
+fn lower_operand_clauses(
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    if let Some(function_type) = context.function_type() {
+        let (inputs, results) = crate::semantic::split_arrow(function_type)?;
+        return Some(RegisteredLowering {
+            name: "arith.addi",
+            result_types: crate::semantic::split_registered_types(results),
+            function_type: format!("{} -> {}", inputs.trim(), results.trim()),
+            attributes: Vec::new(),
+        });
+    }
+
+    if let Some((_, results)) = crate::semantic::split_arrow(context.assembly_spelling()) {
+        let result_types = crate::semantic::split_registered_types(results);
+        let inputs =
+            std::iter::repeat_n("!zirium.unparsed<>", context.operand_count()).collect::<Vec<_>>();
+        return Some(RegisteredLowering {
+            name: "arith.addi",
+            function_type: format!(
+                "({}) -> {}",
+                inputs.join(", "),
+                type_list_text(&result_types)
+            ),
+            result_types,
+            attributes: Vec::new(),
+        });
+    }
+
+    let tail = context.assembly_spelling().split_once(operation)?.1;
+    let (_, type_tail) = tail.rsplit_once(':')?;
+    let type_tail = type_tail.trim();
+    if let Some((input, result)) = split_top_level_to(type_tail) {
+        let inputs = std::iter::repeat_n(input.trim(), context.operand_count()).collect::<Vec<_>>();
+        return Some(RegisteredLowering {
+            name: "arith.addi",
+            result_types: vec![result.trim().to_owned()],
+            function_type: format!("({}) -> {}", inputs.join(", "), result.trim()),
+            attributes: Vec::new(),
+        });
+    }
+
+    let types = crate::semantic::split_registered_types(type_tail);
+    let result = types.last()?.clone();
+    let inputs = if types.len() == 2 && context.operand_count() == 3 {
+        vec![types[0].clone(), types[1].clone(), types[1].clone()]
+    } else if types.len() == context.operand_count() && types.len() > 1 {
+        types.clone()
+    } else {
+        std::iter::repeat_n(result.as_str(), context.operand_count())
+            .map(str::to_owned)
+            .collect()
+    };
+    let result_types = if types.len() == context.operand_count() && types.len() > 1 {
+        types
+    } else {
+        vec![result.clone()]
+    };
+    Some(RegisteredLowering {
+        name: "arith.addi",
+        result_types: result_types.clone(),
+        function_type: format!(
+            "({}) -> {}",
+            inputs.join(", "),
+            type_list_text(&result_types)
+        ),
+        attributes: Vec::new(),
+    })
+}
+
+fn type_list_text(types: &[String]) -> String {
+    match types {
+        [single] => single.clone(),
+        _ => format!("({})", types.join(", ")),
+    }
+}
+
+fn lower_region_clauses(
+    _operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    if let Some(function_type) = context.function_type() {
+        let (inputs, results) = crate::semantic::split_arrow(function_type)?;
+        return Some(RegisteredLowering {
+            name: "zirium.region",
+            result_types: crate::semantic::split_registered_types(results),
+            function_type: format!("{} -> {}", inputs.trim(), results.trim()),
+            attributes: Vec::new(),
+        });
+    }
+
+    // Many structured-control-flow forms infer operand types from surrounding
+    // bindings and only spell result types in the header. Keep those slots
+    // structural and honest instead of assigning dialect semantics here.
+    let input_types =
+        std::iter::repeat_n("!zirium.unparsed<>", context.operand_count()).collect::<Vec<_>>();
+    let result_types = std::iter::repeat_n("!zirium.unparsed<>".to_owned(), context.result_count())
+        .collect::<Vec<_>>();
+    Some(RegisteredLowering {
+        name: "zirium.region",
+        function_type: format!(
+            "({}) -> {}",
+            input_types.join(", "),
+            type_list_text(&result_types)
+        ),
+        result_types,
+        attributes: Vec::new(),
+    })
+}
+
 fn lower_literal_attribute(
     operation: &str,
     context: &RegisteredLoweringContext<'_>,
 ) -> Option<RegisteredLowering> {
     let tail = context.assembly_spelling().split_once(operation)?.1.trim();
-    let (attribute, result) = tail.rsplit_once(':')?;
-    let attribute = strip_top_level_attribute(attribute).trim();
+    let (attribute_prefix, result) = tail.rsplit_once(':')?;
+    let literal = context.literal_value()?.trim();
+    let attribute = if matches!(
+        literal.split_once('<').map(|(name, _)| name.trim()),
+        Some("dense" | "sparse" | "dense_resource")
+    ) {
+        literal
+    } else {
+        strip_top_level_attribute(attribute_prefix).trim()
+    };
     let result = result.trim();
     Some(RegisteredLowering {
         name: "arith.constant",

@@ -122,6 +122,201 @@ fn named_stablehlo_registry_parses_and_lowers_its_supported_custom_forms() {
 }
 
 #[test]
+fn stablehlo_preset_structures_common_attribute_heavy_forms() {
+    let registry = DialectRegistry::from_name("stablehlo").unwrap();
+    let source = br#"module {
+      func.func @main(%input: tensor<4x4xf32>, %start: tensor<i32>) -> tensor<2x4xf32> {
+        %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+        %slice = stablehlo.dynamic_slice %input, %start, %start, sizes = [2, 4] : (tensor<4x4xf32>, tensor<i32>, tensor<i32>) -> tensor<2x4xf32>
+        %broadcast = stablehlo.broadcast_in_dim %zero, dims = [] : (tensor<f32>) -> tensor<2x4xf32>
+        %result = stablehlo.add %slice, %broadcast : tensor<2x4xf32>
+        func.return %result : tensor<2x4xf32>
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    let dynamic_slice = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("stablehlo.dynamic_slice"))
+        .unwrap();
+    assert_eq!(document.operands(dynamic_slice).unwrap().len(), 3);
+    assert_eq!(document.result_types(dynamic_slice).unwrap().len(), 1);
+    assert!(document.attribute_id(dynamic_slice, "sizes").is_some());
+
+    let broadcast = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("stablehlo.broadcast_in_dim"))
+        .unwrap();
+    assert_eq!(document.operands(broadcast).unwrap().len(), 1);
+    assert!(document.attribute_id(broadcast, "dims").is_some());
+
+    let constant = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("stablehlo.constant"))
+        .unwrap();
+    let value = document.attribute_id(constant, "value").unwrap();
+    assert_eq!(
+        document.attribute_spelling_value(value),
+        Some("dense<0.000000e+00> : tensor<f32>")
+    );
+}
+
+#[test]
+fn stablehlo_preset_structures_reducer_regions_and_arguments() {
+    let registry = DialectRegistry::from_name("stablehlo").unwrap();
+    let source = br#"%input = "test.source"() : () -> tensor<f32>
+    %init = "test.source"() : () -> tensor<f32>
+    stablehlo.reduce(%input init: %init) across dimensions = [0] reducer(%lhs: tensor<f32>, %rhs: tensor<f32>) {
+      stablehlo.return %lhs : tensor<f32>
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let reduce = parsed.syntax().file().operations().nth(2).unwrap();
+    assert_eq!(reduce.operands().count(), 2);
+    assert_eq!(reduce.arguments().count(), 2);
+    let block = reduce.regions().next().unwrap().blocks().next().unwrap();
+    assert_eq!(block.arguments().count(), 0);
+
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let reduce = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("stablehlo.reduce"))
+        .unwrap();
+    let region = document.operation_regions(reduce).unwrap()[0];
+    let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
+    assert_eq!(document.block_argument_types(block).unwrap().len(), 2);
+}
+
+#[test]
+fn tosa_preset_structures_operands_attributes_and_constants() {
+    let registry = DialectRegistry::from_name("tosa").unwrap();
+    let source = br#"module {
+      func.func @main(%lhs: tensor<2xf32>, %rhs: tensor<2xf32>) -> tensor<2xf32> {
+        %zero = tosa.const dense<0.000000e+00> : tensor<2xf32>
+        %sum = tosa.add %lhs, %rhs {shift = 0 : i32} : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
+        func.return %sum : tensor<2xf32>
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let add = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("tosa.add"))
+        .unwrap();
+    assert_eq!(document.operands(add).unwrap().len(), 2);
+    assert!(document.attribute_id(add, "shift").is_some());
+    assert_eq!(document.result_types(add).unwrap().len(), 1);
+}
+
+#[test]
+fn scf_preset_exposes_regions_and_header_block_arguments() {
+    let registry = DialectRegistry::from_name("scf").unwrap();
+    let source = br#"module {
+      func.func @loop(%lower: index, %upper: index, %step: index) {
+        scf.for %iv = %lower to %upper step %step {
+          "test.use"(%iv) : (index) -> ()
+          scf.yield
+        }
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let loop_op = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("scf.for"))
+        .unwrap();
+    assert_eq!(document.operands(loop_op).unwrap().len(), 3);
+    let region = document.operation_regions(loop_op).unwrap()[0];
+    let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
+    assert_eq!(document.block_argument_types(block).unwrap().len(), 1);
+}
+
+#[test]
+fn linalg_preset_keeps_generic_regions_and_explicit_block_arguments() {
+    let registry = DialectRegistry::from_name("linalg").unwrap();
+    let source = br#"module {
+      func.func @kernel(%input: memref<4xf32>, %output: memref<4xf32>) {
+        linalg.generic indexing_maps = [], iterator_types = [] ins(%input : memref<4xf32>) outs(%output : memref<4xf32>) {
+        ^bb0(%element: f32, %accumulator: f32):
+          linalg.yield %element : f32
+        }
+        func.return
+      }
+      func.func @tensor_copy(%input: tensor<4xf32>, %init: tensor<4xf32>) -> tensor<4xf32> {
+        %result = linalg.copy ins(%input : tensor<4xf32>) outs(%init : tensor<4xf32>) -> tensor<4xf32>
+        func.return %result : tensor<4xf32>
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let generic = parsed
+        .syntax()
+        .file()
+        .operations()
+        .find(|operation| {
+            operation.mnemonic_range().is_some_and(|range| {
+                &source[range.start() as usize..range.end() as usize] == b"linalg.generic"
+            })
+        })
+        .unwrap();
+    assert_eq!(generic.operands().count(), 2);
+    let region = generic.regions().next().unwrap();
+    assert_eq!(region.blocks().next().unwrap().arguments().count(), 2);
+
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let generic = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("linalg.generic"))
+        .unwrap();
+    assert!(document.attribute_id(generic, "indexing_maps").is_some());
+    assert!(document.attribute_id(generic, "iterator_types").is_some());
+    let region = document.operation_regions(generic).unwrap()[0];
+    let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
+    assert_eq!(document.block_argument_types(block).unwrap().len(), 2);
+    let copy = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("linalg.copy"))
+        .unwrap();
+    assert_eq!(document.operands(copy).unwrap().len(), 2);
+    assert_eq!(document.result_types(copy).unwrap().len(), 1);
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])
