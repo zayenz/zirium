@@ -1,1 +1,1 @@
-select(op("arith.addi")) | users
+filter(op("arith.addi")) | users

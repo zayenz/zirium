@@ -1,157 +1,260 @@
-# Zirium query language reference
+# Zirium query language
 
-A Zirium query starts with `select`, which tests every operation in the input
-document. Pipeline stages then navigate, combine, edit, or summarize the
-selection. Stages run from left to right.
+A query transforms a selection of operations. It starts with every operation
+in the input document. A pipe passes the current selection to the next stage:
 
 ```zirium
-select(op("arith.addi") and not has_attr("analysis.tag")) | defs | count
+filter(op("arith.addi")) | users | filter(has_attr("analysis.tag"))
 ```
 
-Pass a query directly to the `zirium` binary or store it in a file and use
-`--program-file` (or `-f`).
+This finds adds, follows their direct users, and keeps the tagged users.
+`filter` always tests the current selection. Navigation replaces that
+selection; edits preserve it. Selections contain each operation at most once
+and use source order, including after navigation and set operations.
+
+`input` and a final `emit` are implicit. These programs print the same document:
+
+```zirium
+# An empty program is valid.
+```
+
+```zirium
+input
+```
+
+```zirium
+input | emit
+```
+
+The CLI accepts a query argument or a program file (`-f` / `--program-file`).
+With no arguments, it runs the empty program on standard input. Use an empty
+quoted argument to run the empty program on files:
 
 ```sh
-zirium 'select(op("arith.addi")) | count' input.mlir
-zirium --program-file query.zirium input.mlir
+zirium '' input.mlir
+zirium 'filter(op("arith.addi")) | count' input.mlir
+zirium -f query.zirium input.mlir
 ```
 
-See the [CLI examples](cli-examples.md) for complete queries and sample MLIR
-files.
+Input files are independent documents. `input` never combines different files.
+Printing uses Zirium's selected-fragment printer, so printing the input does
+not promise byte-for-byte reproduction of the original text.
 
-## Program structure
+## Predicates and filtering
 
-Every program has one initial selection and zero or more pipeline stages:
-
-```text
-program   = "select" "(" predicate ")" { "|" stage }
-
-predicate = or-expression
-or-expression  = and-expression { "or" and-expression }
-and-expression = not-expression { "and" not-expression }
-not-expression = { "not" } primary
-primary   = operation-predicate
-          | attribute-predicate
-          | "(" predicate ")"
-
-operation-predicate = "op" "(" string ")"
-attribute-predicate = "has_attr" "(" string ")"
-                    | "attr" "(" string "," string ")"
-
-stage = "closure" | "defs" | "users" | "parent" | "children"
-      | "union" "(" predicate ")"
-      | "intersect" "(" predicate ")"
-      | "except" "(" predicate ")"
-      | "set_attr" "(" string "," string ")"
-      | "remove_attr" "(" string ")"
-      | "count" | "root"
-```
-
-Whitespace, including newlines, may appear between tokens. The language has no
-comment syntax.
-
-`not` binds more tightly than `and`, and `and` binds more tightly than `or`.
-Parentheses override that order.
-
-## Predicates
-
-Predicates test one operation at a time.
+Predicates test one operation. They appear inside `filter(...)`.
 
 | Predicate | Matches |
 | --- | --- |
-| `op("name")` | Operations whose full name is exactly `name`. |
-| `has_attr("name")` | Operations with an attribute named `name`, regardless of its value. |
-| `attr("name", "value")` | Operations whose named attribute is a string equal to `value`. |
+| `true` / `false` | Every operation / no operation. |
+| `op("name")` | An operation with exactly this full name. |
+| `has_attr("name")` | An operation with this attribute, regardless of its value. |
+| `string_attr_eq("name", "value")` | An operation whose named attribute is a string equal to this decoded value. |
 
-`attr` matches only MLIR string attributes. It compares decoded string values,
-so `attr("message", "say \"hi\"")` matches an MLIR attribute spelled
-`message = "say \22hi\22"`.
-
-Combine predicates with `not`, `and`, and `or`:
+Combine predicates with `not`, `and`, and `or`, in that precedence order.
+Parentheses override precedence:
 
 ```zirium
-select((op("arith.addi") or op("arith.muli")) and not has_attr("skip"))
+filter((op("arith.addi") or op("arith.muli")) and not has_attr("skip"))
 ```
 
+Use `filter(not predicate)` to exclude matches. `filter(true)` leaves the
+selection unchanged. `count` alone counts every operation, including container
+operations such as `builtin.module`.
+
+String equality compares decoded values. For example,
+`string_attr_eq("message", "say \"hi\"")` matches the MLIR string attribute
+`message = "say \22hi\22"`. It does not compare numeric attributes or their
+printed spellings.
+
 Operation names must be non-empty. Attribute names use dotted ASCII
-identifiers: each component starts with a letter or underscore and continues
-with letters, digits, or underscores. Names such as `analysis.tag` and
-`_zirium.state_2` are valid.
+identifiers: each component starts with a letter or underscore, followed by
+letters, digits, or underscores. `analysis.tag` and `_zirium.state_2` are valid.
 
-## Selection stages
-
-These stages replace or combine the current selection. Results are
-deduplicated and returned in source order.
+## Input, navigation, and fragments
 
 | Stage | Resulting selection |
 | --- | --- |
-| `defs` | Operations that directly define operands of the selected operations. A block argument resolves to the operation that owns its region. |
-| `users` | Operations that directly use results of the selected operations. |
-| `parent` | The immediate enclosing operation of each selected operation. |
-| `children` | Operations directly contained in the regions and blocks owned by the selected operations. |
-| `closure` | The selection plus its transitive dependencies. |
-| `union(predicate)` | The current selection plus every operation matching `predicate`. |
-| `intersect(predicate)` | Selected operations that also match `predicate`. |
-| `except(predicate)` | Selected operations that do not match `predicate`. |
+| `input` | Every operation in the current document, including earlier edits. |
+| `defs` | Operations directly defining operands of the selected operations. A block argument resolves to the operation owning its region. |
+| `users` | Operations directly using results of the selected operations. |
+| `parent` | Each selected operation's immediate enclosing operation. |
+| `children` | Operations directly contained in the selected operations' regions and blocks. |
+| `root` | The outermost selected operations and all their descendants. |
+| `closure` | The selection plus one step of supported dependency expansion. |
 
-`defs`, `users`, `parent`, and `children` move one step and do not retain the
-input selection unless it also appears in the result.
+`defs`, `users`, `parent`, and `children` move one step and replace the input
+selection. They do not automatically keep it. `parent` drops operations with no
+enclosing operation. `defs` and `users` are not inverse relationships: a block
+argument belongs to an enclosing operation rather than an operation result.
 
-`closure` follows SSA definitions. For block arguments, it retains the owning
-operation and its contents. It also follows registered `func.call` targets and
-the successors of `cf.br` and `cf.cond_br`. Closure fails when it encounters an
-unregistered operation or a symbol or successor reference it does not support.
-It does not guess how an unknown operation uses references.
+`root` expands the current fragment. It does not climb to a document root or
+add enclosing printer shells to the selection. Multiple outermost selected
+operations produce multiple subtrees; an empty selection stays empty.
 
-The predicates in `union`, `intersect`, and `except` test all operations in the
-current document, including edits made by earlier stages.
+For example, find the function containing a call, expand its body, and tag its returns:
 
-## Edit stages
+```zirium
+filter(op("func.call")) | parent
+| root
+| filter(op("func.return"))
+| set_attr("analysis.tag", "review")
+```
 
-Edit stages change every selected operation and keep the same selection for
-the next stage.
+The same operation in a sibling function is unaffected. Append `input` to
+print the complete edited document.
 
-| Stage | Effect |
+Selection and printing are distinct. Selecting a function counts as one
+operation, but printing it includes its body. Printing a nested operation also
+retains the enclosing syntax needed to represent it. Neither behavior adds
+those operations to the query selection. Use `root` when descendants must
+participate in filtering, counting, or editing.
+
+Fragments may omit SSA definitions and users, so they are not guaranteed to
+be standalone valid MLIR. Select the needed dependencies explicitly.
+
+## Combining queries
+
+`union`, `intersect`, and `except` are infix operators between selection
+queries. Both operands receive the same incoming selection.
+
+```zirium
+filter(op("arith.addi")) union filter(op("arith.muli"))
+```
+
+For this example, `filter(op("arith.addi") or op("arith.muli"))` is shorter.
+Set operators are useful when the operands navigate differently:
+
+```zirium
+filter(op("arith.addi")) | (defs union users)
+```
+
+This combines the definitions and users of the selected adds. It does not run
+`users` on the output of `defs`.
+
+| Operator | Result |
 | --- | --- |
-| `set_attr("name", "value")` | Adds or replaces `name` with an MLIR string attribute. |
-| `remove_attr("name")` | Removes `name`. Missing attributes are left unchanged. |
+| `left union right` | Operations in either result. |
+| `left intersect right` | Operations in both results. |
+| `left except right` | Operations in the left result but not the right. |
 
-`set_attr` accepts the same dotted attribute names as the attribute predicates.
-Its value may not contain control characters. Edits are buffered and committed
-atomically for each stage.
+Pipes bind more tightly than set operators. All set operators have equal
+precedence and associate left to right. Parenthesize a set expression before
+applying a stage to its combined result:
 
-The binary writes edited MLIR to standard output. It does not overwrite the
-input files.
+```zirium
+(filter(op("arith.addi")) | users union filter(op("arith.muli")) | defs)
+| count
+```
 
-## Output stages
+An operand searches the complete document only when it receives the initial
+selection or explicitly uses `input`. This query adds every tagged operation
+in the document to the current selection:
 
-Without an output stage, the binary prints the final selection.
+```zirium
+filter(op("arith.addi")) | (filter(true) union (input | filter(has_attr("tag"))))
+```
 
-| Stage | Output |
-| --- | --- |
-| `count` | The number of selected operations, followed by a newline. |
-| `root` | The complete current document after validation. |
+Set operands cannot edit or count. Apply edits and counting after grouping the
+set expression. Operands may use `emit` for inspection; emissions occur from
+left to right. Both operands still see the same document and incoming selection.
 
-`count` and `root` are terminal: no pipeline stage may follow either one.
-`root` is useful after an edit when the output should contain the complete
-document rather than a selected fragment.
+## Closure and fixed points
 
-Selection output retains the enclosing syntax needed to print the selected
-operations. An operation that owns regions also retains their contents. The
-result is an intentional fragment of the input, not a guarantee of standalone
-valid MLIR. In particular, Zirium does not add SSA definitions or users unless
-the query selects them or reaches them through a stage such as `defs`, `users`,
-or `closure`.
+`closure` retains the selection and expands dependencies once. It adds direct
+SSA definitions. Block arguments add their owning operation and its subtree;
+`func.call` adds its resolved callee and subtree; `cf.br` and `cf.cond_br` add
+the successor region's owning operation and subtree. These subtree expansions
+retain the corresponding scope, but dependencies of newly added operations
+are followed on subsequent applications.
 
-## Strings and limits
+Use `fixpoint(closure)` for the complete supported dependency slice:
 
-Strings use double quotes. The query language supports two escapes:
+```zirium
+filter(op("func.call")) | fixpoint(closure)
+```
 
-| Escape | Value |
-| --- | --- |
-| `\"` | A double quote. |
-| `\\` | A backslash. |
+Closure requires registered operations with supported reference semantics.
+It fails on an unregistered operation or an unsupported symbol or successor
+reference. It does not infer how unknown operations use references.
 
-Other escapes are errors. The parser reports query errors at byte offsets and
-rejects predicates that exceed its 64-level nesting limit. A query error or
-evaluation error produces no MLIR output.
+`fixpoint(query)` repeatedly replaces the selection with the query's result
+until the selection is unchanged. Its body can contain navigation, filters,
+set expressions, grouping, and nested fixed points. It cannot edit or count.
+Use `fixpoint(closure | emit)` to inspect each iteration, including the final
+unchanged result. If selections cycle without becoming unchanged, evaluation
+fails. Emission does not affect convergence.
+
+Fixed points do not implicitly accumulate intermediate selections:
+
+```zirium
+# Retain the seed and add users until no more are found.
+filter(op("arith.addi")) | fixpoint(filter(true) union users)
+
+# Follow definitions until unchanged; on an acyclic chain this becomes empty.
+filter(op("arith.addi")) | fixpoint(defs)
+```
+
+The same rule applies to `parent`: repeatedly moving beyond the document's
+roots eventually gives an empty selection. `root` is the operation for
+expanding a selected fragment, rather than repeatedly moving upward.
+
+## Edits and emission
+
+`set_attr("name", "value")` adds or replaces a string attribute on every
+selected operation. `remove_attr("name")` removes an attribute; missing
+attributes are ignored. Both preserve the selection. Later filters and
+`input` see the edits. Attribute values passed to `set_attr` cannot contain
+control characters. Each edit stage commits atomically.
+
+`emit` prints the current fragment and passes the same selection onward:
+
+```zirium
+filter(op("arith.addi")) | emit | users
+```
+
+This prints the adds, then their users. Each explicit emission captures the
+document at that point, before later edits. An implicit final emission prints
+the result unless the program ends with an explicit `emit`, including inside
+a final group. `emit | emit` therefore prints twice, while `emit` prints once.
+Nested queries do not acquire implicit input resets or emissions. A fixed-point
+body ending in `emit` emits each iteration; the enclosing program still emits
+its final result unless it ends with an explicit `emit`.
+
+`count` prints the selection's size followed by a newline. It is terminal;
+no stage may follow it. To emit a fragment and then count it, use `emit | count`.
+
+Consecutive fragment outputs are separated by `// -----`. Counts are plain
+lines. The CLI buffers all emissions across all input files until processing
+succeeds: a query, evaluation, or printing error produces no standard output.
+Input files are never overwritten. Rust callers use the `Query::evaluate`
+emission callback and can choose their own buffering policy.
+
+## Grammar and diagnostics
+
+```text
+program    = [ query ]
+query      = pipeline { ("union" | "intersect" | "except") pipeline }
+pipeline   = stage { "|" stage }
+stage      = "input" | "filter" "(" predicate ")"
+           | "defs" | "users" | "parent" | "children" | "root" | "closure"
+           | "fixpoint" "(" query ")" | "(" query ")"
+           | "set_attr" "(" string "," string ")"
+           | "remove_attr" "(" string ")" | "emit" | "count"
+predicate  = and-expr { "or" and-expr }
+and-expr   = not-expr { "and" not-expr }
+not-expr   = { "not" } primary
+primary    = "true" | "false" | "op" "(" string ")"
+           | "has_attr" "(" string ")"
+           | "string_attr_eq" "(" string "," string ")"
+           | "(" predicate ")"
+```
+
+Whitespace is insignificant between tokens. `#` begins a comment extending to
+the end of the line; inside a string it is a literal character. Strings use
+double quotes and support `\"` and `\\`. Other escapes are errors.
+
+Query and predicate nesting share a 64-level limit. Long flat boolean chains,
+pipelines, and set chains do not require corresponding recursive nesting.
+The CLI reports query errors with a byte offset, line, column, and source
+caret. Program-file positions include leading whitespace and comments.

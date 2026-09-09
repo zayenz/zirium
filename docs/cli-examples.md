@@ -35,7 +35,7 @@ prints the untagged `arith.addi` from the sample and omits its tagged
 
 ```sh
 zirium \
-  'select((op("arith.addi") or op("arith.muli")) and not has_attr("analysis.tag"))' \
+  'filter((op("arith.addi") or op("arith.muli")) and not has_attr("analysis.tag"))' \
   examples/cli/arithmetic.mlir
 ```
 
@@ -57,7 +57,7 @@ module {
   %sum = arith.addi %lhs, %rhs : i32
   %product = "arith.muli"(%sum, %rhs) {analysis.tag = "old"} : (i32, i32) -> i32
 }
-$ zirium 'select(op("arith.addi")) | users' examples/cli/arithmetic.mlir
+$ zirium 'filter(op("arith.addi")) | users' examples/cli/arithmetic.mlir
 builtin.module {
   %v3 = "arith.muli"(%v2, %v1) {analysis.tag = "old"} : (i32, i32) -> i32
 }
@@ -70,12 +70,12 @@ The same query is available as
 
 ## Combine arithmetic operation kinds
 
-`union(predicate)` combines the current selection with all operations matching
-another predicate. The result contains the add and multiply in source order:
+`union` combines the results of two queries. The result contains the add and
+multiply in source order:
 
 ```sh
 zirium \
-  'select(op("arith.addi")) | union(op("arith.muli"))' \
+  'filter(op("arith.addi")) union filter(op("arith.muli"))' \
   examples/cli/arithmetic.mlir
 ```
 
@@ -85,11 +85,11 @@ The same query is available as
 
 ## Extract a call dependency slice
 
-`closure` adds transitive dependencies. For a `func.call`, that includes the
-resolved callee and its body, while unrelated sibling functions are omitted.
+`fixpoint(closure)` adds dependencies until the selection stops changing. For a
+`func.call`, that includes the resolved callee and its body, while unrelated sibling functions are omitted.
 
 ```sh
-zirium 'select(op("func.call")) | closure' examples/cli/calls.mlir
+zirium 'filter(op("func.call")) | fixpoint(closure)' examples/cli/calls.mlir
 ```
 
 The output contains `@caller` and `@answer`, and omits `@unrelated`. Closure
@@ -113,14 +113,14 @@ structure and tensor shapes are unchanged.
 The first query below counts every operation. The second counts reductions:
 
 ```console
-$ zirium 'select(not op("__zirium_missing__")) | count' examples/cli/stablelm-decode.mlir
+$ zirium 'count' examples/cli/stablelm-decode.mlir
 237
-$ zirium 'select(op("stablehlo.reduce")) | count' examples/cli/stablelm-decode.mlir
+$ zirium 'filter(op("stablehlo.reduce")) | count' examples/cli/stablelm-decode.mlir
 14
 ```
 
-The first predicate is true for every operation because the input has no
-operation named `__zirium_missing__`.
+The initial selection contains every operation, including the module and other
+container operations.
 
 For a query that will be reused, put the program in a file. The checked-in
 [`stablehlo-matmul-count.zirium`](../examples/cli/stablehlo-matmul-count.zirium)
@@ -129,7 +129,7 @@ matrix multiplications:
 
 ```console
 $ cat examples/cli/stablehlo-matmul-count.zirium
-select(op("stablehlo.dot_general")) | count
+filter(op("stablehlo.dot_general")) | count
 $ zirium --program-file examples/cli/stablehlo-matmul-count.zirium examples/cli/stablelm-decode.mlir
 19
 ```
@@ -140,18 +140,18 @@ source; surrounding whitespace and the final newline are ignored.
 
 ## Tag selected operations
 
-Mutations keep the selection as the pipeline value. Appending `root` returns
-to the whole edited document, validates it, and prints all operations:
+Mutations keep the selection as the pipeline value. Appending `input | emit`
+returns to the whole edited document and prints all operations:
 
 ```sh
 zirium \
-  'select(op("arith.addi")) | set_attr("analysis.tag", "review") | root' \
+  'filter(op("arith.addi")) | set_attr("analysis.tag", "review") | input | emit' \
   examples/cli/arithmetic.mlir
 ```
 
 The output is the complete input document with
 `analysis.tag = "review"` added to `arith.addi`. Unlike the earlier selected
-fragments, `root` output after a mutation is a validated whole document.
+fragments, this output contains the whole edited document.
 The same query is available as
 [`tag-add.zirium`](../examples/cli/tag-add.zirium).
 
@@ -162,11 +162,31 @@ input:
 
 ```sh
 zirium \
-  'select(attr("analysis.tag", "old")) | remove_attr("analysis.tag") | root' \
+  'filter(string_attr_eq("analysis.tag", "old")) | remove_attr("analysis.tag") | input | emit' \
   < examples/cli/arithmetic.mlir
 ```
 
-The validated output retains the complete document but removes `analysis.tag`
+The output retains the complete document but removes `analysis.tag`
 from `arith.muli`.
 The same query is available as
 [`remove-tag.zirium`](../examples/cli/remove-tag.zirium).
+
+## Inspect an intermediate selection
+
+`emit` prints the selection and passes it to the next stage. This prints the
+add, then its direct users, separated by `// -----`:
+
+```sh
+zirium 'filter(op("arith.addi")) | emit | users' examples/cli/arithmetic.mlir
+```
+
+## Work inside a function fragment
+
+`root` includes every descendant of the selected function. The following
+filter therefore finds returns only inside `@caller`:
+
+```sh
+zirium \
+  'filter(op("func.call")) | parent | root | filter(op("func.return"))' \
+  examples/cli/calls.mlir
+```

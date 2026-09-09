@@ -4,27 +4,62 @@ use super::lexer::{Lexed, Token, TokenKind};
 
 pub const DEFAULT_NESTING_LIMIT: usize = 64;
 
+/// Set operators have equal precedence and associate left to right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetOperator {
+    Union,
+    Intersect,
+    Except,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
-    predicate: Predicate,
-    stages: Vec<Stage>,
-    range: TextRange,
+    pub(crate) expression: Expression,
 }
 
 impl Program {
-    pub fn predicate(&self) -> &Predicate {
-        &self.predicate
-    }
-    pub fn stages(&self) -> &[Stage] {
-        &self.stages
+    pub fn expression(&self) -> &Expression {
+        &self.expression
     }
     pub fn range(&self) -> TextRange {
-        self.range
+        self.expression.range
+    }
+}
+
+/// Each set operand is a pipeline. Grouping introduces a nested expression.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Expression {
+    pub first: Vec<Stage>,
+    pub rest: Vec<(SetOperator, Vec<Stage>)>,
+    pub range: TextRange,
+}
+
+impl Expression {
+    pub fn is_selection_only(&self) -> bool {
+        self.first
+            .iter()
+            .chain(self.rest.iter().flat_map(|(_, stages)| stages))
+            .all(Stage::is_selection_only)
+    }
+    pub(crate) fn ends_with_emit(&self) -> bool {
+        self.rest.is_empty()
+            && self.first.last().is_some_and(|stage| match stage {
+                Stage::Emit { .. } => true,
+                Stage::Group { expression, .. } => expression.ends_with_emit(),
+                _ => false,
+            })
+    }
+    fn is_terminal(&self) -> bool {
+        self.first.last().is_some_and(Stage::is_terminal)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Predicate {
+    Bool {
+        value: bool,
+        range: TextRange,
+    },
     Op {
         name: String,
         range: TextRange,
@@ -59,7 +94,8 @@ pub enum Predicate {
 impl Predicate {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Op { range, .. }
+            Self::Bool { range, .. }
+            | Self::Op { range, .. }
             | Self::HasAttr { range, .. }
             | Self::Attr { range, .. }
             | Self::Not { range, .. }
@@ -72,6 +108,13 @@ impl Predicate {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
+    Input {
+        range: TextRange,
+    },
+    Filter {
+        predicate: Predicate,
+        range: TextRange,
+    },
     Closure {
         range: TextRange,
     },
@@ -87,16 +130,15 @@ pub enum Stage {
     Children {
         range: TextRange,
     },
-    Union {
-        predicate: Predicate,
+    Root {
         range: TextRange,
     },
-    Intersect {
-        predicate: Predicate,
+    Group {
+        expression: Box<Expression>,
         range: TextRange,
     },
-    Except {
-        predicate: Predicate,
+    Fixpoint {
+        expression: Box<Expression>,
         range: TextRange,
     },
     SetAttr {
@@ -111,7 +153,7 @@ pub enum Stage {
     Count {
         range: TextRange,
     },
-    Root {
+    Emit {
         range: TextRange,
     },
 }
@@ -119,18 +161,36 @@ pub enum Stage {
 impl Stage {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Closure { range }
+            Self::Input { range }
+            | Self::Filter { range, .. }
+            | Self::Closure { range }
             | Self::Defs { range }
             | Self::Users { range }
             | Self::Parent { range }
             | Self::Children { range }
-            | Self::Union { range, .. }
-            | Self::Intersect { range, .. }
-            | Self::Except { range, .. }
+            | Self::Root { range }
+            | Self::Group { range, .. }
+            | Self::Fixpoint { range, .. }
             | Self::SetAttr { range, .. }
             | Self::RemoveAttr { range, .. }
             | Self::Count { range }
-            | Self::Root { range } => *range,
+            | Self::Emit { range } => *range,
+        }
+    }
+    fn is_selection_only(&self) -> bool {
+        match self {
+            Self::SetAttr { .. } | Self::RemoveAttr { .. } | Self::Count { .. } => false,
+            Self::Group { expression, .. } | Self::Fixpoint { expression, .. } => {
+                expression.is_selection_only()
+            }
+            _ => true,
+        }
+    }
+    fn is_terminal(&self) -> bool {
+        match self {
+            Self::Count { .. } => true,
+            Self::Group { expression, .. } => expression.is_terminal(),
+            _ => false,
         }
     }
 }
@@ -187,13 +247,6 @@ pub fn parse_with_nesting_limit(lexed: &Lexed<'_>, nesting_limit: usize) -> Pars
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PipelineKind {
-    Selection,
-    Scalar,
-    Root,
-}
-
 struct Parser<'a> {
     source: &'a str,
     tokens: &'a [Token],
@@ -205,127 +258,131 @@ struct Parser<'a> {
 impl Parser<'_> {
     fn program(&mut self) -> Option<Program> {
         self.skip_trivia();
+        if self.at(TokenKind::Eof) {
+            return Some(Program {
+                expression: Expression {
+                    first: Vec::new(),
+                    rest: Vec::new(),
+                    range: self.current().range(),
+                },
+            });
+        }
+        let expression = self.expression(0)?;
+        self.skip_trivia();
+        if !self.at(TokenKind::Eof) {
+            self.error("expected `|`, a set operator, or end of query");
+        }
+        Some(Program { expression })
+    }
+
+    fn expression(&mut self, depth: usize) -> Option<Expression> {
+        self.skip_trivia();
+        if depth >= self.nesting_limit {
+            self.error("query nesting limit exceeded");
+            return None;
+        }
         let start = self.current().range().start();
-        self.expect_identifier("select", "expected `select`")?;
-        self.expect(TokenKind::LParen, "expected `(` after select")?;
-        let predicate = self.predicate(1)?;
-        self.expect(TokenKind::RParen, "expected `)` after select predicate")?;
-        let mut stages = Vec::new();
-        let mut kind = PipelineKind::Selection;
+        let first = self.pipeline(depth)?;
+        let mut rest = Vec::new();
         loop {
             self.skip_trivia();
-            if self.at(TokenKind::Eof) {
-                break;
-            }
+            let operator = match self.current_text() {
+                "union" => SetOperator::Union,
+                "intersect" => SetOperator::Intersect,
+                "except" => SetOperator::Except,
+                _ => break,
+            };
+            self.bump();
+            rest.push((operator, self.pipeline(depth)?));
+        }
+        let expression = Expression {
+            first,
+            rest,
+            range: self.span(start),
+        };
+        if !expression.rest.is_empty() && !expression.is_selection_only() {
+            self.diagnostics.push(Diagnostic {
+                message: "set operands must be selection queries; put edits and count after the grouped set expression",
+                range: expression.range,
+            });
+        }
+        Some(expression)
+    }
+
+    fn pipeline(&mut self, depth: usize) -> Option<Vec<Stage>> {
+        let mut stages = vec![self.stage(depth)?];
+        loop {
+            self.skip_trivia();
             if !self.at(TokenKind::Pipe) {
-                self.error("expected `|` followed by a pipeline stage");
-                self.synchronize(&[TokenKind::Pipe, TokenKind::Eof]);
-                if self.at(TokenKind::Eof) {
-                    break;
-                }
+                break;
             }
             self.bump();
             self.skip_trivia();
-            let stage_start = self.current().range().start();
-            let Some(name) = self.identifier_text() else {
-                self.error("expected a pipeline stage");
-                self.synchronize(&[TokenKind::Pipe, TokenKind::Eof]);
-                continue;
-            };
-            let required_selection = matches!(
-                name.as_str(),
-                "closure"
-                    | "defs"
-                    | "users"
-                    | "parent"
-                    | "children"
-                    | "union"
-                    | "intersect"
-                    | "except"
-                    | "set_attr"
-                    | "remove_attr"
-                    | "count"
-                    | "root"
-            );
-            if required_selection && kind != PipelineKind::Selection {
-                let message = match name.as_str() {
-                    "closure" => "closure requires a selection",
-                    "defs" => "defs requires a selection",
-                    "users" => "users requires a selection",
-                    "parent" => "parent requires a selection",
-                    "children" => "children requires a selection",
-                    "union" => "union requires a selection",
-                    "intersect" => "intersect requires a selection",
-                    "except" => "except requires a selection",
-                    "set_attr" => "set_attr requires a selection",
-                    "remove_attr" => "remove_attr requires a selection",
-                    "count" => "count requires a selection",
-                    _ => "root requires a selection",
-                };
-                self.diagnostics.push(Diagnostic {
-                    message,
-                    range: self.previous().range(),
-                });
+            if stages.last().is_some_and(Stage::is_terminal) {
+                self.error("no stage may follow count");
             }
-            let stage = match name.as_str() {
-                "closure" => Some(Stage::Closure {
-                    range: self.span(stage_start),
-                }),
-                "defs" => Some(Stage::Defs {
-                    range: self.span(stage_start),
-                }),
-                "users" => Some(Stage::Users {
-                    range: self.span(stage_start),
-                }),
-                "parent" => Some(Stage::Parent {
-                    range: self.span(stage_start),
-                }),
-                "children" => Some(Stage::Children {
-                    range: self.span(stage_start),
-                }),
-                "union" => self.predicate_stage(
-                    stage_start,
-                    "expected `(` after union",
-                    |predicate, range| Stage::Union { predicate, range },
-                ),
-                "intersect" => self.predicate_stage(
-                    stage_start,
-                    "expected `(` after intersect",
-                    |predicate, range| Stage::Intersect { predicate, range },
-                ),
-                "except" => self.predicate_stage(
-                    stage_start,
-                    "expected `(` after except",
-                    |predicate, range| Stage::Except { predicate, range },
-                ),
-                "count" => {
-                    kind = PipelineKind::Scalar;
-                    Some(Stage::Count {
-                        range: self.span(stage_start),
-                    })
-                }
-                "root" => {
-                    kind = PipelineKind::Root;
-                    Some(Stage::Root {
-                        range: self.span(stage_start),
-                    })
-                }
-                "set_attr" => self.set_attr(stage_start, 1),
-                "remove_attr" => self.remove_attr(stage_start, 1),
-                _ => {
-                    self.error_at_previous("unknown pipeline operation");
-                    self.synchronize(&[TokenKind::Pipe, TokenKind::Eof]);
-                    None
-                }
-            };
-            if let Some(stage) = stage {
-                stages.push(stage);
-            }
+            stages.push(self.stage(depth)?);
         }
-        Some(Program {
-            predicate,
-            stages,
-            range: TextRange::new(start, self.current().range().end()).unwrap(),
+        Some(stages)
+    }
+
+    fn stage(&mut self, depth: usize) -> Option<Stage> {
+        self.skip_trivia();
+        let start = self.current().range().start();
+        if self.at(TokenKind::LParen) {
+            self.bump();
+            let expression = Box::new(self.expression(depth + 1)?);
+            self.expect(TokenKind::RParen, "expected `)` after query")?;
+            return Some(Stage::Group {
+                expression,
+                range: self.span(start),
+            });
+        }
+        let Some(name) = self.identifier_text() else {
+            self.error("expected a query stage such as input, filter, or defs");
+            return None;
+        };
+        let range = self.span(start);
+        Some(match name.as_str() {
+            "input" => Stage::Input { range },
+            "closure" => Stage::Closure { range },
+            "defs" => Stage::Defs { range },
+            "users" => Stage::Users { range },
+            "parent" => Stage::Parent { range },
+            "children" => Stage::Children { range },
+            "root" => Stage::Root { range },
+            "count" => Stage::Count { range },
+            "emit" => Stage::Emit { range },
+            "filter" => {
+                self.expect(TokenKind::LParen, "expected `(` after filter")?;
+                let predicate = self.predicate(depth + 1)?;
+                self.expect(TokenKind::RParen, "expected `)` after filter predicate")?;
+                Stage::Filter {
+                    predicate,
+                    range: self.span(start),
+                }
+            }
+            "fixpoint" => {
+                self.expect(TokenKind::LParen, "expected `(` after fixpoint")?;
+                let expression = Box::new(self.expression(depth + 1)?);
+                self.expect(TokenKind::RParen, "expected `)` after fixpoint query")?;
+                if !expression.is_selection_only() {
+                    self.diagnostics.push(Diagnostic {
+                        message: "fixpoint requires a selection query without edits or count",
+                        range: expression.range,
+                    });
+                }
+                Stage::Fixpoint {
+                    expression,
+                    range: self.span(start),
+                }
+            }
+            "set_attr" => return self.set_attr(start, depth + 1),
+            "remove_attr" => return self.remove_attr(start, depth + 1),
+            _ => {
+                self.error_at_previous("unknown query stage; expected input, filter, navigation, fixpoint, an edit, count, or emit");
+                return None;
+            }
         })
     }
 
@@ -417,6 +474,16 @@ impl Parser<'_> {
             return None;
         };
         match kind.as_str() {
+            "true" | "false" => {
+                if depth >= self.nesting_limit {
+                    self.error_at_previous("query nesting limit exceeded");
+                    return None;
+                }
+                Some(Predicate::Bool {
+                    value: kind == "true",
+                    range: self.span(start),
+                })
+            }
             "op" => {
                 if depth >= self.nesting_limit {
                     self.error("query nesting limit exceeded");
@@ -450,16 +517,16 @@ impl Parser<'_> {
                     range: self.span(start),
                 })
             }
-            "attr" => {
+            "string_attr_eq" => {
                 if depth >= self.nesting_limit {
                     self.error("query nesting limit exceeded");
                     return None;
                 }
-                self.expect(TokenKind::LParen, "expected `(` after attr")?;
+                self.expect(TokenKind::LParen, "expected `(` after string_attr_eq")?;
                 let (name, name_range) = self.string("expected a quoted attribute name")?;
                 self.expect_recover(
                     TokenKind::Comma,
-                    "expected `,` in attr",
+                    "expected `,` in string_attr_eq",
                     &[
                         TokenKind::Comma,
                         TokenKind::RParen,
@@ -470,7 +537,7 @@ impl Parser<'_> {
                 let (value, _) = self.string("expected a quoted attribute value")?;
                 self.expect_recover(
                     TokenKind::RParen,
-                    "expected `)` after attr arguments",
+                    "expected `)` after string_attr_eq arguments",
                     &[TokenKind::RParen, TokenKind::Pipe, TokenKind::Eof],
                 )?;
                 self.check_attribute_name(&name, name_range);
@@ -494,22 +561,6 @@ impl Parser<'_> {
                 range,
             });
         }
-    }
-
-    fn predicate_stage(
-        &mut self,
-        start: u32,
-        open_message: &'static str,
-        make_stage: impl FnOnce(Predicate, TextRange) -> Stage,
-    ) -> Option<Stage> {
-        self.expect(TokenKind::LParen, open_message)?;
-        let predicate = self.predicate(1)?;
-        self.expect_recover(
-            TokenKind::RParen,
-            "expected `)` after set predicate",
-            &[TokenKind::RParen, TokenKind::Pipe, TokenKind::Eof],
-        )?;
-        Some(make_stage(predicate, self.span(start)))
     }
 
     fn set_attr(&mut self, start: u32, depth: usize) -> Option<Stage> {
@@ -601,15 +652,6 @@ impl Parser<'_> {
         Some((value, token.range()))
     }
 
-    fn expect_identifier(&mut self, expected: &str, message: &'static str) -> Option<Token> {
-        self.skip_trivia();
-        if self.at(TokenKind::Identifier) && self.current_text() == expected {
-            Some(self.bump())
-        } else {
-            self.error(message);
-            None
-        }
-    }
     fn at_identifier(&mut self, expected: &str) -> bool {
         self.skip_trivia();
         self.at(TokenKind::Identifier) && self.current_text() == expected

@@ -187,7 +187,7 @@ Build or install the binary separately with Cargo:
 ```sh
 cargo install --path crates/zirium
 zirium --registry examples/cli/registry.json \
-  'select(op("vendor.function")) | count' examples/cli/registered-shapes.mlir
+  'filter(op("vendor.function")) | count' examples/cli/registered-shapes.mlir
 zirium --registry common.json --registry vendor.json -f inspect.zirium input.mlir
 ```
 
@@ -203,8 +203,9 @@ options may appear before or after the program-file pair, until the first
 input path. Remaining arguments are input paths. `--` ends option parsing.
 
 The CLI can select or count recovered unknown custom operations. It rejects
-other syntax errors and semantic lowering diagnostics. Whole-document output
-and semantic mutations require a complete document. `closure` additionally
+other syntax errors and semantic lowering diagnostics. Semantic mutations
+require a complete document. Output uses the selected-fragment printer, including
+when the selection contains the whole input. `closure` additionally
 requires registered reference semantics; configuring a func-like or call-like
 shape alone does not supply vendor dependency semantics. See
 the [query language reference](query-language.md) for the query syntax and

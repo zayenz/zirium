@@ -8,7 +8,7 @@ use zirium::{
     parser::ParseDiagnosticKind,
     parser::ParsedFile,
     printer::PrintLayout,
-    query::{Query, QueryOutput},
+    query::{EvaluationError, Query, QueryOutput},
     semantic::{LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention},
 };
 
@@ -68,12 +68,22 @@ fn run() -> Result<(), String> {
     let query_text = if let Some(path) = program_path {
         fs::read_to_string(&path)
             .map_err(|error| format!("could not read program file {path}: {error}"))?
-            .trim()
             .to_owned()
     } else {
-        inline_query.ok_or_else(|| "missing query; expected `select(op(\"name\"))`".to_owned())?
+        inline_query.unwrap_or_default()
     };
-    let query = Query::parse(&query_text).map_err(|error| error.to_string())?;
+    let query = Query::parse(&query_text).map_err(|error| {
+        let prefix = &query_text[..error.position];
+        let line_number = prefix.bytes().filter(|&byte| byte == b'\n').count() + 1;
+        let line_start = prefix.rfind('\n').map_or(0, |offset| offset + 1);
+        let line = query_text[line_start..].split('\n').next().unwrap_or("");
+        let column = query_text[line_start..error.position].chars().count();
+        format!(
+            "{error} (line {line_number}, column {})\n{line}\n{}^",
+            column + 1,
+            " ".repeat(column)
+        )
+    })?;
     let registry = if registry_paths.is_empty() {
         DialectRegistry::proving().clone()
     } else {
@@ -98,7 +108,6 @@ fn run() -> Result<(), String> {
             .collect::<Result<Vec<_>, _>>()?
     };
     let mut answers = Vec::new();
-    let mut scalar_output = false;
     for (name, bytes) in inputs {
         let parsed = ParsedFile::parse_with_registry(bytes, registry)
             .map_err(|error| format!("could not parse {name}: {error}"))?;
@@ -171,45 +180,37 @@ fn run() -> Result<(), String> {
                 };
                 format!("could not lower {name}: {detail}")
             })?;
-        let result = query
-            .evaluate(&mut document, registry)
-            .map_err(|error| format!("could not evaluate {name}: {error}"))?;
-        let mut answer = Vec::new();
-        match result {
-            QueryOutput::Selection(selected) => document
-                .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
-                .map_err(|error| format!("could not print {name}: {error}"))?,
-            QueryOutput::Root => {
-                if !document.is_semantically_complete() {
-                    return Err(format!(
-                        "could not print {name}: cannot print an incomplete semantic document"
-                    ));
+        query
+            .evaluate(&mut document, registry, |document, output| {
+                let mut answer = Vec::new();
+                let scalar = matches!(output, QueryOutput::Count(_));
+                match output {
+                    QueryOutput::Selection(selected) => document
+                        .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
+                        .map_err(|error| {
+                            EvaluationError::new(format!("could not print {name}: {error}"))
+                        })?,
+                    QueryOutput::Count(count) => {
+                        use std::io::Write;
+                        writeln!(answer, "{count}")
+                            .map_err(|error| EvaluationError::new(error.to_string()))?;
+                    }
                 }
-                document
-                    .write_selection(
-                        &mut answer,
-                        document.root_operations(),
-                        PrintLayout::Pretty,
-                        registry,
-                    )
-                    .map_err(|error| format!("could not print {name}: {error}"))?
-            }
-            QueryOutput::Count(count) => {
-                use std::io::Write;
-                writeln!(answer, "{count}").map_err(|error| error.to_string())?;
-                scalar_output = true;
-            }
-        }
-        answers.push(answer);
+                answers.push((answer, scalar));
+                Ok(())
+            })
+            .map_err(|error| format!("could not evaluate {name}: {error}"))?;
     }
     let stdout = io::stdout();
     let mut output = stdout.lock();
     use std::io::Write;
-    for (index, answer) in answers.into_iter().enumerate() {
-        if index != 0 && !scalar_output {
+    let mut previous_scalar = true;
+    for (index, (answer, scalar)) in answers.into_iter().enumerate() {
+        if index != 0 && !scalar && !previous_scalar {
             output.write_all(b"// -----\n").map_err(|e| e.to_string())?;
         }
         output.write_all(&answer).map_err(|e| e.to_string())?;
+        previous_scalar = scalar;
     }
     Ok(())
 }

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Reengineer the query language around an implicit input selection and output.
+  Empty programs print the input; `filter` replaces `select` and always tests
+  the current selection. `input` explicitly returns to the whole document.
+- Make `union`, `intersect`, and `except` infix operators on full selection
+  queries, with grouping and pipe precedence. Remove predicate-based set stages.
+- Make `closure` one dependency expansion step and add general
+  `fixpoint(query)` repetition until unchanged, with cycle detection.
+- Make `root` expand the outermost selected operations and their descendants.
+  Use `input | emit` for whole-document output after an edit.
+- Add `emit` as a pipeline tap, preserving intermediate output before later
+  edits. Omitted final emission is implicit; a trailing explicit emit is not
+  duplicated. The CLI buffers emissions until all inputs succeed.
+- Add boolean literals, `#` comments, and source carets in query diagnostics.
+  Rename string attribute equality to `string_attr_eq`.
+- Replace the Rust query's single-result evaluation API with an emission
+  callback. Query parsing exposes composable expressions rather than a
+  distinguished initial predicate.
+
 ## 0.0.8
 
 Zirium 0.0.8 fills gaps in generic attribute and operation-signature parsing.

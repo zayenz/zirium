@@ -1,1 +1,1 @@
-select(attr("analysis.tag", "old")) | remove_attr("analysis.tag") | root
+filter(string_attr_eq("analysis.tag", "old")) | remove_attr("analysis.tag") | input | emit

@@ -22,7 +22,7 @@ followed by any input files. With no input files, it reads from standard input.
 For example, this selects every `arith.addi` operation in `input.mlir`:
 
 ```sh
-zirium 'select(op("arith.addi"))' input.mlir
+zirium 'filter(op("arith.addi"))' input.mlir
 ```
 
 The [query language reference](https://github.com/zayenz/zirium/blob/main/docs/query-language.md)
@@ -34,7 +34,7 @@ You can also run the binary from a source checkout with Cargo:
 
 ```sh
 cargo run --quiet --bin zirium -- \
-  'select(op("arith.addi"))' input.mlir
+  'filter(op("arith.addi"))' input.mlir
 ```
 
 ## What it provides

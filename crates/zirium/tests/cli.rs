@@ -29,7 +29,7 @@ fn temporary_path(name: &str, extension: &str) -> std::path::PathBuf {
 
 #[test]
 fn stdin_selection_retains_shell_and_comments() {
-    let output = run_stdin("select(op(\"arith.addi\"))", INPUT);
+    let output = run_stdin("filter(op(\"arith.addi\"))", INPUT);
     assert!(
         output.status.success(),
         "{}",
@@ -48,7 +48,7 @@ fn stdin_selection_retains_shell_and_comments() {
 fn boolean_predicates_select_names_and_decoded_string_attributes() {
     let input = "module {\n  \"test.a\"() {tag = \"say \\22hi\\22\"} : () -> ()\n  \"test.b\"() {tag = 7 : i32} : () -> ()\n  \"test.c\"() : () -> ()\n}\n";
     let output = run_stdin(
-        r#"select((op("test.a") or op("test.b")) and has_attr("tag") and not attr("tag", "other"))"#,
+        r#"filter((op("test.a") or op("test.b")) and has_attr("tag") and not string_attr_eq("tag", "other"))"#,
         input,
     );
     assert!(
@@ -61,7 +61,7 @@ fn boolean_predicates_select_names_and_decoded_string_attributes() {
     assert!(text.contains("test.b"), "{text}");
     assert!(!text.contains("test.c"), "{text}");
 
-    let decoded = run_stdin(r#"select(attr("tag", "say \"hi\""))"#, input);
+    let decoded = run_stdin(r#"filter(string_attr_eq("tag", "say \"hi\""))"#, input);
     assert!(
         decoded.status.success(),
         "{}",
@@ -77,12 +77,12 @@ fn builtin_dense_array_attributes_support_queries_and_ownership() {
     let input = "module {\n  \"stablehlo.reduce\"() ({\n    \"stablehlo.add\"() : () -> ()\n  }) {dimensions = array<i64: 1>} : () -> ()\n}\n";
     for (query, expected) in [
         (
-            r#"select(op("stablehlo.reduce") and has_attr("dimensions")) | count"#,
+            r#"filter(op("stablehlo.reduce") and has_attr("dimensions")) | count"#,
             "1\n",
         ),
-        (r#"select(op("stablehlo.add")) | parent | count"#, "1\n"),
+        (r#"filter(op("stablehlo.add")) | parent | count"#, "1\n"),
         (
-            r#"select(op("stablehlo.reduce")) | children | count"#,
+            r#"filter(op("stablehlo.reduce")) | children | count"#,
             "1\n",
         ),
     ] {
@@ -99,9 +99,9 @@ fn builtin_dense_array_attributes_support_queries_and_ownership() {
 #[test]
 fn malformed_predicates_produce_no_output() {
     for query in [
-        r#"select(attr("tag" "value"))"#,
-        r#"select(op("arith.addi") and)"#,
-        r#"select(has_attr("bad name"))"#,
+        r#"filter(string_attr_eq("tag" "value"))"#,
+        r#"filter(op("arith.addi") and)"#,
+        r#"filter(has_attr("bad name"))"#,
     ] {
         let output = run_stdin(query, INPUT);
         assert!(!output.status.success());
@@ -112,7 +112,7 @@ fn malformed_predicates_produce_no_output() {
 
 #[test]
 fn closure_adds_shared_ssa_definition_once_with_comments() {
-    let output = run_stdin("select(op(\"arith.addi\")) | closure", INPUT);
+    let output = run_stdin("filter(op(\"arith.addi\")) | fixpoint(closure)", INPUT);
     assert!(
         output.status.success(),
         "{}",
@@ -127,7 +127,7 @@ fn closure_adds_shared_ssa_definition_once_with_comments() {
 
 #[test]
 fn direct_ssa_navigation_is_ordered_deduplicated_and_composable() {
-    let defs = run_stdin("select(op(\"arith.addi\")) | defs", INPUT);
+    let defs = run_stdin("filter(op(\"arith.addi\")) | defs", INPUT);
     assert!(
         defs.status.success(),
         "{}",
@@ -137,7 +137,7 @@ fn direct_ssa_navigation_is_ordered_deduplicated_and_composable() {
     assert_eq!(text.matches("arith.constant").count(), 1, "{text}");
     assert!(!text.contains("arith.addi"), "{text}");
 
-    let users = run_stdin("select(op(\"arith.constant\")) | users | count", INPUT);
+    let users = run_stdin("filter(op(\"arith.constant\")) | users | count", INPUT);
     assert!(
         users.status.success(),
         "{}",
@@ -145,17 +145,17 @@ fn direct_ssa_navigation_is_ordered_deduplicated_and_composable() {
     );
     assert_eq!(String::from_utf8(users.stdout).unwrap(), "1\n");
 
-    let unused = run_stdin("select(op(\"example.observe\")) | users | count", INPUT);
+    let unused = run_stdin("filter(op(\"example.observe\")) | users | count", INPUT);
     assert!(unused.status.success());
     assert_eq!(String::from_utf8(unused.stdout).unwrap(), "0\n");
 }
 
 #[test]
-fn predicate_set_operations_are_ordered_and_composable() {
+fn set_queries_are_ordered_and_composable() {
     let input = "module {\n  \"test.a\"() {group = \"keep\"} : () -> ()\n  \"test.b\"() {group = \"keep\"} : () -> ()\n  \"test.c\"() : () -> ()\n}\n";
 
     let union = run_stdin(
-        r#"select(op("test.c")) | union(op("test.a") or has_attr("group"))"#,
+        r#"filter(op("test.c")) union filter(op("test.a") or has_attr("group"))"#,
         input,
     );
     assert!(
@@ -173,17 +173,17 @@ fn predicate_set_operations_are_ordered_and_composable() {
     );
 
     let intersect = run_stdin(
-        r#"select(has_attr("group")) | intersect(not op("test.b")) | count"#,
+        r#"(filter(has_attr("group")) intersect filter(not op("test.b"))) | count"#,
         input,
     );
     assert!(intersect.status.success());
     assert_eq!(String::from_utf8(intersect.stdout).unwrap(), "1\n");
 
     for query in [
-        r#"select(has_attr("group")) | except(attr("group", "keep")) | count"#,
-        r#"select(op("missing")) | union(op("missing")) | count"#,
-        r#"select(op("missing")) | intersect(op("test.a")) | count"#,
-        r#"select(op("test.a")) | except(op("missing")) | count"#,
+        r#"(filter(has_attr("group")) except filter(string_attr_eq("group", "keep"))) | count"#,
+        r#"(filter(op("missing")) union filter(op("missing"))) | count"#,
+        r#"(filter(op("missing")) intersect filter(op("test.a"))) | count"#,
+        r#"(filter(op("test.a")) except filter(op("missing"))) | count"#,
     ] {
         let output = run_stdin(query, input);
         assert!(
@@ -191,7 +191,7 @@ fn predicate_set_operations_are_ordered_and_composable() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let expected = if query.contains("except(op") {
+        let expected = if query.contains("except filter(op") {
             "1\n"
         } else {
             "0\n"
@@ -204,7 +204,7 @@ fn predicate_set_operations_are_ordered_and_composable() {
     fs::write(&first, input).unwrap();
     fs::write(&second, "module { \"test.d\"() : () -> () }\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
-        .arg(r#"select(op("test.a")) | union(op("test.d")) | count"#)
+        .arg(r#"(filter(op("test.a")) union filter(op("test.d"))) | count"#)
         .arg(&first)
         .arg(&second)
         .output()
@@ -219,7 +219,7 @@ fn predicate_set_operations_are_ordered_and_composable() {
 fn ownership_navigation_is_one_step_and_handles_block_arguments() {
     let input = "\"builtin.module\"() ({\n  \"func.func\"() ({\n  ^entry(%arg0: i32):\n    %sum = \"arith.addi\"(%arg0, %arg0) : (i32, i32) -> i32\n    \"func.return\"(%sum) : (i32) -> ()\n  }) : () -> ()\n}) : () -> ()\n";
 
-    let boundary = run_stdin("select(op(\"arith.addi\")) | defs", input);
+    let boundary = run_stdin("filter(op(\"arith.addi\")) | defs", input);
     assert!(
         boundary.status.success(),
         "{}",
@@ -229,12 +229,12 @@ fn ownership_navigation_is_one_step_and_handles_block_arguments() {
     assert!(text.contains("func.func"), "{text}");
     assert!(text.contains("arith.addi"), "{text}");
 
-    let parent = run_stdin("select(op(\"arith.addi\")) | parent", input);
+    let parent = run_stdin("filter(op(\"arith.addi\")) | parent", input);
     assert!(parent.status.success());
     let text = String::from_utf8(parent.stdout).unwrap();
     assert!(text.contains("func.func"), "{text}");
 
-    let children = run_stdin("select(op(\"func.func\")) | children", input);
+    let children = run_stdin("filter(op(\"func.func\")) | children", input);
     assert!(children.status.success());
     let text = String::from_utf8(children.stdout).unwrap();
     assert!(text.contains("arith.addi"), "{text}");
@@ -248,7 +248,7 @@ fn count_prints_one_scalar_line_per_input() {
     fs::write(&first, INPUT).unwrap();
     fs::write(&second, "module { func.return }\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
-        .arg("select(op(\"arith.addi\")) | count")
+        .arg("filter(op(\"arith.addi\")) | count")
         .arg(&first)
         .arg(&second)
         .output()
@@ -266,7 +266,7 @@ fn count_prints_one_scalar_line_per_input() {
 #[test]
 fn set_attr_keeps_the_changed_selection_and_comments() {
     let output = run_stdin(
-        "select(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\")",
+        "filter(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\")",
         INPUT,
     );
     assert!(
@@ -283,9 +283,9 @@ fn set_attr_keeps_the_changed_selection_and_comments() {
 }
 
 #[test]
-fn root_after_mutation_prints_the_validated_whole_document() {
+fn input_after_mutation_prints_the_whole_document() {
     let output = run_stdin(
-        "select(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\") | root",
+        "filter(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\") | input | emit",
         INPUT,
     );
     assert!(
@@ -304,7 +304,7 @@ fn generic_single_operand_edit_prints_a_parseable_function_type() {
     let input =
         "%item = \"sample.create\"() : () -> i64\n\"sample.forward\"(%item) : (i64) -> ()\n";
     let edited = run_stdin(
-        r#"select(op("sample.forward")) | set_attr("roundtrip.marker", "present") | root"#,
+        r#"filter(op("sample.forward")) | set_attr("roundtrip.marker", "present") | input | emit"#,
         input,
     );
     assert!(
@@ -318,7 +318,7 @@ fn generic_single_operand_edit_prints_a_parseable_function_type() {
         "{printed}"
     );
 
-    let reparsed = run_stdin(r#"select(op("sample.forward")) | count"#, &printed);
+    let reparsed = run_stdin(r#"filter(op("sample.forward")) | count"#, &printed);
     assert!(
         reparsed.status.success(),
         "{printed}\n{}",
@@ -330,7 +330,7 @@ fn generic_single_operand_edit_prints_a_parseable_function_type() {
 #[test]
 fn set_attr_mutates_the_selection_at_its_pipeline_position() {
     let output = run_stdin(
-        "select(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\") | closure | root",
+        "filter(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\") | fixpoint(closure) | input | emit",
         INPUT,
     );
     assert!(
@@ -350,7 +350,7 @@ fn set_attr_mutates_the_selection_at_its_pipeline_position() {
 fn remove_attr_keeps_selection_comments_and_other_attributes() {
     let input = "module {\n  // Keep this comment.\n  \"test.a\"() {analysis.tag = \"hot\", other = \"keep\"} : () -> () // trailing a\n  \"test.b\"() {analysis.tag = \"cold\"} : () -> () // trailing b\n}\n";
     let output = run_stdin(
-        r#"select(op("test.a")) | remove_attr("analysis.tag")"#,
+        r#"filter(op("test.a")) | remove_attr("analysis.tag")"#,
         input,
     );
     assert!(
@@ -372,7 +372,7 @@ fn remove_attr_keeps_selection_comments_and_other_attributes() {
 fn remove_attr_absent_is_a_noop_and_composes_in_pipeline_order() {
     let absent_input = "module {\n  // Keep the first.\n  \"test.a\"() : () -> () // trailing a\n  // Keep the second.\n  \"test.b\"() : () -> () // trailing b\n}\n";
     let absent = run_stdin(
-        r#"select(op("test.a") or op("test.b")) | remove_attr("missing.tag")"#,
+        r#"filter(op("test.a") or op("test.b")) | remove_attr("missing.tag")"#,
         absent_input,
     );
     assert!(
@@ -400,7 +400,7 @@ fn remove_attr_absent_is_a_noop_and_composes_in_pipeline_order() {
 
     let mixed_input = "module {\n  // Comment for a.\n  \"test.a\"() {analysis.tag = \"hot\"} : () -> () // trailing a\n  // Comment for b.\n  \"test.b\"() : () -> () // trailing b\n}\n";
     let mixed = run_stdin(
-        r#"select(op("test.a") or op("test.b")) | remove_attr("analysis.tag")"#,
+        r#"filter(op("test.a") or op("test.b")) | remove_attr("analysis.tag")"#,
         mixed_input,
     );
     assert!(
@@ -432,7 +432,7 @@ fn remove_attr_absent_is_a_noop_and_composes_in_pipeline_order() {
     assert!(b_line.ends_with("// trailing b"), "{mixed_text}");
 
     let output = run_stdin(
-        r#"select(op("arith.addi")) | set_attr("analysis.tag", "hot") | remove_attr("analysis.tag") | closure | root"#,
+        r#"filter(op("arith.addi")) | set_attr("analysis.tag", "hot") | remove_attr("analysis.tag") | fixpoint(closure) | input | emit"#,
         INPUT,
     );
     assert!(
@@ -453,7 +453,7 @@ fn remove_attr_rejects_unparsed_operations_before_editing_the_selection() {
         "module {\n  \"example.known\"() {debug.note = \"drop\"} : () -> ()\n  mystery.consume {debug.note = \"sealed\"}\n}\n",
     ] {
         let output = run_stdin(
-            r#"select(op("example.known") or op("mystery.consume")) | remove_attr("debug.note")"#,
+            r#"filter(op("example.known") or op("mystery.consume")) | remove_attr("debug.note")"#,
             input,
         );
         assert!(!output.status.success());
@@ -473,7 +473,7 @@ fn remove_attr_does_not_attach_a_parent_tail_to_a_nested_operation() {
             "module {{\n  \"test.parent\"() ({{ \"test.child\"(){child_attributes} : () -> () }}) : () -> () // parent tail\n}}\n"
         );
         let output = run_stdin(
-            r#"select(op("test.parent") or op("test.child")) | remove_attr("analysis.tag")"#,
+            r#"filter(op("test.parent") or op("test.child")) | remove_attr("analysis.tag")"#,
             &input,
         );
         assert!(
@@ -498,17 +498,17 @@ fn remove_attr_does_not_attach_a_parent_tail_to_a_nested_operation() {
 
 #[test]
 fn rejected_composition_produces_no_output() {
-    let output = run_stdin("select(op(\"arith.addi\")) | count | root", INPUT);
+    let output = run_stdin("filter(op(\"arith.addi\")) | count | input | emit", INPUT);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("root requires a selection"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no stage may follow count"));
 }
 
 #[test]
 fn invalid_set_attr_text_produces_no_output() {
     for query in [
-        "select(op(\"arith.addi\")) | set_attr(\"bad name\", \"hot\") | root",
-        "select(op(\"arith.addi\")) | set_attr(\"tag\", \"hot\nvalue\") | root",
+        "filter(op(\"arith.addi\")) | set_attr(\"bad name\", \"hot\") | input | emit",
+        "filter(op(\"arith.addi\")) | set_attr(\"tag\", \"hot\nvalue\") | input | emit",
     ] {
         let output = run_stdin(query, INPUT);
         assert!(!output.status.success());
@@ -518,10 +518,10 @@ fn invalid_set_attr_text_produces_no_output() {
 }
 
 #[test]
-fn escaped_set_attr_root_output_is_parseable() {
+fn escaped_set_attr_whole_document_output_is_parseable() {
     let input = "module {\n  %c = arith.constant 7 : i32\n  %sum = arith.addi %c, %c : i32\n}\n";
     let output = run_stdin(
-        r#"select(op("arith.addi")) | set_attr("analysis.tag", "say \"hi\" \\ path") | root"#,
+        r#"filter(op("arith.addi")) | set_attr("analysis.tag", "say \"hi\" \\ path") | input | emit"#,
         input,
     );
     assert!(
@@ -531,7 +531,7 @@ fn escaped_set_attr_root_output_is_parseable() {
     );
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains(r#"analysis.tag = "say \"hi\" \\ path""#));
-    let reparsed = run_stdin("select(op(\"builtin.module\"))", &text);
+    let reparsed = run_stdin("filter(op(\"builtin.module\"))", &text);
     assert!(
         reparsed.status.success(),
         "{}",
@@ -542,7 +542,7 @@ fn escaped_set_attr_root_output_is_parseable() {
 #[test]
 fn closure_at_function_argument_retains_complete_function_scope() {
     let input = "\"builtin.module\"() ({\n  \"func.func\"() ({\n  ^entry(%arg0: i32):\n    %sum = \"arith.addi\"(%arg0, %arg0) : (i32, i32) -> i32\n    \"func.return\"(%sum) : (i32) -> ()\n  }) : () -> ()\n  \"example.other\"() : () -> ()\n}) : () -> ()\n";
-    let output = run_stdin("select(op(\"arith.addi\")) | closure", input);
+    let output = run_stdin("filter(op(\"arith.addi\")) | fixpoint(closure)", input);
     assert!(
         output.status.success(),
         "{}",
@@ -557,7 +557,7 @@ fn closure_at_function_argument_retains_complete_function_scope() {
 #[test]
 fn closure_follows_recursive_symbol_once_without_sibling_symbols() {
     let input = "module {\n  func.func @recursive() {\n    func.call @recursive() : () -> ()\n    func.return\n  }\n  func.func @unrelated() { func.return }\n  func.func @caller() {\n    func.call @recursive() : () -> ()\n    func.return\n  }\n}\n";
-    let output = run_stdin("select(op(\"func.call\")) | closure", input);
+    let output = run_stdin("filter(op(\"func.call\")) | fixpoint(closure)", input);
     assert!(
         output.status.success(),
         "{}",
@@ -580,7 +580,7 @@ fn closure_resolves_a_quoted_symbol_containing_path_separators() {
   }
 }
 "#;
-    let output = run_stdin("select(op(\"func.call\")) | closure", input);
+    let output = run_stdin("filter(op(\"func.call\")) | fixpoint(closure)", input);
     assert!(
         output.status.success(),
         "{}",
@@ -595,7 +595,7 @@ fn closure_resolves_a_quoted_symbol_containing_path_separators() {
 #[test]
 fn closure_retains_cyclic_cfg_once_for_conditional_and_unconditional_branches() {
     let input = "module {\n  func.func @loop() {\n  ^entry:\n    cf.br ^loop\n  ^loop:\n    %condition = arith.constant 1 : i1\n    cf.cond_br %condition, ^loop, ^exit\n  ^exit:\n    func.return\n  }\n}\n";
-    let output = run_stdin("select(op(\"cf.cond_br\")) | closure", input);
+    let output = run_stdin("filter(op(\"cf.cond_br\")) | fixpoint(closure)", input);
     assert!(
         output.status.success(),
         "{}",
@@ -612,7 +612,7 @@ fn closure_retains_cyclic_cfg_once_for_conditional_and_unconditional_branches() 
 #[test]
 fn closure_reports_unresolved_callee_from_strict_lowering() {
     let input = "module {\n  func.func @caller() {\n    func.call @missing() : () -> ()\n    func.return\n  }\n}\n";
-    let output = run_stdin("select(op(\"func.call\")) | closure", input);
+    let output = run_stdin("filter(op(\"func.call\")) | fixpoint(closure)", input);
     assert!(!output.status.success());
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -624,7 +624,7 @@ fn closure_reports_unresolved_callee_from_strict_lowering() {
 #[test]
 fn closure_reports_invalid_successor_from_strict_lowering() {
     let input = "module {\n  func.func @caller() {\n    cf.br ^missing\n  }\n}\n";
-    let output = run_stdin("select(op(\"cf.br\")) | closure", input);
+    let output = run_stdin("filter(op(\"cf.br\")) | fixpoint(closure)", input);
     assert!(!output.status.success());
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -636,7 +636,7 @@ fn closure_reports_invalid_successor_from_strict_lowering() {
 #[test]
 fn closure_rejects_symbol_reference_on_unregistered_operation() {
     let input = "\"example.def\"() {sym_name = \"callee\"} : () -> ()\n\"example.call\"() {callee = @callee} : () -> ()\n";
-    let output = run_stdin("select(op(\"example.call\")) | closure", input);
+    let output = run_stdin("filter(op(\"example.call\")) | fixpoint(closure)", input);
     assert!(!output.status.success());
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -650,7 +650,7 @@ fn closure_rejects_symbol_reference_on_unregistered_operation() {
 #[test]
 fn short_program_file_flag_reads_query_with_final_newline() {
     let program = temporary_path("short-program", "zirium");
-    fs::write(&program, "select(op(\"arith.addi\"))\n").unwrap();
+    fs::write(&program, "filter(op(\"arith.addi\"))\n").unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
         .arg("-f")
         .arg(&program)
@@ -684,7 +684,7 @@ fn long_program_file_flag_keeps_mlir_file_arguments() {
     let program = temporary_path("long-program", "zirium");
     let first = temporary_path("long-first", "mlir");
     let second = temporary_path("long-second", "mlir");
-    fs::write(&program, "select(op(\"missing\"))").unwrap();
+    fs::write(&program, "filter(op(\"missing\"))").unwrap();
     fs::write(&first, INPUT).unwrap();
     fs::write(&second, INPUT).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
@@ -724,7 +724,7 @@ fn unreadable_program_file_fails_usefully() {
 #[test]
 fn selected_root_retains_owned_contents_and_comments() {
     let input = "// Root comment.\nmodule {\n  // Function comment.\n  func.func @f() {\n    // Nested comment.\n    func.return\n  }\n}\n";
-    let output = run_stdin("select(op(\"builtin.module\"))", input);
+    let output = run_stdin("filter(op(\"builtin.module\"))", input);
     assert!(
         output.status.success(),
         "{}",
@@ -740,14 +740,14 @@ fn selected_root_retains_owned_contents_and_comments() {
 #[test]
 fn selected_function_with_argument_can_be_queried_again() {
     let input = "module { func.func @identity(%arg: i32) -> i32 { func.return %arg : i32 } }\n";
-    let selected = run_stdin(r#"select(op("func.func"))"#, input);
+    let selected = run_stdin(r#"filter(op("func.func"))"#, input);
     assert!(
         selected.status.success(),
         "{}",
         String::from_utf8_lossy(&selected.stderr)
     );
     let printed = String::from_utf8(selected.stdout).unwrap();
-    let reparsed = run_stdin(r#"select(op("func.func")) | count"#, &printed);
+    let reparsed = run_stdin(r#"filter(op("func.func")) | count"#, &printed);
     assert!(
         reparsed.status.success(),
         "{printed}\n{}",
@@ -759,7 +759,7 @@ fn selected_function_with_argument_can_be_queried_again() {
 #[test]
 fn selected_unknown_operation_preserves_enclosing_argument_names() {
     let input = "module {\n  func.func @pipeline(%source: i64) {\n    mystery.observe %source : i64\n    func.return\n  }\n}\n";
-    let selected = run_stdin(r#"select(op("mystery.observe"))"#, input);
+    let selected = run_stdin(r#"filter(op("mystery.observe"))"#, input);
     assert!(
         selected.status.success(),
         "{}",
@@ -777,15 +777,15 @@ fn selected_unknown_operation_preserves_enclosing_argument_names() {
 
     for (query, expected) in [
         (
-            r#"select(op("mystery.observe")) | count"#,
+            r#"filter(op("mystery.observe")) | count"#,
             b"1\n".as_slice(),
         ),
         (
-            r#"select(op("mystery.observe")) | parent | count"#,
+            r#"filter(op("mystery.observe")) | parent | count"#,
             b"1\n".as_slice(),
         ),
         (
-            r#"select(op("func.func")) | children | count"#,
+            r#"filter(op("func.func")) | children | count"#,
             b"1\n".as_slice(),
         ),
     ] {
@@ -802,7 +802,7 @@ fn selected_unknown_operation_preserves_enclosing_argument_names() {
 #[test]
 fn selected_unknown_operation_does_not_rewrite_attribute_strings() {
     let input = "module {\n  func.func @f(%arg: i32) attributes {note = \"%v0\"} {\n    vendor.use %arg : i32\n  }\n}\n";
-    let selected = run_stdin(r#"select(op("vendor.use"))"#, input);
+    let selected = run_stdin(r#"filter(op("vendor.use"))"#, input);
     assert!(
         selected.status.success(),
         "{}",
@@ -817,7 +817,7 @@ fn selected_unknown_operation_does_not_rewrite_attribute_strings() {
 #[test]
 fn inline_nested_operation_does_not_steal_parent_comment() {
     let input = "module {\n  // Nested function.\n  func.func @inner() { func.return }\n}\n";
-    let output = run_stdin("select(op(\"builtin.module\"))", input);
+    let output = run_stdin("filter(op(\"builtin.module\"))", input);
     assert!(
         output.status.success(),
         "{}",
@@ -837,7 +837,7 @@ fn files_frame_empty_answers() {
     fs::write(&first, INPUT).unwrap();
     fs::write(&second, INPUT).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
-        .arg("select(op(\"missing\"))")
+        .arg("filter(op(\"missing\"))")
         .arg(&first)
         .arg(&second)
         .output()
@@ -850,11 +850,11 @@ fn files_frame_empty_answers() {
 
 #[test]
 fn malformed_query_and_input_fail_usefully() {
-    let bad_query = run_stdin("select(op(\"arith.addi\")", INPUT);
+    let bad_query = run_stdin("filter(op(\"arith.addi\")", INPUT);
     assert!(!bad_query.status.success());
     assert!(String::from_utf8_lossy(&bad_query.stderr).contains("query error at byte"));
     let bad_input = run_stdin(
-        "select(op(\"arith.addi\"))",
+        "filter(op(\"arith.addi\"))",
         "module {\n  %x = arith.constant nope : i32\n}\n",
     );
     assert!(!bad_input.status.success());
@@ -866,7 +866,7 @@ fn malformed_query_and_input_fail_usefully() {
 #[test]
 fn lowering_failure_reports_identity_and_original_range() {
     let input = "module {\n  \"example.use\"(%missing) : (i32) -> ()\n}\n";
-    let output = run_stdin("select(op(\"example.use\"))", input);
+    let output = run_stdin("filter(op(\"example.use\"))", input);
     assert!(!output.status.success());
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -884,10 +884,10 @@ fn arbitrary_generic_dialect_operations_support_structural_queries_and_edits() {
     let input = "\"builtin.module\"() ({\n  \"vendor.container\"() ({\n    \"vendor.compute\"() {tag = \"hot\", remove = \"yes\"} : () -> ()\n  }) : () -> ()\n}) : () -> ()\n";
 
     for (query, expected) in [
-        (r#"select(attr("tag", "hot")) | count"#, "1\n"),
-        (r#"select(op("vendor.compute")) | parent | count"#, "1\n"),
+        (r#"filter(string_attr_eq("tag", "hot")) | count"#, "1\n"),
+        (r#"filter(op("vendor.compute")) | parent | count"#, "1\n"),
         (
-            r#"select(op("vendor.container")) | children | count"#,
+            r#"filter(op("vendor.container")) | children | count"#,
             "1\n",
         ),
     ] {
@@ -901,7 +901,7 @@ fn arbitrary_generic_dialect_operations_support_structural_queries_and_edits() {
     }
 
     let edited = run_stdin(
-        r#"select(op("vendor.compute")) | set_attr("added", "value") | remove_attr("remove")"#,
+        r#"filter(op("vendor.compute")) | set_attr("added", "value") | remove_attr("remove")"#,
         input,
     );
     assert!(
@@ -917,7 +917,7 @@ fn arbitrary_generic_dialect_operations_support_structural_queries_and_edits() {
 #[test]
 fn bounded_unknown_custom_operation_supports_name_count_ownership_and_exact_selection() {
     let input = "module {\n  vendor.compute strangely<balanced>(payload)\n}\n";
-    let count = run_stdin(r#"select(op("vendor.compute")) | count"#, input);
+    let count = run_stdin(r#"filter(op("vendor.compute")) | count"#, input);
     assert!(
         count.status.success(),
         "{}",
@@ -925,15 +925,15 @@ fn bounded_unknown_custom_operation_supports_name_count_ownership_and_exact_sele
     );
     assert_eq!(count.stdout, b"1\n");
 
-    let parent_count = run_stdin(r#"select(op("vendor.compute")) | parent | count"#, input);
+    let parent_count = run_stdin(r#"filter(op("vendor.compute")) | parent | count"#, input);
     assert!(parent_count.status.success());
     assert_eq!(parent_count.stdout, b"1\n");
 
-    let child_count = run_stdin(r#"select(op("builtin.module")) | children | count"#, input);
+    let child_count = run_stdin(r#"filter(op("builtin.module")) | children | count"#, input);
     assert!(child_count.status.success());
     assert_eq!(child_count.stdout, b"1\n");
 
-    let selected = run_stdin(r#"select(op("vendor.compute"))"#, input);
+    let selected = run_stdin(r#"filter(op("vendor.compute"))"#, input);
     assert!(
         selected.status.success(),
         "{}",
@@ -948,14 +948,14 @@ fn bounded_unknown_custom_operation_supports_name_count_ownership_and_exact_sele
 #[test]
 fn unknown_custom_recovery_rejects_malformed_neighbors_closure_and_edits() {
     let malformed = run_stdin(
-        r#"select(op("vendor.compute"))"#,
+        r#"filter(op("vendor.compute"))"#,
         "module { vendor.compute strangely<unclosed(payload) }\n",
     );
     assert!(!malformed.status.success());
     assert!(malformed.stdout.is_empty());
 
     let input = "module { vendor.compute strangely<balanced>(payload) }\n";
-    let closure = run_stdin(r#"select(op("vendor.compute")) | closure"#, input);
+    let closure = run_stdin(r#"filter(op("vendor.compute")) | fixpoint(closure)"#, input);
     assert!(!closure.status.success());
     assert!(closure.stdout.is_empty());
     assert!(String::from_utf8_lossy(&closure.stderr).contains(
@@ -963,7 +963,7 @@ fn unknown_custom_recovery_rejects_malformed_neighbors_closure_and_edits() {
     ));
 
     let edit = run_stdin(
-        r#"select(op("vendor.compute")) | set_attr("tag", "value")"#,
+        r#"filter(op("vendor.compute")) | set_attr("tag", "value")"#,
         input,
     );
     assert!(!edit.status.success());
@@ -975,7 +975,7 @@ fn unknown_custom_recovery_rejects_malformed_neighbors_closure_and_edits() {
 fn mutation_before_unknown_closure_failure_emits_no_stdout() {
     let input = "module {\n  \"vendor.known\"() : () -> ()\n  vendor.unknown opaque<payload>\n}\n";
     let output = run_stdin(
-        r#"select(op("vendor.known")) | set_attr("tag", "value") | union(op("vendor.unknown")) | closure"#,
+        r#"filter(op("vendor.known")) | set_attr("tag", "value") | (filter(true) union (input | filter(op("vendor.unknown")))) | fixpoint(closure)"#,
         input,
     );
     assert!(!output.status.success());
@@ -986,7 +986,7 @@ fn mutation_before_unknown_closure_failure_emits_no_stdout() {
 fn recovered_unknown_sibling_does_not_block_empty_or_understood_selections() {
     let input = "module {\n  \"vendor.known\"() : () -> ()\n  vendor.unknown opaque<payload>\n}\n";
 
-    let empty = run_stdin(r#"select(op("vendor.missing"))"#, input);
+    let empty = run_stdin(r#"filter(op("vendor.missing"))"#, input);
     assert!(
         empty.status.success(),
         "{}",
@@ -994,7 +994,7 @@ fn recovered_unknown_sibling_does_not_block_empty_or_understood_selections() {
     );
     assert!(empty.stdout.is_empty());
 
-    let understood = run_stdin(r#"select(op("vendor.known"))"#, input);
+    let understood = run_stdin(r#"filter(op("vendor.known"))"#, input);
     assert!(
         understood.status.success(),
         "{}",
@@ -1008,21 +1008,21 @@ fn recovered_unknown_sibling_does_not_block_empty_or_understood_selections() {
 #[test]
 fn named_nested_and_commented_module_shorthand_uses_the_parser() {
     let source = "module @outer attributes {tag = \"keep\"} {\n module // nested module\n @inner {\n  \"test.op\"() : () -> ()\n }\n}\n";
-    let output = run_stdin(r#"select(op("builtin.module")) | count"#, source);
+    let output = run_stdin(r#"filter(op("builtin.module")) | count"#, source);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, b"2\n");
-    let printed = run_stdin(r#"select(op("builtin.module")) | root"#, source);
+    let printed = run_stdin(r#"filter(op("builtin.module")) | input | emit"#, source);
     assert!(
         printed.status.success(),
         "{}",
         String::from_utf8_lossy(&printed.stderr)
     );
     let restored = run_stdin(
-        r#"select(op("test.op")) | count"#,
+        r#"filter(op("test.op")) | count"#,
         std::str::from_utf8(&printed.stdout).unwrap(),
     );
     assert!(
@@ -1037,7 +1037,7 @@ fn named_nested_and_commented_module_shorthand_uses_the_parser() {
 fn unknown_custom_sibling_does_not_hide_semantic_errors() {
     let source =
         "module {\n  \"test.use\"(%missing) : (i32) -> ()\n  vendor.unknown opaque<payload>\n}\n";
-    let output = run_stdin(r#"select(op("test.use")) | count"#, source);
+    let output = run_stdin(r#"filter(op("test.use")) | count"#, source);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let diagnostic = String::from_utf8_lossy(&output.stderr);
@@ -1063,10 +1063,10 @@ fn registry_file_drives_cli_lowering_and_round_trip_output() {
         .unwrap();
     for (query, expected) in [
         (
-            r#"select(op("vendor.function")) | count"#,
+            r#"filter(op("vendor.function")) | count"#,
             Some(b"1\n".as_slice()),
         ),
-        (r#"select(op("vendor.invoke")) | root"#, None),
+        (r#"filter(op("vendor.invoke")) | input | emit"#, None),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
             .arg("--registry")
@@ -1094,7 +1094,7 @@ fn registry_file_drives_cli_lowering_and_round_trip_output() {
         }
     }
     let program = temporary_path("registered-query", "zirium");
-    fs::write(&program, r#"select(op("vendor.invoke")) | count"#).unwrap();
+    fs::write(&program, r#"filter(op("vendor.invoke")) | count"#).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
         .arg("-f")
         .arg(&program)
@@ -1113,7 +1113,7 @@ fn registry_file_drives_cli_lowering_and_round_trip_output() {
     let closure = Command::new(env!("CARGO_BIN_EXE_zirium"))
         .arg("--registry")
         .arg(&registry_path)
-        .arg(r#"select(op("vendor.invoke")) | closure"#)
+        .arg(r#"filter(op("vendor.invoke")) | fixpoint(closure)"#)
         .arg(&input)
         .output()
         .unwrap();
@@ -1133,7 +1133,7 @@ fn invalid_registry_fails_without_waiting_for_mlir_stdin() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
         .arg("--registry")
         .arg(&registry)
-        .arg(r#"select(op("a.b")) | count"#)
+        .arg(r#"filter(op("a.b")) | count"#)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1152,4 +1152,211 @@ fn invalid_registry_fails_without_waiting_for_mlir_stdin() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unknown field"));
+}
+
+#[test]
+fn implicit_input_and_emit_cover_empty_programs_and_explicit_taps() {
+    let expected = run_stdin("input | emit", INPUT);
+    assert!(expected.status.success());
+    for query in ["", " \n # unchanged input\n", "input", "emit", "(emit)"] {
+        let output = run_stdin(query, INPUT);
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, expected.stdout, "{query}");
+    }
+    let twice = run_stdin("emit | emit", INPUT);
+    assert!(twice.status.success());
+    let parts = String::from_utf8(twice.stdout).unwrap();
+    assert_eq!(
+        parts.split("// -----\n").collect::<Vec<_>>(),
+        vec![String::from_utf8_lossy(&expected.stdout); 2]
+    );
+}
+
+#[test]
+fn root_expands_the_selected_fragment_without_selecting_siblings() {
+    let input = include_str!("../../../examples/cli/calls.mlir");
+    for (query, expected) in [
+        (r#"filter(op("func.call")) | parent | count"#, "1\n"),
+        (r#"filter(op("func.call")) | parent | root | count"#, "3\n"),
+        (
+            r#"filter(op("func.call")) | parent | root | filter(op("func.return")) | count"#,
+            "1\n",
+        ),
+        (
+            r#"filter(op("func.call")) | parent | root | input | filter(op("func.return")) | count"#,
+            "3\n",
+        ),
+        (r#"filter(op("func.call")) | root | count"#, "1\n"),
+        ("filter(false) | root | count", "0\n"),
+        ("root | count", "9\n"),
+    ] {
+        let output = run_stdin(query, input);
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
+    }
+    let edited = run_stdin(
+        r#"filter(op("func.call")) | parent | root | filter(op("func.return")) | set_attr("tag", "chosen") | input"#,
+        input,
+    );
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(edited.stdout)
+            .unwrap()
+            .matches("tag = \"chosen\"")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn closure_is_one_step_and_fixpoint_repeats_arbitrary_selection_queries() {
+    let input =
+        include_str!("../../../examples/cli/arithmetic.mlir").replace("arith.muli", "arith.addi");
+    for (query, expected) in [
+        (
+            r#"filter(has_attr("analysis.tag")) | closure | count"#,
+            "3\n",
+        ),
+        (
+            r#"filter(has_attr("analysis.tag")) | fixpoint(closure) | count"#,
+            "4\n",
+        ),
+        (
+            r#"filter(has_attr("analysis.tag")) | fixpoint(defs) | count"#,
+            "0\n",
+        ),
+        (
+            r#"filter(op("arith.addi") and not has_attr("analysis.tag")) | fixpoint(filter(true) union users) | count"#,
+            "2\n",
+        ),
+        (
+            r#"filter(op("arith.addi") and not has_attr("analysis.tag")) | (defs union users) | count"#,
+            "3\n",
+        ),
+        (
+            r#"filter(op("arith.addi") and not has_attr("analysis.tag")) | (defs intersect users) | count"#,
+            "0\n",
+        ),
+        (
+            r#"filter(has_attr("analysis.tag")) | (closure except defs) | count"#,
+            "1\n",
+        ),
+        ("filter(false) | fixpoint(closure) | count", "0\n"),
+        ("fixpoint(fixpoint(filter(true))) | count", "5\n"),
+    ] {
+        let output = run_stdin(query, &input);
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
+    }
+    // A complement alternates between the empty and complete selection.
+    let cycle = run_stdin("fixpoint(input except filter(true))", &input);
+    assert!(!cycle.status.success());
+    assert!(cycle.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&cycle.stderr).contains("cycles"));
+}
+
+#[test]
+fn emit_captures_each_pipeline_position_before_later_edits() {
+    let output = run_stdin(
+        r#"filter(op("arith.addi")) | emit | set_attr("tag", "new") | emit | remove_attr("tag")"#,
+        INPUT,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    let fragments = text.split("// -----\n").collect::<Vec<_>>();
+    assert_eq!(fragments.len(), 3);
+    assert!(!fragments[0].contains("tag ="));
+    assert!(fragments[1].contains("tag = \"new\""));
+    assert_eq!(fragments[0], fragments[2]);
+
+    let output = run_stdin(r#"filter(op("arith.addi")) | emit | users"#, INPUT);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let fragments = text.split("// -----\n").collect::<Vec<_>>();
+    assert_eq!(fragments.len(), 2);
+    assert!(fragments[0].contains("arith.addi"));
+    assert!(!fragments[0].contains("example.observe"));
+    assert!(fragments[1].contains("example.observe"));
+
+    let iterations = run_stdin(
+        r#"filter(op("arith.addi")) | fixpoint(closure | emit) | count"#,
+        INPUT,
+    );
+    assert!(iterations.status.success());
+    let text = String::from_utf8(iterations.stdout).unwrap();
+    assert_eq!(text.matches("arith.addi").count(), 2);
+    assert_eq!(text.matches("arith.constant").count(), 2);
+    assert!(text.ends_with("2\n"));
+
+    let branches = run_stdin(
+        r#"filter(op("arith.addi")) | (defs | emit union users | emit) | count"#,
+        INPUT,
+    );
+    assert!(branches.status.success());
+    let text = String::from_utf8(branches.stdout).unwrap();
+    assert!(text.find("arith.constant").unwrap() < text.find("example.observe").unwrap());
+    assert!(text.ends_with("2\n"));
+
+    let failed = run_stdin(r#"emit | filter(op("example.observe")) | closure"#, INPUT);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+}
+
+#[test]
+fn filters_and_input_observe_prior_edits() {
+    let output = run_stdin(
+        r#"filter(op("arith.addi")) | set_attr("tag", "new") | users | input | filter(string_attr_eq("tag", "new")) | count"#,
+        INPUT,
+    );
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"1\n");
+    let scoped = run_stdin(
+        r#"filter(op("arith.addi")) | filter(op("arith.constant")) | count"#,
+        INPUT,
+    );
+    assert!(scoped.status.success());
+    assert_eq!(scoped.stdout, b"0\n");
+}
+
+#[test]
+fn query_diagnostics_keep_program_file_lines_and_unicode_columns() {
+    let program = temporary_path("query-diagnostics", "zirium");
+    fs::write(&program, "\n# a comment\nfilter(op(\"é\")) | typo\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["-f", program.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let _ = fs::remove_file(program);
+    assert!(!output.status.success());
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("line 3, column 19"), "{error}");
+    assert!(error.contains("\n                  ^"), "{error}");
 }

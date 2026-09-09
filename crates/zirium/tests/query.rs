@@ -3,41 +3,68 @@ use zirium::query::{
     lexer::{
         DiagnosticKind as LexDiagnosticKind, MAX_QUERY_BYTES, TokenKind, lex, query_size_supported,
     },
-    parser::{Predicate, Stage, parse, parse_with_nesting_limit},
+    parser::{Predicate, Program, Stage, parse, parse_with_nesting_limit},
 };
 
-#[test]
-fn parses_operation_name_selection_and_reports_positions() {
-    let query = Query::parse("select(op(\"arith.addi\"))").unwrap();
-    assert_eq!(query.operation_name(), Some("arith.addi"));
-    let error = Query::parse("select(op(arith.addi))").unwrap_err();
-    assert!(error.position > 0);
-    assert!(error.to_string().contains("expected"));
+fn initial_predicate(program: &Program) -> &Predicate {
+    let Stage::Filter { predicate, .. } = &program.expression().first[0] else {
+        panic!("expected filter")
+    };
+    predicate
+}
 
-    let closure = Query::parse("select(op(\"arith.addi\")) | closure").unwrap();
-    assert_eq!(closure.operation_name(), Some("arith.addi"));
-    assert_eq!(
-        Query::parse("select(op(\"arith.addi\") or op(\"arith.muli\"))")
-            .unwrap()
-            .operation_name(),
-        None
+#[test]
+fn query_boundaries_and_edit_validation() {
+    for source in [
+        "",
+        "# just a comment",
+        "input",
+        "emit",
+        "emit | input",
+        "count",
+        "filter(true)",
+        "input | filter(false) | root | emit",
+        "fixpoint(closure)",
+        "fixpoint(closure | emit)",
+        "(defs | emit) union users",
+        "(defs union users) | filter(true)",
+        "fixpoint(filter(true) union users)",
+    ] {
+        Query::parse(source).unwrap_or_else(|error| panic!("{source}: {error}"));
+    }
+    for source in [
+        "count | root",
+        "(count) | defs",
+        "fixpoint(count)",
+        "fixpoint(set_attr(\"tag\", \"x\"))",
+        "input union (filter(true) | count)",
+        "input union (set_attr(\"tag\", \"x\"))",
+        "select(op(\"x\"))",
+        "filter(true) | union(op(\"x\"))",
+        "filter(true) |",
+        "()",
+        "fixpoint()",
+    ] {
+        assert!(Query::parse(source).is_err(), "{source}");
+    }
+    for source in [
+        r#"set_attr("bad name", "hot")"#,
+        r#"remove_attr("bad name")"#,
+    ] {
+        assert!(
+            Query::parse(source)
+                .unwrap_err()
+                .to_string()
+                .contains("dotted ASCII identifier")
+        );
+    }
+    assert!(
+        Query::parse("set_attr(\"tag\", \"hot\nvalue\")")
+            .unwrap_err()
+            .to_string()
+            .contains("control characters")
     );
-    Query::parse("select(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\") | root")
-        .unwrap();
-    Query::parse("select(op(\"arith.addi\")) | remove_attr(\"analysis.tag\") | root").unwrap();
-    let error = Query::parse("select(op(\"arith.addi\")) | count | root").unwrap_err();
-    assert!(error.to_string().contains("root requires a selection"));
-    let error =
-        Query::parse("select(op(\"arith.addi\")) | set_attr(\"bad name\", \"hot\")").unwrap_err();
-    assert!(error.to_string().contains("dotted ASCII identifier"));
-    let error = Query::parse("select(op(\"arith.addi\")) | remove_attr(\"bad name\")").unwrap_err();
-    assert!(error.to_string().contains("dotted ASCII identifier"));
-    let error =
-        Query::parse("select(op(\"arith.addi\")) | set_attr(\"tag\", \"hot\nvalue\")").unwrap_err();
-    assert!(error.to_string().contains("control characters"));
-    Query::parse(r#"select(op("arith.addi")) | set_attr("tag", "quoted \"value\" \\ path")"#)
-        .unwrap();
-    assert!(Query::parse("select(op(\"arith.addi\")) | other").is_err());
+    Query::parse(r#"set_attr("tag", "quoted \"value\" \\ path")"#).unwrap();
 }
 
 #[test]
@@ -88,36 +115,38 @@ fn lexer_records_token_kinds_ranges_and_string_failures() {
 
 #[test]
 fn parser_builds_ranged_syntax_with_insignificant_whitespace() {
-    let source = " select ( op ( \"arith.addi\" ) )\n| set_attr ( \"tag\" , \"hot\" ) | count ";
+    let source = " filter ( op ( \"arith.addi\" ) )\n| set_attr ( \"tag\" , \"hot\" ) | count ";
     let lexed = lex(source);
     let parsed = parse(&lexed);
     assert!(parsed.diagnostics().is_empty());
     let program = parsed.program().unwrap();
     assert_eq!(program.range().as_range(), 1..source.len());
-    assert!(matches!(program.predicate(), Predicate::Op { name, .. } if name == "arith.addi"));
     assert!(
-        matches!(program.stages(), [Stage::SetAttr { name, value, .. }, Stage::Count { .. }] if name == "tag" && value == "hot")
+        matches!(initial_predicate(program), Predicate::Op { name, .. } if name == "arith.addi")
+    );
+    assert!(
+        matches!(&program.expression().first[1..], [Stage::SetAttr { name, value, .. }, Stage::Count { .. }] if name == "tag" && value == "hot")
     );
 }
 
 #[test]
 fn parser_builds_ranged_remove_attr_stage() {
-    let source = r#"select(op("x")) | remove_attr("analysis.tag")"#;
+    let source = r#"filter(op("x")) | remove_attr("analysis.tag")"#;
     let parsed = parse(&lex(source));
     assert!(parsed.diagnostics().is_empty());
     assert!(matches!(
-        parsed.program().unwrap().stages(),
+        &parsed.program().unwrap().expression().first[1..],
         [Stage::RemoveAttr { name, range }] if name == "analysis.tag" && range.as_range() == (18..source.len())
     ));
 }
 
 #[test]
 fn parser_builds_ranged_relationship_stages() {
-    let source = r#"select(op("x")) | defs | users | parent | children"#;
+    let source = r#"filter(op("x")) | defs | users | parent | children"#;
     let parsed = parse(&lex(source));
     assert!(parsed.diagnostics().is_empty());
     assert!(matches!(
-        parsed.program().unwrap().stages(),
+        &parsed.program().unwrap().expression().first[1..],
         [
             Stage::Defs { .. },
             Stage::Users { .. },
@@ -126,49 +155,36 @@ fn parser_builds_ranged_relationship_stages() {
         ]
     ));
     assert_eq!(
-        parsed.program().unwrap().stages()[0].range().as_range(),
+        parsed.program().unwrap().expression().first[1]
+            .range()
+            .as_range(),
         18..22
     );
 }
 
 #[test]
-fn parser_builds_ranged_set_stages_with_complete_predicates() {
-    let source = r#"select(op("a")) | union(op("b") or has_attr("tag")) | intersect(not op("c")) | except(attr("state", "skip"))"#;
-    let parsed = parse(&lex(source));
-    assert!(
-        parsed.diagnostics().is_empty(),
-        "{:?}",
-        parsed.diagnostics()
-    );
+fn pipes_bind_more_tightly_than_set_operators() {
+    use zirium::query::parser::SetOperator;
+    let parsed = parse(&lex("input | defs union users | parent except children"));
+    let expression = parsed.program().unwrap().expression();
+    assert_eq!(expression.first.len(), 2);
+    assert!(matches!(expression.rest.as_slice(), [
+        (SetOperator::Union, right), (SetOperator::Except, last)
+    ] if matches!(right.as_slice(), [Stage::Users { .. }, Stage::Parent { .. }])
+        && matches!(last.as_slice(), [Stage::Children { .. }])));
+    let grouped = parse(&lex("(defs union users) | parent"));
     assert!(matches!(
-        parsed.program().unwrap().stages(),
-        [
-            Stage::Union {
-                predicate: Predicate::Or { .. },
-                ..
-            },
-            Stage::Intersect {
-                predicate: Predicate::Not { .. },
-                ..
-            },
-            Stage::Except {
-                predicate: Predicate::Attr { .. },
-                ..
-            }
-        ]
+        grouped.program().unwrap().expression().first.as_slice(),
+        [Stage::Group { .. }, Stage::Parent { .. }]
     ));
-    assert_eq!(
-        parsed.program().unwrap().stages()[0].range().as_range(),
-        18..51
-    );
 }
 
 #[test]
 fn parser_builds_boolean_predicates_with_precedence_and_parentheses() {
     let parsed = parse(&lex(
-        r#"select(op("a") or has_attr("tag") and not attr("state", "skip"))"#,
+        r#"filter(op("a") or has_attr("tag") and not string_attr_eq("state", "skip"))"#,
     ));
-    let predicate = parsed.program().unwrap().predicate();
+    let predicate = initial_predicate(parsed.program().unwrap());
     assert!(matches!(
         predicate,
         Predicate::Or { predicates, .. }
@@ -177,9 +193,9 @@ fn parser_builds_boolean_predicates_with_precedence_and_parentheses() {
                     if matches!(predicate.as_ref(), Predicate::Attr { name, value, .. } if name == "state" && value == "skip")))
     ));
 
-    let grouped = parse(&lex(r#"select((op("a") or op("b")) and has_attr("tag"))"#));
+    let grouped = parse(&lex(r#"filter((op("a") or op("b")) and has_attr("tag"))"#));
     assert!(matches!(
-        grouped.program().unwrap().predicate(),
+        initial_predicate(grouped.program().unwrap()),
         Predicate::And { predicates, .. }
             if matches!(predicates.first(), Some(Predicate::Group { predicate, range })
                 if matches!(predicate.as_ref(), Predicate::Or { .. }) && range.as_range() == (7..27))
@@ -188,12 +204,15 @@ fn parser_builds_boolean_predicates_with_precedence_and_parentheses() {
 
 #[test]
 fn malformed_and_over_nested_predicates_are_diagnosed() {
-    let missing = parse(&lex(r#"select(attr("tag" "value"))"#));
-    assert_eq!(missing.diagnostics()[0].message(), "expected `,` in attr");
+    let missing = parse(&lex(r#"filter(string_attr_eq("tag" "value"))"#));
+    assert_eq!(
+        missing.diagnostics()[0].message(),
+        "expected `,` in string_attr_eq"
+    );
 
-    let at_limit = parse_with_nesting_limit(&lex(r#"select((op("x")))"#), 3);
+    let at_limit = parse_with_nesting_limit(&lex(r#"filter((op("x")))"#), 3);
     assert!(at_limit.diagnostics().is_empty());
-    let beyond = parse_with_nesting_limit(&lex(r#"select(((op("x"))))"#), 3);
+    let beyond = parse_with_nesting_limit(&lex(r#"filter(((op("x"))))"#), 3);
     assert_eq!(
         beyond.diagnostics()[0].message(),
         "query nesting limit exceeded"
@@ -202,18 +221,18 @@ fn malformed_and_over_nested_predicates_are_diagnosed() {
 
 #[test]
 fn unary_and_boolean_chain_complexity_is_stack_safe() {
-    let at_limit = format!("select({}op(\"x\"))", "not ".repeat(62));
+    let at_limit = format!("filter({}op(\"x\"))", "not ".repeat(62));
     assert!(
         parse_with_nesting_limit(&lex(&at_limit), 64)
             .diagnostics()
             .is_empty()
     );
-    let beyond = format!("select({}op(\"x\"))", "not ".repeat(63));
+    let beyond = format!("filter({}op(\"x\"))", "not ".repeat(63));
     assert_eq!(
         parse_with_nesting_limit(&lex(&beyond), 64).diagnostics()[0].message(),
         "query nesting limit exceeded"
     );
-    let pathological = format!("select({}op(\"x\"))", "not ".repeat(50_000));
+    let pathological = format!("filter({}op(\"x\"))", "not ".repeat(50_000));
     assert_eq!(
         parse(&lex(&pathological)).diagnostics()[0].message(),
         "query nesting limit exceeded"
@@ -221,13 +240,13 @@ fn unary_and_boolean_chain_complexity_is_stack_safe() {
 
     for operator in [" or ", " and "] {
         let chain = format!(
-            "select({})",
+            "filter({})",
             std::iter::repeat_n("op(\"x\")", 10_000)
                 .collect::<Vec<_>>()
                 .join(operator)
         );
         let parsed = parse(&lex(&chain));
-        match (operator, parsed.program().unwrap().predicate()) {
+        match (operator, initial_predicate(parsed.program().unwrap())) {
             (" or ", Predicate::Or { predicates, .. })
             | (" and ", Predicate::And { predicates, .. }) => {
                 assert_eq!(predicates.len(), 10_000)
@@ -238,25 +257,19 @@ fn unary_and_boolean_chain_complexity_is_stack_safe() {
 }
 
 #[test]
-fn parser_recovers_at_pipeline_boundaries_and_bounds_nesting() {
-    let source = "select(op(\"x\")) | mystery(stuff) | count | root";
-    let lexed = lex(source);
-    let parsed = parse(&lexed);
-    assert!(
-        parsed
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.message().contains("unknown"))
-    );
-    assert!(
-        parsed
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.message().contains("root requires"))
-    );
-
-    let valid = "select(op(\"x\"))";
-    let lexed = lex(valid);
+fn query_nesting_is_bounded_including_modifiers_and_groups() {
+    for wrapper in ["fixpoint(", "("] {
+        let valid = format!("{}input{}", wrapper.repeat(63), ")".repeat(63));
+        assert!(Query::parse(&valid).is_ok());
+        let invalid = format!("{}input{}", wrapper.repeat(64), ")".repeat(64));
+        assert!(
+            Query::parse(&invalid)
+                .unwrap_err()
+                .message
+                .contains("nesting limit")
+        );
+    }
+    let lexed = lex("filter(op(\"x\"))");
     let parsed = parse_with_nesting_limit(&lexed, 1);
     assert_eq!(
         parsed.diagnostics()[0].message(),
@@ -267,12 +280,12 @@ fn parser_recovers_at_pipeline_boundaries_and_bounds_nesting() {
 
 #[test]
 fn lexed_input_binds_the_parser_source_and_size_checks_do_not_wrap() {
-    let source = String::from("select(op(\"é\"))");
+    let source = String::from("filter(op(\"é\"))");
     let lexed = lex(&source);
     let parsed = parse(&lexed);
     assert!(parsed.diagnostics().is_empty());
     assert!(
-        matches!(parsed.program().unwrap().predicate(), Predicate::Op { name, .. } if name == "é")
+        matches!(initial_predicate(parsed.program().unwrap()), Predicate::Op { name, .. } if name == "é")
     );
 
     assert!(query_size_supported(MAX_QUERY_BYTES));

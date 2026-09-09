@@ -107,6 +107,12 @@ pub fn lex(source: &str) -> Lexed<'_> {
                 }
                 TokenKind::Trivia
             }
+            b'#' => {
+                while position < bytes.len() && bytes[position] != b'\n' {
+                    position += 1;
+                }
+                TokenKind::Trivia
+            }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 position += 1;
                 while bytes

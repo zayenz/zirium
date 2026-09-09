@@ -1,4 +1,4 @@
-//! Parsing and evaluation for the initial operation selection query.
+//! Composable operation-selection queries, editing, and output.
 
 use std::{collections::HashSet, fmt};
 
@@ -15,15 +15,13 @@ pub mod parser;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
-    predicate: parser::Predicate,
-    stages: Vec<parser::Stage>,
+    expression: parser::Expression,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryOutput {
     Selection(Vec<OperationId>),
     Count(usize),
-    Root,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +50,14 @@ impl fmt::Display for EvaluationError {
 }
 
 impl std::error::Error for EvaluationError {}
+
+impl EvaluationError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
 
 impl Query {
     pub fn parse(source: &str) -> Result<Self, QueryError> {
@@ -83,118 +89,183 @@ impl Query {
         let program = parsed
             .into_program()
             .expect("diagnostic-free query has a program");
-        let predicate = program.predicate().clone();
-        let stages = program.stages().to_vec();
-        Ok(Self { predicate, stages })
+        Ok(Self {
+            expression: program.expression,
+        })
     }
 
-    pub fn operation_name(&self) -> Option<&str> {
-        match &self.predicate {
-            parser::Predicate::Op { name, .. } => Some(name),
-            _ => None,
-        }
-    }
-
+    /// Evaluates against the current document, invoking `emit` at each explicit
+    /// emission and for the implicit final output. The callback sees each edit
+    /// as it exists at that point. Callers that need all-or-nothing output should
+    /// buffer emissions until evaluation succeeds. Edits commit per stage.
     pub fn evaluate(
         &self,
         document: &mut Document,
         registry: &DialectRegistry,
-    ) -> Result<QueryOutput, EvaluationError> {
-        let mut selected = document
-            .operations()
-            .filter(|&operation| evaluate_predicate(&self.predicate, document, operation))
-            .collect::<Vec<_>>();
-        let mut output = QueryOutput::Selection(selected.clone());
-        for stage in &self.stages {
-            match stage {
-                parser::Stage::Closure { .. } => {
-                    selected = evaluate_closure(document, selected, registry)?
+        mut emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+    ) -> Result<(), EvaluationError> {
+        let selected = document.operations().collect();
+        let output =
+            evaluate_expression(&self.expression, document, registry, selected, &mut emit)?;
+        if !self.expression.ends_with_emit() {
+            emit(document, output)?;
+        }
+        Ok(())
+    }
+}
+
+fn evaluate_expression(
+    expression: &parser::Expression,
+    document: &mut Document,
+    registry: &DialectRegistry,
+    input: Vec<OperationId>,
+    emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+) -> Result<QueryOutput, EvaluationError> {
+    if expression.rest.is_empty() {
+        return evaluate_pipeline(&expression.first, document, registry, input, emit);
+    }
+    let first = evaluate_pipeline(&expression.first, document, registry, input.clone(), emit)?;
+    let QueryOutput::Selection(mut selected) = first else {
+        unreachable!("parser checks set operands")
+    };
+    for (operator, stages) in &expression.rest {
+        let QueryOutput::Selection(right) =
+            evaluate_pipeline(stages, document, registry, input.clone(), emit)?
+        else {
+            unreachable!("parser checks set operands")
+        };
+        let mut left = selected.into_iter().collect::<HashSet<_>>();
+        let right = right.into_iter().collect::<HashSet<_>>();
+        match operator {
+            parser::SetOperator::Union => left.extend(right),
+            parser::SetOperator::Intersect => left.retain(|operation| right.contains(operation)),
+            parser::SetOperator::Except => left.retain(|operation| !right.contains(operation)),
+        }
+        selected = source_ordered(document, left);
+    }
+    Ok(QueryOutput::Selection(selected))
+}
+
+fn evaluate_pipeline(
+    stages: &[parser::Stage],
+    document: &mut Document,
+    registry: &DialectRegistry,
+    mut selected: Vec<OperationId>,
+    emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+) -> Result<QueryOutput, EvaluationError> {
+    for stage in stages {
+        match stage {
+            parser::Stage::Input { .. } => selected = document.operations().collect(),
+            parser::Stage::Filter { predicate, .. } => {
+                selected.retain(|&operation| evaluate_predicate(predicate, document, operation));
+            }
+            parser::Stage::Closure { .. } => {
+                selected = evaluate_closure(document, selected, registry)?
+            }
+            parser::Stage::Defs { .. } => selected = evaluate_defs(document, &selected),
+            parser::Stage::Users { .. } => selected = evaluate_users(document, &selected),
+            parser::Stage::Parent { .. } => selected = evaluate_parent(document, &selected),
+            parser::Stage::Children { .. } => selected = evaluate_children(document, &selected),
+            parser::Stage::Root { .. } => {
+                let mut expanded = HashSet::new();
+                for operation in selected {
+                    if !expanded.contains(&operation) {
+                        retain_subtree(document, operation, &mut expanded);
+                    }
                 }
-                parser::Stage::Defs { .. } => selected = evaluate_defs(document, &selected),
-                parser::Stage::Users { .. } => selected = evaluate_users(document, &selected),
-                parser::Stage::Parent { .. } => selected = evaluate_parent(document, &selected),
-                parser::Stage::Children { .. } => selected = evaluate_children(document, &selected),
-                parser::Stage::Union { predicate, .. } => {
-                    let mut combined = selected.into_iter().collect::<HashSet<_>>();
-                    combined.extend(matching_operations(document, predicate));
-                    selected = source_ordered(document, combined);
+                selected = source_ordered(document, expanded);
+            }
+            parser::Stage::Group { expression, .. } => {
+                match evaluate_expression(expression, document, registry, selected, emit)? {
+                    QueryOutput::Selection(result) => selected = result,
+                    output => return Ok(output),
                 }
-                parser::Stage::Intersect { predicate, .. } => {
-                    let matching = matching_operations(document, predicate);
-                    let intersection = selected
-                        .into_iter()
-                        .filter(|operation| matching.contains(operation))
-                        .collect();
-                    selected = source_ordered(document, intersection);
+            }
+            parser::Stage::Fixpoint { expression, .. } => {
+                // Brent's cycle detection keeps one checkpoint instead of storing
+                // every intermediate selection. Read-only bodies produce deterministic selections.
+                let mut checkpoint = selected.clone();
+                let mut power = 1usize;
+                let mut distance = 0usize;
+                loop {
+                    let QueryOutput::Selection(next) = evaluate_expression(
+                        expression,
+                        document,
+                        registry,
+                        selected.clone(),
+                        emit,
+                    )?
+                    else {
+                        unreachable!("parser checks fixpoint body")
+                    };
+                    if next == selected {
+                        break;
+                    }
+                    if next == checkpoint {
+                        return Err(EvaluationError {
+                            message:
+                                "fixpoint query cycles without reaching an unchanged selection"
+                                    .into(),
+                        });
+                    }
+                    selected = next;
+                    distance += 1;
+                    if distance == power {
+                        checkpoint = selected.clone();
+                        power = power.saturating_mul(2);
+                        distance = 0;
+                    }
                 }
-                parser::Stage::Except { predicate, .. } => {
-                    let matching = matching_operations(document, predicate);
-                    let difference = selected
-                        .into_iter()
-                        .filter(|operation| !matching.contains(operation))
-                        .collect();
-                    selected = source_ordered(document, difference);
+            }
+            parser::Stage::SetAttr { name, value, .. } => {
+                let mut editor = document.edit(registry).map_err(edit_error)?;
+                let spelling = quote_mlir_string(value);
+                for operation in selected.iter().copied().collect::<HashSet<_>>() {
+                    editor
+                        .set_attribute(
+                            operation,
+                            AttributeSpec {
+                                name: name.clone(),
+                                spelling: spelling.clone(),
+                                value: AttributeValue::String(spelling.clone()),
+                            },
+                        )
+                        .map_err(edit_error)?;
                 }
-                parser::Stage::SetAttr { name, value, .. } => {
+                editor.commit().map_err(edit_error)?;
+            }
+            parser::Stage::RemoveAttr { name, .. } => {
+                let targets = selected
+                    .iter()
+                    .copied()
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .filter(|&operation| {
+                        document.operation_is_unparsed(operation) == Some(true)
+                            || document.attribute_id(operation, name).is_some()
+                    })
+                    .collect::<Vec<_>>();
+                if !targets.is_empty() {
                     let mut editor = document.edit(registry).map_err(edit_error)?;
-                    let spelling = quote_mlir_string(value);
-                    for operation in selected.iter().copied().collect::<HashSet<_>>() {
+                    for operation in targets {
                         editor
-                            .set_attribute(
-                                operation,
-                                AttributeSpec {
-                                    name: name.clone(),
-                                    spelling: spelling.clone(),
-                                    value: AttributeValue::String(spelling.clone()),
-                                },
-                            )
+                            .remove_attribute(operation, name)
                             .map_err(edit_error)?;
                     }
                     editor.commit().map_err(edit_error)?;
                 }
-                parser::Stage::RemoveAttr { name, .. } => {
-                    let targets = selected
-                        .iter()
-                        .copied()
-                        .collect::<HashSet<_>>()
-                        .into_iter()
-                        .filter(|&operation| {
-                            document.operation_is_unparsed(operation) == Some(true)
-                                || document.attribute_id(operation, name).is_some()
-                        })
-                        .collect::<Vec<_>>();
-                    if !targets.is_empty() {
-                        let mut editor = document.edit(registry).map_err(edit_error)?;
-                        for operation in targets {
-                            editor
-                                .remove_attribute(operation, name)
-                                .map_err(edit_error)?;
-                        }
-                        editor.commit().map_err(edit_error)?;
-                    }
-                }
-                parser::Stage::Count { .. } => output = QueryOutput::Count(selected.len()),
-                parser::Stage::Root { .. } => output = QueryOutput::Root,
             }
+            parser::Stage::Count { .. } => return Ok(QueryOutput::Count(selected.len())),
+            parser::Stage::Emit { .. } => emit(document, QueryOutput::Selection(selected.clone()))?,
         }
-        if matches!(output, QueryOutput::Selection(_)) {
-            output = QueryOutput::Selection(selected);
-        }
-        Ok(output)
     }
+    Ok(QueryOutput::Selection(selected))
 }
 
 fn source_ordered(document: &Document, selected: HashSet<OperationId>) -> Vec<OperationId> {
     document
         .operations()
         .filter(|operation| selected.contains(operation))
-        .collect()
-}
-
-fn matching_operations(document: &Document, predicate: &parser::Predicate) -> HashSet<OperationId> {
-    document
-        .operations()
-        .filter(|&operation| evaluate_predicate(predicate, document, operation))
         .collect()
 }
 
@@ -268,6 +339,7 @@ fn evaluate_predicate(
     operation: OperationId,
 ) -> bool {
     match predicate {
+        parser::Predicate::Bool { value, .. } => *value,
         parser::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
         parser::Predicate::HasAttr { name, .. } => document
             .attribute_entries(operation)
@@ -333,8 +405,7 @@ fn evaluate_closure(
     registry: &DialectRegistry,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     let mut selected = seeds.iter().copied().collect::<HashSet<_>>();
-    let mut worklist = seeds;
-    while let Some(operation) = worklist.pop() {
+    for operation in seeds {
         let name = document
             .operation_name(operation)
             .unwrap_or("<invalid operation>");
@@ -361,19 +432,19 @@ fn evaluate_closure(
                             "closure could not resolve func.call callee `{callee}` in an enclosing symbol table"
                         ),
                     })?;
-            retain_subtree(document, target, &mut selected, &mut worklist);
+            retain_subtree(document, target, &mut selected);
         }
         if let Some(branch) = CfBrOp::cast(document, operation) {
             let successor = branch.successor().ok_or_else(|| EvaluationError {
                 message: "closure encountered cf.br without a successor".to_owned(),
             })?;
-            retain_successor_region(document, successor, name, &mut selected, &mut worklist)?;
+            retain_successor_region(document, successor, name, &mut selected)?;
         } else if let Some(branch) = CfCondBrOp::cast(document, operation) {
             let successors = branch.successors().ok_or_else(|| EvaluationError {
                 message: "closure encountered cf.cond_br without successors".to_owned(),
             })?;
             for &successor in successors {
-                retain_successor_region(document, successor, name, &mut selected, &mut worklist)?;
+                retain_successor_region(document, successor, name, &mut selected)?;
             }
         }
         if !document.successors(operation).unwrap_or(&[]).is_empty()
@@ -397,7 +468,7 @@ fn evaluate_closure(
                     });
                 }
                 ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => {
-                    enqueue(operation, &mut selected, &mut worklist);
+                    selected.insert(operation);
                 }
                 ValueReference::Resolved(ValueId::BlockArgument { block, .. }) => {
                     let owner = document
@@ -409,7 +480,7 @@ fn evaluate_closure(
                                     "closure could not resolve the owning scope for a block argument on `{name}`"
                                 ),
                             })?;
-                    retain_subtree(document, owner, &mut selected, &mut worklist);
+                    retain_subtree(document, owner, &mut selected);
                 }
             }
         }
@@ -425,7 +496,6 @@ fn retain_successor_region(
     successor: Successor,
     operation_name: &str,
     selected: &mut HashSet<OperationId>,
-    worklist: &mut Vec<OperationId>,
 ) -> Result<(), EvaluationError> {
     let owner = document
         .block(successor.block())
@@ -436,35 +506,25 @@ fn retain_successor_region(
                 "closure encountered an invalid successor target on `{operation_name}`"
             ),
         })?;
-    retain_subtree(document, owner, selected, worklist);
+    retain_subtree(document, owner, selected);
     Ok(())
-}
-
-fn enqueue(
-    operation: OperationId,
-    selected: &mut HashSet<OperationId>,
-    worklist: &mut Vec<OperationId>,
-) {
-    if selected.insert(operation) {
-        worklist.push(operation);
-    }
 }
 
 fn retain_subtree(
     document: &Document,
     operation: OperationId,
     selected: &mut HashSet<OperationId>,
-    worklist: &mut Vec<OperationId>,
 ) {
-    enqueue(operation, selected, worklist);
-    for &region in document.operation_regions(operation).unwrap_or(&[]) {
-        for &block in document
-            .region(region)
-            .and_then(|region| region.blocks(document))
-            .unwrap_or(&[])
-        {
-            for &child in document.block_operations(block).unwrap_or(&[]) {
-                retain_subtree(document, child, selected, worklist);
+    let mut pending = vec![operation];
+    while let Some(operation) = pending.pop() {
+        selected.insert(operation);
+        for &region in document.operation_regions(operation).unwrap_or(&[]) {
+            for &block in document
+                .region(region)
+                .and_then(|region| region.blocks(document))
+                .unwrap_or(&[])
+            {
+                pending.extend(document.block_operations(block).unwrap_or(&[]));
             }
         }
     }
