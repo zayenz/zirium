@@ -672,6 +672,37 @@ def test_registered_operation_shapes_lower_and_bind_function_arguments():
 
 
 @pytest.mark.parametrize(
+    ("operation", "expect_diagnostics"),
+    [
+        ("%r = a.Op : bf16", True),
+        ("%r = a.Op %x0 : bf16", True),
+        ("%r = a.Op %x0, %x1 : bf16", False),
+        ("%r = a.Op %x0, %x1, %x2 : bf16", True),
+        ("a.Op %x0 : bf16", True),
+        ("a.Op %x0, %x1 : bf16", True),
+    ],
+)
+def test_binary_operand_shape_recovers_from_arity_mismatches(
+    operation: str, expect_diagnostics: bool
+):
+    registry = zirium.DialectRegistry.with_operation_shapes(
+        {"a.Op": zirium.OperationShape.BINARY_OPERANDS}
+    )
+    source = f'''"builtin.module"() ({{
+^bb0:
+  %x0 = "test.source"() : () -> bf16
+  %x1 = "test.source"() : () -> bf16
+  %x2 = "test.source"() : () -> bf16
+  {operation}
+  "test.after"() : () -> ()
+}}) : () -> ()'''
+    lowered = zirium.parse_text(source, registry=registry).lower_best_effort()
+    assert bool(lowered.diagnostics) is expect_diagnostics
+    assert lowered.document is not None
+    assert lowered.document.operation_table("test.after").count == 1
+
+
+@pytest.mark.parametrize(
     "source",
     [
         '%x = "arith.addi"() : () -> i32',

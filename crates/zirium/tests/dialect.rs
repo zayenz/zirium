@@ -122,6 +122,52 @@ fn named_stablehlo_registry_parses_and_lowers_its_supported_custom_forms() {
 }
 
 #[test]
+fn binary_operand_shape_recovers_from_arity_mismatches() {
+    let registry =
+        DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])
+            .unwrap();
+    for (operation, expect_diagnostics) in [
+        ("%r = a.Op : bf16", true),
+        ("%r = a.Op %x0 : bf16", true),
+        ("%r = a.Op %x0, %x1 : bf16", false),
+        ("%r = a.Op %x0, %x1, %x2 : bf16", true),
+        ("a.Op %x0 : bf16", true),
+        ("a.Op %x0, %x1 : bf16", true),
+    ] {
+        let source = format!(
+            r#""builtin.module"() ({{
+^bb0:
+  %x0 = "test.source"() : () -> bf16
+  %x1 = "test.source"() : () -> bf16
+  %x2 = "test.source"() : () -> bf16
+  {operation}
+  "test.after"() : () -> ()
+}}) : () -> ()"#
+        );
+        let parsed = ParsedFile::parse_with_registry(source.as_bytes(), &registry).unwrap();
+        let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+        assert_eq!(
+            !lowered.diagnostics.is_empty(),
+            expect_diagnostics,
+            "unexpected diagnostics for {operation:?}: {:?}",
+            lowered.diagnostics
+        );
+        let document = lowered.document.unwrap();
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some("test.after")),
+            "following operation was lost after {operation:?}"
+        );
+        if expect_diagnostics {
+            assert!(!document.is_semantically_complete());
+        } else {
+            document.verify_semantics(&registry).unwrap();
+        }
+    }
+}
+
+#[test]
 fn registry_presets_validate_names_and_compose_with_explicit_entries() {
     use zirium::dialect::RegistryConfig;
 

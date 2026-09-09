@@ -652,9 +652,9 @@ fn lower_with_registry(
         );
         let operands = op
             .operands()
-            .map(|operand| {
-                let range = operand.tree().text_range(operand.id()).unwrap();
-                resolve_value(
+            .filter_map(|operand| {
+                let range = operand.tree().text_range(operand.id())?;
+                Some(resolve_value(
                     text(source.bytes(), range),
                     range,
                     parent_blocks
@@ -667,7 +667,7 @@ fn lower_with_registry(
                     &region_outer,
                     &region_parent_blocks,
                     &mut doc,
-                )
+                ))
             })
             .collect::<Vec<_>>();
         let mut attributes = lower_dictionary(
