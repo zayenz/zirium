@@ -55,6 +55,21 @@ impl OperationShape {
     const OPTIONAL_TYPED_OPERANDS: Self = Self {
         shape: CoreOperationShape::OptionalTypedOperands,
     };
+
+    #[classattr]
+    const UNARY_OPERAND: Self = Self {
+        shape: CoreOperationShape::UnaryOperand,
+    };
+
+    #[classattr]
+    const VARIADIC_OPERANDS: Self = Self {
+        shape: CoreOperationShape::VariadicOperands,
+    };
+
+    #[classattr]
+    const LITERAL_ATTRIBUTE: Self = Self {
+        shape: CoreOperationShape::LiteralAttribute,
+    };
 }
 
 #[pymethods]

@@ -12,7 +12,13 @@ class OperationShapeConfig(BaseModel):
 
     name: str
     shape: Literal[
-        "func_like", "call_like", "binary_operands", "optional_typed_operands"
+        "func_like",
+        "call_like",
+        "binary_operands",
+        "optional_typed_operands",
+        "unary_operand",
+        "variadic_operands",
+        "literal_attribute",
     ]
 
 

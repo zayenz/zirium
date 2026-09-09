@@ -237,6 +237,115 @@ fn binary_operand_shape_rejects_parenthesized_single_input_function_type() {
 }
 
 #[test]
+fn operation_shapes_cover_representative_spellings() {
+    for (name, spelling, shape, operands, result, attribute) in [
+        (
+            "stir.mul",
+            "%r = stir.mul %a, %b : bf16",
+            OperationShape::BinaryOperands,
+            2,
+            Some("bf16"),
+            None,
+        ),
+        (
+            "stir.select",
+            "%r = stir.select %c, %a, %b : i16, bf16 -> bf16",
+            OperationShape::VariadicOperands,
+            3,
+            Some("bf16"),
+            None,
+        ),
+        (
+            "stir.reciprocal",
+            "%r = stir.reciprocal %a : bf16",
+            OperationShape::UnaryOperand,
+            1,
+            Some("bf16"),
+            None,
+        ),
+        (
+            "stir.return",
+            "stir.return %a : bf16",
+            OperationShape::OptionalTypedOperands,
+            1,
+            None,
+            None,
+        ),
+        (
+            "stir.return",
+            "stir.return %a, %b : bf16, bf16",
+            OperationShape::VariadicOperands,
+            2,
+            None,
+            None,
+        ),
+        (
+            "stir.iter_index",
+            r#"%r = stir.iter_index "default_1" : i32"#,
+            OperationShape::LiteralAttribute,
+            0,
+            Some("i32"),
+            Some(r#""default_1""#),
+        ),
+        (
+            "stir.imm",
+            "%r = stir.imm 0 : i64 : i32",
+            OperationShape::LiteralAttribute,
+            0,
+            Some("i32"),
+            Some("0 : i64"),
+        ),
+        (
+            "stir.arg_in",
+            "%r = stir.arg_in -1.09e+12 : bf16 : bf16",
+            OperationShape::LiteralAttribute,
+            0,
+            Some("bf16"),
+            Some("-1.09e+12 : bf16"),
+        ),
+    ] {
+        let registry = DialectRegistry::with_operation_shapes(&[(name, shape)]).unwrap();
+        let source = format!(
+            r#""builtin.module"() ({{
+^bb0:
+  %a = "test.source"() : () -> bf16
+  %b = "test.source"() : () -> bf16
+  %c = "test.source"() : () -> i16
+  {spelling}
+}}) : () -> ()"#
+        );
+        let parsed = ParsedFile::parse_with_registry(source.as_bytes(), &registry).unwrap();
+        assert!(
+            parsed.syntax().diagnostics().is_empty(),
+            "unexpected syntax diagnostics for {spelling:?}: {:?}",
+            parsed.syntax().diagnostics()
+        );
+        let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected lowering diagnostics for {spelling:?}: {:?}",
+            lowered.diagnostics
+        );
+        let document = lowered.document.unwrap();
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(document.operation_is_unparsed(operation), Some(false));
+        assert_eq!(document.operands(operation).unwrap().len(), operands);
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), usize::from(result.is_some()));
+        if let Some(expected) = result {
+            assert_eq!(document.type_spelling(results[0]), Some(expected));
+        }
+        if let Some(expected) = attribute {
+            let value = document.attribute_id(operation, "value").unwrap();
+            assert_eq!(document.attribute_spelling_value(value), Some(expected));
+        }
+    }
+}
+
+#[test]
 fn registry_presets_validate_names_and_compose_with_explicit_entries() {
     use zirium::dialect::RegistryConfig;
 

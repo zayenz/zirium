@@ -73,6 +73,22 @@ def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
+    ("spelling", "classattr"),
+    [
+        ("unary_operand", zirium.OperationShape.UNARY_OPERAND),
+        ("variadic_operands", zirium.OperationShape.VARIADIC_OPERANDS),
+        ("literal_attribute", zirium.OperationShape.LITERAL_ATTRIBUTE),
+    ],
+)
+def test_extended_operation_shapes_are_configurable(spelling, classattr):
+    model = zirium.OperationShapeConfig(name="vendor.op", shape=spelling)
+    zirium.DialectRegistry.from_config(
+        {"builtins": [], "operation_shapes": [model.model_dump()]}
+    )
+    zirium.DialectRegistry.with_operation_shapes({"vendor.op": classattr})
+
+
+@pytest.mark.parametrize(
     "config",
     [
         {},

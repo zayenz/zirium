@@ -374,6 +374,12 @@ pub enum OperationShape {
     BinaryOperands,
     /// Zero or more operands followed by the same number of optional types.
     OptionalTypedOperands,
+    /// One operand and either one shared type or a function type.
+    UnaryOperand,
+    /// Zero or more operands and either result types or a function type.
+    VariadicOperands,
+    /// One inline literal attribute followed by one result type.
+    LiteralAttribute,
 }
 
 impl std::error::Error for DeclarativeRegistryError {}
@@ -1045,6 +1051,9 @@ pub(crate) fn lower_operation_shape(
         OperationShape::CallLike => lower_call_like(operation, context),
         OperationShape::BinaryOperands => lower_binary_operands(operation, context),
         OperationShape::OptionalTypedOperands => lower_optional_typed_operands(operation, context),
+        OperationShape::UnaryOperand => lower_unary_operand(operation, context),
+        OperationShape::VariadicOperands => lower_variadic_operands(operation, context),
+        OperationShape::LiteralAttribute => lower_literal_attribute(operation, context),
     }
 }
 
@@ -1143,6 +1152,21 @@ fn lower_binary_operands(
     operation: &str,
     context: &RegisteredLoweringContext<'_>,
 ) -> Option<RegisteredLowering> {
+    lower_typed_operands(operation, context, 2)
+}
+
+fn lower_unary_operand(
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    lower_typed_operands(operation, context, 1)
+}
+
+fn lower_typed_operands(
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+    operand_count: usize,
+) -> Option<RegisteredLowering> {
     let tail = context.assembly_spelling().split_once(operation)?.1;
     let (_, ty) = tail.rsplit_once(':')?;
     let ty = ty.trim();
@@ -1151,7 +1175,12 @@ fn lower_binary_operands(
             let inputs = inputs.trim();
             let input_types = crate::semantic::split_registered_types(inputs);
             let normalized_inputs = if !inputs.starts_with('(') && input_types.len() == 1 {
-                format!("({0}, {0})", input_types[0])
+                format!(
+                    "({})",
+                    std::iter::repeat_n(input_types[0].as_str(), operand_count)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             } else {
                 inputs.to_owned()
             };
@@ -1160,13 +1189,64 @@ fn lower_binary_operands(
                 crate::semantic::split_registered_types(results),
             )
         } else {
-            (format!("({ty}, {ty}) -> {ty}"), vec![ty.into()])
+            let inputs = std::iter::repeat_n(ty, operand_count)
+                .collect::<Vec<_>>()
+                .join(", ");
+            (format!("({inputs}) -> {ty}"), vec![ty.into()])
         };
     Some(RegisteredLowering {
         name: "arith.addi",
         result_types,
         function_type,
         attributes: Vec::new(),
+    })
+}
+
+fn lower_variadic_operands(
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    let spelling = context.assembly_spelling();
+    let (prefix, tail) = spelling.split_once(operation)?;
+    let (_, ty) = tail.rsplit_once(':')?;
+    let ty = ty.trim();
+    if let Some((inputs, results)) = crate::semantic::split_arrow(ty) {
+        return Some(RegisteredLowering {
+            name: "arith.addi",
+            result_types: crate::semantic::split_registered_types(results),
+            function_type: format!("{} -> {}", inputs.trim(), results.trim()),
+            attributes: Vec::new(),
+        });
+    }
+    if prefix.contains('=') {
+        let operand_count = tail.bytes().filter(|byte| *byte == b'%').count();
+        return lower_typed_operands(operation, context, operand_count);
+    }
+    let inputs = if ty.starts_with('(') {
+        ty.to_owned()
+    } else {
+        format!("({ty})")
+    };
+    Some(RegisteredLowering {
+        name: "func.return",
+        result_types: Vec::new(),
+        function_type: format!("{inputs} -> ()"),
+        attributes: Vec::new(),
+    })
+}
+
+fn lower_literal_attribute(
+    operation: &str,
+    context: &RegisteredLoweringContext<'_>,
+) -> Option<RegisteredLowering> {
+    let tail = context.assembly_spelling().split_once(operation)?.1.trim();
+    let (attribute, result) = tail.rsplit_once(':')?;
+    let result = result.trim();
+    Some(RegisteredLowering {
+        name: "arith.constant",
+        result_types: vec![result.into()],
+        function_type: format!("() -> {result}"),
+        attributes: vec![("value", attribute.trim().to_owned())],
     })
 }
 

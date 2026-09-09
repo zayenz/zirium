@@ -758,14 +758,14 @@ def test_binary_operand_shape_recovers_from_arity_mismatches(
     registry = zirium.DialectRegistry.with_operation_shapes(
         {"a.Op": zirium.OperationShape.BINARY_OPERANDS}
     )
-    source = f'''"builtin.module"() ({{
+    source = f""""builtin.module"() ({{
 ^bb0:
   %x0 = "test.source"() : () -> bf16
   %x1 = "test.source"() : () -> bf16
   %x2 = "test.source"() : () -> bf16
   {operation}
   "test.after"() : () -> ()
-}}) : () -> ()'''
+}}) : () -> ()"""
     lowered = zirium.parse_text(source, registry=registry).lower_best_effort()
     assert bool(lowered.diagnostics) is expect_diagnostics
     assert lowered.document is not None
@@ -789,16 +789,17 @@ def test_binary_operand_shape_accepts_result_and_function_type_trailers(
     registry = zirium.DialectRegistry.with_operation_shapes(
         {"a.Op": zirium.OperationShape.BINARY_OPERANDS}
     )
-    source = f'''"builtin.module"() ({{
+    source = f""""builtin.module"() ({{
 ^bb0:
   %x0 = "test.source"() : () -> i32
   %x1 = "test.source"() : () -> i32
   %r = a.Op %x0, %x1 : {trailer}
-}}) : () -> ()'''
+}}) : () -> ()"""
     parsed = zirium.parse_text(source, registry=registry)
     assert parsed.diagnostics == []
     lowered = parsed.lower_best_effort()
     assert lowered.diagnostics == []
+    assert lowered.document is not None
     operation = lowered.document.operation_table("a.Op").operation(0)
     assert operation.operand_count() == 2
     assert operation.result_count() == 1
@@ -809,18 +810,113 @@ def test_binary_operand_shape_rejects_parenthesized_single_input_function_type()
     registry = zirium.DialectRegistry.with_operation_shapes(
         {"a.Op": zirium.OperationShape.BINARY_OPERANDS}
     )
-    source = '''"builtin.module"() ({
+    source = """"builtin.module"() ({
 ^bb0:
   %x0 = "test.source"() : () -> i32
   %x1 = "test.source"() : () -> i32
   %r = a.Op %x0, %x1 : (i32) -> i1
   "test.after"() : () -> ()
-}) : () -> ()'''
+}) : () -> ()"""
     parsed = zirium.parse_text(source, registry=registry)
     assert parsed.diagnostics
     lowered = parsed.lower_best_effort()
     assert lowered.diagnostics
+    assert lowered.document is not None
     assert lowered.document.operation_table("test.after").count == 1
+
+
+@pytest.mark.parametrize(
+    ("operation", "shape", "operand_count", "result_type", "attribute"),
+    [
+        (
+            "%r = stir.mul %a, %b : bf16",
+            zirium.OperationShape.BINARY_OPERANDS,
+            2,
+            "bf16",
+            None,
+        ),
+        (
+            "%r = stir.select %c, %a, %b : i16, bf16 -> bf16",
+            zirium.OperationShape.VARIADIC_OPERANDS,
+            3,
+            "bf16",
+            None,
+        ),
+        (
+            "%r = stir.reciprocal %a : bf16",
+            zirium.OperationShape.UNARY_OPERAND,
+            1,
+            "bf16",
+            None,
+        ),
+        (
+            "stir.return %a : bf16",
+            zirium.OperationShape.OPTIONAL_TYPED_OPERANDS,
+            1,
+            None,
+            None,
+        ),
+        (
+            "stir.return %a, %b : bf16, bf16",
+            zirium.OperationShape.VARIADIC_OPERANDS,
+            2,
+            None,
+            None,
+        ),
+        (
+            '%r = stir.iter_index "default_1" : i32',
+            zirium.OperationShape.LITERAL_ATTRIBUTE,
+            0,
+            "i32",
+            ("string", '"default_1"'),
+        ),
+        (
+            "%r = stir.imm 0 : i64 : i32",
+            zirium.OperationShape.LITERAL_ATTRIBUTE,
+            0,
+            "i32",
+            ("integer", "0 : i64"),
+        ),
+        (
+            "%r = stir.arg_in -1.09e+12 : bf16 : bf16",
+            zirium.OperationShape.LITERAL_ATTRIBUTE,
+            0,
+            "bf16",
+            ("float", "-1.09e+12 : bf16"),
+        ),
+    ],
+)
+def test_operation_shapes_cover_representative_spellings(
+    operation: str,
+    shape: zirium.OperationShape,
+    operand_count: int,
+    result_type: str | None,
+    attribute: tuple[str, str] | None,
+):
+    name = f"stir.{operation.split('stir.', 1)[1].split()[0]}"
+    registry = zirium.DialectRegistry.with_operation_shapes({name: shape})
+    source = f""""builtin.module"() ({{
+^bb0:
+  %a = "test.source"() : () -> bf16
+  %b = "test.source"() : () -> bf16
+  %c = "test.source"() : () -> i16
+  {operation}
+}}) : () -> ()"""
+    parsed = zirium.parse_text(source, registry=registry)
+    assert parsed.diagnostics == []
+    lowered = parsed.lower_best_effort()
+    assert lowered.diagnostics == []
+    assert lowered.document is not None
+    shaped = lowered.document.operation_table(name).operation(0)
+    assert not shaped.is_unparsed
+    assert shaped.operand_count() == operand_count
+    assert shaped.result_count() == (result_type is not None)
+    if result_type is not None:
+        assert shaped.result_type(0).spelling == result_type
+    if attribute is not None:
+        value = shaped.attribute_by_name("value")
+        assert value is not None
+        assert (value.kind, value.spelling) == attribute
 
 
 @pytest.mark.parametrize(

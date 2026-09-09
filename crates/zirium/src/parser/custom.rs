@@ -452,6 +452,82 @@ pub(super) fn shaped_operation(
                 good &= parser.type_syntax(0)?;
             }
         }
+        OperationShape::UnaryOperand => {
+            good &= shaped_operand(parser)?;
+            parser.trivia()?;
+            if parser.at(TokenKind::LBrace) {
+                parser.attribute_dict()?;
+                parser.trivia()?;
+            }
+            good &= parser.expect(TokenKind::Colon)?;
+            parser.trivia()?;
+            if binary_trailer_has_arrow(parser) {
+                let input_count = if parser.at(TokenKind::LParen) {
+                    parser.function_type_with_input_count()?
+                } else {
+                    bare_function_type(parser)?
+                };
+                if input_count != 1 {
+                    parser.diagnostic();
+                    good = false;
+                }
+            } else {
+                good &= parser.type_syntax(0)?;
+            }
+        }
+        OperationShape::VariadicOperands => {
+            while parser.at(TokenKind::PercentIdentifier) {
+                good &= shaped_operand(parser)?;
+                parser.trivia()?;
+                if !parser.at(TokenKind::Comma) {
+                    break;
+                }
+                parser.bump()?;
+                parser.trivia()?;
+            }
+            if parser.at(TokenKind::LBrace) {
+                parser.attribute_dict()?;
+                parser.trivia()?;
+            }
+            good &= parser.expect(TokenKind::Colon)?;
+            parser.trivia()?;
+            if binary_trailer_has_arrow(parser) {
+                if parser.at(TokenKind::LParen) {
+                    parser.function_type_with_input_count()?;
+                } else {
+                    bare_function_type(parser)?;
+                }
+            } else {
+                good &= parser.type_syntax(0)?;
+                parser.trivia()?;
+                while parser.at(TokenKind::Comma) {
+                    parser.bump()?;
+                    parser.trivia()?;
+                    good &= parser.type_syntax(0)?;
+                    parser.trivia()?;
+                }
+            }
+        }
+        OperationShape::LiteralAttribute => {
+            let value = parser.builder.start();
+            let value_good = parser.constant_value()?;
+            good &= value_good;
+            parser.builder.complete_with_error(
+                value,
+                SyntaxKind::ArithConstantValue,
+                !value_good,
+            )?;
+            parser.trivia()?;
+            good &= parser.expect(TokenKind::Colon)?;
+            parser.trivia()?;
+            good &= parser.type_syntax(0)?;
+            parser.trivia()?;
+            if parser.at(TokenKind::Colon) {
+                parser.bump()?;
+                parser.trivia()?;
+                good &= parser.type_syntax(0)?;
+            }
+        }
         OperationShape::OptionalTypedOperands => {
             let mut operand_count = 0;
             while parser.at(TokenKind::PercentIdentifier) {
@@ -520,6 +596,19 @@ pub(super) fn shaped_operation(
         .builder
         .complete_with_error(marker, SyntaxKind::DialectOperation, !good)?;
     Ok(())
+}
+
+fn shaped_operand(parser: &mut Parser<'_>) -> Result<bool, CompactError> {
+    let operand = parser.builder.start();
+    let use_marker = parser.builder.start();
+    let good = parser.expect(TokenKind::PercentIdentifier)?;
+    parser
+        .builder
+        .complete_with_error(use_marker, SyntaxKind::OperandUse, !good)?;
+    parser
+        .builder
+        .complete_with_error(operand, SyntaxKind::Operand, !good)?;
+    Ok(good)
 }
 
 fn binary_trailer_has_arrow(parser: &Parser<'_>) -> bool {
