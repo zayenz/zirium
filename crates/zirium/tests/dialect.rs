@@ -7862,3 +7862,185 @@ fn smt_preset_inventory_and_recovery_match_llvm_22_1() {
             .any(|op| document.operation_name(op) == Some("test.after"))
     );
 }
+
+#[test]
+fn sparse_tensor_preset_exposes_complete_explicit_signatures() {
+    assert!(DialectRegistry::preset_names().contains(&"sparse_tensor"));
+    let registry = DialectRegistry::from_name("sparse_tensor").unwrap();
+    let source = br#"module {
+      func.func @forms(
+          %source: !llvm.ptr, %dense: tensor<4xf32>,
+          %sparse: tensor<4xf32, #sparse_tensor.encoding<{}>>,
+          %carry: i32) {
+        %new = sparse_tensor.new %source {tag = "new"} : !llvm.ptr to tensor<4xf32, #sparse_tensor.encoding<{}>>
+        %converted = sparse_tensor.convert %dense : tensor<4xf32> to tensor<4xf32, #sparse_tensor.encoding<{}>>
+        %remapped = sparse_tensor.reinterpret_map %sparse : tensor<4xf32, #sparse_tensor.encoding<{}>> to tensor<4xf32, #sparse_tensor.encoding<{}>>
+        %positions = sparse_tensor.positions %sparse {level = 0 : index} : tensor<4xf32, #sparse_tensor.encoding<{}>> to memref<?xindex>
+        %coordinates = sparse_tensor.coordinates %sparse {level = 0 : index} : tensor<4xf32, #sparse_tensor.encoding<{}>> to memref<?xindex>
+        %coordinate_buffer = sparse_tensor.coordinates_buffer %sparse : tensor<4xf32, #sparse_tensor.encoding<{}>> to memref<?xindex>
+        %values = sparse_tensor.values %sparse : tensor<4xf32, #sparse_tensor.encoding<{}>> to memref<?xf32>
+        %loaded = sparse_tensor.load %sparse hasInserts {tag = "load"} : tensor<4xf32, #sparse_tensor.encoding<{}>>
+        sparse_tensor.print %loaded {tag = "print"} : tensor<4xf32, #sparse_tensor.encoding<{}>>
+        sparse_tensor.yield %carry, %carry {tag = "yield"} : i32, i32
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results) in [
+        ("sparse_tensor.new", 1, 1),
+        ("sparse_tensor.convert", 1, 1),
+        ("sparse_tensor.reinterpret_map", 1, 1),
+        ("sparse_tensor.positions", 1, 1),
+        ("sparse_tensor.coordinates", 1, 1),
+        ("sparse_tensor.coordinates_buffer", 1, 1),
+        ("sparse_tensor.values", 1, 1),
+        ("sparse_tensor.load", 1, 1),
+        ("sparse_tensor.print", 1, 0),
+        ("sparse_tensor.yield", 2, 0),
+    ] {
+        let operation = document
+            .operations()
+            .find(|op| document.operation_name(*op) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+    let load = document
+        .operations()
+        .find(|op| document.operation_name(*op) == Some("sparse_tensor.load"))
+        .unwrap();
+    assert_eq!(
+        document.type_spelling(document.function_type(load).unwrap()),
+        Some(
+            "(tensor<4xf32, #sparse_tensor.encoding<{}>>) -> tensor<4xf32, #sparse_tensor.encoding<{}>>"
+        )
+    );
+
+    let nested_arrow = br#"%sparse = "test.source"() : () -> tensor<4xf32, #sparse_tensor.encoding<{map = (d0) -> (d0 : compressed)}>>
+%dense = sparse_tensor.convert %sparse : tensor<4xf32, #sparse_tensor.encoding<{map = (d0) -> (d0 : compressed)}>> to tensor<4xf32>"#;
+    let parsed = ParsedFile::parse_with_registry(nested_arrow.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    let convert = document
+        .operations()
+        .find(|op| document.operation_name(*op) == Some("sparse_tensor.convert"))
+        .unwrap();
+    assert_eq!(document.operands(convert).unwrap().len(), 1);
+    assert_eq!(document.result_types(convert).unwrap().len(), 1);
+    assert_eq!(
+        document.type_spelling(document.result_types(convert).unwrap()[0]),
+        Some("tensor<4xf32>")
+    );
+}
+
+#[test]
+fn sparse_tensor_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("sparse_tensor").unwrap();
+    let config =
+        RegistryConfig::from_json(include_str!("../registries/sparse_tensor.json")).unwrap();
+    assert_eq!(config.operation_formats.len(), 7);
+    assert_eq!(config.operation_shapes.len(), 3);
+    for operation in &config.operation_shapes {
+        assert_eq!(
+            registry.operation_shape(&operation.name),
+            Some(operation.shape)
+        );
+    }
+    for operation in &config.operation_formats {
+        assert_eq!(
+            operation.format,
+            "$operands attr-dict `:` type($operands) `to` type($results)"
+        );
+        assert_eq!(registry.operation_shape(&operation.name), None);
+    }
+
+    let recovery = [
+        "sparse_tensor.assemble",
+        "sparse_tensor.disassemble",
+        "sparse_tensor.number_of_entries",
+        "sparse_tensor.concatenate",
+        "sparse_tensor.slice.offset",
+        "sparse_tensor.slice.stride",
+        "sparse_tensor.storage_specifier.init",
+        "sparse_tensor.storage_specifier.get",
+        "sparse_tensor.storage_specifier.set",
+        "sparse_tensor.lvl",
+        "sparse_tensor.crd_translate",
+        "sparse_tensor.push_back",
+        "sparse_tensor.expand",
+        "sparse_tensor.compress",
+        "sparse_tensor.out",
+        "sparse_tensor.sort",
+        "sparse_tensor.reorder_coo",
+        "sparse_tensor.binary",
+        "sparse_tensor.unary",
+        "sparse_tensor.reduce",
+        "sparse_tensor.select",
+        "sparse_tensor.foreach",
+        "sparse_tensor.extract_iteration_space",
+        "sparse_tensor.extract_value",
+        "sparse_tensor.iterate",
+        "sparse_tensor.coiterate",
+        "sparse_tensor.has_runtime_library",
+    ];
+    assert_eq!(
+        config.operation_formats.len() + config.operation_shapes.len() + recovery.len(),
+        37
+    );
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%x: f32, %y: f32) {
+        %binary = sparse_tensor.binary %x, %y : f32 to f32
+          overlap = ^bb0(%lhs: f32, %rhs: f32) { sparse_tensor.yield %lhs : f32 }
+        end
+        %selected = sparse_tensor.select %x : f32 {
+        ^bb0(%value: f32): sparse_tensor.yield %value : f32
+        }
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| { diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation })
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|op| document.operation_name(op) == Some("test.after"))
+    );
+}

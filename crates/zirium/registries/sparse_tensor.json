@@ -1,0 +1,23 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "sparse_tensor.load", "shape": "operand_clauses"},
+    {"name": "sparse_tensor.print", "shape": "optional_typed_operands"},
+    {"name": "sparse_tensor.yield", "shape": "variadic_operands"}
+  ],
+  "operation_formats": [
+    {"name": "sparse_tensor.new", "format": "$operands attr-dict `:` type($operands) `to` type($results)"},
+    {"name": "sparse_tensor.convert", "format": "$operands attr-dict `:` type($operands) `to` type($results)"},
+    {"name": "sparse_tensor.reinterpret_map", "format": "$operands attr-dict `:` type($operands) `to` type($results)"},
+    {"name": "sparse_tensor.positions", "format": "$operands attr-dict `:` type($operands) `to` type($results)"},
+    {"name": "sparse_tensor.coordinates", "format": "$operands attr-dict `:` type($operands) `to` type($results)"},
+    {"name": "sparse_tensor.coordinates_buffer", "format": "$operands attr-dict `:` type($operands) `to` type($results)"},
+    {"name": "sparse_tensor.values", "format": "$operands attr-dict `:` type($operands) `to` type($results)"}
+  ]
+}

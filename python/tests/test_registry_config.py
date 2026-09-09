@@ -83,6 +83,7 @@ def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
         "quant",
         "rocdl",
         "shape",
+        "sparse_tensor",
         "smt",
     )
     config = {"presets": ["stablehlo"], "builtins": [], "operation_shapes": []}

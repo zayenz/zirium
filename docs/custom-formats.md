@@ -46,6 +46,7 @@ It does not establish that the operation can be verified or rewritten.
 | ROCDL preset | Core plus 125 structurally exact forms among 323 ROCDL operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Shape preset | Core plus 20 structurally exact forms among 40 Shape operations. |
+| SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
 | SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -80,7 +81,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, and `smt` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, and `smt` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -1125,6 +1126,27 @@ representation is a builtin tensor type, not a fifth Shape dialect type. All
 four dialect types and the extent-tensor representation work through the
 ordinary type parser; the preset adds no Shape verification, type inference,
 constraint semantics, or execution semantics.
+
+SparseTensor defines 37 operations in LLVM 22.1, excluding the separate
+Transform dialect extension. The preset registers 10 exact forms. `new`,
+`convert`, `reinterpret_map`, `positions`, `coordinates`,
+`coordinates_buffer`, and `values` expose their complete operand and result
+types. `load` preserves its optional `hasInserts` clause and same tensor type;
+`print` and variadic `yield` expose complete typed operands and no results.
+
+The other 27 operations remain on whole-operation recovery. `assemble`,
+`disassemble`, `concatenate`, and destination form `out` use grouped or bare
+heterogeneous type lists that do not fit an exact current shape. Slice,
+storage-specifier, coordinate-translation, sorting, insertion, compression,
+and iteration-space forms use positional attributes or partial/inferred
+signatures. `binary`, `unary`, `reduce`, `select`, `foreach`, `iterate`, and
+`coiterate` own custom
+regions or bindings whose roles are dialect-specific. `number_of_entries`,
+`expand`, `extract_value`, and `has_runtime_library` omit at least one result
+type. None of the 37 operations has successors or symbol roles. Sparse tensor
+encodings, iterator/storage types, and level attributes remain balanced opaque
+dialect values; the preset adds no verification, inference, storage, or
+execution semantics.
 
 SMT defines exactly 54 operations in LLVM 22.1: 21 core operations, 21
 bit-vector operations, nine integer operations, and three array operations.
