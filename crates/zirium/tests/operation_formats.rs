@@ -81,3 +81,30 @@ fn into_and_to_are_distinct_format_literals() {
             .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::FormatMismatch)
     );
 }
+
+#[test]
+fn trailing_synthetic_format_steps_preserve_a_newline_boundary() {
+    let registry = RegistryConfig::from_json(
+        r#"{
+          "builtins":["func.return"],
+          "operation_shapes":[],
+          "operation_formats":[{
+            "name":"test.widen",
+            "format":"$operands attr-dict `:` type($operands) `to` type($results)"
+          }]
+        }"#,
+    )
+    .unwrap()
+    .build()
+    .unwrap();
+    let source = br#"%input = "test.source"() : () -> i16
+%result = test.widen %input : i16 to i32
+func.return"#;
+
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+}

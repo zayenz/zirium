@@ -960,6 +960,7 @@ pub(super) fn formatted_operation(
     let mut nodes = Vec::new();
     let mut boundary_trivia = parser.position;
     for step in format.steps() {
+        let consumes_source = !matches!(step, FormatStep::Begin(_) | FormatStep::End(_));
         match *step {
             FormatStep::Begin(kind) => nodes.push((kind, parser.builder.start())),
             FormatStep::End(kind) => {
@@ -1020,8 +1021,10 @@ pub(super) fn formatted_operation(
                 }
             }
         }
-        boundary_trivia = parser.position;
-        parser.trivia()?;
+        if consumes_source {
+            boundary_trivia = parser.position;
+            parser.trivia()?;
+        }
     }
     debug_assert!(nodes.is_empty());
 
