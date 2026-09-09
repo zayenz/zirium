@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an opt-in release profiling test for query parsing and evaluation, with
+  direct-scan comparisons and separate document-width and dependency-depth
+  cases. Record the initial timings and the deep fixed-point scaling limit.
+
 - Reengineer the query language around an implicit input selection and output.
   Empty programs print the input; `filter` replaces `select` and always tests
   the current selection. `input` explicitly returns to the whole document.

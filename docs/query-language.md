@@ -258,3 +258,6 @@ Query and predicate nesting share a 64-level limit. Long flat boolean chains,
 pipelines, and set chains do not require corresponding recursive nesting.
 The CLI reports query errors with a byte offset, line, column, and source
 caret. Program-file positions include leading whitespace and comments.
+
+For implementation timing and scaling measurements, see
+[query profiling](architecture/query-profiling.md).
