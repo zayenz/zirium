@@ -27,6 +27,7 @@ It does not establish that the operation can be verified or rewritten.
 | Bufferization preset | Core plus 5 of the 7 Bufferization operations. |
 | CF preset | Core plus `cf.br` and `cf.cond_br`. |
 | Complex preset | Core plus default forms of 21 of the 29 Complex operations. |
+| DLTI preset | Core only; all 6 DLTI attributes remain opaque dialect values. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -60,7 +61,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, and `complex` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, and `dlti` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -339,6 +340,15 @@ The `complex<T>` type is a builtin MLIR type, not a Complex dialect type. The
 dialect's `#complex.number` attribute remains an opaque dialect value, as it
 does without the preset. None of the 29 operations have regions or successors;
 their declarative forms place ordinary dictionaries before the type trailer.
+
+DLTI defines no operations or types in LLVM 22.1. It defines six attributes:
+`#dlti.dl_entry`, `#dlti.dl_spec`, `#dlti.map`,
+`#dlti.target_system_spec`, `#dlti.target_device_spec`, and
+`#dlti.function_pointer_alignment`. Zirium already parses and lowers their
+balanced spellings as opaque dialect attributes, so the `dlti` preset adds core
+syntax without registering operations or claiming attribute verification.
+`transform.dlti.query` belongs to the Transform dialect and is outside this
+preset.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

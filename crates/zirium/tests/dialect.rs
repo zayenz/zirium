@@ -1664,6 +1664,67 @@ fn complex_preset_inventory_and_recovery_match_llvm_22_1() {
 }
 
 #[test]
+fn dlti_preset_preserves_llvm_22_1_attributes_without_claiming_operations() {
+    let registry = DialectRegistry::from_name("dlti").unwrap();
+    assert_eq!(registry.operation_names().count(), 4);
+    assert!(
+        registry
+            .operation_names()
+            .all(|name| !name.starts_with("dlti."))
+    );
+    assert!(registry.operation("transform.dlti.query").is_none());
+
+    let source = br#"module {
+      "test.dlti"() {
+        entry = #dlti.dl_entry<"test.identifier", 42 : i64>,
+        spec = #dlti.dl_spec<"test.id" = 42 : i32>,
+        map = #dlti.map<"bitwidth" = 32 : i32>,
+        system = #dlti.target_system_spec<"CPU" = #dlti.target_device_spec<"bits" = 64 : i32>>,
+        device = #dlti.target_device_spec<"bits" = 64 : i32>,
+        alignment = #dlti.function_pointer_alignment<64, function_dependent = false>
+      } : () -> ()
+    }"#;
+    let expected = [
+        ("entry", r#"#dlti.dl_entry<"test.identifier", 42 : i64>"#),
+        ("spec", r#"#dlti.dl_spec<"test.id" = 42 : i32>"#),
+        ("map", r#"#dlti.map<"bitwidth" = 32 : i32>"#),
+        (
+            "system",
+            r#"#dlti.target_system_spec<"CPU" = #dlti.target_device_spec<"bits" = 64 : i32>>"#,
+        ),
+        ("device", r#"#dlti.target_device_spec<"bits" = 64 : i32>"#),
+        (
+            "alignment",
+            "#dlti.function_pointer_alignment<64, function_dependent = false>",
+        ),
+    ];
+
+    for mode in [LoweringMode::Strict, LoweringMode::BestEffort] {
+        let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+        assert!(
+            parsed.syntax().diagnostics().is_empty(),
+            "{:?}",
+            parsed.syntax().diagnostics()
+        );
+        let lowered = lower_with_dialect_registry(&parsed, mode, &registry);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let document = lowered.document.unwrap();
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some("test.dlti"))
+            .unwrap();
+        for (name, spelling) in expected {
+            let attribute = document.attribute_id(operation, name).unwrap();
+            assert_eq!(document.attribute_spelling_value(attribute), Some(spelling));
+            assert!(matches!(
+                document.attribute_value(attribute),
+                Some(AttributeValue::Opaque(value)) if value.as_ref() == spelling.as_bytes()
+            ));
+        }
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])

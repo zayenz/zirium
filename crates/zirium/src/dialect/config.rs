@@ -59,6 +59,7 @@ const PRESET_NAMES: &[&str] = &[
     "bufferization",
     "cf",
     "complex",
+    "dlti",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -79,6 +80,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "bufferization" => Some(include_str!("../../registries/bufferization.json")),
         "cf" => Some(include_str!("../../registries/cf.json")),
         "complex" => Some(include_str!("../../registries/complex.json")),
+        "dlti" => Some(include_str!("../../registries/dlti.json")),
         _ => None,
     }
 }

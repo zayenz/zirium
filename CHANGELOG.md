@@ -11,6 +11,8 @@ machine-learning dialects without claiming their execution semantics.
 - Add `tosa`, `scf`, and `linalg` presets. Their common operands, result types,
   attributes, regions, block arguments, and ownership relationships are
   available to Rust, Python, and binary queries.
+- Add a core-only `dlti` preset for a dialect whose LLVM 22.1 surface consists
+  of six opaque attributes and no operations or types.
 - Add reusable operand-clause and region-clause operation shapes. Region
   clauses retain explicit block arguments and loop-style header bindings
   without implementing dialect-specific type inference.
