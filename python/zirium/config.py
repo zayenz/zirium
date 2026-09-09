@@ -16,6 +16,7 @@ class OperationShapeConfig(BaseModel):
         "call_like",
         "binary_operands",
         "optional_typed_operands",
+        "attr_first_optional_typed_operands",
         "unary_operand",
         "variadic_operands",
         "literal_attribute",

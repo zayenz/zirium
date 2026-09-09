@@ -554,56 +554,10 @@ pub(super) fn shaped_operation(
         OperationShape::OperandClauses => good &= operand_clauses(parser)?,
         OperationShape::RegionClauses => good &= region_clauses(parser, operation)?,
         OperationShape::OptionalTypedOperands => {
-            let mut operand_count = 0;
-            while parser.at(TokenKind::PercentIdentifier) {
-                let operand = parser.builder.start();
-                let use_marker = parser.builder.start();
-                parser.bump()?;
-                parser
-                    .builder
-                    .complete(use_marker, SyntaxKind::OperandUse)?;
-                parser.builder.complete(operand, SyntaxKind::Operand)?;
-                operand_count += 1;
-                parser.trivia()?;
-                if !parser.at(TokenKind::Comma) {
-                    break;
-                }
-                parser.bump()?;
-                parser.trivia()?;
-            }
-            if parser.at(TokenKind::LBrace) {
-                parser.attribute_dict()?;
-                parser.trivia()?;
-            }
-            if parser.at(TokenKind::Colon) {
-                parser.bump()?;
-                parser.trivia()?;
-                let type_count = if parser.at(TokenKind::LParen) {
-                    parser.bump()?;
-                    parser.trivia()?;
-                    let mut count = 0;
-                    while parser.at_type_start() {
-                        count += usize::from(parser.type_syntax(0)?);
-                        parser.trivia()?;
-                        if !parser.at(TokenKind::Comma) {
-                            break;
-                        }
-                        parser.bump()?;
-                        parser.trivia()?;
-                    }
-                    good &= parser.expect(TokenKind::RParen)?;
-                    count
-                } else {
-                    usize::from(parser.type_syntax(0)?)
-                };
-                if type_count != operand_count {
-                    parser.diagnostic();
-                    good = false;
-                }
-            } else if operand_count != 0 {
-                parser.diagnostic();
-                good = false;
-            }
+            good &= optional_typed_operands(parser, false)?;
+        }
+        OperationShape::AttrFirstOptionalTypedOperands => {
+            good &= optional_typed_operands(parser, true)?;
         }
     }
     let mut boundary_trivia = parser.position;
@@ -628,6 +582,64 @@ pub(super) fn shaped_operation(
         .builder
         .complete_with_error(marker, SyntaxKind::DialectOperation, !good)?;
     Ok(())
+}
+
+fn optional_typed_operands(
+    parser: &mut Parser<'_>,
+    dictionary_first: bool,
+) -> Result<bool, CompactError> {
+    let mut good = true;
+    if dictionary_first && parser.at(TokenKind::LBrace) {
+        parser.attribute_dict()?;
+        parser.trivia()?;
+    }
+
+    let mut operand_count = 0;
+    while parser.at(TokenKind::PercentIdentifier) {
+        good &= shaped_operand(parser)?;
+        operand_count += 1;
+        parser.trivia()?;
+        if !parser.at(TokenKind::Comma) {
+            break;
+        }
+        parser.bump()?;
+        parser.trivia()?;
+    }
+
+    if !dictionary_first && parser.at(TokenKind::LBrace) {
+        parser.attribute_dict()?;
+        parser.trivia()?;
+    }
+    if parser.at(TokenKind::Colon) {
+        parser.bump()?;
+        parser.trivia()?;
+        let type_count = if parser.at(TokenKind::LParen) {
+            parser.bump()?;
+            parser.trivia()?;
+            let mut count = 0;
+            while parser.at_type_start() {
+                count += usize::from(parser.type_syntax(0)?);
+                parser.trivia()?;
+                if !parser.at(TokenKind::Comma) {
+                    break;
+                }
+                parser.bump()?;
+                parser.trivia()?;
+            }
+            good &= parser.expect(TokenKind::RParen)?;
+            count
+        } else {
+            usize::from(parser.type_syntax(0)?)
+        };
+        if type_count != operand_count {
+            parser.diagnostic();
+            good = false;
+        }
+    } else if operand_count != 0 {
+        parser.diagnostic();
+        good = false;
+    }
+    Ok(good)
 }
 
 fn operand_clauses(parser: &mut Parser<'_>) -> Result<bool, CompactError> {

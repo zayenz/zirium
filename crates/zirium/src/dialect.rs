@@ -388,6 +388,8 @@ pub enum OperationShape {
     BinaryOperands,
     /// Zero or more operands followed by the same number of optional types.
     OptionalTypedOperands,
+    /// An optional attribute dictionary followed by zero or more operands and matching types.
+    AttrFirstOptionalTypedOperands,
     /// One operand and either one shared type or a function type.
     UnaryOperand,
     /// Zero or more operands and either result types or a function type.
@@ -1053,6 +1055,33 @@ fn split_top_level_to(value: &str) -> Option<(&str, &str)> {
     split_top_level_keyword(value, "to")
 }
 
+fn split_top_level_colon(value: &str) -> Option<(&str, &str)> {
+    let mut depth = 0i32;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut colon = None;
+    for (index, character) in value.char_indices() {
+        if quoted {
+            if character == '"' && !escaped {
+                quoted = false;
+            }
+            escaped = character == '\\' && !escaped;
+            if character != '\\' {
+                escaped = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => quoted = true,
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth -= 1,
+            ':' if depth == 0 => colon = Some(index),
+            _ => {}
+        }
+    }
+    colon.map(|index| (&value[..index], &value[index + 1..]))
+}
+
 fn attribute_groups<'a>(groups: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
     let groups = groups
         .into_iter()
@@ -1199,6 +1228,9 @@ pub(crate) fn lower_operation_shape(
         OperationShape::CallLike => lower_call_like(operation, context),
         OperationShape::BinaryOperands => lower_binary_operands(operation, context),
         OperationShape::OptionalTypedOperands => lower_optional_typed_operands(operation, context),
+        OperationShape::AttrFirstOptionalTypedOperands => {
+            lower_optional_typed_operands(operation, context)
+        }
         OperationShape::UnaryOperand => lower_unary_operand(operation, context),
         OperationShape::VariadicOperands => lower_variadic_operands(operation, context),
         OperationShape::LiteralAttribute => lower_literal_attribute(operation, context),
@@ -1617,10 +1649,11 @@ fn lower_optional_typed_operands(
     context: &RegisteredLoweringContext<'_>,
 ) -> Option<RegisteredLowering> {
     let tail = context.assembly_spelling().split_once(operation)?.1.trim();
-    let input = tail
-        .rsplit_once(':')
-        .map(|(_, types)| types.trim())
-        .unwrap_or("()");
+    let input = if context.operand_count() == 0 {
+        "()"
+    } else {
+        split_top_level_colon(tail)?.1.trim()
+    };
     let input = if input.starts_with('(') {
         input.to_owned()
     } else {

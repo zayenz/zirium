@@ -51,6 +51,9 @@ fn parser_diagnostic_message(
                 zirium::dialect::OperationShape::CallLike => "call_like",
                 zirium::dialect::OperationShape::BinaryOperands => "binary_operands",
                 zirium::dialect::OperationShape::OptionalTypedOperands => "optional_typed_operands",
+                zirium::dialect::OperationShape::AttrFirstOptionalTypedOperands => {
+                    "attr_first_optional_typed_operands"
+                }
                 zirium::dialect::OperationShape::UnaryOperand => "unary_operand",
                 zirium::dialect::OperationShape::VariadicOperands => "variadic_operands",
                 zirium::dialect::OperationShape::LiteralAttribute => "literal_attribute",

@@ -57,6 +57,11 @@ impl OperationShape {
     };
 
     #[classattr]
+    const ATTR_FIRST_OPTIONAL_TYPED_OPERANDS: Self = Self {
+        shape: CoreOperationShape::AttrFirstOptionalTypedOperands,
+    };
+
+    #[classattr]
     const UNARY_OPERAND: Self = Self {
         shape: CoreOperationShape::UnaryOperand,
     };

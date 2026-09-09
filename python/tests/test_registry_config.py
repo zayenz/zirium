@@ -116,6 +116,10 @@ def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
     [
         ("unary_operand", zirium.OperationShape.UNARY_OPERAND),
         ("variadic_operands", zirium.OperationShape.VARIADIC_OPERANDS),
+        (
+            "attr_first_optional_typed_operands",
+            zirium.OperationShape.ATTR_FIRST_OPTIONAL_TYPED_OPERANDS,
+        ),
         ("literal_attribute", zirium.OperationShape.LITERAL_ATTRIBUTE),
         ("operand_clauses", zirium.OperationShape.OPERAND_CLAUSES),
         ("region_clauses", zirium.OperationShape.REGION_CLAUSES),
