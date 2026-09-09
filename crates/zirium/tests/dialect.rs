@@ -752,6 +752,67 @@ fn arith_preset_inventory_matches_llvm_22_1_structural_coverage() {
 }
 
 #[test]
+fn arm_neon_preset_exposes_the_widening_multiply_structure() {
+    let registry = DialectRegistry::from_name("arm_neon").unwrap();
+    let source = br#"module {
+      func.func @widen(%lhs: vector<8xi8>, %rhs: vector<8xi8>) -> vector<8xi16> {
+        %result = arm_neon.intr.smull %lhs, %rhs {tag = true} : vector<8xi8> to vector<8xi16>
+        func.return %result : vector<8xi16>
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let smull = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("arm_neon.intr.smull"))
+        .unwrap();
+
+    assert_eq!(document.operands(smull).unwrap().len(), 2);
+    let result_types = document.result_types(smull).unwrap();
+    assert_eq!(result_types.len(), 1);
+    assert_eq!(
+        document.type_spelling(result_types[0]),
+        Some("vector<8xi16>")
+    );
+    assert!(
+        document
+            .attributes(smull)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "true")
+    );
+    assert!(document.operation_regions(smull).unwrap().is_empty());
+    assert!(document.successors(smull).unwrap().is_empty());
+}
+
+#[test]
+fn arm_neon_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("arm_neon").unwrap();
+    assert_eq!(
+        registry.operation_shape("arm_neon.intr.smull"),
+        Some(OperationShape::BinaryOperands)
+    );
+
+    for name in [
+        "arm_neon.intr.sdot",
+        "arm_neon.intr.smmla",
+        "arm_neon.intr.ummla",
+        "arm_neon.intr.usmmla",
+        "arm_neon.intr.bfmmla",
+        "arm_neon.2d.sdot",
+    ] {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])

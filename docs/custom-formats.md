@@ -20,6 +20,7 @@ It does not establish that the operation can be verified or rewritten.
 | AMDGPU preset | Core plus 4 of the 33 AMDGPU operations. |
 | AMX preset | Core plus 1 of the 5 AMX operations. |
 | Arith preset | Core plus default forms of 43 of the 51 Arith operations. |
+| ArmNeon preset | Core plus 1 of the 7 ArmNeon operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -52,7 +53,8 @@ definition. This surface was checked against StableHLO 1.20.1. The unversioned
 preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
-The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, and `arith` presets were checked against LLVM 22.1.0.
+The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`, and
+`arm_neon` presets were checked against LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
 its custom symbol/type form has no reusable structural signature. SCF registers
@@ -166,6 +168,23 @@ typed scalar spelling; inferred boolean constants, shaped constants, and a
 dictionary printed before the value may require recovery or fail strict Arith
 verification. Arith operations have no regions or successors, so post-region
 dictionaries do not apply.
+
+ArmNeon registers 1 of its 7 operations: `arm_neon.intr.smull`. Its two
+operands share the source-vector type in the trailer, and the type after `to`
+is its single widened-vector result, so the binary shape exposes both operands
+and the real result without inference. The ordinary attribute dictionary is
+also available to semantic queries.
+
+The other six operations remain on whole-operation recovery:
+`arm_neon.intr.sdot`, `arm_neon.intr.smmla`, `arm_neon.intr.ummla`,
+`arm_neon.intr.usmmla`, `arm_neon.intr.bfmmla`, and `arm_neon.2d.sdot`.
+Each has three operands. The `sdot` forms spell the two independently typed
+dot-product operands and infer the accumulator type from the result; the four
+matrix-multiply forms spell only their shared source type and infer the
+accumulator type from the result. The current variadic shape would therefore
+assign incorrect types to operands. ArmNeon defines no dialect types or
+attributes, and its operations have no regions or successors, so trailing
+region dictionaries do not apply.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block

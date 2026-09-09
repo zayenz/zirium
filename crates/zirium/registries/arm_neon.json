@@ -1,0 +1,13 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "arm_neon.intr.smull", "shape": "binary_operands"}
+  ],
+  "operation_formats": []
+}

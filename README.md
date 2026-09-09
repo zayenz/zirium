@@ -131,7 +131,7 @@ Canonical output intentionally does not preserve comments, whitespace, aliases, 
 
 Generic quoted operations are handled without a dialect registry. Unknown dialect types and attributes keep their balanced bodies as opaque values.
 
-Registered custom syntax is currently a proving surface rather than broad MLIR dialect coverage. The built-in proving registry covers a fixed subset of Builtin, Func, Arith, and CF operations. Declarative `stablehlo`, `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, and `arith` presets expose common operands, results, named clauses, regions, and block arguments for structural queries; the Arith preset covers the default forms of 43 of its 51 operations. They do not implement dialect verification or execution. Zirium does not load LLVM dialect definitions, interpret arbitrary ODS/TableGen files, or run Python callbacks while parsing.
+Registered custom syntax is currently a proving surface rather than broad MLIR dialect coverage. The built-in proving registry covers a fixed subset of Builtin, Func, Arith, and CF operations. Declarative `stablehlo`, `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`, and `arm_neon` presets expose common operands, results, named clauses, regions, and block arguments for structural queries; ArmNeon covers 1 of its 7 operations. They do not implement dialect verification or execution. Zirium does not load LLVM dialect definitions, interpret arbitrary ODS/TableGen files, or run Python callbacks while parsing.
 
 The [custom-format guide](docs/custom-formats.md) explains operation shapes,
 registry ownership, and the differences between Rust, Python, and the binary.
