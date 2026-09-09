@@ -47,6 +47,7 @@ It does not establish that the operation can be verified or rewritten.
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Shape preset | Core plus 20 structurally exact forms among 40 Shape operations. |
 | Tensor preset | Core plus 4 structurally exact forms among 21 Tensor operations. |
+| Transform preset | Core plus 7 structurally exact forms among 38 core and PDL-extension operations. |
 | SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
 | SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
 | Declarative | A selected subset of the proving catalog. |
@@ -82,7 +83,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, and `tensor` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, and `transform` presets were checked against
 LLVM 22.1.0.
 TOSA registers 91 of the 94 operations defined by its main, utility, and shape
 operation files. `tosa.variable`, `tosa.variable_read`, and
@@ -1171,6 +1172,59 @@ parser. The preset adds no Tensor verification, shape inference, destination
 semantics, or region verification. Supporting the positional dimension and
 reassociation attributes would require a recurring, generic format feature;
 this four-form preset does not justify adding one by itself.
+
+Transform's base dialect initializes 36 operations from `TransformOps.td` in
+LLVM 22.1. The preset also includes the two operations explicitly registered
+by the standard PDL extension, `transform.pdl_match` and
+`transform.with_pdl_patterns`, for an inventory of 38. Separately registered
+Debug, IRDL, Loop, SMT, Tune, and payload-dialect Transform extensions are not
+part of this core/PDL inventory even when their names begin with `transform.`.
+
+Seven structurally exact forms are registered. `transform.cast`,
+`transform.num_associations`, `transform.get_defining_op`,
+`transform.get_parent_op`, and `transform.split_handle` expose one operand and
+complete input/result signatures. `transform.named_sequence` uses the
+function-like form to preserve its symbol, argument and result types, argument
+and result dictionaries, and optional body with entry-block arguments.
+`transform.yield` preserves its variadic typed operands and exact zero-result
+terminator role. Visibility-prefixed named sequences remain on recovery because
+the reusable function-like shape begins at the symbol.
+
+The other 31 operations remain on whole-operation recovery, grouped by the
+roles that their concrete syntax requires:
+
+- Inferred handles and positional parameters: `transform.annotate`, four
+  target-only operations, `transform.get_consumers_of_result`,
+  `transform.get_producer_of_operand`, `transform.get_operand`,
+  `transform.get_result`, `transform.get_type`, the three `transform.match.*`
+  operations, `transform.merge_handles`, `transform.param.constant`,
+  `transform.print`, `transform.replicate`, `transform.select`, and
+  `transform.pdl_match` omit result types, operand types, or both, or place a
+  required name, index, predicate, attribute value, or option before the typed
+  boundary. Here the four target operations are `transform.apply_cse`,
+  `transform.apply_dce`, `transform.apply_licm`, and `transform.verify`.
+- Named calls and descriptor forms: `transform.include`,
+  `transform.collect_matching`, `transform.foreach_match`,
+  `transform.apply_registered_pass`,
+  `transform.apply_conversion_patterns.dialect_to_llvm`, and
+  `transform.apply_patterns.canonicalization` carry symbol references,
+  failure modes, symbol arrays, pass names/options, positional dialect names,
+  or descriptor-only zero-result syntax that are not ordinary SSA signature
+  fields.
+- Custom regions and block bindings: `transform.alternatives`,
+  `transform.apply_conversion_patterns`, `transform.apply_patterns`,
+  `transform.foreach`, `transform.sequence`, and
+  `transform.with_pdl_patterns` combine regions with optional scopes,
+  graph bodies, failure modes, inferred result handles, or custom entry-block
+  bindings. A generic region shape would discard those relationships.
+
+The `!transform.any_op`, `!transform.any_value`, `!transform.any_param`,
+`!transform.affine_map`, `!transform.type`, `!transform.op<...>`, and
+`!transform.param<...>` types and `#transform.*` attributes remain balanced
+opaque dialect values. The preset adds no transform execution, failure
+propagation, payload matching, handle/result or block-argument inference,
+symbol resolution, or verifier semantics. The current seven forms did not
+motivate a new format feature.
 
 SparseTensor defines 37 operations in LLVM 22.1, excluding the separate
 Transform dialect extension. The preset registers 10 exact forms. `new`,

@@ -8499,3 +8499,189 @@ fn spirv_preset_inventory_and_grouped_recovery_match_llvm_22_1() {
             .any(|op| document.operation_name(op) == Some("test.after"))
     );
 }
+
+#[test]
+fn transform_preset_preserves_complete_handle_signatures_and_named_sequences() {
+    assert!(DialectRegistry::preset_names().contains(&"transform"));
+    let registry = DialectRegistry::from_name("transform").unwrap();
+    let source = br#"module {
+      transform.named_sequence @inspect(
+          %root: !transform.any_op {transform.readonly})
+          -> (!transform.op<"builtin.module"> {transform.readonly})
+          attributes {tag = "sequence"} {
+        %cast = transform.cast %root {tag = "cast"} : !transform.any_op to !transform.op<"builtin.module">
+        %count = transform.num_associations %cast : (!transform.op<"builtin.module">) -> !transform.param<i64>
+        %value = "test.source"() : () -> !transform.any_value
+        %defining = transform.get_defining_op %value : (!transform.any_value) -> !transform.any_op
+        %parent = transform.get_parent_op %cast {nth_parent = 1 : i64} : (!transform.op<"builtin.module">) -> !transform.any_op
+        %first, %second = transform.split_handle %parent : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        transform.yield %cast {tag = "yield"} : !transform.op<"builtin.module">
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    let sequence = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("transform.named_sequence"))
+        .unwrap();
+    assert_eq!(
+        document.operation_symbol_name(sequence).as_deref(),
+        Some("inspect")
+    );
+    assert_eq!(
+        document.operation_signature(sequence).as_deref(),
+        Some("(!transform.any_op) -> !transform.op<\"builtin.module\">")
+    );
+    assert_eq!(document.operation_regions(sequence).unwrap().len(), 1);
+    assert!(document.attribute_id(sequence, "arg_attrs").is_some());
+    assert!(document.attribute_id(sequence, "res_attrs").is_some());
+
+    for (name, operands, results) in [
+        ("transform.cast", 1, 1),
+        ("transform.num_associations", 1, 1),
+        ("transform.get_defining_op", 1, 1),
+        ("transform.get_parent_op", 1, 1),
+        ("transform.split_handle", 1, 2),
+        ("transform.yield", 1, 0),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn transform_preset_inventory_matches_llvm_22_1_core_and_pdl_extension() {
+    let registry = DialectRegistry::from_name("transform").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/transform.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 7);
+    assert!(config.operation_formats.is_empty());
+    for operation in &config.operation_shapes {
+        assert_eq!(
+            registry.operation_shape(&operation.name),
+            Some(operation.shape),
+            "{}",
+            operation.name
+        );
+    }
+
+    // TransformOps.td initializes 36 core operations. The standard PDL
+    // extension registers two more transform operations explicitly.
+    let recovery = [
+        "transform.alternatives",
+        "transform.annotate",
+        "transform.apply_cse",
+        "transform.apply_conversion_patterns",
+        "transform.apply_conversion_patterns.dialect_to_llvm",
+        "transform.apply_dce",
+        "transform.apply_patterns",
+        "transform.apply_patterns.canonicalization",
+        "transform.apply_licm",
+        "transform.apply_registered_pass",
+        "transform.collect_matching",
+        "transform.foreach_match",
+        "transform.foreach",
+        "transform.get_consumers_of_result",
+        "transform.get_producer_of_operand",
+        "transform.get_operand",
+        "transform.get_result",
+        "transform.get_type",
+        "transform.include",
+        "transform.match.operation_empty",
+        "transform.match.operation_name",
+        "transform.match.param.cmpi",
+        "transform.merge_handles",
+        "transform.param.constant",
+        "transform.print",
+        "transform.replicate",
+        "transform.select",
+        "transform.sequence",
+        "transform.verify",
+        "transform.pdl_match",
+        "transform.with_pdl_patterns",
+    ];
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 38);
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    // Separately registered Transform extensions are intentionally not folded
+    // into the core/PDL preset, even though their operation names start with
+    // `transform.`.
+    for name in [
+        "transform.debug.emit_remark_at",
+        "transform.irdl.collect_matching",
+        "transform.loop.hoist_loop_invariant_subsets",
+        "transform.smt.constrain_params",
+        "transform.tune.knob",
+    ] {
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn transform_positional_inferred_and_region_forms_recover_at_boundaries() {
+    let registry = DialectRegistry::from_name("transform").unwrap();
+    let source = br#"module {
+      func.func @gaps(%root: !transform.any_op) {
+        %selected = transform.select "func.func" in %root : (!transform.any_op) -> !transform.any_op
+        transform.apply_cse to %root : !transform.any_op
+        transform.include @callee failures(propagate) (%root) : (!transform.any_op) -> ()
+        transform.sequence %root : !transform.any_op failures(propagate) {
+        ^bb0(%arg0: !transform.any_op):
+          transform.yield
+        }
+        transform.with_pdl_patterns %root : !transform.any_op {
+        ^bb0(%arg0: !transform.any_op):
+          transform.yield
+        }
+        "test.after"() {marker = #transform.param_operand<index = 0>} : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    let after = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.after"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(after)
+            .unwrap()
+            .any(|(name, value)| name == "marker"
+                && value == "#transform.param_operand<index = 0>")
+    );
+}

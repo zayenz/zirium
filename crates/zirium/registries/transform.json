@@ -1,0 +1,19 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "transform.cast", "shape": "unary_operand"},
+    {"name": "transform.get_defining_op", "shape": "unary_operand"},
+    {"name": "transform.get_parent_op", "shape": "unary_operand"},
+    {"name": "transform.named_sequence", "shape": "func_like"},
+    {"name": "transform.num_associations", "shape": "unary_operand"},
+    {"name": "transform.split_handle", "shape": "unary_operand"},
+    {"name": "transform.yield", "shape": "optional_typed_operands"}
+  ],
+  "operation_formats": []
+}
