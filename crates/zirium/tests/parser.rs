@@ -452,6 +452,24 @@ fn spaced_and_compact_shaped_dimensions_are_lossless_and_verified() {
 }
 
 #[test]
+fn mixed_and_multiple_scalable_vector_dimensions_are_verified() {
+    let bytes = b"\"scalable_dimensions\"() : (vector<[2]x[8]xf32>, vector<4x[4]xf32>, vector<[2]x3x[4]xf32>) -> vector<[4] x [4] x f32>";
+    let source = Source::new(bytes.as_slice()).unwrap();
+    let lexed = lex(&source);
+    let parsed = parse_generic_operations(&lexed).unwrap();
+    assert!(lexed.diagnostics().is_empty());
+    assert!(
+        parsed.diagnostics().is_empty(),
+        "{:?}",
+        parsed.diagnostics()
+    );
+    assert_eq!(reconstruct(parsed.tree(), &source), bytes);
+    parsed.tree().verify().unwrap();
+    assert_eq!(parsed.file().nodes(SyntaxKind::VectorType).count(), 4);
+    assert_eq!(parsed.file().nodes(SyntaxKind::ShapedDimension).count(), 9);
+}
+
+#[test]
 fn malformed_corpus_is_lossless_verified_and_recovers_operations() {
     for name in [
         "unterminated-opaque.mlir",

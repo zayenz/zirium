@@ -461,7 +461,7 @@ fn is_bare_start(byte: u8) -> bool {
 fn is_dimension_x_suffix(next: Option<u8>) -> bool {
     next.is_some_and(|byte| {
         byte.is_ascii_digit()
-            || matches!(byte, b'?' | b'*')
+            || matches!(byte, b'?' | b'*' | b'[')
             || matches!(
                 byte,
                 b'i' | b's' | b'u' | b'f' | b'b' | b'!' | b't' | b'v' | b'm'

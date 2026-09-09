@@ -185,3 +185,24 @@ fn compact_dimension_x_does_not_split_ordinary_identifiers() {
         8
     );
 }
+
+#[test]
+fn compact_dimension_x_supports_scalable_vector_dimensions() {
+    let source = source(b"vector<[2]x[8]xf32> vector<4x[4]xf32> vector<[2]x3x[4]xf32>");
+    let lexed = lex(&source);
+    assert_eq!(lexed.reconstruct(&source), source.bytes());
+    assert!(lexed.diagnostics().is_empty());
+    let significant = lexed
+        .tokens()
+        .iter()
+        .filter(|token| !matches!(token.kind(), TokenKind::Whitespace | TokenKind::Eof))
+        .map(|token| token.kind())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        significant
+            .iter()
+            .filter(|kind| **kind == TokenKind::X)
+            .count(),
+        7
+    );
+}
