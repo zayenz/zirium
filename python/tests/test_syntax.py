@@ -118,6 +118,84 @@ def test_operation_shapes_extend_declarative_registries():
     assert zirium.parse_text(source, registry=registry).diagnostics == []
 
 
+@pytest.mark.parametrize(
+    (
+        "name",
+        "shape",
+        "shape_name",
+        "source",
+        "operation_count",
+        "fabricated_name",
+    ),
+    [
+        (
+            "a.Op",
+            zirium.OperationShape.VARIADIC_OPERANDS,
+            "variadic_operands",
+            (
+                "module { %a = a.Src : i16\n"
+                "  %b = a.Src : i16\n"
+                "  %r = a.Op %a, %b : i16 to i16 }"
+            ),
+            4,
+            "to",
+        ),
+        (
+            "a.Imm",
+            zirium.OperationShape.LITERAL_ATTRIBUTE,
+            "literal_attribute",
+            (
+                "module { %0 = a.Imm 1 : i64 "
+                "{kUniqueId = 151192 : i64} : i32 }"
+            ),
+            2,
+            "kUniqueId",
+        ),
+        (
+            "a.Op",
+            zirium.OperationShape.VARIADIC_OPERANDS,
+            "variadic_operands",
+            "module { %r = a.Op : i16 x.y }",
+            2,
+            "x.y",
+        ),
+    ],
+)
+def test_shape_mismatch_recovers_one_whole_unparsed_operation(
+    name: str,
+    shape: zirium.OperationShape,
+    shape_name: str,
+    source: str,
+    operation_count: int,
+    fabricated_name: str,
+):
+    registry = zirium.DialectRegistry.with_operation_shapes({name: shape})
+    parsed = zirium.parse_text(source, registry=registry)
+
+    mismatch = [
+        diagnostic
+        for diagnostic in parsed.diagnostics
+        if diagnostic.kind == "parser.ShapeMismatch"
+    ]
+    assert len(mismatch) == 1
+    assert mismatch[0].message == (
+        f"custom operation `{name}` does not match registered shape `{shape_name}`"
+    )
+    assert parsed.operation_count == operation_count
+    assert parsed.operation(0).range == (0, len(source))
+    operation_texts = [
+        parsed.operation(index).text() for index in range(parsed.operation_count)
+    ]
+    assert not any(
+        text.lstrip().startswith(fabricated_name.encode()) for text in operation_texts
+    )
+
+    lowered = parsed.lower_best_effort()
+    assert lowered.document is not None
+    recovered = lowered.document.operation_table(name).operation(0)
+    assert recovered.is_unparsed
+
+
 def test_invalid_utf8_bytes_and_exact_original_output():
     source = VALID + b"\xff\xfe"
     parsed = zirium.parse_bytes(source)

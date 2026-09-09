@@ -1569,6 +1569,46 @@ impl Parser<'_> {
             kind,
         });
     }
+    pub(super) fn shaped_operation_checkpoint(&self) -> (usize, usize, usize, usize) {
+        (
+            self.position,
+            self.builder.checkpoint(),
+            self.diagnostics.len(),
+            self.nesting_depth,
+        )
+    }
+    pub(super) fn shaped_operation_boundary(&self, crossed_line: bool) -> bool {
+        crossed_line
+            || matches!(
+                self.current(),
+                TokenKind::Eof | TokenKind::RBrace | TokenKind::CaretIdentifier
+            )
+            || self.is_generic_operation_start()
+            || self.result_custom_operation_start()
+    }
+    pub(super) fn trivia_crosses_line(&self, start: usize) -> bool {
+        self.tokens[start..self.position].iter().any(|token| {
+            token.kind() == TokenKind::Whitespace
+                && self
+                    .source
+                    .get(token.range().start() as usize..token.range().end() as usize)
+                    .is_some_and(|text| text.contains(&b'\n'))
+        })
+    }
+    pub(super) fn recover_shape_mismatch(
+        &mut self,
+        marker: Marker,
+        shape: OperationShape,
+        checkpoint: (usize, usize, usize, usize),
+    ) -> Result<(), CompactError> {
+        let (position, events, diagnostics, nesting_depth) = checkpoint;
+        self.position = position;
+        self.builder.rewind(events);
+        self.diagnostics.truncate(diagnostics);
+        self.nesting_depth = nesting_depth;
+        self.diagnostic_kind(ParseDiagnosticKind::ShapeMismatch(shape));
+        self.recover_custom_operation(marker)
+    }
     fn ensure_progress(&mut self, before: usize) -> Result<(), CompactError> {
         if self.position == before && !self.at(TokenKind::Eof) {
             self.diagnostic_kind(ParseDiagnosticKind::ProgressLimit);
@@ -1579,6 +1619,9 @@ impl Parser<'_> {
     fn unparsed_custom_operation(&mut self, marker: Option<Marker>) -> Result<(), CompactError> {
         let marker = marker.unwrap_or_else(|| self.builder.start());
         self.diagnostic_kind(ParseDiagnosticKind::UnknownCustomOperation);
+        self.recover_custom_operation(marker)
+    }
+    fn recover_custom_operation(&mut self, marker: Marker) -> Result<(), CompactError> {
         let start = self.position;
         let mut stack = Vec::new();
         let mut line_boundary = false;

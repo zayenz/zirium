@@ -168,6 +168,12 @@ impl EventBuilder {
     pub fn events(&self) -> &[Event] {
         &self.events
     }
+    pub(crate) fn checkpoint(&self) -> usize {
+        self.events.len()
+    }
+    pub(crate) fn rewind(&mut self, checkpoint: usize) {
+        self.events.truncate(checkpoint);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

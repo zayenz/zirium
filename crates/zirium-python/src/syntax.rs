@@ -41,6 +41,22 @@ fn parser_diagnostic_message(
                 format!("unknown custom operation `{name}`")
             }
         }
+        ParseDiagnosticKind::ShapeMismatch(shape) => {
+            let name = source
+                .get(range.start() as usize..range.end() as usize)
+                .map(String::from_utf8_lossy)
+                .unwrap_or_default();
+            let shape = match shape {
+                zirium::dialect::OperationShape::FuncLike => "func_like",
+                zirium::dialect::OperationShape::CallLike => "call_like",
+                zirium::dialect::OperationShape::BinaryOperands => "binary_operands",
+                zirium::dialect::OperationShape::OptionalTypedOperands => "optional_typed_operands",
+                zirium::dialect::OperationShape::UnaryOperand => "unary_operand",
+                zirium::dialect::OperationShape::VariadicOperands => "variadic_operands",
+                zirium::dialect::OperationShape::LiteralAttribute => "literal_attribute",
+            };
+            format!("custom operation `{name}` does not match registered shape `{shape}`")
+        }
         ParseDiagnosticKind::ProgressLimit => "parser recovery made no progress".to_owned(),
         ParseDiagnosticKind::DepthLimit => "delimiter nesting depth limit exceeded".to_owned(),
     }
@@ -518,7 +534,12 @@ impl File {
             .diagnostics()
             .iter()
             .map(|diagnostic| Diagnostic {
-                kind: format!("parser.{:?}", diagnostic.kind()),
+                kind: match diagnostic.kind() {
+                    zirium::parser::ParseDiagnosticKind::ShapeMismatch(_) => {
+                        "parser.ShapeMismatch".to_owned()
+                    }
+                    kind => format!("parser.{kind:?}"),
+                },
                 message: parser_diagnostic_message(
                     diagnostic.kind(),
                     self.parsed.original_bytes(),

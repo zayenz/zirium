@@ -403,6 +403,7 @@ pub struct ParseDiagnostic {
 pub enum ParseDiagnosticKind {
     Syntax,
     UnknownCustomOperation,
+    ShapeMismatch(OperationShape),
     ProgressLimit,
     DepthLimit,
 }

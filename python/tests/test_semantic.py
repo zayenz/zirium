@@ -766,8 +766,13 @@ def test_binary_operand_shape_recovers_from_arity_mismatches(
   {operation}
   "test.after"() : () -> ()
 }}) : () -> ()"""
-    lowered = zirium.parse_text(source, registry=registry).lower_best_effort()
-    assert bool(lowered.diagnostics) is expect_diagnostics
+    parsed = zirium.parse_text(source, registry=registry)
+    lowered = parsed.lower_best_effort()
+    has_shape_mismatch = any(
+        diagnostic.kind == "parser.ShapeMismatch"
+        for diagnostic in parsed.diagnostics
+    )
+    assert (has_shape_mismatch or bool(lowered.diagnostics)) is expect_diagnostics
     assert lowered.document is not None
     assert lowered.document.operation_table("test.after").count == 1
 
@@ -818,9 +823,11 @@ def test_binary_operand_shape_rejects_parenthesized_single_input_function_type()
   "test.after"() : () -> ()
 }) : () -> ()"""
     parsed = zirium.parse_text(source, registry=registry)
-    assert parsed.diagnostics
+    assert any(
+        diagnostic.kind == "parser.ShapeMismatch"
+        for diagnostic in parsed.diagnostics
+    )
     lowered = parsed.lower_best_effort()
-    assert lowered.diagnostics
     assert lowered.document is not None
     assert lowered.document.operation_table("test.after").count == 1
 

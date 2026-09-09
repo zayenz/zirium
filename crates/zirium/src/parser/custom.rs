@@ -373,6 +373,7 @@ pub(super) fn shaped_operation(
     marker: Marker,
     shape: OperationShape,
 ) -> Result<(), CompactError> {
+    let checkpoint = parser.shaped_operation_checkpoint();
     let mut good = parser.expect(TokenKind::BareIdentifier)?;
     parser.trivia()?;
     match shape {
@@ -581,6 +582,7 @@ pub(super) fn shaped_operation(
             }
         }
     }
+    let mut boundary_trivia = parser.position;
     parser.trivia()?;
     if parser.at(TokenKind::Loc) {
         let location = parser.builder.start();
@@ -591,6 +593,12 @@ pub(super) fn shaped_operation(
             SyntaxKind::TrailingLocation,
             !location_good,
         )?;
+        boundary_trivia = parser.position;
+        parser.trivia()?;
+    }
+    let crossed_line = parser.trivia_crosses_line(boundary_trivia);
+    if !good || !parser.shaped_operation_boundary(crossed_line) {
+        return parser.recover_shape_mismatch(marker, shape, checkpoint);
     }
     parser
         .builder

@@ -147,10 +147,13 @@ fn binary_operand_shape_recovers_from_arity_mismatches() {
         let parsed = ParsedFile::parse_with_registry(source.as_bytes(), &registry).unwrap();
         let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
         assert_eq!(
-            !lowered.diagnostics.is_empty(),
+            parsed.syntax().diagnostics().iter().any(|diagnostic| {
+                diagnostic.kind()
+                    == ParseDiagnosticKind::ShapeMismatch(OperationShape::BinaryOperands)
+            }) || !lowered.diagnostics.is_empty(),
             expect_diagnostics,
             "unexpected diagnostics for {operation:?}: {:?}",
-            lowered.diagnostics
+            parsed.syntax().diagnostics()
         );
         let document = lowered.document.unwrap();
         assert!(
@@ -226,8 +229,10 @@ fn binary_operand_shape_rejects_parenthesized_single_input_function_type() {
 }) : () -> ()"#;
     let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
     assert!(!parsed.syntax().diagnostics().is_empty());
+    assert!(parsed.syntax().diagnostics().iter().any(|diagnostic| {
+        diagnostic.kind() == ParseDiagnosticKind::ShapeMismatch(OperationShape::BinaryOperands)
+    }));
     let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
-    assert!(!lowered.diagnostics.is_empty());
     let document = lowered.document.unwrap();
     assert!(
         document
@@ -843,6 +848,113 @@ fn malformed_custom_syntax_recovers_to_the_next_operation() {
             .document
             .is_none()
     );
+}
+
+#[test]
+fn mismatched_operation_shapes_recover_the_whole_operation() {
+    let cases = [
+        (
+            "a.Op",
+            OperationShape::VariadicOperands,
+            "module { %a = a.Src : i16\n  %b = a.Src : i16\n  %r = a.Op %a, %b : i16 to i16 }",
+            4,
+            "%r = a.Op %a, %b : i16 to i16 ",
+            "to",
+        ),
+        (
+            "a.Imm",
+            OperationShape::LiteralAttribute,
+            "module { %0 = a.Imm 1 : i64 {kUniqueId = 151192 : i64} : i32 }",
+            2,
+            "%0 = a.Imm 1 : i64 {kUniqueId = 151192 : i64} : i32 ",
+            "kUniqueId",
+        ),
+        (
+            "a.Op",
+            OperationShape::VariadicOperands,
+            "module { %r = a.Op : i16 x.y }",
+            2,
+            "%r = a.Op : i16 x.y ",
+            "x.y",
+        ),
+    ];
+
+    for (name, shape, source, operation_count, recovered_text, fabricated_name) in cases {
+        let registry = DialectRegistry::with_operation_shapes(&[(name, shape)]).unwrap();
+        let parsed = ParsedFile::parse_with_registry(source.as_bytes(), &registry).unwrap();
+        let operations = parsed.syntax().file().operations().collect::<Vec<_>>();
+
+        assert_eq!(operations.len(), operation_count, "{name}");
+        assert_eq!(
+            parsed
+                .syntax()
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.kind() == ParseDiagnosticKind::ShapeMismatch(shape)
+                })
+                .count(),
+            1,
+            "{name}"
+        );
+        assert_eq!(
+            operations[0]
+                .tree()
+                .text_range(operations[0].id())
+                .unwrap()
+                .end(),
+            source.len() as u32,
+            "{name}"
+        );
+
+        let recovered = operations
+            .iter()
+            .copied()
+            .find(|operation| {
+                operation
+                    .mnemonic_range()
+                    .and_then(|range| source.get(range.start() as usize..range.end() as usize))
+                    == Some(name)
+            })
+            .unwrap();
+        assert_eq!(
+            recovered.tree().kind(recovered.id()),
+            Some(SyntaxKind::UnparsedCustomOperation),
+            "{name}"
+        );
+        let range = recovered.tree().text_range(recovered.id()).unwrap();
+        assert_eq!(
+            source.get(range.start() as usize..range.end() as usize),
+            Some(recovered_text),
+            "{name}"
+        );
+        assert!(
+            operations.iter().all(|operation| {
+                operation
+                    .mnemonic_range()
+                    .and_then(|range| source.get(range.start() as usize..range.end() as usize))
+                    != Some(fabricated_name)
+            }),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn matching_operation_shape_keeps_structured_syntax() {
+    let registry =
+        DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::VariadicOperands)])
+            .unwrap();
+    let source = "%r = a.Op %a, %b : i16";
+    let parsed = ParsedFile::parse_with_registry(source.as_bytes(), &registry).unwrap();
+
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let operation = parsed.syntax().file().operations().next().unwrap();
+    assert_eq!(
+        operation.tree().kind(operation.id()),
+        Some(SyntaxKind::DialectOperation)
+    );
+    assert_eq!(operation.operands().count(), 2);
 }
 
 #[test]
