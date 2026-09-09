@@ -86,6 +86,7 @@ def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
         "sparse_tensor",
         "smt",
         "spirv",
+        "tensor",
     )
     config = {"presets": ["stablehlo"], "builtins": [], "operation_shapes": []}
     path = tmp_path / "stablehlo.json"

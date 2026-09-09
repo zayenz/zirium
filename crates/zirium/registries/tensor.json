@@ -1,0 +1,16 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "tensor.bitcast", "shape": "unary_operand"},
+    {"name": "tensor.cast", "shape": "unary_operand"},
+    {"name": "tensor.reshape", "shape": "operand_clauses"},
+    {"name": "tensor.yield", "shape": "optional_typed_operands"}
+  ],
+  "operation_formats": []
+}

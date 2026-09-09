@@ -31,6 +31,156 @@ fn verify_test_type(spelling: &str) -> Result<(), &'static str> {
 }
 
 #[test]
+fn tensor_preset_exposes_only_complete_explicit_signatures() {
+    assert!(DialectRegistry::preset_names().contains(&"tensor"));
+    let registry = DialectRegistry::from_name("tensor").unwrap();
+    let source = br#"module {
+      func.func @forms(
+          %bits: tensor<4xui32>, %unknown: tensor<*xf32>,
+          %source: tensor<2x2xf32>, %shape: tensor<1xi64>, %value: f32) {
+        %bitcast = tensor.bitcast %bits {tag = "bitcast"} : tensor<4xui32> to tensor<4xi32>
+        %cast = tensor.cast %unknown {tag = "cast"} : tensor<*xf32> to tensor<?x?xf32>
+        %reshaped = tensor.reshape %source(%shape) {tag = "reshape"} : (tensor<2x2xf32>, tensor<1xi64>) -> tensor<4xf32>
+        tensor.yield %value {tag = "yield"} : f32
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, signature) in [
+        ("tensor.bitcast", 1, 1, "(tensor<4xui32>) -> tensor<4xi32>"),
+        ("tensor.cast", 1, 1, "(tensor<*xf32>) -> tensor<?x?xf32>"),
+        (
+            "tensor.reshape",
+            2,
+            1,
+            "(tensor<2x2xf32>, tensor<1xi64>) -> tensor<4xf32>",
+        ),
+        ("tensor.yield", 1, 0, "(f32) -> ()"),
+    ] {
+        let operation = document
+            .operations()
+            .find(|op| document.operation_name(*op) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute, _)| attribute == "tag"),
+            "{name}"
+        );
+    }
+    let bitcast = document
+        .operations()
+        .find(|op| document.operation_name(*op) == Some("tensor.bitcast"))
+        .unwrap();
+    let result = document.result_types(bitcast).unwrap()[0];
+    assert!(matches!(
+        document.type_value(result),
+        Some(TypeValue::Tensor { .. })
+    ));
+}
+
+#[test]
+fn tensor_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("tensor").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/tensor.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 4);
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(registry.operation_names().count(), 4);
+    for (name, shape) in [
+        ("tensor.bitcast", OperationShape::UnaryOperand),
+        ("tensor.cast", OperationShape::UnaryOperand),
+        ("tensor.reshape", OperationShape::OperandClauses),
+        ("tensor.yield", OperationShape::OptionalTypedOperands),
+    ] {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+
+    let recovery = [
+        "tensor.concat",
+        "tensor.dim",
+        "tensor.empty",
+        "tensor.extract",
+        "tensor.extract_slice",
+        "tensor.from_elements",
+        "tensor.gather",
+        "tensor.generate",
+        "tensor.insert",
+        "tensor.insert_slice",
+        "tensor.rank",
+        "tensor.expand_shape",
+        "tensor.collapse_shape",
+        "tensor.pad",
+        "tensor.parallel_insert_slice",
+        "tensor.scatter",
+        "tensor.splat",
+    ];
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 21);
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%source: tensor<2x2xf32>, %size: index, %value: f32) {
+        %concat = tensor.concat dim(0) %source, %source : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<4x2xf32>
+        %collapsed = tensor.collapse_shape %source [[0, 1]] : tensor<2x2xf32> into tensor<4xf32>
+        %generated = tensor.generate %size {
+        ^bb0(%index: index):
+          tensor.yield %value : f32
+        } : tensor<?xf32>
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| { diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation })
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|op| document.operation_name(op) == Some("test.after"))
+    );
+}
+
+#[test]
 fn declarative_registry_owns_a_selected_builtin_subset() {
     let registry = DialectRegistry::declarative(&["arith.constant", "func.return"]).unwrap();
     assert_eq!(

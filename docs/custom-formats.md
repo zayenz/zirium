@@ -46,6 +46,7 @@ It does not establish that the operation can be verified or rewritten.
 | ROCDL preset | Core plus 125 structurally exact forms among 323 ROCDL operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Shape preset | Core plus 20 structurally exact forms among 40 Shape operations. |
+| Tensor preset | Core plus 4 structurally exact forms among 21 Tensor operations. |
 | SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
 | SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
 | Declarative | A selected subset of the proving catalog. |
@@ -81,7 +82,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, and `spirv` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, and `tensor` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -1126,6 +1127,48 @@ representation is a builtin tensor type, not a fifth Shape dialect type. All
 four dialect types and the extent-tensor representation work through the
 ordinary type parser; the preset adds no Shape verification, type inference,
 constraint semantics, or execution semantics.
+
+Tensor defines exactly 21 operations in LLVM 22.1. The preset registers four
+forms whose complete SSA signatures are explicit. `tensor.bitcast` and
+`tensor.cast` expose one source operand and independently spelled source and
+result tensor types. `tensor.reshape` preserves both operands, its full
+functional type, and an ordinary attribute dictionary despite the parentheses
+around its shape operand. `tensor.yield` uses the typed-terminator shape: its
+dictionary follows its single typed operand and it always has zero results.
+
+The other 17 operations remain on whole-operation recovery:
+
+- `tensor.concat`, `tensor.gather`, and `tensor.scatter` have complete
+  functional signatures, but also carry required positional dimension-array
+  attributes. The broad clause shape would find their operands while leaving
+  those attributes unnamed, so it would not provide an honest semantic model.
+- `tensor.collapse_shape` explicitly spells its source and result types, but
+  its reassociation array is a required semantic attribute. Registering only
+  the typed conversion would discard that role. `tensor.expand_shape` adds a
+  reassociation attribute and an output-shape list that interleaves static
+  entries with dynamic SSA operands.
+- `tensor.dim`, `tensor.extract`, `tensor.rank`, and `tensor.from_elements`
+  infer their results from operand or result tensor types. `tensor.empty`
+  carries dynamic size operands while spelling only its result tensor type.
+  `tensor.insert` infers both its scalar type and its result from the
+  destination type, and `tensor.splat` similarly combines an inferred scalar
+  input with optional dynamic-size operands and a result tensor type.
+- `tensor.extract_slice`, `tensor.insert_slice`, and
+  `tensor.parallel_insert_slice` interleave static and dynamic offsets, sizes,
+  and strides. Their compact trailers also infer a result or spell destination
+  types that must not be reclassified as ordinary results.
+- `tensor.generate` and `tensor.pad` own single-block regions whose argument
+  types and result relationships depend on their tensor shapes. Pad also
+  interleaves static and dynamic low/high bounds. These relationships exceed
+  the generic region-clause shape.
+
+Only `tensor.generate` and `tensor.pad` own regions, and no Tensor operation
+has successors. Tensor defines no dialect-specific types or attributes: the
+`tensor<...>` spelling is a builtin type and works through the ordinary type
+parser. The preset adds no Tensor verification, shape inference, destination
+semantics, or region verification. Supporting the positional dimension and
+reassociation attributes would require a recurring, generic format feature;
+this four-form preset does not justify adding one by itself.
 
 SparseTensor defines 37 operations in LLVM 22.1, excluding the separate
 Transform dialect extension. The preset registers 10 exact forms. `new`,
