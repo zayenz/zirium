@@ -1,6 +1,6 @@
 [package]
 name = "zirium-python"
-version = "0.0.9"
+version = "0.0.10"
 publish = false
 edition.workspace = true
 rust-version.workspace = true

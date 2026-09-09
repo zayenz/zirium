@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.0.10
+
+Zirium 0.0.10 expands custom-operation support and improves Python inspection
+of large or malformed MLIR inputs.
+
+- Add unary-operand, variadic-operand, and literal-attribute operation shapes
+  to Rust and Python registries. Binary operations now accept result types and
+  bare or parenthesized function-type trailers.
+- Recover cleanly from binary-operation operand-count mismatches so later
+  operations remain available during best-effort lowering.
+- Decode correctly sized hexadecimal IEEE bit patterns for `f16`, `bf16`,
+  `f32`, and `f64` scalar attributes, including infinities and NaNs.
+- Expose syntax diagnostic messages and semantic diagnostic kinds in Python.
+  Add `File.line_column()` for converting byte offsets to one-based source
+  locations.
+- Expose the installed Python distribution version as `zirium.__version__`.
+- Lazily index syntax operations for fast repeated `File.operation()` access.
+  Add a production-shaped stress benchmark and record its scaling baseline.
+
 ## 0.0.9
 
 Zirium 0.0.9 revises the experimental query language for composable selection,
