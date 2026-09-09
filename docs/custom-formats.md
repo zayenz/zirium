@@ -36,6 +36,7 @@ It does not establish that the operation can be verified or rewritten.
 | LLVM preset | Core plus 138 explicit core and intrinsic forms among 284 LLVM operations. |
 | MemRef preset | Core plus 11 structurally exact forms among 32 MemRef operations. |
 | MLProgram preset | Core only; all 11 MLProgram operations remain on recovery. |
+| MPI preset | Core plus 4 structurally exact forms among 15 MPI operations. |
 | Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
@@ -70,7 +71,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, and `shard` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, and `shard` presets were checked against
 LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
@@ -606,6 +607,43 @@ types to index operands or turn operand-only trailers into result slots. MemRef
 defines no dialect types or attributes: `memref<...>` is a builtin type, so no
 value descriptors are added. The preset does not apply MemRef verification,
 aliasing, layout, memory-space, or execution semantics.
+
+MPI defines 15 operations in LLVM 22.1. The preset registers four forms whose
+complete operand and result signatures fit existing shapes. Result-bearing
+`mpi.init` and `mpi.finalize` and the mandatory-result `mpi.comm_world` have no
+operands and spell their single `!mpi.retval` or `!mpi.comm` result after their
+attribute dictionary. `mpi.error_class` spells its `!mpi.retval` operand type,
+and its result has that same type. Ordinary attribute dictionaries remain
+queryable in their exact ODS positions. The no-result variants of `mpi.init`
+and `mpi.finalize` remain on recovery because the reusable zero-operand shape
+requires the colon and result type.
+
+The other 11 operations remain on whole-operation recovery, grouped by the
+information omitted or mixed by their concrete headers:
+
+- Communicator queries: `mpi.comm_rank`, `mpi.comm_size`, and `mpi.comm_split`
+  put operands in a call-like parenthesized list before `attr-dict`, infer the
+  input communicator type, and spell only their optional return code plus
+  `i32` or communicator result types.
+- Point-to-point and completion: `mpi.send`, `mpi.recv`, `mpi.isend`,
+  `mpi.irecv`, and `mpi.wait` mix explicit buffer/integer/request operand types
+  with inferred communicator types and optional or mandatory arrows for
+  `!mpi.retval` and `!mpi.request` results. The destination/source, tag, and
+  receive buffer are all real SSA operands; no variadic or destination-style
+  shortcut is applied.
+- Collective and synchronization: `mpi.allreduce` has two buffer operands, a
+  positional reduction enum, and a communicator operand, but spells only the
+  two buffer types and an optional return type. `mpi.barrier` infers its
+  communicator input and has an optional return-code arrow.
+- Error comparison: `mpi.retval_check` places a positional error-class
+  attribute after its return-value operand and spells only the `i1` result.
+
+None of the 15 operations owns regions, successors, or symbol roles. The
+`!mpi.retval`, `!mpi.comm`, `!mpi.request`, and `!mpi.status` types and
+`#mpi.errclass<...>` attribute work as balanced opaque dialect values without
+MPI-specific descriptors. Bare reduction enum tokens such as `MPI_SUM` stay
+inside recovered custom operations. The preset adds no MPI type inference,
+error checking, communication semantics, or custom verification.
 
 Shard defines 22 operations in LLVM 22.1, rather than the earlier estimate of
 21. The preset registers `shard.get_sharding`, whose one ranked-tensor operand,

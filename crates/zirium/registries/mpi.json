@@ -1,0 +1,16 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "mpi.init", "shape": "variadic_operands"},
+    {"name": "mpi.comm_world", "shape": "variadic_operands"},
+    {"name": "mpi.finalize", "shape": "variadic_operands"},
+    {"name": "mpi.error_class", "shape": "unary_operand"}
+  ],
+  "operation_formats": []
+}

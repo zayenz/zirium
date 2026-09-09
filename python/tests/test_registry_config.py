@@ -72,6 +72,7 @@ def test_named_stablehlo_registry_and_config_preset(tmp_path: Path):
         "math",
         "memref",
         "ml_program",
+        "mpi",
         "shard",
     )
     config = {"presets": ["stablehlo"], "builtins": [], "operation_shapes": []}

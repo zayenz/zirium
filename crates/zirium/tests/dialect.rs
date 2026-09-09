@@ -5430,6 +5430,191 @@ fn ml_program_opaque_type_and_attribute_need_no_dialect_descriptors() {
 }
 
 #[test]
+fn mpi_preset_exposes_only_fully_typed_result_and_same_type_forms() {
+    assert!(DialectRegistry::preset_names().contains(&"mpi"));
+    let registry = DialectRegistry::from_name("mpi").unwrap();
+    let source = br#"module {
+      func.func @mpi() {
+        %init = mpi.init {tag = "init"} : !mpi.retval
+        %comm = mpi.comm_world {tag = "world"} : !mpi.comm
+        %final = mpi.finalize {tag = "final"} : !mpi.retval
+        %class = mpi.error_class %init {tag = "class"} : !mpi.retval
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    for (name, operands, signature) in [
+        ("mpi.init", 0, "() -> !mpi.retval"),
+        ("mpi.comm_world", 0, "() -> !mpi.comm"),
+        ("mpi.finalize", 0, "() -> !mpi.retval"),
+        ("mpi.error_class", 1, "(!mpi.retval) -> !mpi.retval"),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(document.result_types(operation).unwrap().len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(document.operation_regions(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute, _)| attribute == "tag"),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn mpi_preset_inventory_matches_llvm_22_1_structural_coverage() {
+    let registry = DialectRegistry::from_name("mpi").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/mpi.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 4);
+    for name in ["mpi.init", "mpi.comm_world", "mpi.finalize"] {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::VariadicOperands),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        registry.operation_shape("mpi.error_class"),
+        Some(OperationShape::UnaryOperand)
+    );
+
+    let recovery = [
+        "mpi.comm_rank",
+        "mpi.comm_size",
+        "mpi.comm_split",
+        "mpi.send",
+        "mpi.isend",
+        "mpi.recv",
+        "mpi.irecv",
+        "mpi.allreduce",
+        "mpi.barrier",
+        "mpi.wait",
+        "mpi.retval_check",
+    ];
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 15);
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn mpi_inferred_mixed_and_positional_forms_recover_to_the_next_operation() {
+    let registry = DialectRegistry::from_name("mpi").unwrap();
+    let source = br#"module {
+      func.func @gaps(%ref: memref<100xf32>, %i: i32, %comm: !mpi.comm, %req: !mpi.request, %retval: !mpi.retval) {
+        mpi.init
+        mpi.finalize
+        %rank = mpi.comm_rank(%comm) : i32
+        %size = mpi.comm_size(%comm) : i32
+        %split = mpi.comm_split(%comm, %i, %i) : !mpi.comm
+        mpi.send(%ref, %i, %i, %comm) : memref<100xf32>, i32, i32
+        %sent = mpi.isend(%ref, %i, %i, %comm) : memref<100xf32>, i32, i32 -> !mpi.request
+        mpi.recv(%ref, %i, %i, %comm) : memref<100xf32>, i32, i32
+        %received = mpi.irecv(%ref, %i, %i, %comm) : memref<100xf32>, i32, i32 -> !mpi.request
+        mpi.allreduce(%ref, %ref, MPI_SUM, %comm) : memref<100xf32>, memref<100xf32>
+        mpi.barrier(%comm)
+        mpi.wait(%req) : !mpi.request
+        %ok = mpi.retval_check %retval = <MPI_SUCCESS> : i1
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+            .count(),
+        11,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    assert_eq!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.kind()
+                    == ParseDiagnosticKind::ShapeMismatch(OperationShape::VariadicOperands)
+            })
+            .count(),
+        2,
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn mpi_opaque_types_and_attributes_need_no_dialect_descriptors() {
+    let registry = DialectRegistry::from_name("mpi").unwrap();
+    let source = br#"module {
+      %status = "test.source"() {error = #mpi.errclass<MPI_ERR_COMM>}
+        : () -> !mpi.status
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.source"))
+        .unwrap();
+    assert_eq!(
+        document.type_spelling(document.result_types(operation).unwrap()[0]),
+        Some("!mpi.status")
+    );
+    assert!(
+        document
+            .attributes(operation)
+            .unwrap()
+            .any(|(name, value)| name == "error" && value == "#mpi.errclass<MPI_ERR_COMM>")
+    );
+}
+
+#[test]
 fn shard_preset_exposes_the_explicit_get_sharding_signature() {
     assert!(DialectRegistry::preset_names().contains(&"shard"));
     let registry = DialectRegistry::from_name("shard").unwrap();
