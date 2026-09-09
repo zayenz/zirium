@@ -15,6 +15,26 @@ The current release is intended for experimentation, tooling prototypes, and
 evaluation of the lossless syntax/semantic split. It does not promise broad
 dialect coverage, bytecode support, ODS/TableGen loading, or a stable API.
 
+## Command-line utility
+
+The `zirium` binary queries and edits textual MLIR. Pass the query first,
+followed by any input files. With no input files, it reads from standard input.
+For example, this selects every `arith.addi` operation in `input.mlir`:
+
+```sh
+zirium 'select(op("arith.addi"))' input.mlir
+```
+
+The [CLI examples](https://github.com/zayenz/zirium/blob/main/docs/cli-examples.md)
+cover more queries, dependency slices, and edits.
+
+You can also run the binary from a source checkout with Cargo:
+
+```sh
+cargo run --quiet --bin zirium -- \
+  'select(op("arith.addi"))' input.mlir
+```
+
 ## What it provides
 
 - A byte-oriented lexer and lossless concrete syntax tree (CST).
@@ -77,9 +97,6 @@ The [getting-started guide](https://github.com/zayenz/zirium/blob/main/docs/gett
 - installing the Python extension into a virtual environment;
 - parsing, lowering, verifying, and writing MLIR;
 - choosing a retention profile and output mode.
-
-The [CLI examples](https://github.com/zayenz/zirium/blob/main/docs/cli-examples.md)
-show how to query and edit small MLIR files with the `zirium` command.
 
 For the shortest check from a fresh checkout:
 
