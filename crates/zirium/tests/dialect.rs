@@ -317,6 +317,58 @@ fn linalg_preset_keeps_generic_regions_and_explicit_block_arguments() {
 }
 
 #[test]
+fn acc_preset_structures_mapping_accessors_and_regions() {
+    let registry = DialectRegistry::from_name("acc").unwrap();
+    let source = br#"module {
+      acc.private.recipe @private_memref : memref<4xf32> init {
+      ^bb0(%original: memref<4xf32>):
+        acc.yield %original : memref<4xf32>
+      }
+      func.func @kernel(%host: memref<4xf32>, %queue: i32, %bounds: !acc.data_bounds_ty) {
+        %device = acc.copyin varPtr(%host : memref<4xf32>) async(%queue : i32) -> memref<4xf32>
+        %extent = acc.get_extent %bounds : (!acc.data_bounds_ty) -> index
+        acc.parallel async(%queue : i32) private(%device : memref<4xf32>) {
+          "test.use"(%extent) : (index) -> ()
+          acc.yield
+        }
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    // The OpenACC data-bounds type is intentionally opaque to a declarative
+    // operation preset, so retain the structurally lowered document here.
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+
+    let copyin = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("acc.copyin"))
+        .unwrap();
+    assert_eq!(document.operands(copyin).unwrap().len(), 2);
+    assert_eq!(document.result_types(copyin).unwrap().len(), 1);
+
+    let extent = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("acc.get_extent"))
+        .unwrap();
+    assert_eq!(document.operands(extent).unwrap().len(), 1);
+    assert_eq!(document.result_types(extent).unwrap().len(), 1);
+
+    for name in ["acc.private.recipe", "acc.parallel"] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(document.operation_regions(operation).unwrap().len(), 1);
+    }
+}
+
+#[test]
 fn binary_operand_shape_recovers_from_arity_mismatches() {
     let registry =
         DialectRegistry::with_operation_shapes(&[("a.Op", OperationShape::BinaryOperands)])

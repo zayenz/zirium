@@ -15,6 +15,7 @@ It does not establish that the operation can be verified or rewritten.
 | TOSA preset | Core plus 93 TOSA tensor, shape, control-flow, and utility forms. |
 | SCF preset | Core plus all 12 SCF operations, including structured regions and loop header bindings. |
 | Linalg preset | Core plus 97 core, structured, and generated named Linalg operations. |
+| OpenACC preset | Core plus 35 mapping, bounds-accessor, region, and terminator forms. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -47,7 +48,7 @@ definition. This surface was checked against StableHLO 1.20.1. The unversioned
 preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
-The `tosa`, `scf`, and `linalg` presets were checked against LLVM 22.1.0.
+The `tosa`, `scf`, `linalg`, and `acc` presets were checked against LLVM 22.1.0.
 TOSA registers 93 of the 94 operations defined by its main, utility, and shape
 operation files; `tosa.variable` remains on the generic recovery path because
 its custom symbol/type form has no reusable structural signature. SCF registers
@@ -55,6 +56,20 @@ all 12 operations. Linalg registers its 16 core/structured operations and 81
 generated named operations. Tensor-result named Linalg forms expose their
 trailing result types; buffer forms without a result signature remain usable
 through recovery where their custom spelling has no safe structural boundary.
+
+OpenACC registers 35 of its 54 operations. This includes all 16 data-entry
+mapping operations, the four bounds accessors, 12 single-region constructs,
+the single-region form of `acc.private.recipe`, and both terminators. Mapping
+forms with a trailing `attributes` dictionary, loop result forms, and region
+forms with trailing attributes use whole-operation recovery. The other 19
+operations remain on that recovery path: `acc.bounds`, `acc.atomic.read`,
+`acc.atomic.write`, `acc.copyout`, `acc.delete`, `acc.detach`,
+`acc.update_host`, `acc.firstprivate.recipe`, `acc.reduction.recipe`,
+`acc.enter_data`, `acc.exit_data`, `acc.declare_enter`, `acc.declare_exit`,
+`acc.routine`, `acc.init`, `acc.shutdown`, `acc.set`, `acc.update`, and
+`acc.wait`. Their custom spellings either have no safe trailing boundary in
+the current shapes, require keyword-separated regions, or would incorrectly
+imply SSA result types.
 
 `region_clauses` is used for operations such as `scf.for`, `scf.if`,
 `tosa.while_loop`, and `linalg.generic`. Their operation regions, explicit block
