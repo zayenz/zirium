@@ -35,7 +35,7 @@ It does not establish that the operation can be verified or rewritten.
 | IRDL preset | Core only; all 17 IRDL operations remain on recovery. |
 | LLVM preset | Core plus 138 explicit core and intrinsic forms among 284 LLVM operations. |
 | MemRef preset | Core plus 11 structurally exact forms among 32 MemRef operations. |
-| MLProgram preset | Core only; all 11 MLProgram operations remain on recovery. |
+| MLProgram preset | Core plus 2 structurally exact terminators among 11 MLProgram operations. |
 | MPI preset | Core plus 4 structurally exact forms among 15 MPI operations. |
 | NVGPU preset | Core plus 7 structurally exact forms among 24 NVGPU operations. |
 | NVVM preset | Core plus 71 structurally exact forms among 185 NVVM operations. |
@@ -1023,9 +1023,9 @@ grid-axis attributes remain opaque balanced namespaced values. The preset does
 not implement grid-symbol resolution, collective semantics, destination-style
 semantics, or Shard-specific verification.
 
-MLProgram defines 11 operations in LLVM 22.1. This is a core-only preset: all
-11 operations remain on whole-operation recovery, grouped by the structure
-that the current registry cannot represent faithfully:
+MLProgram defines 11 operations in LLVM 22.1. The preset structurally registers
+2 and leaves 9 on whole-operation recovery, grouped by the structure that the
+current registry cannot represent faithfully:
 
 - Symbol definitions and regions: `ml_program.func`, `ml_program.subgraph`, and
   `ml_program.global`. The two callable operations differ in region kind, and
@@ -1038,10 +1038,13 @@ that the current registry cannot represent faithfully:
   graph forms add custom token-ordering clauses with inferred token types.
 - Inferred result type: `ml_program.token` spells neither its
   `!ml_program.token` result type nor a type signature.
-- Terminators: `ml_program.output` and `ml_program.return` have ordinary
-  optional typed SSA operands, but their attribute dictionary precedes that
-  optional clause. The reusable typed-terminator shape accepts its dictionary
-  after the operands, so registering it would reject valid attributed forms.
+
+`ml_program.output` and `ml_program.return` use the exact
+``attr-dict ($operands^ `:` type($operands))?`` spelling. They are registered with
+the attribute-first optional typed-operands shape: their variadic SSA operands
+retain their explicitly paired types and both operations always have zero
+results. This covers empty, attributed-empty, and nonempty typed forms without
+claiming their parent-operation or signature-verification rules.
 
 None of the 11 operations has successors. Only `ml_program.func` and
 `ml_program.subgraph` own regions; their region kinds are SSACFG and Graph,

@@ -5462,8 +5462,17 @@ fn ml_program_preset_inventory_matches_llvm_22_1_recovery_coverage() {
     assert!(DialectRegistry::preset_names().contains(&"ml_program"));
     let registry = DialectRegistry::from_name("ml_program").unwrap();
     let config = RegistryConfig::from_json(include_str!("../registries/ml_program.json")).unwrap();
-    assert!(config.operation_shapes.is_empty());
+    assert_eq!(config.operation_shapes.len(), 2);
     assert_eq!(registry.operation_names().count(), 4);
+
+    for name in ["ml_program.output", "ml_program.return"] {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::AttrFirstOptionalTypedOperands),
+            "{name}"
+        );
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
 
     let recovery = [
         "ml_program.func",
@@ -5473,12 +5482,11 @@ fn ml_program_preset_inventory_matches_llvm_22_1_recovery_coverage() {
         "ml_program.global_load_graph",
         "ml_program.global_store",
         "ml_program.global_store_graph",
-        "ml_program.output",
-        "ml_program.return",
         "ml_program.subgraph",
         "ml_program.token",
     ];
-    assert_eq!(recovery.len(), 11);
+    assert_eq!(recovery.len(), 9);
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 11);
     for name in recovery {
         assert_eq!(registry.operation_shape(name), None, "{name}");
         assert!(registry.operation(name).is_none(), "{name}");
@@ -5499,8 +5507,6 @@ fn ml_program_symbol_inference_region_and_dictionary_forms_recover() {
         %graph_loaded, %ordered = ml_program.global_load_graph @state ordering(%token -> !ml_program.token) : tensor<?xi32>
         %stored = ml_program.global_store_graph @state = %value ordering(%token -> !ml_program.token) : tensor<?xi32>
         %fresh = ml_program.token
-        ml_program.return {tag = "before-operands"} %value : tensor<?xi32>
-        ml_program.output {tag = "before-operands"} %value : tensor<?xi32>
       }
       "test.after"() : () -> ()
     }"#;
@@ -5512,7 +5518,7 @@ fn ml_program_symbol_inference_region_and_dictionary_forms_recover() {
             .iter()
             .filter(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
             .count(),
-        11,
+        9,
         "{:?}",
         parsed.syntax().diagnostics()
     );
@@ -5523,6 +5529,71 @@ fn ml_program_symbol_inference_region_and_dictionary_forms_recover() {
         document
             .operations()
             .any(|operation| { document.operation_name(operation) == Some("test.after") })
+    );
+}
+
+#[test]
+fn ml_program_terminators_preserve_exact_empty_dictionary_and_typed_forms() {
+    let registry = DialectRegistry::from_name("ml_program").unwrap();
+    let source = br#"module {
+      func.func @empty_return() {
+        ml_program.return
+      }
+      func.func @attributed_output() {
+        ml_program.output {tag = "empty"}
+      }
+      func.func @typed_return(%integer: i32) {
+        ml_program.return {tag = "typed"} %integer : i32
+      }
+      func.func @typed_output(%integer: i32, %tuple: tuple<f32, i64>) {
+        ml_program.output %integer, %tuple : (i32, tuple<f32, i64>)
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let terminators = document
+        .operations()
+        .filter(|operation| {
+            matches!(
+                document.operation_name(*operation),
+                Some("ml_program.output" | "ml_program.return")
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminators.len(), 4);
+    assert_eq!(
+        terminators
+            .iter()
+            .map(|operation| {
+                document.type_spelling(document.function_type(*operation).unwrap())
+            })
+            .collect::<Vec<_>>(),
+        [
+            Some("() -> ()"),
+            Some("() -> ()"),
+            Some("(i32) -> ()"),
+            Some("(i32, tuple<f32, i64>) -> ()"),
+        ]
+    );
+    for operation in terminators {
+        assert!(document.result_types(operation).unwrap().is_empty());
+    }
+    let attributed_empty = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("ml_program.output"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(attributed_empty)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "\"empty\"")
     );
 }
 

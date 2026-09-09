@@ -6,6 +6,15 @@
     "func.call",
     "func.return"
   ],
-  "operation_shapes": [],
+  "operation_shapes": [
+    {
+      "name": "ml_program.output",
+      "shape": "attr_first_optional_typed_operands"
+    },
+    {
+      "name": "ml_program.return",
+      "shape": "attr_first_optional_typed_operands"
+    }
+  ],
   "operation_formats": []
 }
