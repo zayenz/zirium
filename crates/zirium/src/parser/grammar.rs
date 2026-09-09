@@ -1669,6 +1669,12 @@ impl Parser<'_> {
             || self.result_custom_operation_start()
     }
     pub(super) fn trivia_crosses_line(&self, start: usize) -> bool {
+        let mut start = start;
+        if start == self.position {
+            while start > 0 && is_trivia(self.tokens[start - 1].kind()) {
+                start -= 1;
+            }
+        }
         self.tokens[start..self.position].iter().any(|token| {
             token.kind() == TokenKind::Whitespace
                 && self

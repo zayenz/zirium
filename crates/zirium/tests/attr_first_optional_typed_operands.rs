@@ -148,3 +148,14 @@ fn attr_first_shape_never_infers_results_from_result_bindings() {
             .any(|diagnostic| diagnostic.message.contains("result definition count 1"))
     );
 }
+
+#[test]
+fn consumed_newline_still_ends_a_shaped_operation() {
+    let registry = registry();
+    let parsed = ParsedFile::parse_with_registry(
+        b"test.empty {tag = true}\ntest.empty\n".as_slice(),
+        &registry,
+    )
+    .unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+}
