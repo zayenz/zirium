@@ -432,18 +432,10 @@ impl Parser<'_> {
             let attr = self.builder.start();
             let mut bad = false;
             if self.at_identifier() || self.at(TokenKind::String) {
-                let key_range = self.tokens[self.position].range();
-                let key = std::str::from_utf8(
-                    self.source
-                        .get(key_range.start() as usize..key_range.end() as usize)
-                        .unwrap_or_default(),
-                )
-                .unwrap_or("");
                 self.bump()?;
                 self.trivia()?;
-                if key == "no_inline" && (self.at(TokenKind::RBrace) || self.at(TokenKind::Comma)) {
-                    // The registered func.func schema admits MLIR's unit
-                    // attribute spelling: {no_inline}.
+                if self.at(TokenKind::RBrace) || self.at(TokenKind::Comma) {
+                    // MLIR dictionary entries without `= value` are unit-valued.
                 } else {
                     bad |= !self.expect(TokenKind::Equal)?;
                     self.trivia()?;

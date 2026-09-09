@@ -1025,7 +1025,7 @@ fn lower_call_like(
 ) -> Option<RegisteredLowering> {
     let callee = context.leading_symbol()?.to_owned();
     let tail = context.function_type()?;
-    let (inputs, results) = tail.split_once("->")?;
+    let (inputs, results) = crate::semantic::split_arrow(tail)?;
     let result_types = crate::semantic::split_registered_types(results);
     Some(RegisteredLowering {
         name: "func.call",
@@ -1146,14 +1146,15 @@ fn lower_binary_operands(
     let tail = context.assembly_spelling().split_once(operation)?.1;
     let (_, ty) = tail.rsplit_once(':')?;
     let ty = ty.trim();
-    let (function_type, result_types) = if let Some((inputs, results)) = ty.split_once("->") {
-        (
-            format!("{} -> {}", inputs.trim(), results.trim()),
-            crate::semantic::split_registered_types(results),
-        )
-    } else {
-        (format!("({ty}, {ty}) -> {ty}"), vec![ty.into()])
-    };
+    let (function_type, result_types) =
+        if let Some((inputs, results)) = crate::semantic::split_arrow(ty) {
+            (
+                format!("{} -> {}", inputs.trim(), results.trim()),
+                crate::semantic::split_registered_types(results),
+            )
+        } else {
+            (format!("({ty}, {ty}) -> {ty}"), vec![ty.into()])
+        };
     Some(RegisteredLowering {
         name: "arith.addi",
         result_types,

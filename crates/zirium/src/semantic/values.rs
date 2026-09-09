@@ -176,8 +176,7 @@ pub(super) fn operation_output_types(
         return Vec::new();
     };
     let spelling = text(bytes, range);
-    let output = spelling
-        .split_once("->")
+    let output = split_arrow(spelling)
         .map(|(_, output)| output.trim())
         .unwrap_or("");
     split_types(output)
@@ -953,6 +952,9 @@ fn resolve_attribute(
     if spelling == "true" || spelling == "false" {
         return Ok(AttributeValue::Boolean(spelling == "true"));
     }
+    if spelling == "unit" {
+        return Ok(AttributeValue::Opaque(Arc::from(b"unit".as_slice())));
+    }
     if spelling.starts_with("dense_resource<") {
         return balanced_large_attribute(spelling, "dense_resource", LargeAttributeValue::Resource);
     }
@@ -1004,12 +1006,15 @@ fn resolve_attribute(
         let mut entries = split_types(inner)
             .into_iter()
             .map(|entry| {
-                let (name, value) = entry
-                    .split_once('=')
-                    .ok_or_else(|| format!("malformed dictionary entry `{entry}`"))?;
+                let (name, value) = split_dictionary_entry(&entry);
                 Ok((
                     name.trim().to_owned(),
-                    resolve_attribute(value, type_aliases, attribute_aliases, stack)?,
+                    resolve_attribute(
+                        value.unwrap_or("unit"),
+                        type_aliases,
+                        attribute_aliases,
+                        stack,
+                    )?,
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -1438,7 +1443,29 @@ fn angle_inner<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
 fn bracket_inner(value: &str, open: char, close: char) -> Option<&str> {
     value.trim().strip_prefix(open)?.strip_suffix(close)
 }
-pub(super) fn split_arrow(value: &str) -> Option<(&str, &str)> {
+
+fn split_dictionary_entry(value: &str) -> (&str, Option<&str>) {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, byte) in value.bytes().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else if byte == b'"' {
+            quoted = true;
+        } else if byte == b'=' {
+            return (&value[..index], Some(&value[index + 1..]));
+        }
+    }
+    (value, None)
+}
+
+pub(crate) fn split_arrow(value: &str) -> Option<(&str, &str)> {
     let mut depth = 0i32;
     let mut quoted = false;
     let mut escaped = false;
@@ -1569,7 +1596,9 @@ pub(super) fn lower_dictionary(
         .filter_map(|attribute| {
             let attribute_range = tree.text_range(attribute)?;
             let spelling = text(bytes, attribute_range);
-            let (name, value) = spelling.split_once('=').unwrap_or((spelling, ""));
+            let (name, value) = split_dictionary_entry(spelling);
+            let implicit_unit = value.is_none();
+            let value = value.unwrap_or("");
             let name_id = strings.intern(name.trim());
             let duplicate = seen.insert(name_id, attribute_range).map(|previous| {
                 push_diagnostic(
@@ -1583,7 +1612,7 @@ pub(super) fn lower_dictionary(
                     ),
                 )
             });
-            let value_spelling = value.trim();
+            let value_spelling = if implicit_unit { "unit" } else { value.trim() };
             let malformed_numeric_prefix = value_spelling == "0"
                 && bytes
                     .get(attribute_range.end() as usize)
@@ -1614,9 +1643,7 @@ pub(super) fn lower_dictionary(
                     || value_spelling.starts_with("dense_resource<")
                     || (value_spelling.starts_with('#') && value_spelling.contains('<'))
                     || numeric_payload_candidate);
-            let semantic = if name.trim() == "no_inline" && value_spelling.is_empty() {
-                AttributeValue::Opaque(Arc::from(b"unit".as_slice()))
-            } else if malformed_numeric_prefix
+            let semantic = if malformed_numeric_prefix
                 || (owned_payload_candidate && tree.has_error(attribute).unwrap_or(false))
             {
                 AttributeValue::Invalid(push_diagnostic(
@@ -1638,7 +1665,7 @@ pub(super) fn lower_dictionary(
             };
             let semantic = if let Some(diagnostic) = duplicate {
                 AttributeValue::Invalid(diagnostic)
-            } else if value_spelling.is_empty() && name.trim() != "no_inline" {
+            } else if value_spelling.is_empty() {
                 AttributeValue::Invalid(push_diagnostic(
                     doc,
                     SemanticDiagnosticCode::Attribute,
@@ -1693,6 +1720,9 @@ fn lower_attribute_value_with_depth(
     }
     if spelling == "unit" {
         return AttributeValue::Opaque(Arc::from(b"unit".as_slice()));
+    }
+    if spelling.starts_with('"') {
+        return AttributeValue::String(spelling.to_owned());
     }
     if let Some(inner) = angle_inner(spelling, "array") {
         if depth >= doc.attribute_depth_limit {
@@ -1782,27 +1812,11 @@ fn lower_attribute_value_with_depth(
         let mut entries = split_types(inner)
             .into_iter()
             .map(|entry| {
-                let Some((name, value)) = entry.split_once('=') else {
-                    push_diagnostic(
-                        doc,
-                        SemanticDiagnosticCode::Attribute,
-                        range,
-                        format!("malformed dictionary entry `{entry}`"),
-                    );
-                    return (
-                        "<invalid>".into(),
-                        AttributeValue::Invalid(push_diagnostic(
-                            doc,
-                            SemanticDiagnosticCode::Attribute,
-                            range,
-                            "malformed dictionary entry".into(),
-                        )),
-                    );
-                };
+                let (name, value) = split_dictionary_entry(&entry);
                 let name = name.trim().to_owned();
                 let duplicate = seen.insert(name.clone(), ()).is_some();
                 let value = lower_attribute_value_with_depth(
-                    value,
+                    value.unwrap_or("unit"),
                     range,
                     type_aliases,
                     attribute_aliases,

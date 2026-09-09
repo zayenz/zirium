@@ -26,7 +26,7 @@ mod values;
 mod verify;
 
 pub use lowering::{lower_with_dialect_registry, lower_with_dialect_registry_and_retention};
-pub(crate) use values::{format_symbol_path, split_registered_types};
+pub(crate) use values::{format_symbol_path, split_arrow, split_registered_types};
 pub(crate) use verify::{
     verify_builtin_module, verify_cf_br, verify_cf_cond_br, verify_func_call, verify_func_func,
     verify_func_return,

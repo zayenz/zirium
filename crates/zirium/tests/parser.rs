@@ -134,6 +134,25 @@ fn function_types_parse_in_recursive_attribute_positions() {
 }
 
 #[test]
+fn unit_shorthand_parses_in_attribute_property_and_nested_dictionaries() {
+    let parsed = ParsedFile::parse(
+        br#""test"() <{property_flag}> {plain, dotted.key, nested = {inner}} : () -> ()"#.to_vec(),
+    )
+    .unwrap();
+
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    assert_eq!(
+        parsed.syntax().file().nodes(SyntaxKind::Attribute).count(),
+        5
+    );
+    parsed.syntax().tree().verify().unwrap();
+}
+
+#[test]
 fn builtin_dense_array_payload_limit_includes_empty_and_trailing_trivia() {
     for dense_array in ["array<              i64>", "array<i64: 1              >"] {
         let source =

@@ -206,6 +206,82 @@ fn function_types_lower_as_attributes_and_inside_opaque_types() {
 }
 
 #[test]
+fn strings_and_unit_shorthand_keep_their_lexical_attribute_kinds() {
+    let parsed = ParsedFile::parse(
+        br#"#unit_dict = {"aliased=flag"}
+%result = "test"() <{property_flag}> {direct = "a->b", array = ["() -> ()"], dictionary = {text = "Reshape({128}->{1, 128, 1})", nested_flag}, alias = #unit_dict, plain_flag, dotted.flag, "quoted=flag", explicit = unit} : (!test.box<"a->b">) -> i32"#
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operation = document.root_operations()[0];
+    assert_eq!(document.result_types(operation).unwrap().len(), 1);
+
+    let direct = document.attribute_id(operation, "direct").unwrap();
+    assert!(matches!(
+        document.attribute_value(direct),
+        Some(AttributeValue::String(value)) if value == "\"a->b\""
+    ));
+    let array = document.attribute_id(operation, "array").unwrap();
+    assert!(matches!(
+        document.attribute_value(array),
+        Some(AttributeValue::Array(values))
+            if matches!(values.as_slice(), [AttributeValue::String(value)] if value == "\"() -> ()\"")
+    ));
+    let dictionary = document.attribute_id(operation, "dictionary").unwrap();
+    assert!(matches!(
+        document.attribute_value(dictionary),
+        Some(AttributeValue::Dictionary(entries))
+            if matches!(entries.as_slice(),
+                [(flag, AttributeValue::Opaque(unit)), (text, AttributeValue::String(value))]
+                if flag == "nested_flag"
+                    && unit.as_ref() == b"unit"
+                    && text == "text"
+                    && value == "\"Reshape({128}->{1, 128, 1})\"")
+    ));
+    let alias = document.attribute_id(operation, "alias").unwrap();
+    assert!(matches!(
+        document.attribute_value(alias),
+        Some(AttributeValue::Dictionary(entries))
+            if matches!(entries.as_slice(), [(name, AttributeValue::Opaque(unit))]
+                if name == "\"aliased=flag\"" && unit.as_ref() == b"unit")
+    ));
+
+    for name in ["plain_flag", "dotted.flag", "explicit"] {
+        let attribute = document.attribute_id(operation, name).unwrap();
+        assert!(matches!(
+            document.attribute_value(attribute),
+            Some(AttributeValue::Opaque(value)) if value.as_ref() == b"unit"
+        ));
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute_name, spelling)| attribute_name == name && spelling == "unit")
+        );
+    }
+    assert_eq!(
+        document.properties(operation).unwrap().collect::<Vec<_>>(),
+        [("property_flag", "unit")]
+    );
+    assert!(
+        document
+            .attributes(operation)
+            .unwrap()
+            .any(|(name, spelling)| name == "\"quoted=flag\"" && spelling == "unit")
+    );
+}
+
+#[test]
 fn consecutive_unknown_custom_operations_preserve_result_prefix_text() {
     let source = b"%result = vendor.first\nvendor.second".to_vec();
     let parsed = ParsedFile::parse(source).unwrap();
