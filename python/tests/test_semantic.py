@@ -991,6 +991,99 @@ def test_operation_shapes_cover_representative_spellings(
 
 
 @pytest.mark.parametrize(
+    ("operation", "value_kind", "value_spelling", "has_dictionary", "has_location"),
+    [
+        ("%0 = stir.arg_in 1 : i64 : i32", "integer", "1 : i64", False, False),
+        (
+            "%0 = stir.arg_in 1 : i64 : i32 loc(unknown)",
+            "integer",
+            "1 : i64",
+            False,
+            True,
+        ),
+        (
+            "%0 = stir.arg_in 1 : i64 {k = 2 : i64} : i32",
+            "integer",
+            "1 : i64",
+            True,
+            False,
+        ),
+        (
+            "%0 = stir.arg_in 1 {k = 2 : i64} : i32",
+            "integer",
+            "1",
+            True,
+            False,
+        ),
+        (
+            "%0 = stir.arg_in 1 : i64 {k = 2 : i64} : i32 loc(unknown)",
+            "integer",
+            "1 : i64",
+            True,
+            True,
+        ),
+        (
+            '%0 = stir.arg_in "s" : i32 {k = 2 : i64} : i32',
+            "string",
+            '"s" : i32',
+            True,
+            False,
+        ),
+    ],
+)
+def test_literal_attribute_shape_accepts_attribute_dictionaries(
+    operation: str,
+    value_kind: str,
+    value_spelling: str,
+    has_dictionary: bool,
+    has_location: bool,
+):
+    registry = zirium.DialectRegistry.with_operation_shapes(
+        {"stir.arg_in": zirium.OperationShape.LITERAL_ATTRIBUTE}
+    )
+    source = f'''"builtin.module"() ({{
+^bb0:
+  {operation}
+}}) : () -> ()'''
+    parsed = zirium.parse_text(source, registry=registry)
+    assert parsed.diagnostics == []
+    assert parsed.root.range == (0, len(source.encode()))
+
+    syntax = next(
+        parsed.operation(index)
+        for index in range(parsed.operation_count)
+        if parsed.operation(index).text().startswith(b"%0 = stir.arg_in")
+    )
+    assert syntax.text() == f"{operation}\n".encode()
+    attributes = syntax.attributes()
+    assert (attributes is not None) is has_dictionary
+    if attributes is not None:
+        assert attributes.text() == b"{k = 2 : i64}"
+    location = syntax.trailing_location()
+    assert (location is not None) is has_location
+    if location is not None:
+        assert location.text() == b"loc(unknown)"
+
+    lowered = parsed.lower_strict()
+    assert lowered.diagnostics == []
+    assert lowered.document is not None
+    assert lowered.document.operation_table("k").count == 0
+    shaped = lowered.document.operation_table("stir.arg_in").operation(0)
+    assert shaped.is_unparsed is False
+    assert shaped.result_type(0).spelling == "i32"
+    value = shaped.attribute_by_name("value")
+    assert value is not None
+    assert (value.kind, value.spelling) == (value_kind, value_spelling)
+    dictionary_entry = shaped.attribute_by_name("k")
+    assert (dictionary_entry is not None) is has_dictionary
+    if dictionary_entry is not None:
+        assert (dictionary_entry.kind, dictionary_entry.spelling) == (
+            "integer",
+            "2 : i64",
+        )
+
+
+@pytest.mark.parametrize(
     "source",
     [
         '%x = "arith.addi"() : () -> i32',

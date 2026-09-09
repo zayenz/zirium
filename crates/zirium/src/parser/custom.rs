@@ -527,14 +527,26 @@ pub(super) fn shaped_operation(
                 !value_good,
             )?;
             parser.trivia()?;
+            let dictionary_before_type = parser.at(TokenKind::LBrace);
+            if dictionary_before_type {
+                parser.attribute_dict()?;
+                parser.trivia()?;
+            }
             good &= parser.expect(TokenKind::Colon)?;
             parser.trivia()?;
             good &= parser.type_syntax(0)?;
             parser.trivia()?;
-            if parser.at(TokenKind::Colon) {
-                parser.bump()?;
-                parser.trivia()?;
-                good &= parser.type_syntax(0)?;
+            if !dictionary_before_type {
+                let dictionary_after_type = parser.at(TokenKind::LBrace);
+                if dictionary_after_type {
+                    parser.attribute_dict()?;
+                    parser.trivia()?;
+                }
+                if dictionary_after_type || parser.at(TokenKind::Colon) {
+                    good &= parser.expect(TokenKind::Colon)?;
+                    parser.trivia()?;
+                    good &= parser.type_syntax(0)?;
+                }
             }
         }
         OperationShape::OptionalTypedOperands => {

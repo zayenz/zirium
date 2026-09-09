@@ -135,21 +135,10 @@ def test_operation_shapes_extend_declarative_registries():
             (
                 "module { %a = a.Src : i16\n"
                 "  %b = a.Src : i16\n"
-                "  %r = a.Op %a, %b : i16 to i16 }"
+                "  %r = a.Op %a, %b : i16 toward i16 }"
             ),
             4,
-            "to",
-        ),
-        (
-            "a.Imm",
-            zirium.OperationShape.LITERAL_ATTRIBUTE,
-            "literal_attribute",
-            (
-                "module { %0 = a.Imm 1 : i64 "
-                "{kUniqueId = 151192 : i64} : i32 }"
-            ),
-            2,
-            "kUniqueId",
+            "toward",
         ),
         (
             "a.Op",

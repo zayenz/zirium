@@ -428,6 +428,90 @@ fn operation_shapes_cover_representative_spellings() {
 }
 
 #[test]
+fn literal_attribute_shape_accepts_attribute_dictionaries() {
+    let registry = DialectRegistry::with_operation_shapes(&[(
+        "stir.arg_in",
+        OperationShape::LiteralAttribute,
+    )])
+    .unwrap();
+    for (spelling, value) in [
+        (
+            "%r = stir.arg_in 1 : i64 {k = 2 : i64} : i32 loc(unknown)",
+            "1 : i64",
+        ),
+        ("%r = stir.arg_in 1 {k = 2 : i64} : i32", "1"),
+    ] {
+        let source = format!(
+            r#""builtin.module"() ({{
+^bb0:
+  {spelling}
+}}) : () -> ()"#
+        );
+        let parsed = ParsedFile::parse_with_registry(source.as_bytes(), &registry).unwrap();
+        assert!(
+            parsed.syntax().diagnostics().is_empty(),
+            "unexpected syntax diagnostics for {spelling:?}: {:?}",
+            parsed.syntax().diagnostics()
+        );
+        let syntax = parsed
+            .syntax()
+            .file()
+            .operations()
+            .find(|operation| {
+                operation.mnemonic_range().and_then(|range| {
+                    source
+                        .as_bytes()
+                        .get(range.start() as usize..range.end() as usize)
+                }) == Some(b"stir.arg_in")
+            })
+            .unwrap();
+        let range = syntax.tree().text_range(syntax.id()).unwrap();
+        assert_eq!(
+            &source.as_bytes()[range.start() as usize..range.end() as usize],
+            format!("{spelling}\n").as_bytes()
+        );
+        assert_eq!(
+            syntax
+                .attributes()
+                .and_then(|dictionary| dictionary.tree().text_range(dictionary.id()))
+                .map(|range| &source.as_bytes()[range.start() as usize..range.end() as usize]),
+            Some(b"{k = 2 : i64}".as_slice())
+        );
+        assert_eq!(
+            syntax.trailing_location().is_some(),
+            spelling.contains("loc(")
+        );
+
+        let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected lowering diagnostics for {spelling:?}: {:?}",
+            lowered.diagnostics
+        );
+        let document = lowered.document.unwrap();
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some("stir.arg_in"))
+            .unwrap();
+        let results = document.result_types(operation).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(document.type_spelling(results[0]), Some("i32"));
+        let literal = document.attribute_id(operation, "value").unwrap();
+        assert_eq!(document.attribute_spelling_value(literal), Some(value));
+        let dictionary_entry = document.attribute_id(operation, "k").unwrap();
+        assert_eq!(
+            document.attribute_spelling_value(dictionary_entry),
+            Some("2 : i64")
+        );
+        assert!(
+            document
+                .operations()
+                .all(|operation| document.operation_name(operation) != Some("k"))
+        );
+    }
+}
+
+#[test]
 fn registry_presets_validate_names_and_compose_with_explicit_entries() {
     use zirium::dialect::RegistryConfig;
 
@@ -937,14 +1021,6 @@ fn mismatched_operation_shapes_recover_the_whole_operation() {
             4,
             "%r = a.Op %a, %b : i16 toward i16 ",
             "toward",
-        ),
-        (
-            "a.Imm",
-            OperationShape::LiteralAttribute,
-            "module { %0 = a.Imm 1 : i64 {kUniqueId = 151192 : i64} : i32 }",
-            2,
-            "%0 = a.Imm 1 : i64 {kUniqueId = 151192 : i64} : i32 ",
-            "kUniqueId",
         ),
         (
             "a.Op",

@@ -1289,12 +1289,13 @@ fn lower_literal_attribute(
 ) -> Option<RegisteredLowering> {
     let tail = context.assembly_spelling().split_once(operation)?.1.trim();
     let (attribute, result) = tail.rsplit_once(':')?;
+    let attribute = strip_top_level_attribute(attribute).trim();
     let result = result.trim();
     Some(RegisteredLowering {
         name: "arith.constant",
         result_types: vec![result.into()],
         function_type: format!("() -> {result}"),
-        attributes: vec![("value", attribute.trim().to_owned())],
+        attributes: vec![("value", attribute.to_owned())],
     })
 }
 
