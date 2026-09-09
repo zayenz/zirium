@@ -230,13 +230,53 @@ fn tosa_preset_structures_operands_attributes_and_constants() {
 }
 
 #[test]
-fn scf_preset_exposes_regions_and_header_block_arguments() {
+fn scf_preset_preserves_operation_arity_regions_and_header_bindings() {
     let registry = DialectRegistry::from_name("scf").unwrap();
     let source = br#"module {
-      func.func @loop(%lower: index, %upper: index, %step: index) {
-        scf.for %iv = %lower to %upper step %step {
-          "test.use"(%iv) : (index) -> ()
+      func.func @structured(%idx: index, %condition: i1, %value: i32, %output: tensor<4xi32>) {
+        %executed = scf.execute_region -> i32 {
+          scf.yield %value : i32
+        }
+        %looped = scf.for %iv = %idx to %idx step %idx iter_args(%iter = %value) -> i32 {
+          scf.yield %iter : i32
+        }
+        %distributed = scf.forall (%thread, %static_thread) in (%idx, 4) shared_outs(%out = %output) -> tensor<4xi32> {
+          scf.forall.in_parallel {
+          }
+        }
+        %selected = scf.if %condition -> (i32) {
+          scf.yield %value : i32
+        } else {
+          scf.yield %value : i32
+        }
+        %switched = scf.index_switch %idx -> i32
+        case 0 {
+          scf.yield %value : i32
+        }
+        case 1 {
+          scf.yield %value : i32
+        }
+        default {
+          scf.yield %value : i32
+        }
+        scf.index_switch %idx
+        default {
           scf.yield
+        }
+        %parallel = scf.parallel (%p) = (%idx) to (%idx) step (%idx) init (%value) -> i32 {
+          scf.reduce(%value, %value : i32, i32) {
+          ^bb0(%lhs: i32, %rhs: i32):
+            scf.reduce.return %lhs : i32
+          }, {
+          ^bb0(%lhs2: i32, %rhs2: i32):
+            scf.reduce.return %rhs2 : i32
+          }
+        }
+        %continued = scf.while (%before = %value) : (i32) -> i32 {
+          "test.condition"(%condition, %before) : (i1, i32) -> ()
+        } do {
+        ^bb0(%after: i32):
+          scf.yield %after : i32
         }
         func.return
       }
@@ -250,14 +290,105 @@ fn scf_preset_exposes_regions_and_header_block_arguments() {
     let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     let document = lowered.document.unwrap();
-    let loop_op = document
+
+    let operation = |name: &str| {
+        document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap_or_else(|| panic!("missing {name}"))
+    };
+    for (name, operands, results, regions) in [
+        ("scf.execute_region", 0, 1, 1),
+        ("scf.for", 4, 1, 1),
+        ("scf.forall", 2, 1, 1),
+        ("scf.forall.in_parallel", 0, 0, 1),
+        ("scf.if", 1, 1, 2),
+        ("scf.parallel", 4, 1, 1),
+        ("scf.reduce", 2, 0, 2),
+        ("scf.while", 1, 1, 2),
+    ] {
+        let operation = operation(name);
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.operation_regions(operation).unwrap().len(),
+            regions,
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+
+    let switches = document
         .operations()
-        .find(|operation| document.operation_name(*operation) == Some("scf.for"))
+        .filter(|operation| document.operation_name(*operation) == Some("scf.index_switch"))
+        .collect::<Vec<_>>();
+    assert_eq!(switches.len(), 2);
+    for (operation, results, regions) in [(switches[0], 1, 3), (switches[1], 0, 1)] {
+        assert_eq!(document.operands(operation).unwrap().len(), 1);
+        assert_eq!(document.result_types(operation).unwrap().len(), results);
+        assert_eq!(
+            document.operation_regions(operation).unwrap().len(),
+            regions
+        );
+        assert!(document.successors(operation).unwrap().is_empty());
+    }
+
+    for operation in document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("scf.reduce.return"))
+    {
+        assert_eq!(document.operands(operation).unwrap().len(), 1);
+        assert_eq!(document.result_types(operation).unwrap().len(), 0);
+        assert!(document.successors(operation).unwrap().is_empty());
+    }
+    for operation in document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("scf.yield"))
+    {
+        assert_eq!(document.result_types(operation).unwrap().len(), 0);
+        assert!(document.successors(operation).unwrap().is_empty());
+    }
+    for (name, expected_arguments) in [("scf.for", 2), ("scf.forall", 3), ("scf.parallel", 1)] {
+        let region = document.operation_regions(operation(name)).unwrap()[0];
+        let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
+        assert_eq!(
+            document.block_argument_types(block).unwrap().len(),
+            expected_arguments,
+            "{name}"
+        );
+    }
+
+    assert_eq!(
+        registry.operation_shape("scf.reduce.return"),
+        Some(OperationShape::OptionalTypedOperands)
+    );
+    assert_eq!(registry.operation_shape("scf.condition"), None);
+}
+
+#[test]
+fn scf_condition_recovers_without_inventing_a_result() {
+    let registry = DialectRegistry::from_name("scf").unwrap();
+    let source = br#"func.func @condition(%condition: i1, %value: i32) {
+      scf.condition(%condition) %value : i32
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    assert!(!lowered.semantically_complete);
+    let document = lowered.document.unwrap();
+    let condition = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("scf.condition"))
         .unwrap();
-    assert_eq!(document.operands(loop_op).unwrap().len(), 3);
-    let region = document.operation_regions(loop_op).unwrap()[0];
-    let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
-    assert_eq!(document.block_argument_types(block).unwrap().len(), 1);
+    assert_eq!(document.result_types(condition).unwrap().len(), 0);
 }
 
 #[test]

@@ -13,7 +13,7 @@ It does not establish that the operation can be verified or rewritten.
 | Proving | Core plus `arith.constant`, `arith.addi`, `cf.br`, and `cf.cond_br`. |
 | StableHLO preset | Core plus 96 common StableHLO custom forms. |
 | TOSA preset | Core plus 93 TOSA tensor, shape, control-flow, and utility forms. |
-| SCF preset | Core plus all 12 SCF operations, including structured regions and loop header bindings. |
+| SCF preset | Core plus 11 of 12 SCF operations, including structured regions and loop header bindings. |
 | Linalg preset | Core plus all 99 core, structured, relayout, and generated named Linalg operations. |
 | OpenACC preset | Core plus 35 mapping, bounds-accessor, region, and terminator forms. |
 | Affine preset | Core plus 4 of the 16 Affine operations. |
@@ -1059,6 +1059,15 @@ Header bindings written as `%argument = %initial` are attached to implicit entry
 blocks as opaque-typed arguments when the custom syntax does not spell their
 types locally. This preserves definition/use structure without claiming dialect
 type inference.
+
+SCF defines 12 operations in LLVM 22.1. The preset structurally registers 11.
+`scf.condition` remains on whole-operation recovery because its fixed
+parenthesized `i1` condition is followed by an optional typed forwarding-operand
+clause. Treating its trailing types as results would be incorrect: the operation
+has no results. `scf.reduce.return` and `scf.yield` use the typed-terminator shape,
+so their typed SSA values are operands and both operations have zero results.
+The remaining registered operations preserve their SSA operands, result arity,
+and owned regions. None of the SCF operations has successors.
 
 ## Python
 
