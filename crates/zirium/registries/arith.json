@@ -5,10 +5,10 @@
     "func.func",
     "func.call",
     "func.return",
-    "arith.constant",
-    "arith.addi"
+    "arith.constant"
   ],
   "operation_shapes": [
+    {"name": "arith.addi", "shape": "binary_operands"},
     {"name": "arith.subi", "shape": "binary_operands"},
     {"name": "arith.muli", "shape": "binary_operands"},
     {"name": "arith.divui", "shape": "binary_operands"},

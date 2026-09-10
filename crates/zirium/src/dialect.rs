@@ -121,7 +121,6 @@ impl OperandCount {
 /// | `FuncCall` | `func.call` | variadic / variadic | `callee` | none | false / false / true |
 /// | `CfCondBr` | `cf.cond_br` | variadic / 0 | none | none | false / false / false |
 /// | `ArithConstant` | `arith.constant` | 0 / 1 | `value` | none | false / false / false |
-/// | `ArithAddi` | `arith.addi` | 2 / 1 | none | none | false / false / false |
 /// | `FuncReturn` | `func.return` | variadic / 0 | none | none | false / false / false |
 /// | `CfBr` | `cf.br` | 0 / 0 | none | none | false / false / false |
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,7 +130,6 @@ pub enum AssemblyProgram {
     FuncCall,
     CfCondBr,
     ArithConstant,
-    ArithAddi,
     FuncReturn,
     CfBr,
 }
@@ -144,7 +142,6 @@ impl AssemblyProgram {
             Self::FuncCall => "func.call",
             Self::CfCondBr => "cf.cond_br",
             Self::ArithConstant => "arith.constant",
-            Self::ArithAddi => "arith.addi",
             Self::FuncReturn => "func.return",
             Self::CfBr => "cf.br",
         }
@@ -157,7 +154,6 @@ impl AssemblyProgram {
             Self::FuncCall => Some("callee"),
             Self::CfCondBr => None,
             Self::ArithConstant => Some("value"),
-            Self::ArithAddi => Some("overflowFlags"),
             Self::FuncReturn | Self::CfBr => None,
         }
     }
@@ -170,11 +166,10 @@ impl AssemblyProgram {
             Self::BuiltinModule => lower_module(context),
             Self::FuncFunc => lower_function(context),
             Self::FuncCall => lower_call(context),
-            Self::CfCondBr => lower_no_results("cf.cond_br"),
+            Self::CfCondBr => lower_no_results(),
             Self::ArithConstant => lower_arith_constant(context),
-            Self::ArithAddi => lower_addi(context),
             Self::FuncReturn => lower_return(context),
-            Self::CfBr => lower_no_results(self.operation_name()),
+            Self::CfBr => lower_no_results(),
         }
     }
 
@@ -189,7 +184,6 @@ impl AssemblyProgram {
             Self::FuncCall => crate::semantic::verify_func_call(document, operation),
             Self::CfCondBr => crate::semantic::verify_cf_cond_br(document, operation),
             Self::ArithConstant => verify_arith_constant(document, operation),
-            Self::ArithAddi => verify_addi(document, operation),
             Self::FuncReturn => crate::semantic::verify_func_return(document, operation),
             Self::CfBr => crate::semantic::verify_cf_br(document, operation),
         }
@@ -229,7 +223,6 @@ impl AssemblyProgram {
             Self::FuncCall => print_call(document, operation),
             Self::CfCondBr => print_cond_branch(document, operation),
             Self::ArithConstant => print_arith_constant(document, operation),
-            Self::ArithAddi => print_addi(document, operation),
             Self::FuncReturn => print_return(document, operation),
             Self::CfBr => print_branch(document, operation),
         }
@@ -557,19 +550,6 @@ impl DialectRegistry {
                             "typed attribute schema is inconsistent"
                         );
                     }
-                    AssemblyProgram::ArithAddi => {
-                        assert!(
-                            matches!(schema.operands, OperandCount::Exact(2))
-                                && matches!(schema.results, ResultCount::Exact(1))
-                                && same_names(schema.required_attributes, &[])
-                                && operations[index].regions.is_empty()
-                                && !operations[index].symbols.defines_symbol
-                                && !operations[index].symbols.symbol_table
-                                && !operations[index].symbols.uses_symbols
-                                && !operations[index].is_terminator,
-                            "binary operand schema is inconsistent"
-                        );
-                    }
                     AssemblyProgram::FuncReturn => {
                         assert!(
                             matches!(schema.operands, OperandCount::Variadic)
@@ -765,9 +745,15 @@ impl DialectRegistry {
             .unwrap_or_default()
     }
 
-    /// Returns the fixed registry used by the dialect baseline corpus.
+    /// Returns the registry used by the dialect baseline corpus.
     pub fn baseline() -> &'static Self {
-        &BASELINE_REGISTRY
+        BASELINE_REGISTRY.get_or_init(|| {
+            let mut registry = DialectRegistry::new(BASELINE_OPERATIONS, &[], &[])
+                .extend_operation_shapes(BASELINE_OPERATION_SHAPES)
+                .expect("baseline operation shapes must be valid");
+            registry.module_alias = true;
+            registry
+        })
     }
 
     /// Returns the standard module and function operation set.
@@ -796,6 +782,12 @@ impl DialectRegistry {
             let index = BASELINE_OPERATIONS
                 .iter()
                 .position(|descriptor| descriptor.name == name)
+                .or_else(|| {
+                    BASELINE_OPERATION_SHAPES
+                        .iter()
+                        .position(|(candidate, _)| *candidate == name)
+                        .map(|index| BASELINE_OPERATIONS.len() + index)
+                })
                 .ok_or_else(|| DeclarativeRegistryError::UnknownOperation(name.to_owned()))?;
             let bit = 1_u8 << index;
             if selected & bit != 0 {
@@ -819,7 +811,17 @@ impl DialectRegistry {
             operations,
             types: &[],
             attributes: &[],
-            operation_shapes: None,
+            operation_shapes: Some(
+                BASELINE_OPERATION_SHAPES
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| {
+                        selected & (1_u8 << (BASELINE_OPERATIONS.len() + index)) != 0
+                    })
+                    .map(|(_, (name, shape))| ((*name).to_owned(), *shape))
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
             operation_formats: None,
             module_alias: operation_names.contains(&"builtin.module"),
         })
@@ -917,7 +919,6 @@ fn lower_arith_constant(context: &RegisteredLoweringContext<'_>) -> Option<Regis
         true
     };
     (!value.is_empty() && !ty.is_empty()).then(|| RegisteredLowering {
-        name: "arith.constant",
         result_types: compatible.then(|| ty.to_owned()).into_iter().collect(),
         function_type: format!("() -> {ty}"),
         attributes: vec![("value", value.to_owned())],
@@ -930,7 +931,6 @@ fn lower_module(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLow
         attributes.push(("sym_name", symbol.to_owned()));
     }
     Some(RegisteredLowering {
-        name: "builtin.module",
         result_types: Vec::new(),
         function_type: "() -> ()".into(),
         attributes,
@@ -1196,7 +1196,6 @@ fn lower_func_like(
         }
     }
     Some(RegisteredLowering {
-        name: "func.func",
         result_types: Vec::new(),
         function_type: "() -> ()".into(),
         attributes,
@@ -1216,7 +1215,6 @@ fn lower_call_like(
     let (inputs, results) = crate::semantic::split_arrow(tail)?;
     let result_types = crate::semantic::split_registered_types(results);
     Some(RegisteredLowering {
-        name: "func.call",
         result_types,
         function_type: format!("{} -> {}", inputs.trim(), results.trim()),
         attributes: vec![("callee", callee)],
@@ -1269,7 +1267,6 @@ pub(crate) fn lower_operation_format(
         };
         let result = result.trim();
         return Some(RegisteredLowering {
-            name: "zirium.format",
             result_types: crate::semantic::split_registered_types(result),
             function_type: format!("({inputs}) -> {result}"),
             attributes: Vec::new(),
@@ -1280,7 +1277,6 @@ pub(crate) fn lower_operation_format(
         let value = context.literal_value()?.trim();
         let result = context.function_type()?.trim();
         return Some(RegisteredLowering {
-            name: "zirium.format",
             result_types: crate::semantic::split_registered_types(result),
             function_type: format!("() -> {result}"),
             attributes: vec![("value", value.to_owned())],
@@ -1358,28 +1354,6 @@ fn print_arith_constant(document: &Document, operation: OperationId) -> Option<S
     Some(format!("arith.constant {value}{dictionary} : {ty}"))
 }
 
-fn lower_addi(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLowering> {
-    let tail = context.spelling().split_once("arith.addi")?.1;
-    let (head, ty) = tail.rsplit_once(':')?;
-    let ty = ty.trim();
-    let attributes = head
-        .find("overflow")
-        .and_then(|start| {
-            let value = &head[start..];
-            let open = value.find('<')?;
-            let close = value[open + 1..].find('>')? + open + 1;
-            let flags = strip_overflow_trivia(&value[open + 1..close]);
-            Some(vec![("overflowFlags", format!("#arith.overflow<{flags}>"))])
-        })
-        .unwrap_or_default();
-    Some(RegisteredLowering {
-        name: "arith.addi",
-        result_types: vec![ty.into()],
-        function_type: format!("({ty}, {ty}) -> {ty}"),
-        attributes,
-    })
-}
-
 fn lower_binary_operands(
     operation: &str,
     context: &RegisteredLoweringContext<'_>,
@@ -1401,7 +1375,7 @@ fn lower_typed_operands(
 ) -> Option<RegisteredLowering> {
     let tail = context.assembly_spelling().split_once(operation)?.1;
     let (_, ty) = tail.rsplit_once(':')?;
-    let ty = ty.trim();
+    let ty = ty.split_once("//").map_or(ty, |(ty, _)| ty).trim();
     let (function_type, result_types) = if let Some((input, result)) = split_top_level_to(ty) {
         let input = input.trim();
         let inputs = std::iter::repeat_n(input, operand_count)
@@ -1433,7 +1407,6 @@ fn lower_typed_operands(
         (format!("({inputs}) -> {ty}"), vec![ty.into()])
     };
     Some(RegisteredLowering {
-        name: "arith.addi",
         result_types,
         function_type,
         attributes: Vec::new(),
@@ -1450,7 +1423,6 @@ fn lower_variadic_operands(
     let ty = ty.trim();
     if let Some((inputs, results)) = crate::semantic::split_arrow(ty) {
         return Some(RegisteredLowering {
-            name: "arith.addi",
             result_types: crate::semantic::split_registered_types(results),
             function_type: format!("{} -> {}", inputs.trim(), results.trim()),
             attributes: Vec::new(),
@@ -1470,7 +1442,6 @@ fn lower_variadic_operands(
         format!("({ty})")
     };
     Some(RegisteredLowering {
-        name: "func.return",
         result_types: Vec::new(),
         function_type: format!("{inputs} -> ()"),
         attributes: Vec::new(),
@@ -1484,7 +1455,6 @@ fn lower_operand_clauses(
     if let Some(function_type) = context.function_type() {
         let (inputs, results) = crate::semantic::split_arrow(function_type)?;
         return Some(RegisteredLowering {
-            name: "arith.addi",
             result_types: crate::semantic::split_registered_types(results),
             function_type: format!("{} -> {}", inputs.trim(), results.trim()),
             attributes: Vec::new(),
@@ -1496,7 +1466,6 @@ fn lower_operand_clauses(
         let inputs =
             std::iter::repeat_n("!zirium.unparsed<>", context.operand_count()).collect::<Vec<_>>();
         return Some(RegisteredLowering {
-            name: "arith.addi",
             function_type: format!(
                 "({}) -> {}",
                 inputs.join(", "),
@@ -1513,7 +1482,6 @@ fn lower_operand_clauses(
     if let Some((input, result)) = split_top_level_to(type_tail) {
         let inputs = std::iter::repeat_n(input.trim(), context.operand_count()).collect::<Vec<_>>();
         return Some(RegisteredLowering {
-            name: "arith.addi",
             result_types: vec![result.trim().to_owned()],
             function_type: format!("({}) -> {}", inputs.join(", "), result.trim()),
             attributes: Vec::new(),
@@ -1537,7 +1505,6 @@ fn lower_operand_clauses(
         vec![result.clone()]
     };
     Some(RegisteredLowering {
-        name: "arith.addi",
         result_types: result_types.clone(),
         function_type: format!(
             "({}) -> {}",
@@ -1562,7 +1529,6 @@ fn lower_region_clauses(
     if let Some(function_type) = context.function_type() {
         let (inputs, results) = crate::semantic::split_arrow(function_type)?;
         return Some(RegisteredLowering {
-            name: "zirium.region",
             result_types: crate::semantic::split_registered_types(results),
             function_type: format!("{} -> {}", inputs.trim(), results.trim()),
             attributes: Vec::new(),
@@ -1577,7 +1543,6 @@ fn lower_region_clauses(
     let result_types = std::iter::repeat_n("!zirium.unparsed<>".to_owned(), context.result_count())
         .collect::<Vec<_>>();
     Some(RegisteredLowering {
-        name: "zirium.region",
         function_type: format!(
             "({}) -> {}",
             input_types.join(", "),
@@ -1605,25 +1570,14 @@ fn lower_literal_attribute(
     };
     let result = result.trim();
     Some(RegisteredLowering {
-        name: "arith.constant",
         result_types: vec![result.into()],
         function_type: format!("() -> {result}"),
         attributes: vec![("value", attribute.to_owned())],
     })
 }
 
-fn strip_overflow_trivia(value: &str) -> String {
-    value
-        .lines()
-        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
-        .flat_map(str::chars)
-        .filter(|character| !character.is_ascii_whitespace())
-        .collect()
-}
-
-fn lower_no_results(name: &'static str) -> Option<RegisteredLowering> {
+fn lower_no_results() -> Option<RegisteredLowering> {
     Some(RegisteredLowering {
-        name,
         result_types: Vec::new(),
         function_type: "() -> ()".into(),
         attributes: Vec::new(),
@@ -1642,7 +1596,6 @@ fn lower_return(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLow
         format!("({input})")
     };
     Some(RegisteredLowering {
-        name: "func.return",
         result_types: Vec::new(),
         function_type: format!("{input} -> ()"),
         attributes: Vec::new(),
@@ -1665,61 +1618,10 @@ fn lower_optional_typed_operands(
         format!("({input})")
     };
     Some(RegisteredLowering {
-        name: "func.return",
         result_types: Vec::new(),
         function_type: format!("{input} -> ()"),
         attributes: Vec::new(),
     })
-}
-
-fn verify_addi(document: &Document, operation: OperationId) -> Result<(), &'static str> {
-    let expected = document
-        .result_types(operation)
-        .and_then(|types| types.first())
-        .and_then(|ty| document.type_spelling(*ty))
-        .ok_or("arith.addi requires one result")?;
-    if document
-        .operands(operation)
-        .ok_or("arith.addi requires operands")?
-        .iter()
-        .any(|operand| document.value_type(*operand) != Some(expected))
-    {
-        return Err("arith.addi operand and result types must match");
-    }
-    if let Some(flags) = document.attributes(operation).and_then(|mut attrs| {
-        attrs.find_map(|(name, value)| (name == "overflowFlags").then_some(value))
-    }) && !matches!(
-        flags,
-        "#arith.overflow<none>"
-            | "#arith.overflow<nsw>"
-            | "#arith.overflow<nuw>"
-            | "#arith.overflow<nsw,nuw>"
-            | "#arith.overflow<nuw,nsw>"
-    ) {
-        return Err("arith.addi has unrecognized overflow flags");
-    }
-    Ok(())
-}
-
-fn print_addi(document: &Document, operation: OperationId) -> Option<String> {
-    let operands = document.operands(operation)?;
-    let ty = document
-        .result_types(operation)?
-        .first()
-        .and_then(|ty| document.type_spelling(*ty))?;
-    let flags = document
-        .attributes(operation)?
-        .find_map(|(name, value)| {
-            (name == "overflowFlags").then(|| value.trim_start_matches("#arith.").to_owned())
-        })
-        .map(|value| format!(" {value}"))
-        .unwrap_or_default();
-    let dictionary = print_attribute_dictionary(document, operation, &["overflowFlags"])?;
-    Some(format!(
-        "arith.addi {}, {}{flags}{dictionary} : {ty}",
-        document.value_spelling(operands[0])?,
-        document.value_spelling(operands[1])?
-    ))
 }
 
 fn print_return(document: &Document, operation: OperationId) -> Option<String> {
@@ -1992,27 +1894,6 @@ static ARITH_CONSTANT: OperationDescriptor = OperationDescriptor {
     is_terminator: false,
 };
 
-static ARITH_ADDI: OperationDescriptor = OperationDescriptor {
-    name: "arith.addi",
-    syntax_kind: SyntaxKind::DialectOperation,
-    parse: None,
-    lower: None,
-    verify: None,
-    print: None,
-    assembly: Some(AssemblyProgram::ArithAddi),
-    schema: OperationSchema {
-        operands: OperandCount::Exact(2),
-        results: ResultCount::Exact(1),
-        required_attributes: &[],
-    },
-    regions: &[],
-    symbols: SymbolDescriptor {
-        defines_symbol: false,
-        symbol_table: false,
-        uses_symbols: false,
-    },
-    is_terminator: false,
-};
 static FUNC_RETURN: OperationDescriptor = OperationDescriptor {
     name: "func.return",
     syntax_kind: SyntaxKind::DialectOperation,
@@ -2061,19 +1942,16 @@ static BASELINE_OPERATIONS: &[OperationDescriptor] = &[
     FUNC_RETURN,
     FUNC_CALL,
     ARITH_CONSTANT,
-    ARITH_ADDI,
     CF_BR,
     CF_COND_BR,
 ];
+static BASELINE_OPERATION_SHAPES: &[(&str, OperationShape)] =
+    &[("arith.addi", OperationShape::BinaryOperands)];
 static CORE_OPERATIONS: &[OperationDescriptor] =
     &[BUILTIN_MODULE, FUNC_FUNC, FUNC_RETURN, FUNC_CALL];
 static DECLARATIVE_OPERATION_SETS: [OnceLock<Box<[OperationDescriptor]>>; 256] =
     [const { OnceLock::new() }; 256];
-static BASELINE_REGISTRY: DialectRegistry = {
-    let mut registry = DialectRegistry::new(BASELINE_OPERATIONS, &[], &[]);
-    registry.module_alias = true;
-    registry
-};
+static BASELINE_REGISTRY: OnceLock<DialectRegistry> = OnceLock::new();
 static CORE_REGISTRY: DialectRegistry = DialectRegistry {
     operations: CORE_OPERATIONS,
     types: &[],

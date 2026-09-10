@@ -120,51 +120,6 @@ impl DialectParser<'_, '_> {
                 self.complete_operation(good)
             }
             AssemblyProgram::ArithConstant => self.parse_zero_operand_constant(),
-            AssemblyProgram::ArithAddi => {
-                let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
-                self.parser.trivia()?;
-                for index in 0..2 {
-                    if self.parser.at(TokenKind::PercentIdentifier) {
-                        let operand = self.parser.builder.start();
-                        let use_marker = self.parser.builder.start();
-                        self.parser.bump()?;
-                        self.parser
-                            .builder
-                            .complete(use_marker, SyntaxKind::OperandUse)?;
-                        self.parser.builder.complete(operand, SyntaxKind::Operand)?;
-                    } else {
-                        good = false;
-                        self.parser.diagnostic();
-                    }
-                    self.parser.trivia()?;
-                    if index == 0 {
-                        good &= self.parser.expect(TokenKind::Comma)?;
-                        self.parser.trivia()?;
-                    }
-                }
-                if self.parser.at(TokenKind::BareIdentifier) {
-                    if self.parser.current_text() == "overflow" {
-                        good &= self.parse_overflow_flags()?;
-                        self.parser.trivia()?;
-                    } else {
-                        self.parser.diagnostic();
-                        good = false;
-                        self.parser.bump()?;
-                    }
-                } else if !self.parser.at(TokenKind::LBrace) && !self.parser.at(TokenKind::Colon) {
-                    self.parser.diagnostic();
-                    good = false;
-                    self.parser.bump()?;
-                }
-                if self.parser.at(TokenKind::LBrace) {
-                    self.parser.attribute_dict()?;
-                    self.parser.trivia()?;
-                }
-                good &= self.parser.expect(TokenKind::Colon)?;
-                self.parser.trivia()?;
-                good &= self.parser.type_syntax(0)?;
-                self.complete_operation(good)
-            }
             AssemblyProgram::FuncReturn => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
                 self.parser.trivia()?;
@@ -296,52 +251,6 @@ impl DialectParser<'_, '_> {
             .builder
             .complete_with_error(self.marker, self.descriptor.syntax_kind, !good)?;
         Ok(())
-    }
-
-    fn parse_overflow_flags(&mut self) -> Result<bool, CompactError> {
-        let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
-        self.parser.trivia()?;
-        good &= self.parser.expect(TokenKind::Less)?;
-        self.parser.trivia()?;
-        let mut seen_nsw = false;
-        let mut seen_nuw = false;
-        let mut seen_none = false;
-        let mut count = 0;
-        loop {
-            if !self.parser.at(TokenKind::BareIdentifier) {
-                good = false;
-                self.parser.diagnostic();
-                break;
-            }
-            let flag = self.parser.current_text();
-            let duplicate = match flag {
-                "nsw" => std::mem::replace(&mut seen_nsw, true),
-                "nuw" => std::mem::replace(&mut seen_nuw, true),
-                "none" => std::mem::replace(&mut seen_none, true),
-                _ => true,
-            };
-            if duplicate || (flag == "none" && count != 0) || (flag != "none" && seen_none) {
-                good = false;
-                self.parser.diagnostic();
-            }
-            self.parser.bump()?;
-            self.parser.trivia()?;
-            count += 1;
-            if count > 2 {
-                good = false;
-                self.parser.diagnostic();
-            }
-            if !self.parser.at(TokenKind::Comma) {
-                break;
-            }
-            self.parser.bump()?;
-            self.parser.trivia()?;
-        }
-        if count == 0 {
-            good = false;
-        }
-        good &= self.parser.expect(TokenKind::Greater)?;
-        Ok(good)
     }
 
     fn parse_return_type_list(&mut self) -> Result<usize, CompactError> {

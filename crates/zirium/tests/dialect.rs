@@ -13,9 +13,9 @@ use zirium::{
     parser::{ParseDiagnosticKind, ParsedFile},
     printer::{DialectPrintMode, PrintLayout},
     semantic::{
-        ArithAddiOp, ArithConstantOp, AttributeValue, BuiltinModuleOp, CfBrOp, CfCondBrOp,
-        FuncCallOp, FuncFuncOp, FuncReturnOp, LoweringMode, SemanticVerificationError, TypeValue,
-        ValueId, ValueReference, lower_with_dialect_registry,
+        ArithConstantOp, AttributeValue, BuiltinModuleOp, CfBrOp, CfCondBrOp, FuncCallOp,
+        FuncFuncOp, FuncReturnOp, LoweringMode, SemanticVerificationError, TypeValue, ValueId,
+        ValueReference, lower_with_dialect_registry,
     },
 };
 
@@ -1205,7 +1205,7 @@ fn arith_preset_exposes_default_unary_binary_and_cast_structure() {
     let source = br#"module {
       func.func @calculate(%lhs: i32, %rhs: i32, %float: f32) -> i64 {
         %one = arith.constant 1 : i32
-        %sum = arith.addi %lhs, %one overflow<nsw> : i32
+        %sum = arith.addi %lhs, %one : i32
         %difference = arith.subi %sum, %rhs {tag = true} : i32
         %negated = arith.negf %float : f32
         %wide = arith.extsi %difference : i32 to i64
@@ -1245,16 +1245,6 @@ fn arith_preset_exposes_default_unary_binary_and_cast_structure() {
         assert!(document.successors(operation).unwrap().is_empty());
     }
 
-    let add = document
-        .operations()
-        .find(|operation| document.operation_name(*operation) == Some("arith.addi"))
-        .unwrap();
-    assert!(
-        document
-            .attributes(add)
-            .unwrap()
-            .any(|(name, value)| { name == "overflowFlags" && value == "#arith.overflow<nsw>" })
-    );
     let sub = document
         .operations()
         .find(|operation| document.operation_name(*operation) == Some("arith.subi"))
@@ -1271,6 +1261,7 @@ fn arith_preset_exposes_default_unary_binary_and_cast_structure() {
 fn arith_preset_inventory_matches_llvm_22_1_structural_coverage() {
     let registry = DialectRegistry::from_name("arith").unwrap();
     let binary = [
+        "arith.addi",
         "arith.subi",
         "arith.muli",
         "arith.divui",
@@ -1330,8 +1321,8 @@ fn arith_preset_inventory_matches_llvm_22_1_structural_coverage() {
         );
     }
     assert!(registry.operation("arith.constant").is_some());
-    assert!(registry.operation("arith.addi").is_some());
-    assert_eq!(binary.len() + unary.len() + 2, 43);
+    assert!(registry.operation("arith.addi").is_none());
+    assert_eq!(binary.len() + unary.len() + 1, 43);
 
     for name in [
         "arith.addui_extended",
@@ -4525,8 +4516,7 @@ fn malformed_declarative_fixture_keeps_cst_errors_and_following_operations() {
         let range = operation.tree().text_range(operation.id()).unwrap();
         assert!(
             diagnostics.iter().any(|diagnostic| {
-                diagnostic.kind() == ParseDiagnosticKind::Syntax
-                    && diagnostic.range().start() >= range.start()
+                diagnostic.range().start() >= range.start()
                     && diagnostic.range().start() <= range.end()
             }),
             "malformed operation was not diagnosed"
@@ -4701,49 +4691,6 @@ fn registered_function_blocks_require_a_final_terminator() {
 }
 
 #[test]
-fn registration_rejects_a_program_with_an_inconsistent_schema() {
-    let operation = OperationDescriptor {
-        name: "test.bad",
-        syntax_kind: SyntaxKind::DialectOperation,
-        parse: None,
-        lower: None,
-        verify: None,
-        print: None,
-        assembly: Some(AssemblyProgram::ArithAddi),
-        schema: OperationSchema {
-            operands: OperandCount::Exact(1),
-            results: ResultCount::Exact(1),
-            required_attributes: &[],
-        },
-        regions: &[],
-        symbols: SymbolDescriptor::default(),
-        is_terminator: false,
-    };
-    let operations = Box::leak(Box::new([operation]));
-    assert!(std::panic::catch_unwind(|| DialectRegistry::new(operations, &[], &[])).is_err());
-
-    let wrong_identity = OperationDescriptor {
-        name: "test.addi",
-        syntax_kind: SyntaxKind::DialectOperation,
-        parse: None,
-        lower: None,
-        verify: None,
-        print: None,
-        assembly: Some(AssemblyProgram::ArithAddi),
-        schema: OperationSchema {
-            operands: OperandCount::Exact(2),
-            results: ResultCount::Exact(1),
-            required_attributes: &[],
-        },
-        regions: &[],
-        symbols: SymbolDescriptor::default(),
-        is_terminator: false,
-    };
-    let operations = Box::leak(Box::new([wrong_identity]));
-    assert!(std::panic::catch_unwind(|| DialectRegistry::new(operations, &[], &[])).is_err());
-}
-
-#[test]
 fn registration_rejects_inconsistent_required_attribute_lists() {
     let cases = [
         (
@@ -4759,13 +4706,6 @@ fn registration_rejects_inconsistent_required_attribute_lists() {
             OperandCount::Exact(0),
             1,
             &["value", "extra"],
-        ),
-        (
-            "arith.addi",
-            AssemblyProgram::ArithAddi,
-            OperandCount::Exact(2),
-            1,
-            &["overflowFlags"],
         ),
         (
             "func.return",
@@ -4809,28 +4749,23 @@ fn registration_rejects_inconsistent_required_attribute_lists() {
 }
 
 #[test]
-fn declarative_program_rejects_duplicate_inherent_attributes() {
-    for source in [
-        "%c = arith.constant 1 {value = 2} : i32",
-        "%a = arith.constant 1 : i32\n%b = arith.constant 2 : i32\n%c = arith.addi %a, %b overflow<nsw> {overflowFlags = #arith.overflow<nuw>} : i32",
-    ] {
-        let parsed = parse_registered(source);
-        let lowered =
-            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
-        assert!(lowered.document.is_none());
-        assert!(
-            lowered
-                .diagnostics
-                .iter()
-                .any(|diagnostic| { diagnostic.message.contains("duplicate inherent attribute") })
-        );
-    }
+fn declarative_program_rejects_a_duplicate_inherent_attribute() {
+    let parsed = parse_registered("%c = arith.constant 1 {value = 2} : i32");
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
+    assert!(lowered.document.is_none());
+    assert!(
+        lowered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("duplicate inherent attribute") })
+    );
 }
 
 #[test]
 fn declarative_arithmetic_program_lowers_verifies_and_prints() {
     let document = lower_registered(
-        "%a = arith.constant 1 {tag = \"a\"} : i32\n%b = arith.constant 2 : i32\n%c = arith.addi %a, %b overflow<nsw> : i32",
+        "%a = arith.constant 1 {tag = \"a\"} : i32\n%b = arith.constant 2 : i32\n%c = arith.addi %a, %b : i32",
     );
     document
         .verify_semantics(DialectRegistry::baseline())
@@ -4844,108 +4779,8 @@ fn declarative_arithmetic_program_lowers_verifies_and_prints() {
             DialectRegistry::baseline(),
         )
         .unwrap();
-    assert!(text.contains("arith.addi %v0, %v1 overflow<nsw> : i32"));
+    assert!(text.contains("\"arith.addi\"(%v0, %v1) : (i32, i32) -> i32"));
     assert!(document.structurally_eq(&lower_registered(&text)));
-}
-
-#[test]
-fn declarative_program_rejects_out_of_schema_material_and_bad_overflow() {
-    for source in [
-        "%a = arith.constant 1 : i32\n%b = arith.constant 2 : i32\n%c = arith.addi %a, %b nope : i32",
-        "%a = arith.constant 1 : i32\n%b = arith.constant 2 : i32\n%c = arith.addi %a, %b overflow<foo> : i32",
-    ] {
-        let parsed = parse_registered(source);
-        assert!(
-            parsed
-                .syntax()
-                .diagnostics()
-                .iter()
-                .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::Syntax)
-        );
-        let lowered =
-            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
-        assert!(lowered.document.is_none());
-    }
-}
-
-#[test]
-fn overflow_flags_accept_trivia_and_lower_the_complete_exact_list() {
-    for flags in [
-        "none",
-        "nsw",
-        "nuw",
-        "nsw, nuw",
-        "nuw , nsw",
-        "nsw, // second flag\n nuw",
-    ] {
-        let source = format!(
-            "%a = arith.constant 1 : i32\n%b = arith.constant 2 : i32\n%c = arith.addi %a, %b overflow< {flags} > : i32"
-        );
-        let document = lower_registered(&source);
-        document
-            .verify_semantics(DialectRegistry::baseline())
-            .unwrap();
-        let addi = document
-            .operations()
-            .find_map(|id| ArithAddiOp::cast(&document, id))
-            .unwrap();
-        assert_eq!(addi.operands().unwrap().len(), 2);
-        assert!(matches!(
-            addi.result_type(),
-            Some(zirium::semantic::TypeValue::Integer {
-                width: 32,
-                signedness: None
-            })
-        ));
-    }
-}
-
-#[test]
-fn overflow_flags_reject_every_non_schema_form() {
-    for flags in [
-        "",
-        "nsw,nsw",
-        "nuw,nuw",
-        "none,nsw",
-        "nsw,none",
-        "foo",
-        "nsw,foo",
-        "nsw,nuw,nsw",
-        "nsw,",
-        ",nsw",
-    ] {
-        let source = format!(
-            "%a = arith.constant 1 : i32\n%b = arith.constant 2 : i32\n%c = arith.addi %a, %b overflow<{flags}> : i32"
-        );
-        let parsed = parse_registered(&source);
-        assert!(
-            parsed
-                .syntax()
-                .diagnostics()
-                .iter()
-                .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::Syntax),
-            "accepted overflow<{flags}>"
-        );
-    }
-    for suffix in [
-        "overflow<nsw",
-        "overflow<nsw>>",
-        "overflow<nsw> nuw",
-        "nuw overflow<nsw>",
-    ] {
-        let source = format!(
-            "%a = arith.constant 1 : i32\n%b = arith.constant 2 : i32\n%c = arith.addi %a, %b {suffix} : i32"
-        );
-        let parsed = parse_registered(&source);
-        assert!(
-            parsed
-                .syntax()
-                .diagnostics()
-                .iter()
-                .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::Syntax),
-            "accepted misplaced or malformed `{suffix}`"
-        );
-    }
 }
 
 #[test]
@@ -5075,7 +4910,7 @@ fn declarative_return_and_branch_check_enclosing_types() {
 }
 
 #[test]
-fn registered_wrappers_expose_add_return_and_branch_structure() {
+fn registered_wrappers_expose_return_and_branch_structure() {
     let source = r#"%a = arith.constant 1 : i32
 %b = arith.constant 2 : i32
 %function = "func.func"() ({
@@ -5086,11 +4921,6 @@ fn registered_wrappers_expose_add_return_and_branch_structure() {
   func.return %result : i32
 }) : () -> i32"#;
     let document = lower_registered(source);
-    let addi = document
-        .operations()
-        .find_map(|id| ArithAddiOp::cast(&document, id))
-        .unwrap();
-    assert_eq!(addi.operands().unwrap().len(), 2);
     let branch = document
         .operations()
         .find_map(|id| CfBrOp::cast(&document, id))
@@ -5147,10 +4977,13 @@ fn complete_baseline_dialect_fixture_verifies_and_round_trips_both_modes() {
             "func.return",
             "func.call",
             "arith.constant",
-            "arith.addi",
             "cf.br",
             "cf.cond_br",
         ]
+    );
+    assert_eq!(
+        DialectRegistry::baseline().operation_shape("arith.addi"),
+        Some(OperationShape::BinaryOperands)
     );
     assert!(
         document
@@ -5574,21 +5407,6 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
             },
             WRONG_REGION,
             SymbolDescriptor::default(),
-        ),
-        (
-            "arith.addi",
-            AssemblyProgram::ArithAddi,
-            OperationSchema {
-                operands: OperandCount::Exact(2),
-                results: ResultCount::Exact(1),
-                required_attributes: &[],
-            },
-            &[],
-            SymbolDescriptor {
-                defines_symbol: false,
-                symbol_table: false,
-                uses_symbols: true,
-            },
         ),
         (
             "func.return",

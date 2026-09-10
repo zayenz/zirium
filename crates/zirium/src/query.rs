@@ -409,7 +409,11 @@ fn evaluate_closure(
         let name = document
             .operation_name(operation)
             .unwrap_or("<invalid operation>");
-        if registry.operation(name).is_none() {
+        let shape = registry.operation_shape(name);
+        if registry.operation(name).is_none()
+            && (shape.is_none() || shape == Some(crate::dialect::OperationShape::CallLike))
+            && registry.operation_format(name).is_none()
+        {
             return Err(EvaluationError {
                 message: format!(
                     "closure cannot determine reference semantics for unregistered operation `{name}`"

@@ -480,7 +480,6 @@ impl<'a> RegisteredLoweringContext<'a> {
 
 /// Arena-independent result returned by a registered lowerer.
 pub struct RegisteredLowering {
-    pub name: &'static str,
     pub result_types: Vec<String>,
     pub function_type: String,
     pub attributes: Vec<(&'static str, String)>,
@@ -1741,28 +1740,6 @@ impl<'a> ArithConstantOp<'a> {
         self.document
             .attribute_id(self.operation, "value")
             .and_then(|attribute| self.document.attribute_value(attribute))
-    }
-}
-
-pub struct ArithAddiOp<'a> {
-    document: &'a Document,
-    operation: OperationId,
-}
-impl<'a> ArithAddiOp<'a> {
-    pub fn cast(document: &'a Document, operation: OperationId) -> Option<Self> {
-        registered_schema_matches(document, operation, "arith.addi").then_some(Self {
-            document,
-            operation,
-        })
-    }
-    pub fn operands(&self) -> Option<&'a [ValueReference]> {
-        self.document.operands(self.operation)
-    }
-    pub fn result_type(&self) -> Option<&'a TypeValue> {
-        self.document
-            .result_types(self.operation)?
-            .first()
-            .and_then(|ty| self.document.type_value(*ty))
     }
 }
 

@@ -450,7 +450,7 @@ fn lower_with_registry(
                 .and_then(|program| program.lower(&context))
                 .or_else(|| descriptor.lower.and_then(|lower| lower(&context)))
                 .map(|lowering| MatchedLowering {
-                    name: lowering.name.to_owned(),
+                    name: descriptor.name.to_owned(),
                     shape: None,
                     lowering,
                 })
