@@ -1,6 +1,6 @@
 **CLI query language review and follow-up — 2026-09-10**
 
-The fixes are implemented in the working tree based on `d0c9705`. The seven
+The follow-up fixes were implemented after revision `d0c9705`. The seven
 findings below have been addressed through code or explicit documentation of
 the structural representation. The original review is retained below as the
 before-state; its implementation descriptions and timings are historical.
@@ -56,10 +56,10 @@ and Python formatting/lint checks. The generated harness ran 191 subprocess
 probes with 162 explicit checks, including 108 comparisons against twelve
 independent StableHLO DAG models. The unmodified profiling command now passes.
 
-Updated artifacts are [CLI probe results](../../target/query-review/results-after.json),
-[profiling output](../../target/query-review/profile-after.txt), and the
-[current profiling summary](query-profiling.md). The original artifacts linked
-in the historical review below remain available.
+The [profiling summary](query-profiling.md) records the measurements and
+reproduction commands. Raw CLI and profiling outputs were stored locally under
+`target/query-review/`; those generated files are not distributed with the
+repository.
 
 **Original review — revision `d0c9705`**
 
@@ -304,9 +304,9 @@ python3 python/benchmarks/query_language_review.py > target/query-review/results
 
 The [harness](../../python/benchmarks/query_language_review.py) is standard-library
 Python and creates fixtures and query files temporarily. Local outputs from this
-review are [probe results](../../target/query-review/results.json),
-[the original benchmark failure](../../target/query-review/profile.txt), and
-[the corrected benchmark run](../../target/query-review/profile-corrected.txt).
+review were `target/query-review/results.json`, `profile.txt`, and
+`profile-corrected.txt` in the same directory. These generated files are not
+tracked; use the harness to produce results for the current checkout.
 To reproduce the latter, copy `query_profile.rs` to a temporary integration-test
 file, change only the users expectation to `width * (depth + 1)`, run that test
 with the same release flags, then remove the copy.
