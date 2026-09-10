@@ -329,6 +329,8 @@ pub enum DeclarativeRegistryError {
     ConflictingShape(String),
     ConflictingFormat(String),
     ConflictingAlternatives(String),
+    ConflictingCallTargetAttribute(String),
+    InvalidCallTargetAttribute(String),
     InvalidOperationAlternatives(String),
     UnknownOperation(String),
     DuplicateOperation(String),
@@ -351,6 +353,13 @@ impl std::fmt::Display for DeclarativeRegistryError {
             Self::ConflictingAlternatives(name) => {
                 write!(formatter, "conflicting operation alternatives for: {name}")
             }
+            Self::ConflictingCallTargetAttribute(name) => {
+                write!(formatter, "conflicting call-target attributes for: {name}")
+            }
+            Self::InvalidCallTargetAttribute(name) => write!(
+                formatter,
+                "callee_attribute requires a call_like shape and a dotted ASCII attribute name: {name}"
+            ),
             Self::InvalidOperationAlternatives(name) => {
                 write!(
                     formatter,
@@ -489,6 +498,7 @@ pub struct DialectRegistry {
     operation_shapes: Option<Box<[(String, OperationShape)]>>,
     operation_formats: Option<Box<[(String, OperationFormat)]>>,
     operation_alternatives: Option<OwnedOperationAlternatives>,
+    call_target_attributes: Option<Box<[(String, String)]>>,
     module_alias: bool,
 }
 
@@ -527,6 +537,7 @@ impl DialectRegistry {
             operation_shapes: None,
             operation_formats: None,
             operation_alternatives: None,
+            call_target_attributes: None,
             module_alias: false,
         };
         let mut index = 0;
@@ -724,6 +735,47 @@ impl DialectRegistry {
         )
     }
 
+    /// Returns the attribute containing a direct call's target symbol.
+    pub fn call_target_attribute(&self, name: &str) -> Option<&str> {
+        if self
+            .operation(name)
+            .and_then(|descriptor| descriptor.assembly)
+            == Some(AssemblyProgram::FuncCall)
+        {
+            return Some("callee");
+        }
+        if let Some(attribute) = self
+            .call_target_attributes
+            .as_deref()
+            .and_then(|entries| entries.iter().find(|(candidate, _)| candidate == name))
+            .map(|(_, attribute)| attribute.as_str())
+        {
+            return Some(attribute);
+        }
+        if self.operation_shape(name) == Some(OperationShape::CallLike)
+            || self
+                .operation_format(name)
+                .is_some_and(OperationFormat::captures_callee)
+            || self
+                .operation_grammars(name)
+                .is_some_and(|grammars| grammars.iter().all(OperationGrammar::is_direct_call))
+        {
+            Some("callee")
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn with_call_target_attributes(mut self, attributes: Vec<(String, String)>) -> Self {
+        let attributes = attributes
+            .into_iter()
+            .filter(|(_, attribute)| attribute != "callee")
+            .collect::<Vec<_>>();
+        self.call_target_attributes =
+            (!attributes.is_empty()).then(|| attributes.into_boxed_slice());
+        self
+    }
+
     /// Builds an owned registry containing the core operations plus caller-named operations
     /// assigned supported [`OperationShape`] variants.
     ///
@@ -740,6 +792,7 @@ impl DialectRegistry {
             operation_shapes: None,
             operation_formats: None,
             operation_alternatives: None,
+            call_target_attributes: None,
             module_alias: true,
         }
         .extend_operation_shapes(operation_shapes)
@@ -805,6 +858,7 @@ impl DialectRegistry {
             operation_shapes: Some(shapes.into_boxed_slice()),
             operation_formats: self.operation_formats.clone(),
             operation_alternatives: self.operation_alternatives.clone(),
+            call_target_attributes: self.call_target_attributes.clone(),
             module_alias: self.module_alias,
         })
     }
@@ -844,6 +898,7 @@ impl DialectRegistry {
             operation_shapes: self.operation_shapes.clone(),
             operation_formats: Some(formats.into_boxed_slice()),
             operation_alternatives: self.operation_alternatives.clone(),
+            call_target_attributes: self.call_target_attributes.clone(),
             module_alias: self.module_alias,
         })
     }
@@ -907,6 +962,7 @@ impl DialectRegistry {
             operation_shapes: self.operation_shapes.clone(),
             operation_formats: self.operation_formats.clone(),
             operation_alternatives: Some(alternatives.into_boxed_slice()),
+            call_target_attributes: self.call_target_attributes.clone(),
             module_alias: self.module_alias,
         })
     }
@@ -1027,6 +1083,7 @@ impl DialectRegistry {
             ),
             operation_formats: None,
             operation_alternatives: None,
+            call_target_attributes: None,
             module_alias: operation_names.contains(&"builtin.module"),
         })
     }
@@ -1076,6 +1133,12 @@ impl DialectRegistry {
                         }
                     }
                 }
+            }
+        }
+        if let Some(attributes) = &self.call_target_attributes {
+            for (name, attribute) in attributes.iter() {
+                hash = mix(hash, name.as_bytes());
+                hash = mix(hash, attribute.as_bytes());
             }
         }
         for descriptor in self.types {
@@ -2245,5 +2308,6 @@ static CORE_REGISTRY: DialectRegistry = DialectRegistry {
     operation_shapes: None,
     operation_formats: None,
     operation_alternatives: None,
+    call_target_attributes: None,
     module_alias: true,
 };

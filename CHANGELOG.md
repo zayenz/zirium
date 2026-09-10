@@ -35,6 +35,8 @@ formats, and adds composable report generation.
   SSA definitions, direct calls, and supported branches. Register function-like
   definitions and call-like symbol uses for lookup. Unsupported references and
   callees without bodies produce errors.
+- Let `call_like` registry entries name a nonstandard call-target attribute, and
+  use the same direct-call metadata in `reachable` and `closure`.
 
 - Preserve both sides of StableHLO dot dimension clauses and accept `return`
   shorthand plus unparenthesized multi-operand return type lists.

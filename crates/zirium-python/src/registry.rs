@@ -107,6 +107,10 @@ impl DialectRegistryHandle {
             .map(CoreOperationShape::name)
     }
 
+    fn call_target_attribute<'a>(&'a self, name: &str) -> Option<&'a str> {
+        self.kind.registry().call_target_attribute(name)
+    }
+
     fn operation_alternatives(&self, name: &str) -> Option<Vec<(String, String)>> {
         Some(
             self.kind

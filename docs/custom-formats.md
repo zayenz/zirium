@@ -73,6 +73,7 @@ names = registry.operation_names()
 assert "vendor.function" in names
 assert registry.operation_shape("vendor.function") == "func_like"
 assert registry.operation_shape("missing.operation") is None
+assert registry.call_target_attribute("func.call") == "callee"
 ```
 
 `operation_names()` returns a sorted tuple containing built-ins, preset entries,
@@ -96,7 +97,7 @@ the caller's default registry; include every preset and built-in you need.
   "builtins": [],
   "operation_shapes": [
     {"name": "vendor.function", "shape": "func_like"},
-    {"name": "vendor.invoke", "shape": "call_like"}
+    {"name": "vendor.invoke", "shape": "call_like", "callee_attribute": "target"}
   ],
   "operation_formats": [
     {"name": "vendor.widen", "format": "$operands attr-dict `:` type($operands) `into` type($results)"}
@@ -117,7 +118,7 @@ the caller's default registry; include every preset and built-in you need.
 | --- | --- |
 | `presets` | Bundled registry names. Defaults to an empty list. |
 | `builtins` | Operation names selected from the baseline catalog. Required; may be empty. |
-| `operation_shapes` | Exact operation names paired with reusable grammars. Required; may be empty. |
+| `operation_shapes` | Exact operation names paired with reusable grammars. A `call_like` entry may set `callee_attribute`. Required; may be empty. |
 | `operation_formats` | Exact operation names paired with validated format descriptions. Defaults to an empty list. |
 | `operation_alternatives` | Exact operation names paired with two or more ordered shape or format alternatives. Defaults to an empty list. |
 
@@ -142,6 +143,10 @@ Python exposes the same names as uppercase `OperationShape` members.
 | `operand_clauses` | SSA operands mixed with fixed clauses and simple named attributes before a trailing type signature. |
 | `region_clauses` | Operands and clauses with parsed regions and entry-block header bindings. |
 
+`call_like` uses the `callee` attribute by default. Set `callee_attribute` when
+the generic form stores the target symbol under another dotted ASCII attribute
+name. `reachable` and `closure` use this metadata for direct-call traversal.
+
 Clause shapes retain structural information for inspection. They do not interpret
 the dialect-specific meaning of fixed clauses. A similar-looking type trailer is
 not enough to justify a shape: a type describing a stored value, for example,
@@ -157,7 +162,7 @@ attribute dictionary, and type assignments. The supported elements are:
 | `$operands` | Zero or more comma-separated SSA operands. |
 | `$operands[0]`, `$operands[1]`, ... | A fixed number of SSA operands. Indices must occur once, in order from zero. Put a `` `,` `` literal between them. |
 | `$value` | An inline literal attribute stored as `value`. |
-| `$callee` | A symbol reference stored as `callee`. This does not enable dependency traversal by itself. |
+| `$callee` | A symbol reference stored as `callee` and recognized by direct-call dependency traversal. |
 | `attr-dict` | An attribute dictionary when one is present. The directive may occur at most once and may be omitted from the description. |
 | `` `token` `` | One exact MLIR lexer token, such as `` `:` ``, `` `->` ``, `` `to` ``, or `` `as` ``. |
 | `type(...)` | One type assigned to one or more listed targets. Aggregate operand and result targets also accept parenthesized type lists. |
@@ -216,6 +221,9 @@ config = zirium.RegistryConfig(
     builtins=["builtin.module"],
     operation_shapes=[
         zirium.OperationShapeConfig(name="vendor.function", shape="func_like"),
+        zirium.OperationShapeConfig(
+            name="vendor.invoke", shape="call_like", callee_attribute="target"
+        ),
     ],
 )
 registry = zirium.DialectRegistry.from_config(config)
@@ -267,8 +275,8 @@ required before a path beginning with a dash.
 The CLI can select or count recovered unknown custom operations. It rejects
 other syntax errors and semantic lowering diagnostics. Semantic mutations
 require a complete document. `closure` also requires registered reference
-semantics; a func-like or call-like shape alone does not supply vendor dependency
-semantics.
+semantics. Function-like definitions and direct calls have built-in symbol
+conventions; other vendor symbol uses must define their semantics in Rust.
 
 Output uses the selected-fragment printer, even when the selection contains the
 whole input. See the [query language reference](query-language.md) for that
@@ -284,7 +292,8 @@ and `DialectRegistry::declarative(...)` selects built-ins by name.
 
 `operation_names()` enumerates static, shape-backed, and format-backed
 registrations. `operation_shape(name)` returns the `OperationShape` assigned to
-a shape-backed name. `declarative(...)` deliberately selects only built-in
+a shape-backed name. `call_target_attribute(name)` returns the target attribute
+for a registered direct call, if any. `declarative(...)` deliberately selects only built-in
 implementations; use configuration or `extend_operation_shapes(...)` for a
 caller-owned mnemonic whose grammar Zirium cannot infer from its name.
 
@@ -304,8 +313,9 @@ contracts.
 Shapes and format descriptions supply parsing and lowering conventions. They
 do not define a vendor operation's verifier, symbol-table rules, or custom
 printer. A `func_like` shape defines its `sym_name` in the enclosing symbol
-table, and a `call_like` shape declares its `callee` symbol use. These conventions
-support direct reference traversal without making the operation equivalent to `func.func` for every semantic analysis. Bundled dialect presets
+table, and a `call_like` shape declares a symbol use through `callee` or its
+configured `callee_attribute`. These conventions support direct reference
+traversal without making the operation equivalent to `func.func` for every semantic analysis. Bundled dialect presets
 likewise provide selected structural support, not full dialect implementations.
 
 `lower_strict()` rejects lowering errors; it does not replace

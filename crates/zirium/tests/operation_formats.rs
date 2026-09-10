@@ -1,5 +1,5 @@
 use zirium::{
-    dialect::{DeclarativeRegistryError, RegistryConfig},
+    dialect::{DeclarativeRegistryError, DialectRegistry, RegistryConfig},
     parser::{ParseDiagnosticKind, ParsedFile},
     query::{Query, QueryOutput},
     semantic::{LoweringMode, lower_with_dialect_registry},
@@ -394,6 +394,121 @@ fn alternatives_require_consistent_symbol_behavior() {
     assert!(matches!(
         inconsistent.build(),
         Err(DeclarativeRegistryError::InvalidOperationAlternatives(name)) if name == "test.choice"
+    ));
+}
+
+#[test]
+fn configured_call_target_attribute_drives_dependency_queries() {
+    let registry = RegistryConfig::from_json(
+        r#"{
+          "builtins": ["builtin.module"],
+          "operation_shapes": [
+            {"name":"vendor.function","shape":"func_like"},
+            {"name":"vendor.invoke","shape":"call_like","callee_attribute":"target"},
+            {"name":"vendor.body","shape":"variadic_operands"}
+          ]
+        }"#,
+    )
+    .unwrap()
+    .build()
+    .unwrap();
+    assert_eq!(
+        registry.call_target_attribute("vendor.invoke"),
+        Some("target")
+    );
+    assert_eq!(
+        DialectRegistry::baseline().call_target_attribute("func.call"),
+        Some("callee")
+    );
+    assert_eq!(registry.call_target_attribute("vendor.function"), None);
+
+    let source = br#"module {
+  "vendor.function"() ({
+  ^bb0:
+    "vendor.body"() : () -> ()
+  }) {sym_name = "target", type = () -> ()} : () -> ()
+  "vendor.invoke"() {target = @target} : () -> ()
+  vendor.invoke @target() : () -> ()
+}"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let mut document = lowered.document.unwrap();
+
+    for (source, expected) in [
+        (
+            r#"filter(op("vendor.invoke")) | reachable | names"#,
+            vec!["vendor.body", "vendor.invoke", "vendor.invoke"],
+        ),
+        (
+            r#"filter(op("vendor.invoke")) | closure | names"#,
+            vec![
+                "vendor.function",
+                "vendor.body",
+                "vendor.invoke",
+                "vendor.invoke",
+            ],
+        ),
+    ] {
+        let query = Query::parse(source).unwrap();
+        let mut outputs = Vec::new();
+        query
+            .evaluate(&mut document, &registry, |_, output| {
+                outputs.push(output);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            outputs,
+            [QueryOutput::Values(
+                expected.into_iter().map(str::to_owned).collect()
+            )]
+        );
+    }
+}
+
+#[test]
+fn call_target_attribute_requires_a_valid_call_like_registration() {
+    for json in [
+        r#"{"builtins":[],"operation_shapes":[
+          {"name":"vendor.function","shape":"func_like","callee_attribute":"target"}
+        ]}"#,
+        r#"{"builtins":[],"operation_shapes":[
+          {"name":"vendor.invoke","shape":"call_like","callee_attribute":"bad-name"}
+        ]}"#,
+    ] {
+        let error = match RegistryConfig::from_json(json).unwrap().build() {
+            Ok(_) => panic!("invalid call-target registration was accepted"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            DeclarativeRegistryError::InvalidCallTargetAttribute(name)
+                if name.starts_with("vendor.")
+        ));
+    }
+
+    let default = RegistryConfig::from_json(
+        r#"{"builtins":[],"operation_shapes":[
+          {"name":"vendor.invoke","shape":"call_like"}
+        ]}"#,
+    )
+    .unwrap();
+    let custom = RegistryConfig::from_json(
+        r#"{"builtins":[],"operation_shapes":[
+          {"name":"vendor.invoke","shape":"call_like","callee_attribute":"target"}
+        ]}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        RegistryConfig::build_many(&[default, custom]),
+        Err(DeclarativeRegistryError::ConflictingCallTargetAttribute(name))
+            if name == "vendor.invoke"
     ));
 }
 

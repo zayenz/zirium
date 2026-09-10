@@ -8,8 +8,8 @@ use std::{
 use crate::{
     dialect::DialectRegistry,
     semantic::{
-        AttributeSpec, AttributeValue, CfBrOp, CfCondBrOp, Document, FuncCallOp, OperationId,
-        Successor, UseSite, ValueId, ValueReference, decode_mlir_string,
+        AttributeSpec, AttributeValue, CfBrOp, CfCondBrOp, Document, OperationId, Successor,
+        UseSite, ValueId, ValueReference, decode_mlir_string,
     },
 };
 
@@ -1127,10 +1127,9 @@ fn evaluate_reachable(
         let name = document
             .operation_name(operation)
             .unwrap_or("<invalid operation>");
-        let shape = registry.operation_shape(name);
         if document.operation_is_unparsed(operation) == Some(true)
             || (registry.operation(name).is_none()
-                && shape.is_none()
+                && registry.operation_shape(name).is_none()
                 && registry.operation_format(name).is_none()
                 && registry.operation_grammars(name).is_none())
         {
@@ -1140,20 +1139,14 @@ fn evaluate_reachable(
         }
         // Region-bearing operations include their explicitly represented bodies.
         retain_subtree(document, operation, &mut selection, budget)?;
-        let is_call = name == "func.call"
-            || shape == Some(crate::dialect::OperationShape::CallLike)
-            || registry
-                .operation_grammars(name)
-                .is_some_and(|grammars| grammars.iter().all(|grammar| grammar.is_direct_call()));
-        if is_call {
-            let callee = document
-                .attribute_id(operation, "callee")
-                .and_then(|id| document.attribute_spelling_value(id))
-                .ok_or_else(|| {
-                    EvaluationError::new(format!("reachable encountered `{name}` without a callee"))
-                })?;
+        if let Some(attribute) = registry.call_target_attribute(name) {
+            let callee = call_target_spelling(document, operation, attribute).ok_or_else(|| {
+                EvaluationError::new(format!(
+                    "reachable encountered `{name}` without call-target attribute `{attribute}`"
+                ))
+            })?;
             let target = document
-                .checked_lookup_symbol(operation, callee, registry)
+                .checked_lookup_symbol(operation, &callee, registry)
                 .map_err(|error| {
                     EvaluationError::new(format!("reachable could not look up `{callee}`: {error}"))
                 })?
@@ -1225,11 +1218,11 @@ fn evaluate_closure(
         let name = document
             .operation_name(operation)
             .unwrap_or("<invalid operation>");
-        let shape = registry.operation_shape(name);
-        if registry.operation(name).is_none()
-            && (shape.is_none() || shape == Some(crate::dialect::OperationShape::CallLike))
-            && registry.operation_format(name).is_none()
-            && registry.operation_grammars(name).is_none()
+        if document.operation_is_unparsed(operation) == Some(true)
+            || (registry.operation(name).is_none()
+                && registry.operation_shape(name).is_none()
+                && registry.operation_format(name).is_none()
+                && registry.operation_grammars(name).is_none())
         {
             return Err(EvaluationError {
                 message: format!(
@@ -1237,22 +1230,40 @@ fn evaluate_closure(
                 ),
             });
         }
-        if let Some(call) = FuncCallOp::cast(document, operation) {
-            let callee = call.callee().ok_or_else(|| EvaluationError {
-                message: "closure encountered a func.call without a callee".to_owned(),
+        if let Some(attribute) = registry.call_target_attribute(name) {
+            let callee = call_target_spelling(document, operation, attribute).ok_or_else(|| {
+                EvaluationError {
+                    message: if name == "func.call" {
+                        "closure encountered a func.call without a callee".to_owned()
+                    } else {
+                        format!(
+                            "closure encountered `{name}` without call-target attribute `{attribute}`"
+                        )
+                    },
+                }
             })?;
             let target = document
-                    .checked_lookup_symbol(operation, callee, registry)
-                    .map_err(|error| EvaluationError {
-                        message: format!(
-                            "closure could not look up func.call callee `{callee}`: {error}"
-                        ),
-                    })?
-                    .ok_or_else(|| EvaluationError {
-                        message: format!(
+                .checked_lookup_symbol(operation, &callee, registry)
+                .map_err(|error| EvaluationError {
+                    message: if name == "func.call" {
+                        format!("closure could not look up func.call callee `{callee}`: {error}")
+                    } else {
+                        format!(
+                            "closure could not look up `{name}` target `{callee}`: {error}"
+                        )
+                    },
+                })?
+                .ok_or_else(|| EvaluationError {
+                    message: if name == "func.call" {
+                        format!(
                             "closure could not resolve func.call callee `{callee}` in an enclosing symbol table"
-                        ),
-                    })?;
+                        )
+                    } else {
+                        format!(
+                            "closure could not resolve `{name}` target `{callee}` in an enclosing symbol table"
+                        )
+                    },
+                })?;
             retain_subtree(document, target, &mut selection, budget)?;
         }
         if let Some(branch) = CfBrOp::cast(document, operation) {
@@ -1276,7 +1287,7 @@ fn evaluate_closure(
                 message: format!("closure does not yet support successor references on `{name}`"),
             });
         }
-        if registry.symbols(name).uses_symbols && name != "func.call" {
+        if registry.symbols(name).uses_symbols && registry.call_target_attribute(name).is_none() {
             return Err(EvaluationError {
                 message: format!("closure does not yet support symbol references on `{name}`"),
             });
@@ -1311,6 +1322,22 @@ fn evaluate_closure(
         .operations()
         .filter(|operation| selection.selected.contains(operation))
         .collect())
+}
+
+fn call_target_spelling(
+    document: &Document,
+    operation: OperationId,
+    attribute: &str,
+) -> Option<String> {
+    document
+        .attribute_id(operation, attribute)
+        .or_else(|| {
+            (attribute != "callee")
+                .then(|| document.attribute_id(operation, "callee"))
+                .flatten()
+        })
+        .and_then(|id| document.attribute_spelling_value(id))
+        .map(str::to_owned)
 }
 
 fn retain_successor_region(

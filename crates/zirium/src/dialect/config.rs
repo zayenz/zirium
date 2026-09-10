@@ -28,6 +28,8 @@ pub struct RegistryConfig {
 pub struct OperationShapeConfig {
     pub name: String,
     pub shape: OperationShape,
+    #[serde(default)]
+    pub callee_attribute: Option<String>,
 }
 
 /// One named operation using a validated format description.
@@ -59,6 +61,7 @@ type ExpandedRegistry = (
     BTreeMap<String, OperationShape>,
     BTreeMap<String, String>,
     BTreeMap<String, Vec<OperationGrammarConfig>>,
+    BTreeMap<String, String>,
 );
 
 const PRESET_NAMES: &[&str] = &[
@@ -206,9 +209,15 @@ impl RegistryConfig {
         let mut shapes = BTreeMap::new();
         let mut formats = BTreeMap::new();
         let mut alternatives = BTreeMap::new();
+        let mut call_target_attributes = BTreeMap::new();
         for config in configs {
-            let (config_builtins, config_shapes, config_formats, config_alternatives) =
-                config.expanded()?;
+            let (
+                config_builtins,
+                config_shapes,
+                config_formats,
+                config_alternatives,
+                config_call_target_attributes,
+            ) = config.expanded()?;
             builtins.extend(config_builtins);
             for (name, shape) in config_shapes {
                 if let Some(previous) = shapes.insert(name.clone(), shape)
@@ -231,14 +240,36 @@ impl RegistryConfig {
                     return Err(DeclarativeRegistryError::ConflictingAlternatives(name));
                 }
             }
+            for (name, attribute) in config_call_target_attributes {
+                if let Some(previous) =
+                    call_target_attributes.insert(name.clone(), attribute.clone())
+                    && previous != attribute
+                {
+                    return Err(DeclarativeRegistryError::ConflictingCallTargetAttribute(
+                        name,
+                    ));
+                }
+            }
         }
-        Self::build_entries(builtins, shapes, formats, alternatives)
+        Self::build_entries(
+            builtins,
+            shapes,
+            formats,
+            alternatives,
+            call_target_attributes,
+        )
     }
 
     /// Validates all registrations and constructs an owned registry.
     pub fn build(&self) -> Result<DialectRegistry, DeclarativeRegistryError> {
-        let (builtins, shapes, formats, alternatives) = self.expanded()?;
-        Self::build_entries(builtins, shapes, formats, alternatives)
+        let (builtins, shapes, formats, alternatives, call_target_attributes) = self.expanded()?;
+        Self::build_entries(
+            builtins,
+            shapes,
+            formats,
+            alternatives,
+            call_target_attributes,
+        )
     }
 
     fn expanded(&self) -> Result<ExpandedRegistry, DeclarativeRegistryError> {
@@ -247,6 +278,7 @@ impl RegistryConfig {
         let mut shapes = BTreeMap::new();
         let mut formats = BTreeMap::new();
         let mut alternatives = BTreeMap::new();
+        let mut call_target_attributes = BTreeMap::new();
         for name in &self.presets {
             if !seen_presets.insert(name.as_str()) {
                 return Err(DeclarativeRegistryError::DuplicatePreset(name.clone()));
@@ -254,8 +286,13 @@ impl RegistryConfig {
             let json = preset_json(name)
                 .ok_or_else(|| DeclarativeRegistryError::UnknownPreset(name.clone()))?;
             let preset = Self::from_json(json).expect("bundled registry preset must be valid");
-            let (preset_builtins, preset_shapes, preset_formats, preset_alternatives) =
-                preset.expanded()?;
+            let (
+                preset_builtins,
+                preset_shapes,
+                preset_formats,
+                preset_alternatives,
+                preset_call_target_attributes,
+            ) = preset.expanded()?;
             builtins.extend(preset_builtins);
             for (name, shape) in preset_shapes {
                 if let Some(previous) = shapes.insert(name.clone(), shape)
@@ -268,6 +305,16 @@ impl RegistryConfig {
                 formats.insert(name, format);
             }
             alternatives.extend(preset_alternatives);
+            for (name, attribute) in preset_call_target_attributes {
+                if let Some(previous) =
+                    call_target_attributes.insert(name.clone(), attribute.clone())
+                    && previous != attribute
+                {
+                    return Err(DeclarativeRegistryError::ConflictingCallTargetAttribute(
+                        name,
+                    ));
+                }
+            }
         }
 
         let mut explicit_builtins = BTreeSet::new();
@@ -290,6 +337,24 @@ impl RegistryConfig {
                 return Err(DeclarativeRegistryError::ConflictingShape(
                     operation.name.clone(),
                 ));
+            }
+            if let Some(attribute) = operation.callee_attribute.as_deref()
+                && (operation.shape != OperationShape::CallLike || !valid_attribute_name(attribute))
+            {
+                return Err(DeclarativeRegistryError::InvalidCallTargetAttribute(
+                    operation.name.clone(),
+                ));
+            }
+            if operation.shape == OperationShape::CallLike {
+                let attribute = operation.callee_attribute.as_deref().unwrap_or("callee");
+                if let Some(previous) =
+                    call_target_attributes.insert(operation.name.clone(), attribute.to_owned())
+                    && previous != attribute
+                {
+                    return Err(DeclarativeRegistryError::ConflictingCallTargetAttribute(
+                        operation.name.clone(),
+                    ));
+                }
             }
         }
         let mut explicit_formats = BTreeSet::new();
@@ -340,7 +405,13 @@ impl RegistryConfig {
                 ));
             }
         }
-        Ok((builtins, shapes, formats, alternatives))
+        Ok((
+            builtins,
+            shapes,
+            formats,
+            alternatives,
+            call_target_attributes,
+        ))
     }
 
     fn build_entries(
@@ -348,6 +419,7 @@ impl RegistryConfig {
         shapes: BTreeMap<String, OperationShape>,
         formats: BTreeMap<String, String>,
         alternatives: BTreeMap<String, Vec<OperationGrammarConfig>>,
+        call_target_attributes: BTreeMap<String, String>,
     ) -> Result<DialectRegistry, DeclarativeRegistryError> {
         let builtins = builtins.iter().map(String::as_str).collect::<Vec<_>>();
         let shapes = shapes
@@ -365,7 +437,21 @@ impl RegistryConfig {
                 registry
                     .extend_operation_alternatives(&alternatives.into_iter().collect::<Vec<_>>())
             })
+            .map(|registry| {
+                registry.with_call_target_attributes(call_target_attributes.into_iter().collect())
+            })
     }
+}
+
+fn valid_attribute_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.split('.').all(|component| {
+            let mut chars = component.chars();
+            chars
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+                && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
 }
 
 /// Reading, deserializing, or constructing a registry failed.

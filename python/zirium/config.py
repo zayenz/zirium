@@ -23,6 +23,15 @@ class OperationShapeConfig(BaseModel):
         "operand_clauses",
         "region_clauses",
     ]
+    callee_attribute: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def validate_callee_attribute(self):
+        if self.callee_attribute is not None and self.shape != "call_like":
+            raise ValueError("callee_attribute requires a call_like shape")
+        return self
 
 
 class OperationFormatConfig(BaseModel):

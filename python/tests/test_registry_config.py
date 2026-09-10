@@ -173,6 +173,26 @@ def test_registry_contents_are_introspectable():
     assert registry.operation_shape("vendor.formatted") is None
     assert registry.operation_shape("vendor.missing") is None
 
+
+def test_call_target_attribute_is_configurable_and_introspectable():
+    call = zirium.OperationShapeConfig(
+        name="vendor.invoke", shape="call_like", callee_attribute="target"
+    )
+    registry = zirium.DialectRegistry.from_config(
+        {"builtins": [], "operation_shapes": [call.model_dump()]}
+    )
+
+    assert registry.call_target_attribute("vendor.invoke") == "target"
+    assert zirium.DialectRegistry.baseline().call_target_attribute("func.call") == "callee"
+    assert registry.call_target_attribute("vendor.missing") is None
+
+    with pytest.raises(ValueError, match="requires a call_like shape"):
+        zirium.OperationShapeConfig(
+            name="vendor.function",
+            shape="func_like",
+            callee_attribute="target",
+        )
+
     assert "scf.for" in zirium.DialectRegistry.from_name("scf").operation_names()
 
 
