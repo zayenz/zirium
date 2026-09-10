@@ -1,10 +1,15 @@
-# MLIR 22.1 corpus manifest
+# MLIR 22.1 corpus
 
-`manifest.toml` fixes compatibility evidence to `llvmorg-22.1.0`. Each owned lexical or grammar family must name the upstream implementation file and parsing or lexing rule used as authority, every positive fixture and its source, intentional Zirium differences, and the applicable license notice. Add one `[[families]]` entry per family; do not treat a sampled fixture or the MLIR documentation as a complete grammar.
+[`manifest.toml`](manifest.toml) records the grammar and fixture sources for
+compatibility with `llvmorg-22.1.0`. Add one `[[families]]` entry for each lexical
+or grammar family. Each entry identifies the upstream implementation and rule,
+positive fixtures and their sources, intentional Zirium differences, and
+applicable license notices. A sampled fixture alone does not define the grammar.
 
-`generic-baseline/` contains the project-authored positive fixture from the base brief and focused malformed recovery variants. They contain no copied LLVM source text and therefore need no LLVM license notice beyond that fact.
+`generic-baseline/` contains project-authored generic MLIR and focused malformed
+variants for testing recovery. These fixtures contain no copied LLVM source.
 
-`lexer.mlir` is a compact project-authored checklist fixture. The manifest ties
-each family it exercises to the tagged implementation source. Zirium retains
-whitespace and comments, accepts arbitrary bytes, recovers with invalid tokens,
-and applies explicit file and token limits.
+`lexer.mlir` is a compact, project-authored fixture covering lexical forms. The
+manifest links each family to the tagged upstream implementation. Zirium
+preserves whitespace and comments, accepts arbitrary bytes, recovers with
+invalid tokens, and applies explicit file and token limits.

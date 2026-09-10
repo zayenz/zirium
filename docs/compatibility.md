@@ -1,13 +1,15 @@
 # Compatibility and local wheel checks
 
-Zirium 0.0.11 requires Rust 1.88 or newer and supports version-specific CPython
+Zirium 0.0.12 requires Rust 1.88 or newer and supports version-specific CPython
 extensions for conventional CPython 3.11 through 3.14. Published wheels support
 Linux x86_64 and macOS arm64, and the CI quality workflow checks both platforms.
 Source builds may work elsewhere, but other platforms are unsupported. This
 release does not use `abi3` or `abi3t`. CPython 3.14 free-threaded builds remain
 experimental and unsupported.
 
-Run the complete local Rust quality gate. The commands match the CI jobs:
+## Rust checks
+
+Run these commands from the repository root. They match the CI jobs:
 
 ```sh
 cargo fmt --check
@@ -52,7 +54,7 @@ target/python-3.14t/bin/pytest
 The parsing, file I/O, lowering, edit commit, verification, printing, and
 structural-comparison entry points release Python while doing Rust-only work.
 The Python tests include concurrent semantic reads and editing checks; run the
-same test suite in both conventional and free-threaded lanes.
+same test suite with both conventional and free-threaded interpreters.
 
 ## Build and import a local wheel
 
@@ -90,12 +92,22 @@ check that version's wheel. Build an sdist and validate it with:
 uv build --sdist --python 3.14 --out-dir target/sdist --clear
 uv run --locked --no-sync twine check target/sdist/*
 ```
+
 ## Resource limits
 
-Rust callers can use `ParsedFile::parse_with_limits` with `ParseLimits`. Python's `parse_bytes`, `parse_text`, and `parse_file` accept the same limits as keyword-only arguments: `max_file_bytes`, `max_tokens`, `max_delimiter_depth`, `max_payload_bytes`, `max_numeric_literal_bytes`, `max_attribute_depth`, and `max_alias_expansion_depth`. Existing calls keep their current defaults.
+Rust callers can use `ParsedFile::parse_with_limits` with `ParseLimits`.
+Python's `parse_bytes`, `parse_text`, and `parse_file` accept the same limits as
+keyword-only arguments: `max_file_bytes`, `max_tokens`, `max_delimiter_depth`,
+`max_payload_bytes`, `max_numeric_literal_bytes`, `max_attribute_depth`, and
+`max_alias_expansion_depth`. Omitted limits use their defaults.
 
-Exceeding `max_file_bytes` rejects the input before lexing (`ParseFileError::ResourceLimit` in Rust and `ResourceLimitError` in Python). Other syntax limits produce a lossless parsed file with diagnostics. Attribute-depth exhaustion during lowering produces an invalid attribute sentinel: strict lowering has no document, while best-effort lowering returns a document only when it remains structurally valid.
-The alias expansion limit defaults to 64 and covers type, attribute, affine,
-memref, and location aliases through one shared budget. Exhaustion produces an
-invalid semantic value and the diagnostic `alias expansion depth exceeds limit
-of 64`, with the effective limit substituted.
+Exceeding `max_file_bytes` rejects the input before lexing
+(`ParseFileError::ResourceLimit` in Rust and `ResourceLimitError` in Python).
+Other syntax limits produce a lossless parsed file with diagnostics. Exceeding
+the attribute-depth limit during lowering produces an invalid attribute
+placeholder. Strict lowering returns no document; best-effort lowering returns
+one only if its structure remains valid. The alias expansion limit defaults to
+64 and covers type, attribute, affine, memref, and location aliases through one
+shared budget. Exceeding the limit produces an invalid semantic value and the
+diagnostic `alias expansion depth exceeds limit of 64`, with the effective limit
+substituted.

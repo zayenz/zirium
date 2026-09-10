@@ -1,26 +1,29 @@
-# Lexer fuzzing
+# Fuzzing
 
-The fuzz package is intentionally excluded from the workspace default gate.
-Run a bounded arbitrary-byte reconstruction smoke test with:
+The fuzz package runs separately from the workspace checks. Each command below
+runs a target for five seconds.
+
+## Lexer
+
+The lexer target checks that arbitrary bytes can be reconstructed exactly:
 
 ```sh
 (cd fuzz && RUSTC_BOOTSTRAP=1 cargo fuzz run lexer -- -max_total_time=5)
 ```
 
-# Parser fuzzing
+## Parser
 
-The parser target checks arbitrary bytes for lossless reconstruction, bounded
-completion, and a structurally valid CST. Run the bounded smoke check with:
+The parser target checks lossless reconstruction, bounded completion, and CST
+structure for arbitrary input:
 
 ```sh
 (cd fuzz && RUSTC_BOOTSTRAP=1 cargo fuzz run parser -- -max_total_time=5)
 ```
 
-# Semantic lowering fuzzing
+## Semantic lowering
 
-The semantic target parses bounded input through the registered baseline
-dialects, runs strict and best-effort lowering, and inspects every document that
-lowering returns. Run the bounded smoke check with:
+The semantic target parses bounded input with the baseline registry, runs strict
+and best-effort lowering, and checks each returned document:
 
 ```sh
 (cd fuzz && RUSTC_BOOTSTRAP=1 cargo fuzz run semantic_lowering -- -max_len=4096 -max_total_time=5)

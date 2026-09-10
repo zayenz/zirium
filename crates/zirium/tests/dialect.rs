@@ -290,7 +290,7 @@ fn tensor_preset_inventory_and_recovery_match_llvm_22_1() {
     let config = RegistryConfig::from_json(include_str!("../registries/tensor.json")).unwrap();
     assert_eq!(config.operation_shapes.len(), 4);
     assert!(config.operation_formats.is_empty());
-    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(registry.operation_names().count(), 8);
     for (name, shape) in [
         ("tensor.bitcast", OperationShape::UnaryOperand),
         ("tensor.cast", OperationShape::UnaryOperand),
@@ -2965,7 +2965,7 @@ fn llvm_preset_inventory_matches_llvm_22_1_assembly_families() {
     // LLVMOps.td contains 80 concrete operations and LLVMIntrinsicOps.td 204.
     // The preset covers 43 core and 95 intrinsic custom forms plus four core
     // container operations inherited by every bundled dialect preset.
-    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(registry.operation_names().count(), 142);
     assert_eq!(
         registry.operation_shape("llvm.add"),
         Some(OperationShape::BinaryOperands)
@@ -4979,6 +4979,7 @@ fn complete_baseline_dialect_fixture_verifies_and_round_trips_both_modes() {
             "arith.constant",
             "cf.br",
             "cf.cond_br",
+            "arith.addi",
         ]
     );
     assert_eq!(
@@ -5711,7 +5712,7 @@ fn ml_program_preset_inventory_matches_llvm_22_1_recovery_coverage() {
     let registry = DialectRegistry::from_name("ml_program").unwrap();
     let config = RegistryConfig::from_json(include_str!("../registries/ml_program.json")).unwrap();
     assert_eq!(config.operation_shapes.len(), 2);
-    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(registry.operation_names().count(), 6);
 
     for name in ["ml_program.output", "ml_program.return"] {
         assert_eq!(
@@ -7434,7 +7435,7 @@ fn quant_preset_inventory_matches_llvm_22_1_complete_coverage() {
     let config = RegistryConfig::from_json(include_str!("../registries/quant.json")).unwrap();
     assert!(config.operation_shapes.is_empty());
     assert_eq!(config.operation_formats.len(), 3);
-    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(registry.operation_names().count(), 7);
     assert_eq!(
         config
             .operation_formats
@@ -7847,7 +7848,7 @@ fn shape_preset_inventory_matches_llvm_22_1_conservative_coverage() {
     let config = RegistryConfig::from_json(include_str!("../registries/shape.json")).unwrap();
     assert_eq!(config.operation_shapes.len(), 20);
     assert!(config.operation_formats.is_empty());
-    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(registry.operation_names().count(), 24);
 
     for (name, shape) in [
         ("shape.add", OperationShape::BinaryOperands),
@@ -8054,7 +8055,7 @@ fn smt_preset_inventory_and_recovery_match_llvm_22_1() {
     let registry = DialectRegistry::from_name("smt").unwrap();
     let config = RegistryConfig::from_json(include_str!("../registries/smt.json")).unwrap();
     assert_eq!(config.operation_shapes.len(), 16);
-    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(registry.operation_names().count(), 20);
 
     for operation in &config.operation_shapes {
         assert_eq!(
@@ -8749,7 +8750,7 @@ fn ub_preset_inventory_and_recovery_match_llvm_22_1() {
     let config = RegistryConfig::from_json(include_str!("../registries/ub.json")).unwrap();
     assert_eq!(config.operation_shapes.len(), 2);
     assert!(config.operation_formats.is_empty());
-    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(registry.operation_names().count(), 6);
     for (name, shape) in [
         ("ub.poison", OperationShape::VariadicOperands),
         (
@@ -8847,7 +8848,7 @@ fn wasmssa_preset_inventory_and_recovery_match_llvm_22_1() {
     let config = RegistryConfig::from_json(include_str!("../registries/wasmssa.json")).unwrap();
     assert_eq!(config.operation_shapes.len(), 1);
     assert!(config.operation_formats.is_empty());
-    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(registry.operation_names().count(), 5);
     assert_eq!(
         registry.operation_shape("wasmssa.return"),
         Some(OperationShape::AttrFirstOptionalTypedOperands)

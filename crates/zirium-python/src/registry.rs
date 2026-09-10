@@ -94,6 +94,19 @@ impl DialectRegistryHandle {
         PyTuple::new(py, DialectRegistry::preset_names())
     }
 
+    fn operation_names<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let mut names = self.kind.registry().operation_names().collect::<Vec<_>>();
+        names.sort_unstable();
+        PyTuple::new(py, names)
+    }
+
+    fn operation_shape(&self, name: &str) -> Option<&'static str> {
+        self.kind
+            .registry()
+            .operation_shape(name)
+            .map(CoreOperationShape::name)
+    }
+
     #[staticmethod]
     fn from_name(name: &str) -> PyResult<Self> {
         let registry = DialectRegistry::from_name(name).map_err(py_error)?;

@@ -9,7 +9,7 @@ tag to one commit, runs the full Quality workflow against that commit, and
 publishes only the checked artifacts. After the checks pass, approve the
 `crates-io` and `pypi` deployments to publish both packages.
 
-## Prepare the registries and repository
+## Trusted publishing setup
 
 Both registries use trusted publishing for the `zirium` package. Each trusts
 GitHub owner `zayenz`, repository `zirium`, and workflow `release.yml`, with a
@@ -44,12 +44,13 @@ cargo package -p zirium --list
 Review the generated crate under `target/package/`, the source-distribution
 archive, and a locally built version-specific wheel. Commit the final release
 changes, then wait for the Quality workflow to pass on the committed candidate
-before tagging it. Creating and pushing the tag, approving deployments, and
-publishing remain user-owned actions.
+before tagging it. The release maintainer creates and pushes the tag and
+approves publication.
 
 ## Publish a version
 
-Tag the checked commit and push only that tag. For example, for 0.0.3:
+Tag the checked commit and push only that tag. The commands below use 0.0.3
+as an example; substitute the version being released throughout.
 
 ```sh
 git tag -a v0.0.3 -m "Zirium 0.0.3"
@@ -88,7 +89,7 @@ Check the crates.io, docs.rs, and PyPI pages before announcing the release.
 The two uploads are not atomic. If one succeeds and the other fails, rerun only
 the failed publishing job. Do not rerun a successful upload.
 
-Keep published release tags unchanged. If the workflow itself needs a fix,
+Do not move or replace a published release tag. If the workflow itself needs a fix,
 commit it to `main`, then run the updated workflow against the existing tag.
 Select only the registry whose upload has not succeeded:
 

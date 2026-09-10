@@ -1,12 +1,15 @@
 # Getting started with Zirium
 
-This guide takes a source checkout through the two main Zirium workflows: using the Rust crate and building the Python extension. Both APIs follow the same sequence:
+Build Zirium from a source checkout to use the Rust crate or develop the Python
+extension. Both APIs follow the same sequence:
 
 ```text
 source bytes -> parsed file -> semantic document -> verification/editing -> output
 ```
 
-Keep the parsed file when exact source text matters. Lower to a semantic document when the task needs resolved SSA values, types, symbols, verification, or structural edits.
+Keep the parsed file when exact source text matters. Lower to a semantic
+document for resolved SSA values, types, symbols, verification, or structural
+edits.
 
 ## Prerequisites
 
@@ -21,7 +24,8 @@ Python development also requires:
 - [`uv`](https://docs.astral.sh/uv/), used below to create the environment;
 - a working Rust toolchain so maturin can compile the extension.
 
-CPython 3.14 free-threaded builds are experimental. Zirium builds version-specific extensions and does not use `abi3`.
+CPython 3.14 free-threaded builds are experimental and unsupported. Zirium
+builds version-specific extensions and does not use `abi3`.
 
 ## Check the source tree
 
@@ -33,13 +37,8 @@ cd zirium
 cargo test --workspace
 ```
 
-If the checkout already exists, run the same test command from its root:
-
-```sh
-cargo test --workspace
-```
-
-This builds both workspace crates and runs the Rust tests. To generate and open the core API documentation:
+This builds both workspace crates and runs the Rust tests. To generate and open
+the core API documentation:
 
 ```sh
 cargo doc -p zirium --open
@@ -54,7 +53,9 @@ For a local consumer next to the Zirium checkout, point Cargo at the core crate:
 zirium = { path = "../zirium/crates/zirium" }
 ```
 
-The following program parses generic MLIR, checks for syntax diagnostics, lowers it strictly, validates the semantic structure, and prints canonical generic MLIR:
+The following program parses generic MLIR, checks for syntax diagnostics, lowers
+it strictly, validates the semantic structure, and prints canonical generic
+MLIR:
 
 ```rust
 use zirium::{
@@ -110,7 +111,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`ParsedFile::parse` uses the empty registry, which accepts generic quoted operation syntax. Use `ParsedFile::parse_with_registry` and pass the same registry to lowering and semantic verification when the input contains registered custom syntax.
+`ParsedFile::parse` uses the empty registry, which accepts generic quoted
+operation syntax. Use `ParsedFile::parse_with_registry` and pass the same
+registry to lowering and semantic verification when the input contains
+registered custom syntax.
 
 ## Build the Python package
 
@@ -128,7 +132,7 @@ extension imports:
 .venv/bin/python -c 'import zirium; print("zirium imported")'
 ```
 
-For a useful smoke test instead of an import-only check:
+To check parsing as well as importing:
 
 ```sh
 .venv/bin/python - <<'PY'
@@ -159,7 +163,9 @@ uv run --locked --no-sync pytest
 
 ## Parse syntax without lowering
 
-Syntax parsing is lossless even when the input is malformed. Diagnostics describe the problem, while the returned `File` still owns the original bytes and recoverable CST:
+Syntax parsing is lossless even when the input is malformed. Diagnostics
+describe the problem, while the returned `File` still owns the original bytes
+and recoverable CST:
 
 ```python
 import zirium
@@ -204,22 +210,27 @@ and indexes are snapshot-local and belong only to the source `File`; use
 checked scalar conversion. `File.node()` and `File.token()` create wrappers
 only when requested.
 
-Use `parse_text` for Python strings, `parse_bytes` for arbitrary bytes, and `parse_file` for a path. `parse_text` encodes its input as UTF-8. The other two paths preserve raw bytes, including invalid UTF-8.
-Diagnostic ranges are half-open byte offsets. `File.line_column()` converts an
-offset to a one-based line and column; columns count Unicode characters, with
-invalid UTF-8 replaced as it is when decoding Python-facing diagnostic text.
+Use `parse_text` for Python strings, `parse_bytes` for arbitrary bytes, and
+`parse_file` for a path. `parse_text` encodes its input as UTF-8. The other two
+paths preserve raw bytes, including invalid UTF-8. Diagnostic ranges are
+half-open byte offsets. `File.line_column()` converts an offset to a one-based
+line and column; columns count Unicode characters, with invalid UTF-8 replaced
+as it is when decoding Python-facing diagnostic text.
 
 ## Lower and verify semantic data
 
-Strict lowering returns no document when semantic resolution is incomplete. Best-effort lowering can return a structurally valid document containing invalid sentinels and diagnostics. That document is useful for inspection, but verification, editing, and canonical output reject it until it is complete.
+Strict lowering returns no document when semantic resolution is incomplete.
+Best-effort lowering can return a structurally valid document with diagnostics
+and placeholder values for unresolved data. You can inspect that document, but
+verification, editing, and canonical output require it to be complete.
 
 ```python
 import zirium
 
-parsed = zirium.parse_text('''\
+parsed = zirium.parse_text("""\
 %value = "example.make"() : () -> i32
 "example.consume"(%value) : (i32) -> ()
-''')
+""")
 
 result = parsed.lower_strict("semantic")
 if result.document is None:
@@ -246,18 +257,23 @@ follow first encounter order. The packed columns remain valid after edits;
 `operation(index)` checks the retained generation-checked ID and raises
 `StaleHandleError` if that operation was erased.
 
-`validate_structure()` checks ownership, IDs, parent-child links, and operand targets. `verify_semantics()` also runs the schemas and verifiers in the registry associated with the parsed file.
+`validate_structure()` checks ownership, IDs, parent-child links, and operand
+targets. `verify_semantics()` also runs the schemas and verifiers in the
+registry associated with the parsed file.
 
-For the fixed Builtin, Func, Arith, and CF baseline subset, construct a registry before parsing:
+For custom syntax, select the required built-ins before parsing. This example
+uses module, function, and return forms:
 
 ```python
 import zirium
 
-registry = zirium.DialectRegistry.declarative([
-    "builtin.module",
-    "func.func",
-    "func.return",
-])
+registry = zirium.DialectRegistry.declarative(
+    [
+        "builtin.module",
+        "func.func",
+        "func.return",
+    ]
+)
 
 parsed = zirium.parse_text(
     "builtin.module { func.func @main() { func.return } }",
@@ -269,7 +285,9 @@ result.document.verify_semantics()
 print(result.document.custom_bytes().decode(), end="")
 ```
 
-The registry is retained by the parsed file and semantic document, so it does not need to remain in a separate Python variable.
+The parsed file and semantic document retain the registry, so you do not need
+to keep a separate Python reference to it. See [custom formats](custom-formats.md)
+for bundled presets and caller-defined operations.
 
 ## Choose a retention profile
 
@@ -281,7 +299,8 @@ Lowering accepts three retention profiles:
 | `"syntax"` | `SyntaxOnly` | Semantic storage, source, and CST, without mappings | Semantic inspection that also needs the parsed syntax. |
 | `"hybrid"` | `Hybrid` | Semantic storage, source, CST, and sparse mappings | Semantic edits followed by source-preserving output. |
 
-The default is semantic-only. Hybrid retention costs more memory because the document keeps both representations.
+The default is semantic-only. Hybrid retention uses more memory because the
+document keeps both representations.
 
 ## Write output
 
@@ -297,15 +316,16 @@ Canonical output comes entirely from semantic storage:
 document.write_canonical("canonical.mlir")
 ```
 
-Canonical output normalizes formatting and names. It is intended for deterministic semantic output, not source fidelity.
+Canonical output normalizes formatting and names, producing the same text for
+the same semantic structure.
 
 Preserving output requires hybrid retention:
 
 ```python
-parsed = zirium.parse_text('''\
+parsed = zirium.parse_text("""\
 "template"() {tag = "new"} : () -> ()
 "target"() {tag = "old"} : () -> ()
-''')
+""")
 result = parsed.lower_strict("hybrid")
 assert result.document is not None, result.diagnostics
 document = result.document
@@ -342,7 +362,7 @@ their identity across commits. Erased operation handles raise
 Source-preserving output remains available after edits that can map back to an
 existing operation or block, such as the attribute replacement above. It copies
 unedited ranges directly and regenerates dirty ranges. Inserting or erasing an
-operation changes the semantic structure without a source range, so the
+operation invalidates the source mappings, so the
 document becomes semantic-only and preserving output is no longer available.
 
 ## Resource limits
@@ -362,16 +382,18 @@ parsed = zirium.parse_file(
 )
 ```
 
-Exceeding `max_file_bytes` raises `ResourceLimitError` before lexing. Other syntax limits return a lossless parsed file with diagnostics where recovery is possible. Rust callers configure the same boundaries with `ParseLimits` and `ParsedFile::parse_with_limits`.
-Alias expansion uses a shared budget across type, attribute, affine, memref, and
-location aliases. When an alias chain reaches `max_alias_expansion_depth`,
-lowering reports `alias expansion depth exceeds limit of 64`, with the selected
-limit in place of 64. The default is 64.
+Exceeding `max_file_bytes` raises `ResourceLimitError` before lexing. Other
+syntax limits return a lossless parsed file with diagnostics where recovery is
+possible. Rust callers configure the same boundaries with `ParseLimits` and
+`ParsedFile::parse_with_limits`. Alias expansion uses a shared budget across
+type, attribute, affine, memref, and location aliases. When an alias chain
+reaches `max_alias_expansion_depth`, lowering reports `alias expansion depth
+exceeds limit of 64`, with the selected limit in place of 64. The default is 64.
 
-## Where to go next
+## Further reading
 
-- [Compatibility and local wheel checks](compatibility.md) contains the full Rust quality gate and CPython test matrix.
+- [Compatibility and local wheel checks](compatibility.md) contains the full Rust checks and CPython test matrix.
 - [Syntax representation baseline](architecture/representation-baseline.md) explains the flat immutable CST.
-- [Processing benchmarks](architecture/processing-benchmarks.md) records the large-file measurement protocol and results.
+- [Processing benchmarks](architecture/processing-benchmarks.md) documents the large-file measurement protocol and results.
 - [`python/zirium/__init__.pyi`](../python/zirium/__init__.pyi) is the compact reference for the typed Python API.
 - [`crates/zirium/src/lib.rs`](../crates/zirium/src/lib.rs) links the public Rust modules and contains a minimal doctest.

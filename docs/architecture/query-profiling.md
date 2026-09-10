@@ -2,8 +2,7 @@
 
 The opt-in `query_profile` integration test measures query parsing and
 execution separately. It uses the release profile, a pre-lowered document,
-and a warmed evaluator. It reports timings rather than asserting a machine-
-dependent time limit.
+and a warmed evaluator. It reports timings without enforcing a machine-dependent time limit.
 
 ```sh
 # Quick check of the benchmark and its expected results.
@@ -52,7 +51,7 @@ Use runs on the same machine and compiler to compare revisions. There are no
 portable timing thresholds: the direct-filter comparison and scaling across
 width and depth are more useful than a pass/fail deadline.
 
-## Initial measurements
+## Recorded measurements
 
 Measured on Apple M1 Max, macOS arm64, rustc 1.98.1, using the release command
 above and the query implementation in `ad1d3c7`. No concurrent build was
@@ -87,8 +86,7 @@ Deep dependency slices show a different limit:
 Each fixed-point iteration reapplies the query to the entire current selection.
 Closure also scans document order when forming its result. On a chain, the
 selection grows one dependency step at a time, so this repeats increasing work
-and produces approximately quadratic growth. The current implementation is
-inexpensive for small queries and shallow slices, but it is not uniformly cheap
-for deep fixed points. An optimization of that path should preserve general
-fixed-point semantics, error handling, and per-iteration emissions, and be
-compared with these depth cases.
+and produces approximately quadratic growth. Deep slices were therefore
+substantially more expensive than shallow ones in this run. Use these depth
+cases when evaluating optimizations, and check that fixed-point semantics, error
+handling, and per-iteration emissions still hold.

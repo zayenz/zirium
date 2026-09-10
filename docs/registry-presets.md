@@ -46,8 +46,9 @@ registered function forms.
 
 ## What coverage means
 
-Registration applies to supported spellings of an operation. It does not promise
-that every optional clause or variant will lower. Generic quoted operations
+An operation can have several custom spellings. Registration covers the forms
+that match its grammar; optional clauses or other variants may still require
+recovery. Generic quoted operations
 need no preset, and dialect types and attributes generally retain their balanced
 payloads as opaque values.
 
@@ -68,9 +69,9 @@ Common limits affect how you can use these presets:
 - Unsupported custom forms use best-effort recovery. Inspect parsing and
   lowering diagnostics before relying on semantic structure or editing output.
 
-Presets do not supply full dialect verification, type inference, execution,
-target checks, or serialization. StableHLO support does not include VHLO or
-portable-artifact compatibility.
+Presets provide structural support. Full dialect verification, type inference,
+execution, target checks, and serialization are outside their scope. StableHLO
+support does not include VHLO or portable-artifact compatibility.
 
 The preset definitions were checked against LLVM 22.1.0, except StableHLO,
 which was checked against StableHLO 1.20.1. Preset names are unversioned and track

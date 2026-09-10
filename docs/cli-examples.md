@@ -13,13 +13,12 @@ pipeline stage, and output rule.
 
 The input files and reusable `.zirium` programs used below are checked in under
 [`examples/cli`](../examples/cli/). Each section links to its corresponding
-files. The commands keep short queries inline so they can be read and changed
-without opening another file.
+files. Short queries are shown inline so you can read and change them directly.
 
-The binary uses the baseline registry and accepts ordinary, named, and nested
-`module` shorthand. Use `--registry registry.json` to load caller-defined operation shapes; repeat
-the flag to combine files. See [custom formats](custom-formats.md)
-for the supported syntax and output boundaries.
+The binary defaults to the baseline registry, which accepts ordinary, named,
+and nested `module` shorthand. Use `--registry registry.json` to load presets
+or caller-defined operations; repeat the flag to combine files. See
+[custom formats](custom-formats.md) for configuration and output behavior.
 
 The commands below assume `target/debug` is on `PATH`:
 
@@ -39,8 +38,8 @@ zirium \
   examples/cli/arithmetic.mlir
 ```
 
-The result is an intentional selected fragment: Zirium retains the module
-shell needed to print the add, but does not add the add's operands or users.
+The result contains the add and its enclosing module syntax. Its operand
+definitions and users are omitted, so the fragment may not be valid on its own.
 The same query is available as
 [`untagged-arithmetic.zirium`](../examples/cli/untagged-arithmetic.zirium).
 
@@ -63,8 +62,7 @@ builtin.module {
 }
 ```
 
-Its selected-fragment output contains `arith.muli`, without recursively
-following further relationships.
+The output contains the multiply. `users` stops after this one step.
 The same query is available as
 [`direct-consumers.zirium`](../examples/cli/direct-consumers.zirium).
 
@@ -86,15 +84,16 @@ The same query is available as
 ## Extract a call dependency slice
 
 `fixpoint(closure)` adds dependencies until the selection stops changing. For a
-`func.call`, that includes the resolved callee and its body, while unrelated sibling functions are omitted.
+`func.call`, that includes the resolved callee and its body, and leaves
+unrelated sibling functions out.
 
 ```sh
 zirium 'filter(op("func.call")) | fixpoint(closure)' examples/cli/calls.mlir
 ```
 
 The output contains `@caller` and `@answer`, and omits `@unrelated`. Closure
-expands the selection, but its output is still a slice of the input rather than
-a promise that every selected fragment is independently valid MLIR.
+expands supported dependencies. The resulting slice may still need other parts
+of the input to be valid MLIR.
 The same query is available as
 [`call-closure.zirium`](../examples/cli/call-closure.zirium).
 
@@ -105,8 +104,8 @@ example represents one token-generation step for a small two-layer StableLM.
 It contains rotary position handling, KV-cache updates, grouped-query
 attention, gated MLPs, and a language-model head.
 
-The example is adapted from MLXcel's Apache-2.0 licensed
-[StableLM decode program](https://github.com/lablup/mlxcel/blob/0accedd90ae9ea0679121bd087dafdd82882182a/src/lib/mlxcel-xla/assets/stablelm/decode.mlir).
+The example is adapted from MLXcel's Apache-2.0 licensed [StableLM decode
+program](https://github.com/lablup/mlxcel/blob/0accedd90ae9ea0679121bd087dafdd82882182a/src/lib/mlxcel-xla/assets/stablelm/decode.mlir).
 Its large embedded rotary tables are replaced by zero splats; the operation
 structure and tensor shapes are unchanged.
 
@@ -140,7 +139,7 @@ source; surrounding whitespace and the final newline are ignored.
 
 ## Tag selected operations
 
-Mutations keep the selection as the pipeline value. Appending `input | emit`
+Edits preserve the current selection. Appending `input | emit`
 returns to the whole edited document and prints all operations:
 
 ```sh
@@ -149,9 +148,8 @@ zirium \
   examples/cli/arithmetic.mlir
 ```
 
-The output is the complete input document with
-`analysis.tag = "review"` added to `arith.addi`. Unlike the earlier selected
-fragments, this output contains the whole edited document.
+The output contains the complete document, with `analysis.tag = "review"`
+added to `arith.addi`.
 The same query is available as
 [`tag-add.zirium`](../examples/cli/tag-add.zirium).
 

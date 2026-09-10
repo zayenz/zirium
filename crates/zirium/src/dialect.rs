@@ -107,8 +107,8 @@ impl OperandCount {
 
 /// Exact custom assembly and semantic handling for one baseline operation.
 ///
-/// Reusable structural grammars belong in [`OperationShape`] or
-/// [`OperationFormat`]. Each variant here names the operation whose parsing,
+/// Reusable structural grammars belong in [`OperationShape`] or the internal
+/// operation-format descriptors. Each variant here names the operation whose parsing,
 /// lowering, verification, and printing it implements.
 ///
 /// [`DialectRegistry::new`] enforces the following descriptor contract. Symbol
@@ -406,6 +406,23 @@ pub enum OperationShape {
     RegionClauses,
 }
 
+impl OperationShape {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::FuncLike => "func_like",
+            Self::CallLike => "call_like",
+            Self::BinaryOperands => "binary_operands",
+            Self::OptionalTypedOperands => "optional_typed_operands",
+            Self::AttrFirstOptionalTypedOperands => "attr_first_optional_typed_operands",
+            Self::UnaryOperand => "unary_operand",
+            Self::VariadicOperands => "variadic_operands",
+            Self::LiteralAttribute => "literal_attribute",
+            Self::OperandClauses => "operand_clauses",
+            Self::RegionClauses => "region_clauses",
+        }
+    }
+}
+
 impl std::error::Error for DeclarativeRegistryError {}
 
 /// A fixed collection of operation, type, and attribute descriptors.
@@ -589,8 +606,26 @@ impl DialectRegistry {
             .find(|descriptor| descriptor.name == name)
     }
 
-    pub fn operation_names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.operations.iter().map(|descriptor| descriptor.name)
+    /// Lists every operation registered for custom-form parsing.
+    ///
+    /// This includes static descriptors, caller-supplied shapes, and format
+    /// descriptions. Each name occurs once.
+    pub fn operation_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.operations
+            .iter()
+            .map(|descriptor| descriptor.name)
+            .chain(
+                self.operation_shapes
+                    .iter()
+                    .flatten()
+                    .map(|(name, _)| name.as_str()),
+            )
+            .chain(
+                self.operation_formats
+                    .iter()
+                    .flatten()
+                    .map(|(name, _)| name.as_str()),
+            )
     }
 
     pub fn operation_shape(&self, name: &str) -> Option<OperationShape> {

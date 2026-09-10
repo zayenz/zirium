@@ -3,9 +3,9 @@
 A dialect registry tells Zirium how to parse and lower custom operation syntax.
 Generic quoted operations need no registry. Unknown custom operations use
 best-effort recovery, which preserves their name, source text, and nested regions
-without establishing that they can be verified or rewritten.
+so you can inspect them even when semantic verification or rewriting is unavailable.
 
-Use a bundled registry for existing dialects, or configure operation shapes and
+Use a bundled preset for an existing dialect, or configure operation shapes and
 format descriptions for your own syntax. The [preset reference](registry-presets.md)
 lists the available dialects and explains their coverage.
 
@@ -42,10 +42,12 @@ To add your own operation names to an existing registry:
 ```python
 import zirium
 
-registry = zirium.DialectRegistry.baseline().extend_operation_shapes({
-    "vendor.function": zirium.OperationShape.FUNC_LIKE,
-    "vendor.invoke": zirium.OperationShape.CALL_LIKE,
-})
+registry = zirium.DialectRegistry.baseline().extend_operation_shapes(
+    {
+        "vendor.function": zirium.OperationShape.FUNC_LIKE,
+        "vendor.invoke": zirium.OperationShape.CALL_LIKE,
+    }
+)
 parsed = zirium.parse_text(
     "module { vendor.function @declaration() }",
     registry=registry,
@@ -58,6 +60,21 @@ assert operation.symbol_name == "declaration"
 `DialectRegistry.with_operation_shapes(...)` starts with core operations.
 `existing_registry.extend_operation_shapes(...)` preserves the existing
 registry. Both accept mappings and return a new registry.
+
+Registries can be inspected after construction:
+
+```python
+names = registry.operation_names()
+assert "vendor.function" in names
+assert registry.operation_shape("vendor.function") == "func_like"
+assert registry.operation_shape("missing.operation") is None
+```
+
+`operation_names()` returns a sorted tuple containing built-ins, preset entries,
+caller-supplied shapes, and configured formats. `operation_shape()` returns the
+configuration spelling for shape-backed operations. It returns `None` both for
+format-backed and unregistered names; use membership in `operation_names()` to
+distinguish those cases.
 
 ## Configure a registry with JSON
 
@@ -203,6 +220,12 @@ registries. `DialectRegistry::from_name("stablehlo")` builds a bundled preset;
 `RegistryConfig::from_json` followed by `build` constructs a registry from JSON text,
 and `DialectRegistry::declarative(...)` selects built-ins by name.
 
+`operation_names()` enumerates static, shape-backed, and format-backed
+registrations. `operation_shape(name)` returns the `OperationShape` assigned to
+a shape-backed name. `declarative(...)` deliberately selects only built-in
+implementations; use configuration or `extend_operation_shapes(...)` for a
+caller-owned mnemonic whose grammar Zirium cannot infer from its name.
+
 Use the same registry for parsing, lowering, verification, editing, and
 `print_with_registry`. Unlike Python's parsed file, Rust's `ParsedFile` does not
 retain an owned registry. Text edits on registered syntax need
@@ -214,7 +237,7 @@ verification, and printing callbacks. Python does not expose those callbacks.
 See the [dialect API source](../crates/zirium/src/dialect.rs) for descriptor
 contracts.
 
-## Lowering, verification, and output
+## Verify and write semantic documents
 
 Shapes and format descriptions supply parsing and lowering conventions. They
 do not define a vendor operation's verifier, symbol-table rules, or custom

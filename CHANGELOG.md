@@ -1,9 +1,30 @@
 # Changelog
 
+## 0.0.12
+
+Zirium 0.0.12 expands the registry catalog and makes configured coverage
+inspectable.
+
+- Add bundled presets covering selected custom forms across LLVM 22.1 dialects,
+  including arithmetic, control flow, memory, tensors, vectors, GPU targets,
+  parallel execution, lowering, transformation, and constraints.
+- Rename `DialectRegistry.proving()` to `DialectRegistry.baseline()`, make the
+  baseline assembly handlers operation-specific, and register `arith.addi`
+  through its reusable declarative shape.
+- Add the attribute-first optional typed-operand shape, accept `into` format
+  separators and nested arrows, preserve operation boundaries around type lists
+  and regions, and support bare opaque dialect types and attributes.
+- Expose complete registry operation names and caller-supplied shape labels in
+  Rust and Python, including entries loaded from bundled presets and JSON
+  format descriptions.
+- Store parser events in a four-byte transient representation and release the
+  event buffer before trimming the completed CST, reducing peak parse memory.
+
 ## 0.0.11
 
 Zirium 0.0.11 broadens structural custom-operation support for compiler and
-machine-learning dialects without claiming their execution semantics.
+machine-learning dialects. This support covers parsing and lowering; execution
+semantics are outside its scope.
 
 - Expand the StableHLO preset from 16 to 96 forms, including constants,
   attribute-heavy operations, compact reductions, and all region-bearing
@@ -43,7 +64,7 @@ of large or malformed MLIR inputs.
   locations.
 - Expose the installed Python distribution version as `zirium.__version__`.
 - Lazily index syntax operations for fast repeated `File.operation()` access.
-  Add a production-shaped stress benchmark and record its scaling baseline.
+  Add a stress benchmark modeled on production input and record its scaling baseline.
 
 ## 0.0.9
 
@@ -102,7 +123,6 @@ and consistent handling for quoted symbols and aliased attribute values.
   `DialectRegistry.from_file`. Python's `from_config` accepts JSON-compatible
   dictionaries or the new Pydantic `RegistryConfig` / `OperationShapeConfig`
   models. All entry points share Serde deserialization and registry validation.
-
 - Fall back to generic printing when built-in custom assembly cannot preserve
   operation structure, locations, properties, or supported attribute spellings.
   Malformed generic arithmetic operations no longer panic in custom printing.
@@ -158,7 +178,7 @@ production compiler dumps.
 
 - Parse and lower `loc(unknown)` and fused locations with dictionary metadata.
 - Represent type-suffixed decimal literals as integers when their value fits in
-  `i128`, while retaining genuinely wide literals as wide numbers.
+  `i128`, while retaining wider literals as wide numbers.
 - Expose indexed array and dictionary elements through Python
   `SemanticAttribute` handles, including nested typed access and exact child
   spellings.
@@ -193,6 +213,6 @@ First public experimental release of Zirium.
 - Separate semantic lowering, verification, editing, and output paths.
 - Rust core crate and typed Python bindings.
 - Python support for CPython 3.11 through 3.14, subject to the published
-  artifact matrix.
+  platform and interpreter matrix.
 
 The API is experimental and may change before 1.0.

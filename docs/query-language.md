@@ -7,7 +7,8 @@ in the input document. A pipe passes the current selection to the next stage:
 filter(op("arith.addi")) | users | filter(has_attr("analysis.tag"))
 ```
 
-This finds adds, follows their direct users, and keeps the tagged users.
+This finds `arith.addi` operations, follows their direct users, and keeps those
+with an `analysis.tag` attribute.
 `filter` always tests the current selection. Navigation replaces that
 selection; edits preserve it. Selections contain each operation at most once
 and use source order, including after navigation and set operations.
@@ -37,8 +38,8 @@ zirium -f query.zirium input.mlir
 ```
 
 Input files are independent documents. `input` never combines different files.
-Printing uses Zirium's selected-fragment printer, so printing the input does
-not promise byte-for-byte reproduction of the original text.
+The selected-fragment printer may change formatting even when printing the
+whole input. Use the library's original-output API to reproduce input bytes.
 
 ## Predicates and filtering
 
@@ -101,7 +102,7 @@ filter(op("func.call")) | parent
 | set_attr("analysis.tag", "review")
 ```
 
-The same operation in a sibling function is unaffected. Append `input` to
+Returns in sibling functions are unaffected. Append `input` to
 print the complete edited document.
 
 Selection and printing are distinct. Selecting a function counts as one
@@ -217,7 +218,7 @@ This prints the adds, then their users. Each explicit emission captures the
 document at that point, before later edits. An implicit final emission prints
 the result unless the program ends with an explicit `emit`, including inside
 a final group. `emit | emit` therefore prints twice, while `emit` prints once.
-Nested queries do not acquire implicit input resets or emissions. A fixed-point
+Nested queries do not implicitly reset to `input` or emit their results. A fixed-point
 body ending in `emit` emits each iteration; the enclosing program still emits
 its final result unless it ends with an explicit `emit`.
 

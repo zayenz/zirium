@@ -145,6 +145,36 @@ def test_extended_operation_shapes_are_configurable(spelling, classattr):
     zirium.DialectRegistry.with_operation_shapes({"vendor.op": classattr})
 
 
+def test_registry_contents_are_introspectable():
+    registry = zirium.DialectRegistry.from_config(
+        {
+            "builtins": ["builtin.module"],
+            "operation_shapes": [
+                {"name": "vendor.shaped", "shape": "literal_attribute"}
+            ],
+            "operation_formats": [
+                {
+                    "name": "vendor.formatted",
+                    "format": (
+                        "$operands attr-dict `:` type($operands) `to` type($results)"
+                    ),
+                }
+            ],
+        }
+    )
+
+    assert registry.operation_names() == (
+        "builtin.module",
+        "vendor.formatted",
+        "vendor.shaped",
+    )
+    assert registry.operation_shape("vendor.shaped") == "literal_attribute"
+    assert registry.operation_shape("vendor.formatted") is None
+    assert registry.operation_shape("vendor.missing") is None
+
+    assert "scf.for" in zirium.DialectRegistry.from_name("scf").operation_names()
+
+
 def test_operation_formats_round_trip_and_parse_captured_roles():
     formats = [
         zirium.OperationFormatConfig(

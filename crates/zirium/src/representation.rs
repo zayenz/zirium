@@ -1,6 +1,7 @@
 use crate::lexer::{Token, TokenKind};
 use std::{fmt, sync::OnceLock};
 
+#[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyntaxKind {
     File,
@@ -87,13 +88,73 @@ pub enum Event {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PackedEvent(u32);
+
+impl PackedEvent {
+    const TAG_SHIFT: u32 = 30;
+    const PAYLOAD_MASK: u32 = (1 << Self::TAG_SHIFT) - 1;
+    const KIND_BITS: u32 = 7;
+    const FORWARD_MAX: u32 = Self::PAYLOAD_MASK >> Self::KIND_BITS;
+
+    fn from_event(event: Event) -> Result<Self, CompactError> {
+        match event {
+            Event::Tombstone => Ok(Self(0)),
+            Event::Token(index) if index <= Self::PAYLOAD_MASK => {
+                Ok(Self((1 << Self::TAG_SHIFT) | index))
+            }
+            Event::Token(_) => Err(CompactError::RepresentationTooLarge),
+            Event::Finish { local_error } => {
+                Ok(Self((2 << Self::TAG_SHIFT) | u32::from(local_error)))
+            }
+            Event::Start {
+                kind,
+                forward_parent,
+            } => {
+                let forward = forward_parent.unwrap_or(0);
+                if forward > Self::FORWARD_MAX {
+                    return Err(CompactError::RepresentationTooLarge);
+                }
+                Ok(Self(
+                    (3 << Self::TAG_SHIFT) | (forward << Self::KIND_BITS) | u32::from(kind as u8),
+                ))
+            }
+        }
+    }
+
+    fn event(self) -> Event {
+        let tag = self.0 >> Self::TAG_SHIFT;
+        let payload = self.0 & Self::PAYLOAD_MASK;
+        match tag {
+            0 => Event::Tombstone,
+            1 => Event::Token(payload),
+            2 => Event::Finish {
+                local_error: payload != 0,
+            },
+            3 => {
+                let kind = (payload & ((1 << Self::KIND_BITS) - 1)) as u8;
+                debug_assert!(kind <= SyntaxKind::FileMetadata as u8);
+                // SAFETY: start events are packed only from valid SyntaxKind values.
+                let kind = unsafe { std::mem::transmute::<u8, SyntaxKind>(kind) };
+                let forward = payload >> Self::KIND_BITS;
+                Event::Start {
+                    kind,
+                    forward_parent: (forward != 0).then_some(forward),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Marker(usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompletedMarker(usize);
 
 #[derive(Debug, Default)]
 pub struct EventBuilder {
-    events: Vec<Event>,
+    events: Vec<PackedEvent>,
+    decoded_events: OnceLock<Vec<Event>>,
 }
 
 impl EventBuilder {
@@ -101,14 +162,17 @@ impl EventBuilder {
         Self::default()
     }
     pub fn start(&mut self) -> Marker {
+        self.decoded_events.take();
         let p = self.events.len();
-        self.events.push(Event::Tombstone);
+        self.events
+            .push(PackedEvent::from_event(Event::Tombstone).expect("tombstone is representable"));
         Marker(p)
     }
     pub fn token(&mut self, index: usize) -> Result<(), CompactError> {
-        self.events.push(Event::Token(
+        self.decoded_events.take();
+        self.events.push(PackedEvent::from_event(Event::Token(
             u32::try_from(index).map_err(|_| CompactError::RepresentationTooLarge)?,
-        ));
+        ))?);
         Ok(())
     }
     pub fn complete(
@@ -116,6 +180,7 @@ impl EventBuilder {
         marker: Marker,
         kind: SyntaxKind,
     ) -> Result<CompletedMarker, CompactError> {
+        self.decoded_events.take();
         self.complete_with_error(marker, kind, false)
     }
     pub fn complete_with_error(
@@ -125,20 +190,25 @@ impl EventBuilder {
         local_error: bool,
     ) -> Result<CompletedMarker, CompactError> {
         match self.events.get_mut(marker.0) {
-            Some(e @ Event::Tombstone) => {
-                *e = Event::Start {
+            Some(e) if e.event() == Event::Tombstone => {
+                *e = PackedEvent::from_event(Event::Start {
                     kind,
                     forward_parent: None,
-                }
+                })?
             }
             _ => return Err(CompactError::InvalidMarker),
         }
-        self.events.push(Event::Finish { local_error });
+        self.events
+            .push(PackedEvent::from_event(Event::Finish { local_error })?);
         Ok(CompletedMarker(marker.0))
     }
     pub fn abandon(&mut self, marker: Marker) -> Result<(), CompactError> {
+        self.decoded_events.take();
         if marker.0 + 1 == self.events.len()
-            && matches!(self.events.get(marker.0), Some(Event::Tombstone))
+            && self
+                .events
+                .get(marker.0)
+                .is_some_and(|event| event.event() == Event::Tombstone)
         {
             self.events.pop();
             Ok(())
@@ -147,35 +217,60 @@ impl EventBuilder {
         }
     }
     pub fn precede(&mut self, marker: CompletedMarker) -> Result<Marker, CompactError> {
+        self.decoded_events.take();
         let p = self.events.len();
         let distance = u32::try_from(p.checked_sub(marker.0).ok_or(CompactError::InvalidMarker)?)
             .map_err(|_| CompactError::RepresentationTooLarge)?;
         match self.events.get_mut(marker.0) {
-            Some(Event::Start { forward_parent, .. }) if forward_parent.is_none() => {
-                *forward_parent = Some(distance)
+            Some(event)
+                if matches!(
+                    event.event(),
+                    Event::Start {
+                        forward_parent: None,
+                        ..
+                    }
+                ) =>
+            {
+                let Event::Start { kind, .. } = event.event() else {
+                    unreachable!()
+                };
+                *event = PackedEvent::from_event(Event::Start {
+                    kind,
+                    forward_parent: Some(distance),
+                })?;
             }
             _ => return Err(CompactError::InvalidMarker),
         }
-        self.events.push(Event::Tombstone);
+        self.events
+            .push(PackedEvent::from_event(Event::Tombstone).expect("tombstone is representable"));
         Ok(Marker(p))
     }
     pub fn finish(self, tokens: Vec<Token>) -> Result<SyntaxTree, CompactError> {
-        SyntaxTree::from_events(self.events, tokens)
+        SyntaxTree::from_packed_events(self.events, tokens, false)
     }
     pub(crate) fn finish_parser(self, tokens: Vec<Token>) -> Result<SyntaxTree, CompactError> {
-        SyntaxTree::from_parser_events(self.events, tokens)
+        SyntaxTree::from_packed_events(self.events, tokens, true)
     }
     #[cfg(test)]
     pub(crate) fn into_events(self) -> Vec<Event> {
-        self.events
+        self.decoded_events
+            .into_inner()
+            .unwrap_or_else(|| self.events.into_iter().map(PackedEvent::event).collect())
     }
     pub fn events(&self) -> &[Event] {
-        &self.events
+        self.decoded_events.get_or_init(|| {
+            self.events
+                .iter()
+                .copied()
+                .map(PackedEvent::event)
+                .collect()
+        })
     }
     pub(crate) fn checkpoint(&self) -> usize {
         self.events.len()
     }
     pub(crate) fn rewind(&mut self, checkpoint: usize) {
+        self.decoded_events.take();
         self.events.truncate(checkpoint);
     }
 }
@@ -258,29 +353,39 @@ pub struct SyntaxTree {
 
 impl SyntaxTree {
     pub fn from_events(events: Vec<Event>, tokens: Vec<Token>) -> Result<Self, CompactError> {
-        let tree = Self::compact_events(events, tokens, false)?;
+        let tree = Self::from_packed_events(
+            events
+                .into_iter()
+                .map(PackedEvent::from_event)
+                .collect::<Result<Vec<_>, _>>()?,
+            tokens,
+            false,
+        )?;
         tree.verify()?;
         Ok(tree)
-    }
-    fn from_parser_events(
-        events: Vec<Event>,
-        mut tokens: Vec<Token>,
-    ) -> Result<Self, CompactError> {
-        tokens.shrink_to_fit();
-        Self::compact_events(events, tokens, true)
     }
     #[cfg(test)]
     pub(crate) fn from_events_unverified(
         events: Vec<Event>,
         tokens: Vec<Token>,
     ) -> Result<Self, CompactError> {
-        Self::compact_events(events, tokens, false)
+        Self::from_packed_events(
+            events
+                .into_iter()
+                .map(PackedEvent::from_event)
+                .collect::<Result<Vec<_>, _>>()?,
+            tokens,
+            false,
+        )
     }
-    fn compact_events(
-        mut events: Vec<Event>,
-        tokens: Vec<Token>,
+    fn from_packed_events(
+        mut events: Vec<PackedEvent>,
+        mut tokens: Vec<Token>,
         trust_token_order: bool,
     ) -> Result<Self, CompactError> {
+        if trust_token_order {
+            tokens.shrink_to_fit();
+        }
         let mut nodes = Vec::<FlatNode>::new();
         let mut stored = (!trust_token_order).then(|| Vec::with_capacity(tokens.len()));
         let mut token_position = 0usize;
@@ -363,11 +468,13 @@ impl SyntaxTree {
             while let Event::Start {
                 kind,
                 forward_parent,
-            } = *events
+            } = events
                 .get(current)
                 .ok_or(CompactError::InvalidForwardParent)?
+                .event()
             {
-                events[current] = Event::Tombstone;
+                events[current] =
+                    PackedEvent::from_event(Event::Tombstone).expect("tombstone is representable");
                 chain.push(Event::Start {
                     kind,
                     forward_parent: None,
@@ -383,8 +490,8 @@ impl SyntaxTree {
             for event in chain.drain(..).rev() {
                 compact(event)?;
             }
-            if !matches!(events[p], Event::Tombstone) {
-                compact(events[p])?;
+            if events[p].event() != Event::Tombstone {
+                compact(events[p].event())?;
             }
         }
         if !stack.is_empty() {
@@ -400,6 +507,8 @@ impl SyntaxTree {
         {
             return Err(CompactError::InvalidRootCoverage);
         }
+        drop(events);
+        nodes.shrink_to_fit();
         Ok(Self {
             nodes,
             tokens: stored.unwrap_or(tokens),
@@ -609,6 +718,22 @@ mod tests {
             parents: OnceLock::new(),
         }
     }
+    #[test]
+    fn parser_events_keep_the_four_byte_peak_memory_layout() {
+        assert_eq!(std::mem::size_of::<PackedEvent>(), 4);
+        for event in [
+            Event::Tombstone,
+            Event::Token(17),
+            Event::Start {
+                kind: SyntaxKind::AttributeDict,
+                forward_parent: Some(29),
+            },
+            Event::Finish { local_error: true },
+        ] {
+            assert_eq!(PackedEvent::from_event(event).unwrap().event(), event);
+        }
+    }
+
     #[test]
     fn rejects_malformed_trees() {
         assert_eq!(

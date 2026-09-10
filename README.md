@@ -1,19 +1,37 @@
 # Zirium
 
-Zirium 0.0.11 is an experimental release. The API may change without a
-migration path.
+Zirium is a Rust library and command-line tool for reading, inspecting, editing,
+and writing textual MLIR, with typed Python bindings. It works without linking
+LLVM. The parser preserves the original bytes, including comments, whitespace,
+malformed syntax, and invalid UTF-8. A separate semantic representation supports
+verification and structural edits.
 
-Zirium is a Rust library for reading, inspecting, transforming, and writing textual MLIR. It also provides typed Python bindings. The parser keeps the original bytes, including comments, whitespace, malformed syntax, and invalid UTF-8. A separate semantic layer provides a compact representation for verification and editing.
+Version 0.0.12 is experimental. It targets MLIR 22.1 textual syntax and supports
+selected custom dialect forms. The API may change without a migration path;
+bytecode and ODS/TableGen loading are unsupported.
 
-The project is useful when a tool needs to understand MLIR without linking LLVM, and when source fidelity matters alongside semantic processing.
+## Installation
 
-Zirium currently targets the textual syntax of MLIR 22.1. It has a
-deliberately narrow dialect surface and is not a replacement for all of MLIR's
-parser or ODS infrastructure.
+Install the Python package with:
 
-The current release is intended for experimentation, tooling prototypes, and
-evaluation of the lossless syntax/semantic split. It does not promise broad
-dialect coverage, bytecode support, ODS/TableGen loading, or a stable API.
+```sh
+python -m pip install zirium
+```
+
+Published wheels cover CPython 3.11 through 3.14 on Linux x86_64 and macOS
+arm64. Wheels are specific to each CPython version. Other platforms require a
+local source build and are unsupported.
+
+Rust builds require Rust 1.88 or newer. From a source checkout, install the CLI
+with:
+
+```sh
+cargo install --path crates/zirium
+```
+
+The Python wheel does not include the CLI. The
+[getting-started guide](https://github.com/zayenz/zirium/blob/main/docs/getting-started.md)
+covers Rust usage and building the Python extension locally.
 
 ## Command-line utility
 
@@ -37,35 +55,17 @@ cargo run --quiet --bin zirium -- \
   'filter(op("arith.addi"))' input.mlir
 ```
 
-## What it provides
-
-- A byte-oriented lexer and lossless concrete syntax tree (CST).
-- Recovery from malformed input with ranged diagnostics and useful outer structure.
-- Stable machine-readable categories on semantic diagnostics.
-- Standard `module` handling and caller-provided func-like and call-like operation shapes.
-- Structural recovery of unknown custom operations, including nested regions,
-  SSA declarations and uses, and trailing attribute dictionaries.
-- Strict and best-effort lowering into a separate semantic document.
-- Operations, regions, blocks, SSA values, types, attributes, locations, symbols, and dominance queries.
-- Python inspection of exact type and attribute spellings, scalar attributes, and stable value identity.
-- Form-independent operation roles for symbol names, signatures, and callees.
-- Deterministic generic MLIR output and structural round-trip comparison.
-- Buffered semantic edits that commit atomically.
-- Conservative source-preserving output for documents lowered with hybrid retention.
-- Rust and Python APIs over the same core implementation.
-- Explicit limits for file size, token count, nesting, and large payloads.
-
-## A small example
+## Python example
 
 ```python
 import zirium
 
-source = '''\
+source = """\
 "builtin.module"() ({
   %value = "example.make"() : () -> i32
   "example.consume"(%value) : (i32) -> ()
 }) : () -> ()
-'''
+"""
 
 parsed = zirium.parse_text(source)
 assert parsed.original_bytes() == source.encode()
@@ -83,37 +83,10 @@ print([table.operation(index).name for index in range(table.count)])
 print(document.canonical_bytes().decode(), end="")
 ```
 
-Parsing and lowering are separate on purpose. A `File` owns the original bytes, tokens, CST, and syntax diagnostics. A `Document` owns resolved semantic data. This keeps malformed-source tooling from depending on a partly valid semantic model, while transformation code does not have to operate on syntax nodes.
-
-## Getting started
-
-Zirium requires Rust 1.88 or newer. The Python package supports conventional
-CPython 3.11 through 3.14. Release artifacts are currently proven only for
-Linux x86_64 and macOS arm64 by CI; other platforms require a local source
-build with maturin and are not part of the platform promise. Wheels remain
-specific to each supported CPython version rather than using the stable ABI.
-
-The [getting-started guide](https://github.com/zayenz/zirium/blob/main/docs/getting-started.md) covers:
-
-- building and testing the Rust workspace;
-- installing the Python extension into a virtual environment;
-- parsing, lowering, verifying, and writing MLIR;
-- choosing a retention profile and output mode.
-
-For the shortest check from a fresh checkout:
-
-```sh
-cargo test --workspace
-```
-
-Install a published Python wheel with:
-
-~~~sh
-python -m pip install zirium
-~~~
-
-If a wheel is not available yet, build the extension locally using the
-[getting-started guide](https://github.com/zayenz/zirium/blob/main/docs/getting-started.md).
+A `File` owns the original bytes, tokens, concrete syntax tree (CST), and syntax
+diagnostics. A `Document` owns resolved semantic data. Keeping them separate lets
+you inspect malformed source without requiring a valid semantic model, and edit
+semantic structure without manipulating syntax nodes.
 
 ## Output modes
 
@@ -125,11 +98,14 @@ Zirium has three output paths, each with a different contract:
 | Canonical | Semantic document | Emits deterministic generic MLIR from semantic storage. |
 | Preserving | Hybrid semantic document | Copies unchanged source and regenerates edited operations or blocks. |
 
-Canonical output intentionally does not preserve comments, whitespace, aliases, or SSA spelling. Use original output when no semantic edit is needed, and hybrid retention when edits should leave unrelated source text alone.
+Canonical output normalizes formatting and SSA names and does not preserve
+comments or aliases. Use original output to reproduce the input, or hybrid
+retention when edits should preserve unrelated source text.
 
 ## Dialect support
 
-Generic quoted operations are handled without a dialect registry. Unknown dialect types and attributes keep their balanced bodies as opaque values.
+Generic quoted operations are handled without a dialect registry. Unknown
+dialect types and attributes keep their balanced bodies as opaque values.
 
 The baseline registry covers a small set of Builtin, Func, Arith, and CF
 operations. Bundled presets expose selected custom forms from other dialects
@@ -141,7 +117,8 @@ operation shapes, and use from Rust, Python, and the CLI. The
 [preset reference](docs/registry-presets.md) groups the available dialects and
 links to their exact registry definitions.
 
-See [compatibility and local wheel checks](https://github.com/zayenz/zirium/blob/main/docs/compatibility.md) for the exact toolchain and CPython matrix. The [corpus notes](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/README.md) explain how syntax compatibility is tied to `llvmorg-22.1.0`.
+The [corpus notes](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/README.md)
+describe how syntax compatibility is checked against `llvmorg-22.1.0`.
 
 ## Repository layout
 
@@ -155,23 +132,30 @@ docs/                   Usage, compatibility, and architecture notes
 fuzz/                   Lexer and parser fuzz targets
 ```
 
-The architecture notes include the [syntax representation baseline](https://github.com/zayenz/zirium/blob/main/docs/architecture/representation-baseline.md) and [processing benchmarks](https://github.com/zayenz/zirium/blob/main/docs/architecture/processing-benchmarks.md).
+The architecture notes include the [syntax representation baseline](https://github.com/zayenz/zirium/blob/main/docs/architecture/representation-baseline.md)
+and [processing benchmarks](https://github.com/zayenz/zirium/blob/main/docs/architecture/processing-benchmarks.md).
 
-## Development checks
+## Development
 
-The complete local quality gate, including the supported Rust and Python
-versions, is documented in the [compatibility guide](https://github.com/zayenz/zirium/blob/main/docs/compatibility.md).
-The CI workflow runs those same commands.
+Run the Rust workspace tests from the repository root:
 
-Python development details are documented in [the getting-started guide](https://github.com/zayenz/zirium/blob/main/docs/getting-started.md).
-The [release guide](https://github.com/zayenz/zirium/blob/main/docs/releasing.md)
-records the registry setup, package checks, and publication order.
+```sh
+cargo test --workspace
+```
+
+The [compatibility guide](https://github.com/zayenz/zirium/blob/main/docs/compatibility.md)
+lists the full CI checks, supported toolchains, and wheel checks. The
+[getting-started guide](https://github.com/zayenz/zirium/blob/main/docs/getting-started.md)
+covers Python development, and the
+[release guide](https://github.com/zayenz/zirium/blob/main/docs/releasing.md)
+describes packaging and publication.
 
 ## License
 
-Zirium's original code is available under the [MIT](https://github.com/zayenz/zirium/blob/main/LICENSE-MIT) or
-[Apache 2.0](https://github.com/zayenz/zirium/blob/main/LICENSE-APACHE) license. Some MLIR-derived or adapted test
-material retains the provenance and licensing information recorded in the
-[corpus manifest](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/manifest.toml).
+Zirium's original code is available under the
+[MIT](https://github.com/zayenz/zirium/blob/main/LICENSE-MIT) or [Apache 2.0](https://github.com/zayenz/zirium/blob/main/LICENSE-APACHE) license. Some
+MLIR-derived or adapted test material carries the source attribution and license
+notices recorded in the [corpus manifest](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/manifest.toml).
 
-Release notes are recorded in the [changelog](https://github.com/zayenz/zirium/blob/main/CHANGELOG.md).
+Release notes are recorded in the
+[changelog](https://github.com/zayenz/zirium/blob/main/CHANGELOG.md).
