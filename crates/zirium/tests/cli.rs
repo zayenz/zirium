@@ -1585,23 +1585,24 @@ fn ordering_bounds_and_extrema_compose_on_streams() {
   "vendor.item"() {id = 1, label = "beta"} : () -> ()
   "vendor.item"() {id = 2, label = "alpha"} : () -> ()
   "vendor.item"() {id = 3, label = "alpha"} : () -> ()
+  "vendor.item"() {id = 4, label = "beta"} : () -> ()
 }"#;
     for (query, expected) in [
         (
             r#"filter(op("vendor.item")) | attr("label") | sort"#,
-            "alpha\nalpha\nbeta\n",
+            "alpha\nalpha\nbeta\nbeta\n",
         ),
         (
             r#"filter(op("vendor.item")) | sort_by(attr("label")) | attr("id")"#,
-            "2\n3\n1\n",
+            "2\n3\n1\n4\n",
         ),
         (
             r#"filter(op("vendor.item")) | sort_by(children | count) | attr("id")"#,
-            "1\n2\n3\n",
+            "1\n2\n3\n4\n",
         ),
         (
             r#"filter(op("vendor.item")) | sort_by(attr("label")) | reverse | attr("id")"#,
-            "1\n3\n2\n",
+            "4\n1\n3\n2\n",
         ),
         (
             r#"filter(op("vendor.item")) | head(2) | attr("id")"#,
@@ -1609,7 +1610,7 @@ fn ordering_bounds_and_extrema_compose_on_streams() {
         ),
         (
             r#"filter(op("vendor.item")) | tail(2) | attr("id")"#,
-            "2\n3\n",
+            "3\n4\n",
         ),
         (
             r#"filter(op("vendor.item")) | attr("label") | min"#,
@@ -1620,12 +1621,28 @@ fn ordering_bounds_and_extrema_compose_on_streams() {
             "beta\n",
         ),
         (
+            r#"filter(op("vendor.item")) | attr("label") | min_all"#,
+            "alpha\nalpha\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | attr("label") | max_all"#,
+            "beta\nbeta\n",
+        ),
+        (
             r#"filter(op("vendor.item")) | min_by(attr("label")) | attr("id")"#,
             "2\n",
         ),
         (
             r#"filter(op("vendor.item")) | max_by(attr("label")) | attr("id")"#,
             "1\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | min_all_by(attr("label")) | attr("id")"#,
+            "2\n3\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | max_all_by(attr("label")) | attr("id")"#,
+            "1\n4\n",
         ),
     ] {
         let output = run_stdin(query, input);
@@ -1644,6 +1661,8 @@ fn ordering_bounds_and_extrema_compose_on_streams() {
     for query in [
         "filter(false) | names | min",
         "filter(false) | min_by(names)",
+        "filter(false) | names | max_all",
+        "filter(false) | max_all_by(names)",
         "saved = count; saved | count",
     ] {
         let output = run_stdin(query, input);

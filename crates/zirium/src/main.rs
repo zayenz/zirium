@@ -46,7 +46,8 @@ Stages: input, filter(predicate), defs, defs(index), users, users(index), parent
 children, root(predicate), subtree, closure, slice, reachable, fixpoint(query),
 unique, attr("name"), names, result_types, operand_types, tally,
 map_by(key, value), sort, sort_by(query), reverse, head(n), tail(n), min,
-min_by(query), max, max_by(query), set_attr("name", "value"),
+min_all, min_by(query), min_all_by(query), max, max_all, max_by(query),
+max_all_by(query), set_attr("name", "value"),
 remove_attr("name"), emit, json, markdown, print("text"), count.
 Statements: prefix a query with `do` and end it with `;` to keep edits while
 suppressing that statement's implicit result.

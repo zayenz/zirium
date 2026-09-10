@@ -150,9 +150,10 @@ filter(op("func.func")) | sort_by(attr("sym_name")) | head(10)
 
 `min` and `max` return the lexical minimum or maximum of a non-empty value
 stream. `min_by(query)` and `max_by(query)` return one operation using the same
-selector rules as `sort_by`; the first operation wins a tie. All four report an
-error on an empty stream. Use `reverse` after `sort` or `sort_by` for descending
-order.
+selector rules as `sort_by`; the first operation wins a tie. The corresponding
+`min_all`, `max_all`, `min_all_by(query)`, and `max_all_by(query)` stages retain
+every tied extreme in its previous order. All extrema stages report an error on
+an empty stream. Use `reverse` after `sort` or `sort_by` for descending order.
 
 Maps remain sorted lexically by key. Ordering stages do not rank `tally` or
 `map_by` maps.
@@ -665,7 +666,8 @@ stage      = object | array | identifier | "markdown" | "print" "(" string ")"
            | "tally" | "map_by" "(" query "," query ")"
            | "sort" | "sort_by" "(" query ")" | "reverse"
            | ("head" | "tail") "(" integer ")"
-           | "min" | "min_by" "(" query ")" | "max" | "max_by" "(" query ")"
+           | "min" | "min_all" | ("min_by" | "min_all_by") "(" query ")"
+           | "max" | "max_all" | ("max_by" | "max_all_by") "(" query ")"
            | "input" | "filter" "(" predicate ")"
            | ("defs" | "users") [ "(" integer ")" ]
            | "parent" | "children" | "closure" | "slice" | "reachable"

@@ -411,7 +411,7 @@ fn evaluate_pipeline(
             parser::Stage::SortBy { selector, .. } => {
                 let selected = take_operations(current, "sort_by")?;
                 current = QueryOutput::Operations(sort_operations_by(
-                    selected, selector, document, registry, emit, budget, false, false,
+                    selected, selector, document, registry, emit, budget, false, None,
                 )?);
             }
             parser::Stage::Reverse { .. } => match &mut current {
@@ -426,21 +426,67 @@ fn evaluate_pipeline(
             parser::Stage::Head { count, .. } => truncate_stream(&mut current, *count, false)?,
             parser::Stage::Tail { count, .. } => truncate_stream(&mut current, *count, true)?,
             parser::Stage::Min { .. } => {
-                current = QueryOutput::Values(extreme_value(current, false)?);
+                current = QueryOutput::Values(extreme_value(current, false, false)?);
             }
             parser::Stage::Max { .. } => {
-                current = QueryOutput::Values(extreme_value(current, true)?);
+                current = QueryOutput::Values(extreme_value(current, true, false)?);
+            }
+            parser::Stage::MinAll { .. } => {
+                current = QueryOutput::Values(extreme_value(current, false, true)?);
+            }
+            parser::Stage::MaxAll { .. } => {
+                current = QueryOutput::Values(extreme_value(current, true, true)?);
             }
             parser::Stage::MinBy { selector, .. } => {
                 let selected = take_operations(current, "min_by")?;
                 current = QueryOutput::Operations(sort_operations_by(
-                    selected, selector, document, registry, emit, budget, false, true,
+                    selected,
+                    selector,
+                    document,
+                    registry,
+                    emit,
+                    budget,
+                    false,
+                    Some(false),
                 )?);
             }
             parser::Stage::MaxBy { selector, .. } => {
                 let selected = take_operations(current, "max_by")?;
                 current = QueryOutput::Operations(sort_operations_by(
-                    selected, selector, document, registry, emit, budget, true, true,
+                    selected,
+                    selector,
+                    document,
+                    registry,
+                    emit,
+                    budget,
+                    true,
+                    Some(false),
+                )?);
+            }
+            parser::Stage::MinAllBy { selector, .. } => {
+                let selected = take_operations(current, "min_all_by")?;
+                current = QueryOutput::Operations(sort_operations_by(
+                    selected,
+                    selector,
+                    document,
+                    registry,
+                    emit,
+                    budget,
+                    false,
+                    Some(true),
+                )?);
+            }
+            parser::Stage::MaxAllBy { selector, .. } => {
+                let selected = take_operations(current, "max_all_by")?;
+                current = QueryOutput::Operations(sort_operations_by(
+                    selected,
+                    selector,
+                    document,
+                    registry,
+                    emit,
+                    budget,
+                    true,
+                    Some(true),
                 )?);
             }
             parser::Stage::Attr { name, .. } => {
@@ -684,19 +730,31 @@ fn truncate_stream(
     Ok(())
 }
 
-fn extreme_value(output: QueryOutput, maximum: bool) -> Result<Vec<String>, EvaluationError> {
+fn extreme_value(
+    output: QueryOutput,
+    maximum: bool,
+    retain_all: bool,
+) -> Result<Vec<String>, EvaluationError> {
     let QueryOutput::Values(values) = output else {
         return Err(EvaluationError::new(
-            "min and max require a value stream; use names or attr first",
+            "value extrema require a value stream; use names or attr first",
         ));
     };
     let value = if maximum {
-        values.into_iter().max()
+        values.iter().max()
     } else {
-        values.into_iter().min()
+        values.iter().min()
     }
-    .ok_or_else(|| EvaluationError::new("min and max require a non-empty value stream"))?;
-    Ok(vec![value])
+    .cloned()
+    .ok_or_else(|| EvaluationError::new("value extrema require a non-empty value stream"))?;
+    if retain_all {
+        Ok(values
+            .into_iter()
+            .filter(|candidate| candidate == &value)
+            .collect())
+    } else {
+        Ok(vec![value])
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -708,11 +766,11 @@ fn sort_operations_by(
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     budget: &mut EvaluationState,
     descending: bool,
-    one: bool,
+    extrema: Option<bool>,
 ) -> Result<Vec<OperationId>, EvaluationError> {
-    if one && selected.is_empty() {
+    if extrema.is_some() && selected.is_empty() {
         return Err(EvaluationError::new(
-            "min_by and max_by require a non-empty operation stream",
+            "by extrema require a non-empty operation stream",
         ));
     }
     let mut keyed = Vec::with_capacity(selected.len());
@@ -732,7 +790,7 @@ fn sort_operations_by(
             }
             _ => {
                 return Err(EvaluationError::new(
-                    "sort selector must produce exactly one string or count per operation",
+                    "ordering selector must produce exactly one string or count per operation",
                 ));
             }
         };
@@ -746,8 +804,21 @@ fn sort_operations_by(
             ordering
         }
     });
-    if one {
-        keyed.truncate(1);
+    if let Some(retain_all) = extrema {
+        let retain = if retain_all {
+            keyed
+                .first()
+                .map(|(_, extreme)| {
+                    keyed
+                        .iter()
+                        .take_while(|(_, candidate)| candidate == extreme)
+                        .count()
+                })
+                .unwrap_or(0)
+        } else {
+            1
+        };
+        keyed.truncate(retain);
     }
     Ok(keyed.into_iter().map(|(operation, _)| operation).collect())
 }

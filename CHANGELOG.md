@@ -24,6 +24,8 @@ formats, and adds composable report generation.
   Later statements see the edits, while explicit emitters inside `do` still run.
 - Add stable value and operation ordering with `sort`, `sort_by`, `reverse`,
   `head`, and `tail`. Add `min`, `min_by`, `max`, and `max_by` reductions.
+- Add `min_all`, `min_all_by`, `max_all`, and `max_all_by` for retaining every
+  value or operation tied at an extreme.
 - Reject `count` applied to an existing scalar count or rendered output.
 - Concatenate statement and multi-input outputs exactly as emitted instead of
   inserting automatic `// -----` separators; reports can add explicit text.

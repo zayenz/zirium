@@ -97,7 +97,9 @@ impl Expression {
                 }
                 Stage::SortBy { selector, .. }
                 | Stage::MinBy { selector, .. }
-                | Stage::MaxBy { selector, .. } => selector.is_read_only(),
+                | Stage::MinAllBy { selector, .. }
+                | Stage::MaxBy { selector, .. }
+                | Stage::MaxAllBy { selector, .. } => selector.is_read_only(),
                 Stage::MapBy { key, value, .. } => key.is_read_only() && value.is_read_only(),
                 _ => true,
             })
@@ -271,10 +273,24 @@ pub enum Stage {
         selector: Box<Expression>,
         range: TextRange,
     },
+    MinAll {
+        range: TextRange,
+    },
+    MinAllBy {
+        selector: Box<Expression>,
+        range: TextRange,
+    },
     Max {
         range: TextRange,
     },
     MaxBy {
+        selector: Box<Expression>,
+        range: TextRange,
+    },
+    MaxAll {
+        range: TextRange,
+    },
+    MaxAllBy {
         selector: Box<Expression>,
         range: TextRange,
     },
@@ -347,8 +363,12 @@ impl Stage {
             | Self::Tail { range, .. }
             | Self::Min { range }
             | Self::MinBy { range, .. }
+            | Self::MinAll { range }
+            | Self::MinAllBy { range, .. }
             | Self::Max { range }
             | Self::MaxBy { range, .. }
+            | Self::MaxAll { range }
+            | Self::MaxAllBy { range, .. }
             | Self::Attr { range, .. }
             | Self::Names { range }
             | Self::ResultTypes { range }
@@ -657,7 +677,7 @@ impl Parser<'_> {
             "subtree" => Stage::Subtree { range },
             "unique" => Stage::Unique { range },
             "sort" => Stage::Sort { range },
-            "sort_by" | "min_by" | "max_by" => {
+            "sort_by" | "min_by" | "min_all_by" | "max_by" | "max_all_by" => {
                 self.expect(TokenKind::LParen, "expected `(` after selector stage")?;
                 let selector = Box::new(self.expression(depth + 1)?);
                 self.expect(TokenKind::RParen, "expected `)` after selector query")?;
@@ -669,7 +689,9 @@ impl Parser<'_> {
                 match name.as_str() {
                     "sort_by" => Stage::SortBy { selector, range },
                     "min_by" => Stage::MinBy { selector, range },
+                    "min_all_by" => Stage::MinAllBy { selector, range },
                     "max_by" => Stage::MaxBy { selector, range },
+                    "max_all_by" => Stage::MaxAllBy { selector, range },
                     _ => unreachable!(),
                 }
             }
@@ -695,7 +717,9 @@ impl Parser<'_> {
                 }
             }
             "min" => Stage::Min { range },
+            "min_all" => Stage::MinAll { range },
             "max" => Stage::Max { range },
+            "max_all" => Stage::MaxAll { range },
             "count" => Stage::Count { range },
             "emit" => Stage::Emit { range },
             "json" => Stage::Json { range },
@@ -1303,8 +1327,12 @@ fn is_reserved(name: &str) -> bool {
             | "tail"
             | "min"
             | "min_by"
+            | "min_all"
+            | "min_all_by"
             | "max"
             | "max_by"
+            | "max_all"
+            | "max_all_by"
             | "attr"
             | "names"
             | "result_types"
