@@ -65,10 +65,12 @@ def run(
         assert row.get("code") == 0 and row["stdout"] == expected, row
         row["checked"] = True
     if expected_error is not None:
+        stderr = row.get("stderr")
         assert (
             row.get("code") == 1
             and not row["stdout"]
-            and expected_error in row["stderr"]
+            and isinstance(stderr, str)
+            and expected_error in stderr
         ), row
         row["checked"] = True
     results.append(row)
