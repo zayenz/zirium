@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.0.13
+
+Zirium 0.0.13 expands structural queries and declarative custom-operation
+formats, and adds composable report generation.
+
+- Model query results as ordered streams with explicit `unique`, add
+  predicate-based ancestor lookup through `root(predicate)`, rename downward
+  expansion to `subtree`, project attributes with `attr`, and emit streams as
+  JSON with `json`.
 
 - Add JSON object and array literals with typed binding insertion, string/key
   interpolation, duplicate-key diagnostics, and bounded construction.
@@ -37,6 +45,12 @@
   `users`, plus SSA-only `slice` that stops at block arguments.
 - Correct the query profiling fixture's expected use-site count and document
   recovery, compact reductions, slicing, and fixed-point limits.
+- Extend declarative operation formats with indexed operands, composed type
+  targets, per-operand type lists, and callee captures. Add ordered syntax
+  alternatives for operations with multiple complete spellings, including
+  consistent symbol handling in dependency queries.
+- Describe the three-operand type relationships of `llvm.select` and
+  `stablehlo.select` precisely instead of treating all operands as one type.
 
 ## 0.0.12
 
@@ -57,10 +71,6 @@ inspectable.
   format descriptions.
 - Store parser events in a four-byte transient representation and release the
   event buffer before trimming the completed CST, reducing peak parse memory.
-- Model query results as ordered streams with explicit `unique`, add
-  predicate-based ancestor lookup through `root(predicate)`, rename downward
-  expansion to `subtree`, project attributes with `attr`, and emit streams as
-  JSON with `json`.
 
 ## 0.0.11
 
