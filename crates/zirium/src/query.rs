@@ -970,7 +970,8 @@ fn evaluate_reachable(
         if document.operation_is_unparsed(operation) == Some(true)
             || (registry.operation(name).is_none()
                 && shape.is_none()
-                && registry.operation_format(name).is_none())
+                && registry.operation_format(name).is_none()
+                && registry.operation_grammars(name).is_none())
         {
             return Err(EvaluationError::new(format!(
                 "reachable cannot determine reference semantics for `{name}`; load the appropriate registry"
@@ -978,8 +979,11 @@ fn evaluate_reachable(
         }
         // Region-bearing operations include their explicitly represented bodies.
         retain_subtree(document, operation, &mut selection, budget)?;
-        let is_call =
-            name == "func.call" || shape == Some(crate::dialect::OperationShape::CallLike);
+        let is_call = name == "func.call"
+            || shape == Some(crate::dialect::OperationShape::CallLike)
+            || registry
+                .operation_grammars(name)
+                .is_some_and(|grammars| grammars.iter().all(|grammar| grammar.is_direct_call()));
         if is_call {
             let callee = document
                 .attribute_id(operation, "callee")
@@ -1064,6 +1068,7 @@ fn evaluate_closure(
         if registry.operation(name).is_none()
             && (shape.is_none() || shape == Some(crate::dialect::OperationShape::CallLike))
             && registry.operation_format(name).is_none()
+            && registry.operation_grammars(name).is_none()
         {
             return Err(EvaluationError {
                 message: format!(

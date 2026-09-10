@@ -1,6 +1,7 @@
 use zirium::{
     dialect::{DeclarativeRegistryError, RegistryConfig},
     parser::{ParseDiagnosticKind, ParsedFile},
+    query::{Query, QueryOutput},
     semantic::{LoweringMode, lower_with_dialect_registry},
 };
 
@@ -353,7 +354,7 @@ fn explicit_alternatives_parse_and_lower_both_spellings() {
     );
     let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
-    let document = lowered.document.unwrap();
+    let mut document = lowered.document.unwrap();
     let operations = document
         .operations()
         .filter(|operation| document.operation_name(*operation) == Some("test.widen"))
@@ -370,6 +371,30 @@ fn explicit_alternatives_parse_and_lower_both_spellings() {
             .collect::<Vec<_>>(),
         ["i32"]
     );
+
+    let query = Query::parse(r#"filter(op("test.widen")) | reachable | count"#).unwrap();
+    let mut outputs = Vec::new();
+    query
+        .evaluate(&mut document, &registry, |_, output| {
+            outputs.push(output);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(outputs, [QueryOutput::Count(2)]);
+}
+
+#[test]
+fn alternatives_require_consistent_symbol_behavior() {
+    let inconsistent = RegistryConfig::from_json(
+        r#"{"builtins":[],"operation_shapes":[],"operation_alternatives":[{
+          "name":"test.choice","alternatives":[{"shape":"call_like"},{"shape":"operand_clauses"}]
+        }]}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        inconsistent.build(),
+        Err(DeclarativeRegistryError::InvalidOperationAlternatives(name)) if name == "test.choice"
+    ));
 }
 
 #[test]

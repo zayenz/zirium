@@ -443,6 +443,31 @@ pub(crate) enum OperationGrammar {
     Format(OperationFormat),
 }
 
+impl OperationGrammar {
+    fn symbols(&self) -> SymbolDescriptor {
+        match self {
+            Self::Shape(OperationShape::FuncLike) => SymbolDescriptor {
+                defines_symbol: true,
+                ..SymbolDescriptor::default()
+            },
+            Self::Shape(OperationShape::CallLike) => SymbolDescriptor {
+                uses_symbols: true,
+                ..SymbolDescriptor::default()
+            },
+            Self::Format(format) if format.captures_callee() => SymbolDescriptor {
+                uses_symbols: true,
+                ..SymbolDescriptor::default()
+            },
+            _ => SymbolDescriptor::default(),
+        }
+    }
+
+    pub(crate) fn is_direct_call(&self) -> bool {
+        matches!(self, Self::Shape(OperationShape::CallLike))
+            || matches!(self, Self::Format(format) if format.captures_callee())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationAlternative<'a> {
     Shape(OperationShape),
@@ -864,6 +889,15 @@ impl DialectRegistry {
                     }
                 }
             }
+            if compiled.first().is_some_and(|first| {
+                compiled
+                    .iter()
+                    .any(|grammar| grammar.symbols() != first.symbols())
+            }) {
+                return Err(DeclarativeRegistryError::InvalidOperationAlternatives(
+                    name.clone(),
+                ));
+            }
             alternatives.push((name.clone(), compiled.into_boxed_slice()));
         }
         Ok(Self {
@@ -906,7 +940,11 @@ impl DialectRegistry {
                     uses_symbols: true,
                     ..SymbolDescriptor::default()
                 },
-                _ => SymbolDescriptor::default(),
+                _ => self
+                    .operation_grammars(operation)
+                    .and_then(|grammars| grammars.first())
+                    .map(OperationGrammar::symbols)
+                    .unwrap_or_default(),
             })
     }
 
