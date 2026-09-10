@@ -1,0 +1,9 @@
+# Count each explicitly represented operation type within each function.
+functions = filter(op("func.func"));
+
+functions
+| map_by(
+    attr("sym_name"),
+    children | subtree | names | tally
+  )
+| json

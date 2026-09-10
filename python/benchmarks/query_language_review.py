@@ -227,6 +227,88 @@ def semantic_probes(decoder):
     )
 
 
+def aggregation_graph_probes():
+    # An independent graph oracle: every function has a random number of adds,
+    # and calls may share targets, point backwards, or form recursive cycles.
+    for seed in range(12):
+        rng = random.Random(seed)
+        n = 30
+        edges = {
+            i: [rng.randrange(n) for _ in range(rng.randrange(4))] for i in range(n)
+        }
+        adds = {i: rng.randrange(5) for i in range(n)}
+        lines = ["module {"]
+        for i in range(n):
+            lines.append(f"func.func @f{i}(%arg: tensor<f32>) {{")
+            for j in range(adds[i]):
+                lines.append(f"%v{j} = stablehlo.add %arg, %arg : tensor<f32>")
+            for target in edges[i]:
+                lines.append(f"func.call @f{target}(%arg) : (tensor<f32>) -> ()")
+            lines += ["func.return", "}"]
+        lines.append("}")
+        source = "\n".join(lines)
+        for transitive in [False, True]:
+            expected = {}
+            for i in range(n):
+                visited = {i}
+                pending = [i] if transitive else []
+                while pending:
+                    for target in edges[pending.pop()]:
+                        if target not in visited:
+                            visited.add(target)
+                            pending.append(target)
+                histogram = {
+                    "stablehlo.add": sum(adds[j] for j in visited),
+                    "func.call": sum(len(edges[j]) for j in visited),
+                    "func.return": len(visited),
+                }
+                expected[f"f{i}"] = {
+                    key: value for key, value in histogram.items() if value
+                }
+            traversal = "reachable | " if transitive else ""
+            row = run(
+                f"function-graph-{seed}-reachable-{transitive}",
+                'F = filter(op("func.func")); F | map_by(attr("sym_name"), '
+                f"children | subtree | {traversal}names | tally) | json",
+                source,
+            )
+            assert row.get("code") == 0, row
+            assert json.loads(row["stdout"]) == expected, row
+            row["checked"] = True
+
+    for n in [128, 512, 2048, 8192]:
+        source = (
+            "module {\n"
+            + "\n".join(
+                f'func.func @f{i}() attributes {{entry = "{i}"}} {{ '
+                + (f"func.call @f{i + 1}() : () -> () " if i + 1 < n else "")
+                + "func.return }"
+                for i in range(n)
+            )
+            + "\n}"
+        )
+        row = run(
+            f"reachable-call-chain-{n}",
+            'F = filter(string_attr_eq("entry", "0")); '
+            'F | map_by(attr("sym_name"), children | reachable | names | tally)',
+            source,
+        )
+        assert row.get("code") == 0, row
+        assert json.loads(row["stdout"]) == {
+            "f0": {"func.call": n - 1, "func.return": n}
+        }, row
+        row["checked"] = True
+
+    run(
+        "many-saved-bindings",
+        'A0 = filter(op("stablehlo.add"));'
+        + "".join(f"A{i} = A{i - 1};" for i in range(1, 1000))
+        + "A999 | count",
+        dag(0, 60)[0],
+        expected="59\n",
+    )
+
+
 def main():
     decoder = (ROOT / "examples/cli/stablelm-decode.mlir").read_text()
     semantic_probes(decoder)
@@ -277,7 +359,7 @@ def main():
                     "seconds": statistics.median(r["seconds"] for r in rows),
                 }
             )
-    for n in [128, 512, 2048]:
+    for n in [128, 512, 2048, 8192]:
         run(
             f"argument-fanout-{n}",
             'filter(op("func.return")) | fixpoint(closure) | count',
@@ -352,6 +434,7 @@ def main():
         '(filter(string_attr_eq("review.id", "2")) | attr("review.id") union filter(string_attr_eq("review.id", "0")) | attr("review.id")) | json',
         dag(0, 3)[0],
     )
+    aggregation_graph_probes()
     print(json.dumps(results, indent=2))
 
 

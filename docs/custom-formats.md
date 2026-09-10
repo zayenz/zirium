@@ -246,8 +246,9 @@ contracts.
 
 Shapes and format descriptions supply parsing and lowering conventions. They
 do not define a vendor operation's verifier, symbol-table rules, or custom
-printer. A func-like shape exposes a symbol name but does not make the operation
-equivalent to `func.func` for every semantic analysis. Bundled dialect presets
+printer. A `func_like` shape defines its `sym_name` in the enclosing symbol
+table, and a `call_like` shape declares its `callee` symbol use. These conventions
+support direct reference traversal without making the operation equivalent to `func.func` for every semantic analysis. Bundled dialect presets
 likewise provide selected structural support, not full dialect implementations.
 
 `lower_strict()` rejects lowering errors; it does not replace

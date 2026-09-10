@@ -777,7 +777,17 @@ impl DialectRegistry {
     pub fn symbols(&self, operation: &str) -> SymbolDescriptor {
         self.operation(operation)
             .map(|descriptor| descriptor.symbols)
-            .unwrap_or_default()
+            .unwrap_or_else(|| match self.operation_shape(operation) {
+                Some(OperationShape::FuncLike) => SymbolDescriptor {
+                    defines_symbol: true,
+                    ..SymbolDescriptor::default()
+                },
+                Some(OperationShape::CallLike) => SymbolDescriptor {
+                    uses_symbols: true,
+                    ..SymbolDescriptor::default()
+                },
+                _ => SymbolDescriptor::default(),
+            })
     }
 
     /// Returns the registry used by the dialect baseline corpus.

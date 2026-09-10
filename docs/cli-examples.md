@@ -248,3 +248,19 @@ zirium \
   'filter(op("func.call")) | parent | subtree | filter(op("func.return"))' \
   examples/cli/calls.mlir
 ```
+
+## Per-function operation inventories
+
+Run the saved histogram query on the decoder:
+
+```sh
+zirium --preset stablehlo --strict \
+  -f examples/cli/function-op-counts.zirium examples/cli/stablelm-decode.mlir
+```
+
+The result is a JSON object keyed by function name, containing counts keyed by
+operation name. In this example, `main` contains 19 `stablehlo.dot_general`
+operations. Add `reachable |` before `names` to include supported callees'
+bodies, counting shared operations once. See
+[bindings and aggregation](query-language.md#naming-intermediate-results) for
+the evaluation rules and the distinction between body and reachable counts.

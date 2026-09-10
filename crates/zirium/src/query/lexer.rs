@@ -9,6 +9,8 @@ pub enum TokenKind {
     RParen,
     Comma,
     Pipe,
+    Equals,
+    Semicolon,
     Trivia,
     Invalid,
     Eof,
@@ -142,6 +144,14 @@ pub fn lex(source: &str) -> Lexed<'_> {
             b',' => {
                 position += 1;
                 TokenKind::Comma
+            }
+            b'=' => {
+                position += 1;
+                TokenKind::Equals
+            }
+            b';' => {
+                position += 1;
+                TokenKind::Semicolon
             }
             b'|' => {
                 position += 1;

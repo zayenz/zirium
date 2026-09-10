@@ -1789,3 +1789,208 @@ fn query_diagnostics_keep_program_file_lines_and_unicode_columns() {
     assert!(error.contains("line 3, column 19"), "{error}");
     assert!(error.contains("\n                  ^"), "{error}");
 }
+
+#[test]
+fn named_queries_build_function_histograms_and_keep_live_selections() {
+    let decoder = include_str!("../../../examples/cli/stablelm-decode.mlir");
+    let output = run_stdin_with_registry(
+        "stablehlo.json",
+        r#"matmuls = filter(op("stablehlo.dot_general"));
+           matmuls | root(op("func.func")) | attr("sym_name") | tally | json"#,
+        decoder,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({"main": 19})
+    );
+
+    let source = "module { func.func @a() { func.return } func.func @b() { func.return } }";
+    for (query, expected) in [
+        (
+            r#"F = filter(op("func.func")); F | map_by(attr("sym_name"), children | subtree | names | tally) | json"#,
+            serde_json::json!({"a":{"func.return":1},"b":{"func.return":1}}),
+        ),
+        (
+            r#"F = filter(op("func.func")); F | map_by(attr("sym_name"), children | count)"#,
+            serde_json::json!({"a":1,"b":1}),
+        ),
+        (
+            r#"A = filter(op("func.func")); B = A | children; (A union B) | names | tally"#,
+            serde_json::json!({"func.func":2,"func.return":2}),
+        ),
+        (
+            r#"F = filter(op("func.func")); F | set_attr("tag", "changed") | F | attr("tag") | tally"#,
+            serde_json::json!({"changed":2}),
+        ),
+        (
+            r#"N = names | tally; N | json"#,
+            serde_json::json!({"builtin.module":1,"func.func":2,"func.return":2}),
+        ),
+        (
+            r#"filter(false) | map_by(attr("sym_name"), names | tally)"#,
+            serde_json::json!({}),
+        ),
+    ] {
+        let output = run_stdin(query, source);
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
+    }
+    for (query, error) in [
+        ("A = B; B = input; A", "unknown query stage"),
+        ("A = input; A = input; A", "already defined"),
+        ("input = names; input", "reserved"),
+        ("A = emit; A", "cannot edit or emit"),
+        ("A = input;", "expected a query stage"),
+        ("A = input A", "expected `;`"),
+        ("map_by(names, emit)", "cannot edit or emit"),
+        ("map_by(names, count)", "duplicate key"),
+        (
+            r#"filter(op("func.func")) | map_by(attr("absent"), count)"#,
+            "exactly one string",
+        ),
+        ("tally", "requires a value stream"),
+        ("N = count; N | names", "requires operations"),
+        (
+            "N = names | tally; N union N",
+            "require operation or value streams",
+        ),
+        (
+            "N = names | tally; fixpoint(N)",
+            "requires an operation or value stream",
+        ),
+    ] {
+        let output = run_stdin(query, source);
+        assert!(!output.status.success(), "{query}");
+        assert!(output.stdout.is_empty(), "{query}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(error),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn aggregate_limits_cover_saved_nested_maps() {
+    let source = "module {}";
+    let query = "A = names | tally; B = input | map_by(names, A); B";
+    let output = run_stdin_with_options(&["--max-items", "2"], query, source);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("stream size limit"));
+
+    let mut query = String::from("A0 = names | tally;");
+    for i in 1..70 {
+        query.push_str(&format!("A{i} = input | map_by(names, A{});", i - 1));
+    }
+    query.push_str("A69");
+    let output = run_stdin(&query, source);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("map nesting limit"));
+}
+
+#[test]
+fn reachable_counts_shared_and_recursive_callee_bodies_once() {
+    let source = r#"module {
+      func.func @main(%arg: i32) {
+        %dead = arith.addi %arg, %arg : i32
+        func.call @leaf(%arg) : (i32) -> ()
+        func.call @leaf(%arg) : (i32) -> ()
+        func.return
+      }
+      func.func @leaf(%arg: i32) {
+        func.call @leaf(%arg) : (i32) -> ()
+        func.return
+      }
+    }"#;
+    for (query, expected) in [
+        (
+            r#"filter(op("func.func")) | map_by(attr("sym_name"), children | subtree | names | tally)"#,
+            serde_json::json!({"main":{"arith.addi":1,"func.call":2,"func.return":1},"leaf":{"func.call":1,"func.return":1}}),
+        ),
+        (
+            r#"filter(op("func.func")) | map_by(attr("sym_name"), children | subtree | reachable | names | tally)"#,
+            serde_json::json!({"main":{"arith.addi":1,"func.call":3,"func.return":2},"leaf":{"func.call":1,"func.return":1}}),
+        ),
+        (
+            r#"filter(op("func.call")) | reachable | names | tally"#,
+            serde_json::json!({"func.call":3,"func.return":1}),
+        ),
+    ] {
+        let output = run_stdin(query, source);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+            expected
+        );
+    }
+    let output = run_stdin_with_options(
+        &["--preset", "async"],
+        r#"filter(op("async.call")) | reachable | names | tally"#,
+        "module { func.func @main() { async.call @work() : () -> ()\n func.return } async.func @work() { async.return } }",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({"async.call":1,"async.return":1})
+    );
+
+    let branch = run_stdin(
+        r#"filter(op("cf.br")) | reachable | names | tally"#,
+        "module { func.func @f(%arg: i32) { cf.br ^next(%arg : i32)\n ^dead: func.return\n ^next(%next_arg: i32): %x = arith.addi %next_arg, %next_arg : i32\n func.return } }",
+    );
+    assert!(
+        branch.status.success(),
+        "{}",
+        String::from_utf8_lossy(&branch.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&branch.stdout).unwrap(),
+        serde_json::json!({"cf.br":1,"arith.addi":1,"func.return":1})
+    );
+
+    for (source, error) in [
+        (
+            "module { func.func private @external()\n func.func @main() { func.call @external() : () -> () func.return } }",
+            "without a body",
+        ),
+        (
+            "module { func.func @main() { func.call @missing() : () -> () func.return } }",
+            "could not resolve",
+        ),
+        (
+            "module { \"vendor.lambda\"() : () -> () }",
+            "cannot determine reference semantics",
+        ),
+    ] {
+        let output = run_stdin("reachable | count", source);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(error),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

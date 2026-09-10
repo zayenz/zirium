@@ -11,7 +11,7 @@ This finds `arith.addi` operations, follows their direct users, and keeps those
 with an `analysis.tag` attribute.
 `filter` always tests the current operation stream. Navigation replaces that
 stream; edits preserve it. Navigation preserves order and duplicates. Set
-operators on operations, `closure`, and `slice` produce source-ordered sets; `unique` explicitly
+operators on operations, `closure`, `slice`, and `reachable` produce source-ordered sets; `unique` explicitly
 removes duplicates from other streams.
 
 `input` and a final `emit` are implicit. These programs print the same document:
@@ -54,6 +54,127 @@ verification or reconstruct operations implicit in custom assembly.
 Input files are independent documents. `input` never combines different files.
 The selected-fragment printer may change formatting even when printing the
 whole input. Use the library's original-output API to reproduce input bytes.
+
+## Naming intermediate results
+
+Bindings make a longer query easier to read and let several parts reuse the same
+selection. Each binding is evaluated once for each input document:
+
+```zirium
+adds = filter(op("stablehlo.add"));
+matmuls = filter(op("stablehlo.dot_general"));
+
+(adds union matmuls) | names | tally | json
+```
+
+A binding saves its result. It is not a query macro: using `adds` later restores
+the saved stream, regardless of the current selection. Each right-hand side
+starts with all operations in the document and may refer to earlier bindings.
+The final expression also starts with all operations.
+
+Names use ASCII letters, digits, and underscores, starting with a letter or
+underscore. Stage names, predicate names, and language keywords are reserved.
+Bindings cannot be reassigned, refer forward, or refer to themselves. Each
+binding needs a trailing semicolon, followed by one final expression.
+
+Bindings preserve order and duplicates. Saved operations refer to the live
+document, so later edits are visible through those operations. Projected strings
+and aggregates retain their saved values. Bindings cannot edit or emit; put
+those stages in the final expression. Use `union` to combine saved selections;
+`or` combines predicates inside `filter`.
+
+## Counting values and building maps
+
+`tally` counts how many times each value occurs and returns a map from strings
+to counts. For example, `names | tally` counts operations by their full names.
+An empty value stream produces `{}`. Maps print as JSON objects, with keys
+sorted lexically. `json` can also emit a map explicitly.
+
+To map function names to their number of matmuls:
+
+```zirium
+matmuls = filter(op("stablehlo.dot_general"));
+
+matmuls | root(op("func.func")) | attr("sym_name") | tally | json
+```
+
+Each matmul contributes its enclosing function's name once. Keep the duplicates:
+adding `unique` would lose the information needed for the count. Functions
+without matmuls are absent. On `examples/cli/stablelm-decode.mlir`, this produces
+`{"main": 19}` when run with `--preset stablehlo`.
+
+For a separate analysis of each function, use `map_by(key_query, value_query)`:
+
+```zirium
+functions = filter(op("func.func"));
+
+functions
+| map_by(
+    attr("sym_name"),
+    children | subtree | names | tally
+  )
+| json
+```
+
+Both queries run independently on each single input operation. Here the key is
+the function's name, and the value is a histogram of its body. `children |
+subtree` includes explicitly represented nested regions and excludes the
+function operation itself. An empty body produces an empty histogram.
+
+The key must produce exactly one string. Missing keys and duplicate keys are
+errors. If different symbol scopes contain the same function name, select a
+scope before building the map, or use an attribute with a unique identifier.
+By contrast, `tally` intentionally combines equal strings across scopes.
+
+The value may be a count, a map, or a stream. Streams become JSON arrays, using
+the same representation as `json`. For example, replace `names | tally` with
+`count` for a total body size, or with `result_types | tally` for a type
+histogram. Maps can be nested. Key and value queries cannot edit or emit.
+Bindings used inside them still restore their saved results; they do not
+become queries relative to the current function.
+
+## Counting reachable operations
+
+Adding `reachable` includes supported dependencies and referenced bodies:
+
+```zirium
+functions = filter(op("func.func"));
+
+functions
+| map_by(
+    attr("sym_name"),
+    children | subtree | reachable | names | tally
+  )
+| json
+```
+
+Suppose `main` calls `helper` twice, and `helper` contains one add and one
+return. The body histogram for `main` includes its two calls and its own
+return. The reachable histogram also includes one add and the helper's return.
+The helper's body is counted once, even though two calls reach it. If the helper
+calls itself, traversal still terminates and counts each static operation once.
+These counts describe the represented code, not execution frequency.
+
+`reachable` includes seeds, their explicit nested bodies, and transitive SSA
+definitions. Block arguments are boundaries. Direct `func.call` and registered
+`call_like` operations resolve their `callee` symbol and include the target's
+body. The target declaration itself is not added merely because it is called.
+Registered `func_like` operations participate in symbol lookup. Supported
+`cf.br` and `cf.cond_br` edges include their target blocks without widening
+the selection to the enclosing function. The result is a source-ordered set.
+
+A lambda represented by a named function and a direct call works with these
+rules. Indirect calls through function values, captures with dialect-specific
+semantics, and other unsupported reference kinds require additional dialect
+support. Unknown operations, unresolved callees, external callees without
+bodies, and declared unsupported references cause errors. Load the appropriate
+registry; a shape or format registration describes the supported structure,
+not arbitrary dialect behavior.
+
+As with body counts, compact assembly can omit implicit operations from the
+represented structure. `reachable` does not synthesize those operations.
+Use `closure` when retaining enclosing scopes for a printable fragment;
+`reachable` deliberately stops at block arguments for analysis.
 
 ## Predicates and filtering
 
@@ -108,6 +229,7 @@ letters, digits, or underscores. `analysis.tag` and `_zirium.state_2` are valid.
 | `subtree` | Each selected operation and all its descendants. |
 | `closure` | The selection plus one step of supported dependency expansion. |
 | `slice` | The selection and its transitive SSA definitions, stopping at block arguments. |
+| `reachable` | The selection, explicit bodies, SSA definitions, and supported referenced bodies, each operation once. |
 
 `defs`, `users`, `parent`, and `children` move one step and replace the input
 selection. They do not automatically keep it. `parent` drops operations with no
@@ -221,7 +343,8 @@ in the document to the current selection:
 filter(op("arith.addi")) | (filter(true) union (input | filter(has_attr("tag"))))
 ```
 
-Set operands cannot edit or count. Apply edits and counting after grouping the
+Set operands must return operation or value streams; they cannot edit, count,
+or construct maps. Apply edits and counting after grouping the
 set expression. Operands may use `emit` for inspection; emissions occur from
 left to right. Both operands still see the same document and incoming selection.
 
@@ -246,7 +369,7 @@ reference. It does not infer how unknown operations use references.
 
 `fixpoint(query)` repeatedly replaces the selection with the query's result
 until the selection is unchanged. Its body can contain navigation, filters,
-set expressions, grouping, and nested fixed points. It cannot edit or count.
+set expressions, grouping, and nested fixed points. It cannot edit, count, or construct maps.
 Use `fixpoint(closure | emit)` to inspect each iteration, including the final
 unchanged result. If selections cycle without becoming unchanged, evaluation
 fails. Emission does not affect convergence.
@@ -339,7 +462,7 @@ its final result unless it ends with an explicit `emit`.
 `count` prints the stream's size followed by a newline. It is terminal;
 no stage may follow it. To emit a fragment and then count it, use `emit | count`.
 
-`json` emits the current stream as a JSON array and passes the stream onward.
+`json` emits streams as JSON arrays and maps as JSON objects, then passes the result onward.
 For value streams, the array contains strings. For operation streams, each
 entry contains the operation name, an object of attribute spellings, and
 `operand_types` and `result_types` arrays. Unknown type
@@ -356,12 +479,14 @@ emission callback and can choose their own buffering policy.
 ## Grammar and diagnostics
 
 ```text
-program    = [ query ]
+program    = [ { binding } query ]
+binding    = identifier "=" query ";"
 query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
-stage      = "input" | "filter" "(" predicate ")"
+stage      = identifier | "tally" | "map_by" "(" query "," query ")"
+           | "input" | "filter" "(" predicate ")"
            | ("defs" | "users") [ "(" integer ")" ]
-           | "parent" | "children" | "closure" | "slice"
+           | "parent" | "children" | "closure" | "slice" | "reachable"
            | "root" "(" predicate ")" | "subtree" | "unique"
            | "attr" "(" string ")" | "names" | "result_types" | "operand_types" | "json"
            | "fixpoint" "(" query ")" | "(" query ")"
@@ -382,7 +507,10 @@ Whitespace is insignificant between tokens. `#` begins a comment extending to
 the end of the line; inside a string it is a literal character. Strings use
 double quotes and support `\"` and `\\`. Other escapes are errors.
 
-Query and predicate nesting share a 64-level limit. Long flat boolean chains,
+Query and predicate nesting share a 64-level limit. Materialized maps also have
+a 64-level nesting limit, including maps built through successive bindings.
+Nested map contents count toward `--max-items`, and copying saved results counts
+toward `--max-work`. Long flat boolean chains,
 pipelines, and set chains do not require corresponding recursive nesting.
 The CLI reports query errors with a byte offset, line, column, and source
 caret. Program-file positions include leading whitespace and comments.

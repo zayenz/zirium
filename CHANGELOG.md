@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add immutable query bindings, value histograms with `tally`, and per-operation
+  maps with `map_by(key, value)`. Maps support nested JSON output and bounded
+  aggregate size.
+- Add `reachable` for distinct static operation counts across explicit bodies,
+  SSA definitions, direct calls, and supported branches. Register function-like
+  definitions and call-like symbol uses for lookup. Unsupported references and
+  callees without bodies produce errors.
+
 - Preserve both sides of StableHLO dot dimension clauses and accept `return`
   shorthand plus unparenthesized multi-operand return type lists.
 - Warn when CLI recovery leaves semantic information incomplete; add `--strict`,

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::source::TextRange;
 
 use super::lexer::{Lexed, Token, TokenKind};
@@ -14,6 +16,7 @@ pub enum SetOperator {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
+    pub bindings: Vec<(String, Expression)>,
     pub(crate) expression: Expression,
 }
 
@@ -50,6 +53,23 @@ impl Expression {
             .chain(self.rest.iter().flat_map(|(_, stages)| stages))
             .all(Stage::is_selection_only)
     }
+    fn is_read_only(&self) -> bool {
+        self.first
+            .iter()
+            .chain(self.rest.iter().flat_map(|(_, stages)| stages))
+            .all(|stage| match stage {
+                Stage::SetAttr { .. }
+                | Stage::RemoveAttr { .. }
+                | Stage::Emit { .. }
+                | Stage::Json { .. } => false,
+                Stage::Group { expression, .. } | Stage::Fixpoint { expression, .. } => {
+                    expression.is_read_only()
+                }
+                Stage::MapBy { key, value, .. } => key.is_read_only() && value.is_read_only(),
+                _ => true,
+            })
+    }
+
     pub(crate) fn ends_with_emission(&self) -> bool {
         self.rest.is_empty()
             && self.first.last().is_some_and(|stage| match stage {
@@ -127,6 +147,21 @@ impl Predicate {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
+    Binding {
+        name: String,
+        range: TextRange,
+    },
+    Tally {
+        range: TextRange,
+    },
+    MapBy {
+        key: Box<Expression>,
+        value: Box<Expression>,
+        range: TextRange,
+    },
+    Reachable {
+        range: TextRange,
+    },
     Input {
         range: TextRange,
     },
@@ -208,7 +243,11 @@ pub enum Stage {
 impl Stage {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Input { range }
+            Self::Binding { range, .. }
+            | Self::Tally { range }
+            | Self::MapBy { range, .. }
+            | Self::Reachable { range }
+            | Self::Input { range }
             | Self::Filter { range, .. }
             | Self::Closure { range }
             | Self::Slice { range }
@@ -234,7 +273,11 @@ impl Stage {
     }
     fn is_selection_only(&self) -> bool {
         match self {
-            Self::SetAttr { .. } | Self::RemoveAttr { .. } | Self::Count { .. } => false,
+            Self::SetAttr { .. }
+            | Self::RemoveAttr { .. }
+            | Self::Count { .. }
+            | Self::Tally { .. }
+            | Self::MapBy { .. } => false,
             Self::Group { expression, .. } | Self::Fixpoint { expression, .. } => {
                 expression.is_selection_only()
             }
@@ -294,6 +337,7 @@ pub fn parse_with_nesting_limit(lexed: &Lexed<'_>, nesting_limit: usize) -> Pars
         cursor: 0,
         diagnostics: Vec::new(),
         nesting_limit,
+        bindings: HashSet::new(),
     };
     let program = parser.program();
     Parsed {
@@ -308,6 +352,7 @@ struct Parser<'a> {
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
     nesting_limit: usize,
+    bindings: HashSet<String>,
 }
 
 impl Parser<'_> {
@@ -315,6 +360,7 @@ impl Parser<'_> {
         self.skip_trivia();
         if self.at(TokenKind::Eof) {
             return Some(Program {
+                bindings: Vec::new(),
                 expression: Expression {
                     first: Vec::new(),
                     rest: Vec::new(),
@@ -322,12 +368,41 @@ impl Parser<'_> {
                 },
             });
         }
+        let mut bindings = Vec::new();
+        loop {
+            self.skip_trivia();
+            let next = self.tokens[self.cursor + 1..]
+                .iter()
+                .find(|token| token.kind() != TokenKind::Trivia);
+            if !self.at(TokenKind::Identifier)
+                || !next.is_some_and(|token| token.kind() == TokenKind::Equals)
+            {
+                break;
+            }
+            let name = self.identifier_text()?;
+            if is_reserved(&name) || self.bindings.contains(&name) {
+                self.error_at_previous("binding name is reserved or already defined");
+                return None;
+            }
+            self.expect(TokenKind::Equals, "expected `=` after binding name")?;
+            let expression = self.expression(0)?;
+            if !expression.is_read_only() {
+                self.error("bindings cannot edit or emit; put output in the final expression");
+                return None;
+            }
+            self.expect(TokenKind::Semicolon, "expected `;` after binding")?;
+            self.bindings.insert(name.clone());
+            bindings.push((name, expression));
+        }
         let expression = self.expression(0)?;
         self.skip_trivia();
         if !self.at(TokenKind::Eof) {
             self.error("expected `|`, a set operator, or end of query");
         }
-        Some(Program { expression })
+        Some(Program {
+            bindings,
+            expression,
+        })
     }
 
     fn expression(&mut self, depth: usize) -> Option<Expression> {
@@ -399,6 +474,27 @@ impl Parser<'_> {
         };
         let range = self.span(start);
         Some(match name.as_str() {
+            "reachable" => Stage::Reachable { range },
+            "tally" => Stage::Tally { range },
+            "map_by" => {
+                self.expect(TokenKind::LParen, "expected `(` after map_by")?;
+                let key = Box::new(self.expression(depth + 1)?);
+                self.expect(
+                    TokenKind::Comma,
+                    "expected `,` between map_by key and value",
+                )?;
+                let value = Box::new(self.expression(depth + 1)?);
+                self.expect(TokenKind::RParen, "expected `)` after map_by")?;
+                if !key.is_read_only() || !value.is_read_only() {
+                    self.error("map_by queries cannot edit or emit");
+                    return None;
+                }
+                Stage::MapBy {
+                    key,
+                    value,
+                    range: self.span(start),
+                }
+            }
             "input" => Stage::Input { range },
             "closure" => Stage::Closure { range },
             "slice" => Stage::Slice { range },
@@ -478,6 +574,7 @@ impl Parser<'_> {
             "set_attr" => return self.set_attr(start, depth + 1),
             "remove_attr" => return self.remove_attr(start, depth + 1),
             "attr" => return self.attr(start, depth + 1),
+            _ if self.bindings.contains(&name) => Stage::Binding { name, range },
             _ => {
                 self.error_at_previous("unknown query stage; expected input, filter, navigation, projection, fixpoint, an edit, count, emit, or json");
                 return None;
@@ -889,4 +986,47 @@ fn valid_attribute_name(name: &str) -> bool {
                 .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
                 && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         })
+}
+
+fn is_reserved(name: &str) -> bool {
+    matches!(
+        name,
+        "input"
+            | "filter"
+            | "closure"
+            | "slice"
+            | "reachable"
+            | "defs"
+            | "users"
+            | "parent"
+            | "children"
+            | "root"
+            | "subtree"
+            | "unique"
+            | "attr"
+            | "names"
+            | "result_types"
+            | "operand_types"
+            | "fixpoint"
+            | "set_attr"
+            | "remove_attr"
+            | "count"
+            | "emit"
+            | "json"
+            | "tally"
+            | "map_by"
+            | "union"
+            | "intersect"
+            | "except"
+            | "and"
+            | "or"
+            | "not"
+            | "true"
+            | "false"
+            | "op"
+            | "dialect"
+            | "result_type"
+            | "has_attr"
+            | "string_attr_eq"
+    )
 }

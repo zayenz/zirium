@@ -282,7 +282,10 @@ fn run() -> Result<(), String> {
                 let mut answer = Vec::new();
                 let scalar = matches!(
                     output,
-                    QueryOutput::Count(_) | QueryOutput::Values(_) | QueryOutput::Json(_)
+                    QueryOutput::Count(_)
+                        | QueryOutput::Values(_)
+                        | QueryOutput::Json(_)
+                        | QueryOutput::Map(_)
                 );
                 match output {
                     QueryOutput::Operations(selected) => document
@@ -301,6 +304,14 @@ fn run() -> Result<(), String> {
                             writeln!(answer, "{value}")
                                 .map_err(|error| EvaluationError::new(error.to_string()))?;
                         }
+                    }
+                    QueryOutput::Map(values) => {
+                        answer.extend_from_slice(
+                            serde_json::to_string_pretty(&values)
+                                .map_err(|error| EvaluationError::new(error.to_string()))?
+                                .as_bytes(),
+                        );
+                        answer.push(b'\n');
                     }
                     QueryOutput::Json(json) => answer.extend_from_slice(json.as_bytes()),
                 }

@@ -1,7 +1,7 @@
 //! Composable operation-selection queries, editing, and output.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     fmt,
 };
 
@@ -19,6 +19,7 @@ pub mod parser;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
     expression: parser::Expression,
+    bindings: Vec<(String, parser::Expression)>,
 }
 
 /// Bounds evaluation work and the number of items in any one stream.
@@ -38,12 +39,13 @@ impl Default for EvaluationLimits {
     }
 }
 
-struct Budget {
+struct EvaluationState {
+    bindings: BTreeMap<String, QueryOutput>,
     remaining: usize,
     max_items: usize,
 }
 
-impl Budget {
+impl EvaluationState {
     fn charge(&mut self, work: usize) -> Result<(), EvaluationError> {
         self.remaining = self.remaining.checked_sub(work).ok_or_else(|| EvaluationError::new(
             "query work limit exceeded; fixed points may need unique or a larger --max-work limit"
@@ -72,6 +74,7 @@ pub enum QueryOutput {
     Operations(Vec<OperationId>),
     Values(Vec<String>),
     Count(usize),
+    Map(serde_json::Map<String, serde_json::Value>),
     Json(String),
 }
 
@@ -142,6 +145,7 @@ impl Query {
             .expect("diagnostic-free query has a program");
         Ok(Self {
             expression: program.expression,
+            bindings: program.bindings,
         })
     }
 
@@ -165,11 +169,23 @@ impl Query {
         limits: EvaluationLimits,
         mut emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
-        let mut budget = Budget {
+        let mut budget = EvaluationState {
+            bindings: BTreeMap::new(),
             remaining: limits.max_work,
             max_items: limits.max_items,
         };
         let input = QueryOutput::Operations(budget.collect(document.operations())?);
+        for (name, expression) in &self.bindings {
+            let value = evaluate_expression(
+                expression,
+                document,
+                registry,
+                input.clone(),
+                &mut emit,
+                &mut budget,
+            )?;
+            budget.bindings.insert(name.clone(), value);
+        }
         let output = evaluate_expression(
             &self.expression,
             document,
@@ -191,7 +207,7 @@ fn evaluate_expression(
     registry: &DialectRegistry,
     input: QueryOutput,
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
-    budget: &mut Budget,
+    budget: &mut EvaluationState,
 ) -> Result<QueryOutput, EvaluationError> {
     if expression.rest.is_empty() {
         return evaluate_pipeline(&expression.first, document, registry, input, emit, budget);
@@ -219,12 +235,77 @@ fn evaluate_pipeline(
     registry: &DialectRegistry,
     input: QueryOutput,
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
-    budget: &mut Budget,
+    budget: &mut EvaluationState,
 ) -> Result<QueryOutput, EvaluationError> {
     let mut current = input;
     for stage in stages {
-        budget.charge(output_len(&current).max(1))?;
+        budget.charge(output_size(&current).max(1))?;
         match stage {
+            parser::Stage::Binding { name, .. } => {
+                budget.charge(output_size(&budget.bindings[name]).max(1))?;
+                current = budget.bindings[name].clone();
+            }
+            parser::Stage::Tally { .. } => {
+                let QueryOutput::Values(values) = current else {
+                    return Err(EvaluationError::new(
+                        "tally requires a value stream; use names or attr first",
+                    ));
+                };
+                let mut counts = BTreeMap::<String, usize>::new();
+                for value in values {
+                    *counts.entry(value).or_default() += 1;
+                }
+                current = QueryOutput::Map(
+                    counts
+                        .into_iter()
+                        .map(|(key, count)| (key, serde_json::json!(count)))
+                        .collect(),
+                );
+            }
+            parser::Stage::MapBy { key, value, .. } => {
+                let selected = take_operations(current, "map_by")?;
+                let mut entries = serde_json::Map::new();
+                let mut items = 0usize;
+                for operation in selected {
+                    let item = QueryOutput::Operations(vec![operation]);
+                    let key =
+                        evaluate_expression(key, document, registry, item.clone(), emit, budget)?;
+                    let QueryOutput::Values(mut keys) = key else {
+                        return Err(EvaluationError::new(
+                            "map_by key must produce exactly one string",
+                        ));
+                    };
+                    if keys.len() != 1 {
+                        return Err(EvaluationError::new(
+                            "map_by key must produce exactly one string",
+                        ));
+                    }
+                    let key = keys.pop().unwrap();
+                    if entries.contains_key(&key) {
+                        return Err(EvaluationError::new(format!(
+                            "map_by encountered duplicate key `{key}`; select unique keys"
+                        )));
+                    }
+                    let value = evaluate_expression(value, document, registry, item, emit, budget)?;
+                    items = items.saturating_add(output_size(&value).saturating_add(1));
+                    budget.check_items(items)?;
+                    budget.charge(output_size(&value))?;
+                    let value = output_value(document, &value);
+                    if value_depth(&value) >= parser::DEFAULT_NESTING_LIMIT {
+                        return Err(EvaluationError::new("map nesting limit exceeded"));
+                    }
+                    entries.insert(key, value);
+                }
+                current = QueryOutput::Map(entries);
+            }
+            parser::Stage::Reachable { .. } => {
+                current = QueryOutput::Operations(evaluate_reachable(
+                    document,
+                    take_operations(current, "reachable")?,
+                    registry,
+                    budget,
+                )?);
+            }
             parser::Stage::Input { .. } => {
                 current = QueryOutput::Operations(budget.collect(document.operations())?)
             }
@@ -275,7 +356,11 @@ fn evaluate_pipeline(
             parser::Stage::Unique { .. } => match &mut current {
                 QueryOutput::Operations(selected) => retain_unique(selected),
                 QueryOutput::Values(values) => retain_unique(values),
-                QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
+                _ => {
+                    return Err(EvaluationError::new(
+                        "unique requires an operation or value stream",
+                    ));
+                }
             },
             parser::Stage::Attr { name, .. } => {
                 let selected = take_operations(current, "attr")?;
@@ -315,9 +400,6 @@ fn evaluate_pipeline(
             parser::Stage::Group { expression, .. } => {
                 current =
                     evaluate_expression(expression, document, registry, current, emit, budget)?;
-                if matches!(current, QueryOutput::Count(_) | QueryOutput::Json(_)) {
-                    return Ok(current);
-                }
             }
             parser::Stage::Fixpoint { expression, .. } => {
                 if expression.is_single_closure() {
@@ -344,8 +426,13 @@ fn evaluate_pipeline(
                         emit,
                         budget,
                     )?;
-                    if matches!(next, QueryOutput::Count(_) | QueryOutput::Json(_)) {
-                        unreachable!("parser checks fixpoint body");
+                    if matches!(
+                        next,
+                        QueryOutput::Count(_) | QueryOutput::Json(_) | QueryOutput::Map(_)
+                    ) {
+                        return Err(EvaluationError::new(
+                            "fixpoint requires an operation or value stream",
+                        ));
                     }
                     budget.charge(1)?;
                     if next == current {
@@ -414,6 +501,7 @@ fn evaluate_pipeline(
                 QueryOutput::Json(output_json(document, &current)?),
             )?,
         }
+        budget.check_items(output_size(&current))?;
     }
     Ok(current)
 }
@@ -424,10 +512,9 @@ fn operations<'a>(
 ) -> Result<&'a [OperationId], EvaluationError> {
     match output {
         QueryOutput::Operations(selected) => Ok(selected),
-        QueryOutput::Values(_) => Err(EvaluationError::new(format!(
+        _ => Err(EvaluationError::new(format!(
             "{stage} requires operations, but the current stream contains values"
         ))),
-        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
     }
 }
 
@@ -437,20 +524,18 @@ fn operations_mut<'a>(
 ) -> Result<&'a mut Vec<OperationId>, EvaluationError> {
     match output {
         QueryOutput::Operations(selected) => Ok(selected),
-        QueryOutput::Values(_) => Err(EvaluationError::new(format!(
+        _ => Err(EvaluationError::new(format!(
             "{stage} requires operations, but the current stream contains values"
         ))),
-        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
     }
 }
 
 fn take_operations(output: QueryOutput, stage: &str) -> Result<Vec<OperationId>, EvaluationError> {
     match output {
         QueryOutput::Operations(selected) => Ok(selected),
-        QueryOutput::Values(_) => Err(EvaluationError::new(format!(
+        _ => Err(EvaluationError::new(format!(
             "{stage} requires operations, but the current stream contains values"
         ))),
-        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
     }
 }
 
@@ -458,7 +543,35 @@ fn output_len(output: &QueryOutput) -> usize {
     match output {
         QueryOutput::Operations(selected) => selected.len(),
         QueryOutput::Values(values) => values.len(),
-        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
+        QueryOutput::Map(values) => values.len(),
+        QueryOutput::Count(_) | QueryOutput::Json(_) => 1,
+    }
+}
+
+fn value_depth(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(entries) => {
+            1 + entries.values().map(value_depth).max().unwrap_or(0)
+        }
+        serde_json::Value::Array(values) => 1 + values.iter().map(value_depth).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+// Bound nested aggregate contents as well as the outer map.
+fn output_size(output: &QueryOutput) -> usize {
+    fn value_size(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Object(entries) => {
+                entries.values().map(|value| 1 + value_size(value)).sum()
+            }
+            serde_json::Value::Array(values) => values.iter().map(value_size).sum(),
+            _ => 1,
+        }
+    }
+    match output {
+        QueryOutput::Map(entries) => entries.values().map(|value| 1 + value_size(value)).sum(),
+        _ => output_len(output),
     }
 }
 
@@ -502,7 +615,9 @@ fn evaluate_set_operator(
         | (QueryOutput::Values(_), QueryOutput::Operations(_)) => Err(EvaluationError::new(
             "set operands must produce the same kind of stream",
         )),
-        _ => unreachable!("parser checks set operands"),
+        _ => Err(EvaluationError::new(
+            "set operands require operation or value streams",
+        )),
     }
 }
 
@@ -515,7 +630,7 @@ fn evaluate_defs(
     document: &Document,
     selected: &[OperationId],
     index: Option<usize>,
-    budget: &Budget,
+    budget: &EvaluationState,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     budget.collect(
         selected
@@ -544,7 +659,7 @@ fn evaluate_users(
     document: &Document,
     selected: &[OperationId],
     index: Option<usize>,
-    budget: &Budget,
+    budget: &EvaluationState,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     budget.collect(
         selected
@@ -570,7 +685,7 @@ fn evaluate_users(
 fn evaluate_parent(
     document: &Document,
     selected: &[OperationId],
-    budget: &Budget,
+    budget: &EvaluationState,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     budget.collect(selected.iter().filter_map(|&operation| {
         document
@@ -585,7 +700,7 @@ fn evaluate_parent(
 fn evaluate_children(
     document: &Document,
     selected: &[OperationId],
-    budget: &Budget,
+    budget: &EvaluationState,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     budget.collect(
         selected
@@ -648,7 +763,13 @@ fn evaluate_attr(
 }
 
 fn output_json(document: &Document, output: &QueryOutput) -> Result<String, EvaluationError> {
-    let value = match output {
+    serde_json::to_string_pretty(&output_value(document, output))
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| EvaluationError::new(format!("could not encode JSON: {error}")))
+}
+
+fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value {
+    match output {
         QueryOutput::Operations(selected) => serde_json::Value::Array(
             selected
                 .iter()
@@ -676,11 +797,10 @@ fn output_json(document: &Document, output: &QueryOutput) -> Result<String, Eval
                 .collect(),
         ),
         QueryOutput::Values(values) => serde_json::json!(values),
-        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
-    };
-    serde_json::to_string_pretty(&value)
-        .map(|json| format!("{json}\n"))
-        .map_err(|error| EvaluationError::new(format!("could not encode JSON: {error}")))
+        QueryOutput::Map(values) => serde_json::Value::Object(values.clone()),
+        QueryOutput::Count(count) => serde_json::json!(count),
+        QueryOutput::Json(value) => serde_json::Value::String(value.clone()),
+    }
 }
 
 fn evaluate_predicate(
@@ -729,7 +849,11 @@ struct ClosureSelection {
 }
 
 impl ClosureSelection {
-    fn insert(&mut self, operation: OperationId, budget: &Budget) -> Result<(), EvaluationError> {
+    fn insert(
+        &mut self,
+        operation: OperationId,
+        budget: &EvaluationState,
+    ) -> Result<(), EvaluationError> {
         if self.selected.insert(operation) {
             budget.check_items(self.selected.len())?;
             self.pending.push_back(operation);
@@ -743,7 +867,7 @@ impl ClosureSelection {
 fn evaluate_slice(
     document: &Document,
     seeds: Vec<OperationId>,
-    budget: &mut Budget,
+    budget: &mut EvaluationState,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     let mut selection = ClosureSelection::default();
     for operation in seeds {
@@ -774,12 +898,101 @@ fn evaluate_slice(
     Ok(source_ordered(document, selection.selected))
 }
 
+// Analysis reachability retains bodies and explicit dependencies, without
+// widening block arguments or successor edges to their owning function.
+fn evaluate_reachable(
+    document: &Document,
+    seeds: Vec<OperationId>,
+    registry: &DialectRegistry,
+    budget: &mut EvaluationState,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    let mut selection = ClosureSelection::default();
+    for operation in seeds {
+        selection.insert(operation, budget)?;
+    }
+    while let Some(operation) = selection.pending.pop_front() {
+        budget.charge(1)?;
+        let name = document
+            .operation_name(operation)
+            .unwrap_or("<invalid operation>");
+        let shape = registry.operation_shape(name);
+        if document.operation_is_unparsed(operation) == Some(true)
+            || (registry.operation(name).is_none()
+                && shape.is_none()
+                && registry.operation_format(name).is_none())
+        {
+            return Err(EvaluationError::new(format!(
+                "reachable cannot determine reference semantics for `{name}`; load the appropriate registry"
+            )));
+        }
+        // Region-bearing operations include their explicitly represented bodies.
+        retain_subtree(document, operation, &mut selection, budget)?;
+        let is_call =
+            name == "func.call" || shape == Some(crate::dialect::OperationShape::CallLike);
+        if is_call {
+            let callee = document
+                .attribute_id(operation, "callee")
+                .and_then(|id| document.attribute_spelling_value(id))
+                .ok_or_else(|| {
+                    EvaluationError::new(format!("reachable encountered `{name}` without a callee"))
+                })?;
+            let target = document
+                .checked_lookup_symbol(operation, callee, registry)
+                .map_err(|error| {
+                    EvaluationError::new(format!("reachable could not look up `{callee}`: {error}"))
+                })?
+                .ok_or_else(|| {
+                    EvaluationError::new(format!("reachable could not resolve callee `{callee}`"))
+                })?;
+            if document.operation_regions(target).unwrap_or(&[]).is_empty() {
+                return Err(EvaluationError::new(format!(
+                    "reachable cannot inspect external callee `{callee}` without a body"
+                )));
+            }
+            // Include the callee's body, without counting its declaration as an operation in the caller.
+            for child in evaluate_children(document, &[target], budget)? {
+                retain_subtree(document, child, &mut selection, budget)?;
+            }
+        } else if registry.symbols(name).uses_symbols {
+            return Err(EvaluationError::new(format!(
+                "reachable does not yet support symbol references on `{name}`"
+            )));
+        }
+        let successors = document.successors(operation).unwrap_or(&[]);
+        if !successors.is_empty() && name != "cf.br" && name != "cf.cond_br" {
+            return Err(EvaluationError::new(format!(
+                "reachable does not yet support successor references on `{name}`"
+            )));
+        }
+        for successor in successors {
+            for &target in document.block_operations(successor.block()).unwrap_or(&[]) {
+                selection.insert(target, budget)?;
+            }
+        }
+        budget.charge(document.operands(operation).unwrap_or(&[]).len())?;
+        for operand in document.operands(operation).unwrap_or(&[]) {
+            match *operand {
+                ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => {
+                    selection.insert(operation, budget)?
+                }
+                ValueReference::Resolved(ValueId::BlockArgument { .. }) => {}
+                ValueReference::Invalid(_) => {
+                    return Err(EvaluationError::new(
+                        "reachable encountered an invalid SSA operand",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(source_ordered(document, selection.selected))
+}
+
 fn evaluate_closure(
     document: &Document,
     seeds: Vec<OperationId>,
     registry: &DialectRegistry,
     transitive: bool,
-    budget: &mut Budget,
+    budget: &mut EvaluationState,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     let mut selection = ClosureSelection::default();
     for operation in seeds {
@@ -888,7 +1101,7 @@ fn retain_successor_region(
     successor: Successor,
     operation_name: &str,
     selection: &mut ClosureSelection,
-    budget: &mut Budget,
+    budget: &mut EvaluationState,
 ) -> Result<(), EvaluationError> {
     let owner = document
         .block(successor.block())
@@ -907,7 +1120,7 @@ fn retain_subtree(
     document: &Document,
     operation: OperationId,
     selection: &mut ClosureSelection,
-    budget: &mut Budget,
+    budget: &mut EvaluationState,
 ) -> Result<(), EvaluationError> {
     let mut pending = vec![operation];
     while let Some(operation) = pending.pop() {
@@ -933,7 +1146,7 @@ fn append_subtree(
     document: &Document,
     operation: OperationId,
     selected: &mut Vec<OperationId>,
-    budget: &mut Budget,
+    budget: &mut EvaluationState,
 ) -> Result<(), EvaluationError> {
     let mut pending = vec![operation];
     while let Some(operation) = pending.pop() {
