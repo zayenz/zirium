@@ -24,13 +24,13 @@ fn main() {
     let start = Instant::now();
     let parsed = ParsedFile::parse_with_registry(
         Arc::<[u8]>::from(source.into_bytes()),
-        DialectRegistry::proving(),
+        DialectRegistry::baseline(),
     )
     .unwrap();
     let parse_ns = start.elapsed().as_nanos();
     let start = Instant::now();
     let mut document =
-        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving())
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline())
             .document
             .unwrap();
     let lower_ns = start.elapsed().as_nanos();
@@ -47,7 +47,7 @@ fn main() {
     black_box(document.uses(first_value));
     let use_index_ns = start.elapsed().as_nanos();
     let start = Instant::now();
-    black_box(document.symbol_index_diagnostics(DialectRegistry::proving()));
+    black_box(document.symbol_index_diagnostics(DialectRegistry::baseline()));
     let symbol_index_ns = start.elapsed().as_nanos();
     let last = operations
         .iter()
@@ -56,7 +56,7 @@ fn main() {
         .find(|operation| document.operation_name(*operation) == Some("arith.addi"))
         .unwrap();
     let start = Instant::now();
-    black_box(document.dominates(first_value, last, DialectRegistry::proving()));
+    black_box(document.dominates(first_value, last, DialectRegistry::baseline()));
     let dominance_index_ns = start.elapsed().as_nanos();
     let indexed = document.statistics();
     let second = operations
@@ -65,7 +65,7 @@ fn main() {
         .filter(|operation| document.operation_name(*operation) == Some("arith.constant"))
         .nth(1)
         .unwrap();
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     let second_value = editor
         .document()
         .operation(second)

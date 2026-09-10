@@ -13,7 +13,7 @@ use zirium::{
 fn corpus(name: &str) -> Vec<u8> {
     fs::read(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/corpus/mlir-22.1/generic-proving")
+            .join("../../tests/corpus/mlir-22.1/generic-baseline")
             .join(name),
     )
     .unwrap()
@@ -349,7 +349,7 @@ fn unmatched_close_is_an_error_node() {
 }
 
 #[test]
-fn proving_fixture_has_narrow_typed_structure() {
+fn baseline_fixture_has_narrow_typed_structure() {
     let bytes = corpus("valid.mlir");
     let source = Source::new(bytes.clone()).unwrap();
     let lexed = lex(&source);

@@ -2,12 +2,12 @@ schema_version = 1
 upstream_tag = "llvmorg-22.1.0"
 
 [[families]]
-name = "complete-proving-dialect-set"
+name = "complete-baseline-dialect-set"
 implementation_source = "mlir/include/mlir/IR/BuiltinOps.td, mlir/include/mlir/Dialect/Func/IR/FuncOps.td, mlir/include/mlir/Dialect/Arith/IR/ArithOps.td, and mlir/include/mlir/Dialect/ControlFlow/IR/ControlFlowOps.td"
 implementation_rule = "fixed assembly formats and semantic traits for builtin.module, func.func, func.return, func.call, arith.constant, arith.addi, cf.br, and cf.cond_br"
-fixture = "proving-dialects/{valid,malformed}.mlir"
+fixture = "baseline-dialects/{valid,malformed}.mlir"
 fixture_source = "positive spellings adapted from llvmorg-22.1.0 operation definitions plus project-authored malformed recovery"
-intentional_differences = "Zirium implements exactly eight fixed proving schemas and performs non-indexed semantic scans."
+intentional_differences = "Zirium implements exactly eight fixed baseline schemas and performs non-indexed semantic scans."
 license_notice = "Positive spellings are adapted from LLVM definitions under Apache-2.0 WITH LLVM-exception."
 
 [[families]]
@@ -23,7 +23,7 @@ license_notice = "Positive spellings are adapted from LLVM definitions under Apa
 name = "canonical-generic-structural-round-trip"
 implementation_source = "mlir/lib/IR/AsmPrinter.cpp"
 implementation_rule = "OperationPrinter generic operation, region, block, type, attribute, and location printing"
-fixture = "{semantic-proving/valid.mlir,generic-complete/valid.mlir,shaped-affine/semantic-valid.mlir,payload-opaque/valid.mlir}"
+fixture = "{semantic-baseline/valid.mlir,generic-complete/valid.mlir,shaped-affine/semantic-valid.mlir,payload-opaque/valid.mlir}"
 fixture_source = "Accumulated llvmorg-22.1.0 positive semantic fixtures covering generic operations, SSA and block references, regions, successors, properties, attributes, locations, builtin and opaque types, affine values, and large opaque payloads."
 intentional_differences = "Zirium emits deterministic generic syntax and inline-resolved aliases; semantic output does not preserve source spelling, formatting, comments, or retention."
 license_notice = "Fixtures are project-authored or adapted from LLVM tests as recorded by their existing manifest families."
@@ -101,12 +101,12 @@ intentional_differences = "A zero-width EOF sentinel is always appended at the s
 license_notice = "Fixture is project-authored; no LLVM source text is copied."
 
 [[families]]
-name = "generic-operation-proving"
+name = "generic-operation-baseline"
 implementation_source = "mlir/lib/AsmParser/Parser.cpp"
 implementation_rule = "OperationParser::parseGenericOperation"
-fixture = "generic-proving/*.mlir"
+fixture = "generic-baseline/*.mlir"
 fixture_source = "project-authored from the release-scope syntax checklist"
-intentional_differences = "None for this proving fixture."
+intentional_differences = "None for this baseline fixture."
 license_notice = "Fixture is project-authored; no LLVM source text is copied."
 
 [[families]]

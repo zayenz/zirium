@@ -6,7 +6,7 @@ use zirium::dialect::{RegistryConfig, RegistryConfigError};
 pub(super) enum RegistryKind {
     Empty,
     Core,
-    Proving,
+    Baseline,
     Declarative(Arc<DialectRegistry>),
 }
 
@@ -17,7 +17,7 @@ impl RegistryKind {
         match self {
             Self::Empty => &EMPTY_REGISTRY,
             Self::Core => DialectRegistry::core(),
-            Self::Proving => DialectRegistry::proving(),
+            Self::Baseline => DialectRegistry::baseline(),
             Self::Declarative(registry) => registry,
         }
     }
@@ -163,9 +163,9 @@ impl DialectRegistryHandle {
     }
 
     #[staticmethod]
-    fn proving() -> Self {
+    fn baseline() -> Self {
         Self {
-            kind: RegistryKind::Proving,
+            kind: RegistryKind::Baseline,
         }
     }
 

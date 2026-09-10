@@ -96,14 +96,14 @@ fn fixture(width: usize, depth: usize) -> Document {
     }
     source.push_str("}\n");
     let parsed =
-        ParsedFile::parse_with_registry(source.into_bytes(), DialectRegistry::proving()).unwrap();
+        ParsedFile::parse_with_registry(source.into_bytes(), DialectRegistry::baseline()).unwrap();
     assert!(
         parsed.syntax().diagnostics().is_empty(),
         "{:?}",
         parsed.syntax().diagnostics()
     );
     let lowered =
-        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving());
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     lowered.document.unwrap()
 }
@@ -111,7 +111,7 @@ fn fixture(width: usize, depth: usize) -> Document {
 fn evaluate(query: &Query, document: &mut Document) -> usize {
     let mut checksum = 0;
     query
-        .evaluate(document, DialectRegistry::proving(), |_, output| {
+        .evaluate(document, DialectRegistry::baseline(), |_, output| {
             checksum += match output {
                 QueryOutput::Count(count) => count,
                 QueryOutput::Selection(selected) => selected.len(),

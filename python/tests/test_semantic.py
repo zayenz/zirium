@@ -12,8 +12,8 @@ Retention: TypeAlias = Literal[
 ]
 
 ROOT = Path(__file__).parents[2]
-VALID = ROOT / "tests/corpus/mlir-22.1/semantic-proving/valid.mlir"
-UNRESOLVED = ROOT / "tests/corpus/mlir-22.1/semantic-proving/unresolved.mlir"
+VALID = ROOT / "tests/corpus/mlir-22.1/semantic-baseline/valid.mlir"
+UNRESOLVED = ROOT / "tests/corpus/mlir-22.1/semantic-baseline/unresolved.mlir"
 PAYLOADS = ROOT / "tests/corpus/mlir-22.1/payload-opaque/valid.mlir"
 
 
@@ -348,8 +348,8 @@ def test_canonical_round_trip_and_structural_equality(tmp_path: Path):
     assert first.operation_table().count > 0
 
 
-def test_proving_registry_is_used_for_lowering_verification_and_custom_printing():
-    registry = zirium.DialectRegistry.proving()
+def test_baseline_registry_is_used_for_lowering_verification_and_custom_printing():
+    registry = zirium.DialectRegistry.baseline()
     result = zirium.parse_text(
         "%value = arith.constant 7 : i32", registry=registry
     ).lower_strict()
@@ -362,7 +362,7 @@ def test_proving_registry_is_used_for_lowering_verification_and_custom_printing(
 
 
 def test_custom_file_output_matches_custom_bytes(tmp_path: Path):
-    registry = zirium.DialectRegistry.proving()
+    registry = zirium.DialectRegistry.baseline()
     document = (
         zirium.parse_text("%value = arith.constant 7 : i32", registry=registry)
         .lower_strict()
@@ -431,7 +431,7 @@ def test_declarative_subset_is_owned_and_used_end_to_end():
 
 
 def test_quoted_symbol_paths_resolve_by_decoded_components():
-    registry = zirium.DialectRegistry.proving()
+    registry = zirium.DialectRegistry.baseline()
     source = r"""builtin.module {
       func.func @"a::b"() { func.return }
       builtin.module @outer {
@@ -1093,7 +1093,7 @@ def test_literal_attribute_shape_accepts_attribute_dictionaries(
     ],
 )
 def test_custom_printing_falls_back_without_panics_or_data_loss(source: str):
-    registry = zirium.DialectRegistry.proving()
+    registry = zirium.DialectRegistry.baseline()
     document = zirium.parse_text(source, registry=registry).lower_strict().document
     assert document is not None
     printed = document.custom_bytes()

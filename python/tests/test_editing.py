@@ -31,9 +31,9 @@ def test_operation_table_survives_edits_but_lazy_erased_handle_is_stale():
 
 
 ROOT = Path(__file__).parents[2]
-VALID = ROOT / "tests/corpus/mlir-22.1/semantic-proving/valid.mlir"
-FORWARD = ROOT / "tests/corpus/mlir-22.1/semantic-proving/forward.mlir"
-UNRESOLVED = ROOT / "tests/corpus/mlir-22.1/semantic-proving/unresolved.mlir"
+VALID = ROOT / "tests/corpus/mlir-22.1/semantic-baseline/valid.mlir"
+FORWARD = ROOT / "tests/corpus/mlir-22.1/semantic-baseline/forward.mlir"
+UNRESOLVED = ROOT / "tests/corpus/mlir-22.1/semantic-baseline/unresolved.mlir"
 SUCCESSOR_SOURCE = """\
 "container"() ({
 ^entry:
@@ -58,15 +58,15 @@ def generic_document(
     source: str, *, retention: Retention = "semantic"
 ) -> zirium.Document:
     lowered = zirium.parse_text(
-        source, registry=zirium.DialectRegistry.proving()
+        source, registry=zirium.DialectRegistry.baseline()
     ).lower_strict(retention)
     assert lowered.document is not None, lowered.diagnostics
     return lowered.document
 
 
-def test_edit_commit_keeps_selected_proving_registry():
+def test_edit_commit_keeps_selected_baseline_registry():
     lowered = zirium.parse_text(
-        "%value = arith.constant 7 : i32", registry=zirium.DialectRegistry.proving()
+        "%value = arith.constant 7 : i32", registry=zirium.DialectRegistry.baseline()
     ).lower_strict()
     assert lowered.document is not None, lowered.diagnostics
     doc = lowered.document

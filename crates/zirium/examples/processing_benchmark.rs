@@ -230,7 +230,7 @@ fn parse_args() -> Args {
 }
 
 fn measure(stage: Stage, shape: Shape, depth: Option<usize>, path: &PathBuf) -> Measurement {
-    let registry = DialectRegistry::proving();
+    let registry = DialectRegistry::baseline();
     let mut limits = ParseLimits::default();
     if let Some(depth) = depth {
         limits.max_delimiter_depth = limits.max_delimiter_depth.max(depth.saturating_add(8));

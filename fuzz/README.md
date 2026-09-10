@@ -18,7 +18,7 @@ completion, and a structurally valid CST. Run the bounded smoke check with:
 
 # Semantic lowering fuzzing
 
-The semantic target parses bounded input through the registered proving
+The semantic target parses bounded input through the registered baseline
 dialects, runs strict and best-effort lowering, and inspects every document that
 lowering returns. Run the bounded smoke check with:
 

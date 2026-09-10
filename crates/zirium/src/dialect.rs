@@ -194,7 +194,7 @@ impl AssemblyProgram {
     pub(crate) fn print(self, document: &Document, operation: OperationId) -> Option<String> {
         // Generic input need not satisfy a registered operation's schema. Only
         // use assembly when it can represent all of the operation's structure.
-        let descriptor = PROVING_OPERATIONS
+        let descriptor = BASELINE_OPERATIONS
             .iter()
             .find(|descriptor| descriptor.assembly == Some(self))?;
         if !descriptor
@@ -414,7 +414,7 @@ impl std::error::Error for DeclarativeRegistryError {}
 /// A fixed collection of operation, type, and attribute descriptors.
 ///
 /// Use [`Self::EMPTY`] for generic quoted syntax, [`Self::core`] or
-/// [`Self::proving`] for the built-in sets, and [`Self::new`] for static custom
+/// [`Self::baseline`] for the built-in sets, and [`Self::new`] for static custom
 /// descriptors.
 #[derive(Clone)]
 pub struct DialectRegistry {
@@ -761,9 +761,9 @@ impl DialectRegistry {
             .unwrap_or_default()
     }
 
-    /// Returns the fixed registry used by the dialect proving corpus.
-    pub fn proving() -> &'static Self {
-        &PROVING_REGISTRY
+    /// Returns the fixed registry used by the dialect baseline corpus.
+    pub fn baseline() -> &'static Self {
+        &BASELINE_REGISTRY
     }
 
     /// Returns the standard module and function operation set.
@@ -781,7 +781,7 @@ impl DialectRegistry {
 
     /// Builds a callback-free registry set from the built-in declarative operation catalog.
     ///
-    /// Iteration follows the fixed proving-catalog order, independent of input order.
+    /// Iteration follows the fixed baseline-catalog order, independent of input order.
     ///
     /// # Errors
     ///
@@ -789,7 +789,7 @@ impl DialectRegistry {
     pub fn declarative(operation_names: &[&str]) -> Result<Self, DeclarativeRegistryError> {
         let mut selected = 0_u8;
         for &name in operation_names {
-            let index = PROVING_OPERATIONS
+            let index = BASELINE_OPERATIONS
                 .iter()
                 .position(|descriptor| descriptor.name == name)
                 .ok_or_else(|| DeclarativeRegistryError::UnknownOperation(name.to_owned()))?;
@@ -803,7 +803,7 @@ impl DialectRegistry {
         }
         let operations: &'static [OperationDescriptor] =
             DECLARATIVE_OPERATION_SETS[usize::from(selected)].get_or_init(|| {
-                PROVING_OPERATIONS
+                BASELINE_OPERATIONS
                     .iter()
                     .enumerate()
                     .filter(|(index, _)| selected & (1_u8 << index) != 0)
@@ -1341,7 +1341,7 @@ fn print_arith_constant(document: &Document, operation: OperationId) -> Option<S
     let value = document
         .attributes(operation)?
         .find_map(|(name, value)| (name == "value").then_some(value))?;
-    // The proving assembly stores an untyped scalar. Keep typed generic
+    // The baseline assembly stores an untyped scalar. Keep typed generic
     // attributes generic instead of emitting a second type annotation.
     if value.contains(':') {
         return None;
@@ -2051,7 +2051,7 @@ static CF_BR: OperationDescriptor = OperationDescriptor {
     },
     is_terminator: true,
 };
-static PROVING_OPERATIONS: &[OperationDescriptor] = &[
+static BASELINE_OPERATIONS: &[OperationDescriptor] = &[
     BUILTIN_MODULE,
     FUNC_FUNC,
     FUNC_RETURN,
@@ -2065,8 +2065,8 @@ static CORE_OPERATIONS: &[OperationDescriptor] =
     &[BUILTIN_MODULE, FUNC_FUNC, FUNC_RETURN, FUNC_CALL];
 static DECLARATIVE_OPERATION_SETS: [OnceLock<Box<[OperationDescriptor]>>; 256] =
     [const { OnceLock::new() }; 256];
-static PROVING_REGISTRY: DialectRegistry = {
-    let mut registry = DialectRegistry::new(PROVING_OPERATIONS, &[], &[]);
+static BASELINE_REGISTRY: DialectRegistry = {
+    let mut registry = DialectRegistry::new(BASELINE_OPERATIONS, &[], &[]);
     registry.module_alias = true;
     registry
 };

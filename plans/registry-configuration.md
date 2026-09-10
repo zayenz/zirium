@@ -35,7 +35,7 @@ same validation errors.
 `presets` is optional. An empty registry is
 `{"builtins": [], "operation_shapes": []}`. No operations are added implicitly.
 In particular, loading this configuration does not extend the CLI's default
-proving registry or Python's default empty registry.
+baseline registry or Python's default empty registry.
 
 `builtins` selects names from the existing declarative catalog:
 `builtin.module`, `func.func`, `func.call`, `func.return`, `arith.constant`,
@@ -82,7 +82,7 @@ before producing any output. Relative paths resolve against the process's
 working directory. The file must be UTF-8 JSON regardless of its suffix.
 Do not use `-` for registry stdin; stdin remains available for MLIR.
 
-With no flag, retain the current proving registry. The explicit file replaces
+With no flag, retain the current baseline registry. The explicit file replaces
 that default. Omitting a registry path is a usage error. Configuration parse and validation failures
 use the current nonzero error exit and leave stdout empty.
 
@@ -95,7 +95,7 @@ argument-parsing change; it does not require a CLI framework migration.
 
 Keep one owned registry for the invocation and pass `&registry` to parsing,
 lowering, query evaluation, and selection printing. Do not reconstruct it for
-each file or revert to the proving registry in later phases.
+each file or revert to the baseline registry in later phases.
 
 ## Python
 
@@ -286,7 +286,7 @@ Implemented integration checks cover:
 - Exercise duplicate/conflicting names, a misspelled field, an unknown shape,
   malformed JSON, and a missing file. File failures must occur before consuming
   MLIR stdin and must not emit query output.
-- Check that the explicit registry replaces defaults: an unlisted proving
+- Check that the explicit registry replaces defaults: an unlisted baseline
   operation remains unregistered. Check the documented closure boundary.
 
 Run the existing Rust/Python quality checks and verify dependency compatibility

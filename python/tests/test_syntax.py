@@ -55,9 +55,9 @@ def test_handles_keep_the_parse_alive():
 
 def test_registry_selects_custom_syntax_and_is_owned_by_file():
     source = b"%value = arith.constant 7 : i32"
-    proving = zirium.DialectRegistry.proving()
-    parsed = zirium.parse_bytes(source, registry=proving)
-    del proving
+    baseline = zirium.DialectRegistry.baseline()
+    parsed = zirium.parse_bytes(source, registry=baseline)
+    del baseline
     assert parsed.diagnostics == []
     assert parsed.lower_strict().document is not None
 
@@ -73,7 +73,7 @@ def test_builtin_registries_accept_ordinary_and_nested_modules():
 
     assert zirium.parse_bytes(source).diagnostics
     for registry in [
-        zirium.DialectRegistry.proving(),
+        zirium.DialectRegistry.baseline(),
         zirium.DialectRegistry.declarative(["builtin.module"]),
     ]:
         parsed = zirium.parse_bytes(source, registry=registry)

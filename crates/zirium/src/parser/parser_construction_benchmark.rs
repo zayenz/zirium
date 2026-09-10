@@ -127,7 +127,7 @@ fn measure_parser_construction_and_string_identity() {
     );
 
     let source = Source::new(source_bytes.clone()).unwrap();
-    let registry = DialectRegistry::proving();
+    let registry = DialectRegistry::baseline();
     report_whole_parse(shape.name(), source_bytes.clone(), registry, warmups, runs);
     report_phase("lex", warmups, runs, || {
         let (started, baseline) = begin_measurement();

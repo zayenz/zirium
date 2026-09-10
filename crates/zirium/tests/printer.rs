@@ -55,8 +55,8 @@ fn round_trip(path: &str) {
 #[test]
 fn accumulated_semantic_corpus_round_trips_structurally() {
     for path in [
-        "semantic-proving/valid.mlir",
-        "semantic-proving/forward.mlir",
+        "semantic-baseline/valid.mlir",
+        "semantic-baseline/forward.mlir",
         "generic-complete/valid.mlir",
         "shaped-affine/semantic-valid.mlir",
         "payload-opaque/valid.mlir",
@@ -169,7 +169,7 @@ fn unchanged_preserving_output_keeps_trailing_metadata_byte_exact() {
 #[test]
 fn incomplete_documents_fail_before_the_first_sink_write() {
     let parsed = ParsedFile::parse(
-        include_bytes!("../../../tests/corpus/mlir-22.1/semantic-proving/unresolved.mlir")
+        include_bytes!("../../../tests/corpus/mlir-22.1/semantic-baseline/unresolved.mlir")
             .as_slice(),
     )
     .unwrap();

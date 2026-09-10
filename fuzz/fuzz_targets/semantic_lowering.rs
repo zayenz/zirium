@@ -18,7 +18,7 @@ const LIMITS: ParseLimits = ParseLimits {
 };
 
 fuzz_target!(|data: &[u8]| {
-    let registry = DialectRegistry::proving();
+    let registry = DialectRegistry::baseline();
     let parsed = match ParsedFile::parse_with_limits_and_registry(data, LIMITS, registry) {
         Ok(parsed) => parsed,
         Err(ParseFileError::ResourceLimit(_)) if data.len() > LIMITS.max_file_bytes => return,

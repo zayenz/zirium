@@ -1799,7 +1799,7 @@ impl<'a> CfBrOp<'a> {
 }
 
 fn registered_schema_matches(document: &Document, operation: OperationId, name: &str) -> bool {
-    let Some(descriptor) = DialectRegistry::proving().operation(name) else {
+    let Some(descriptor) = DialectRegistry::baseline().operation(name) else {
         return false;
     };
     document.operation_name(operation) == Some(descriptor.name)
@@ -2190,7 +2190,7 @@ mod tests {
 
     #[test]
     fn validator_rejects_stale_ids_and_relationships() {
-        let bytes = include_bytes!("../../../tests/corpus/mlir-22.1/semantic-proving/valid.mlir");
+        let bytes = include_bytes!("../../../tests/corpus/mlir-22.1/semantic-baseline/valid.mlir");
         let mut stale = lower(bytes);
         stale.corrupt_root_generation();
         assert!(matches!(

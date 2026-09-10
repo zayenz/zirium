@@ -15,7 +15,7 @@ lists the available dialects and explains their coverage.
 | --- | --- |
 | Empty | Inspect generic quoted MLIR or recover unknown custom syntax. This is the Python parser's default. |
 | Core | Parse `builtin.module`, `func.func`, `func.call`, and `func.return`. |
-| Proving | Use core plus `arith.constant`, `arith.addi`, `cf.br`, and `cf.cond_br`. This is the CLI's default. |
+| Baseline | Use core plus `arith.constant`, `arith.addi`, `cf.br`, and `cf.cond_br`. This is the CLI's default. |
 | Bundled preset | Parse selected custom forms from a dialect such as StableHLO, SCF, or Linalg. |
 | Configured registry | Combine presets, select built-ins, and register caller-named operations. |
 
@@ -42,7 +42,7 @@ To add your own operation names to an existing registry:
 ```python
 import zirium
 
-registry = zirium.DialectRegistry.proving().extend_operation_shapes({
+registry = zirium.DialectRegistry.baseline().extend_operation_shapes({
     "vendor.function": zirium.OperationShape.FUNC_LIKE,
     "vendor.invoke": zirium.OperationShape.CALL_LIKE,
 })
@@ -81,11 +81,11 @@ the caller's default registry; include every preset and built-in you need.
 | Field | Meaning |
 | --- | --- |
 | `presets` | Bundled registry names. Defaults to an empty list. |
-| `builtins` | Operation names selected from the proving catalog. Required; may be empty. |
+| `builtins` | Operation names selected from the baseline catalog. Required; may be empty. |
 | `operation_shapes` | Exact operation names paired with reusable grammars. Required; may be empty. |
 | `operation_formats` | Exact operation names paired with validated format descriptions. Defaults to an empty list. |
 
-The built-in catalog contains the eight operations listed under core and proving
+The built-in catalog contains the eight operations listed under core and baseline
 above. Selecting a built-in uses its existing implementation.
 
 ### Operation shapes
@@ -176,7 +176,7 @@ zirium --registry examples/cli/registry.json \
 zirium --registry common.json --registry vendor.json -f inspect.zirium input.mlir
 ```
 
-Without `--registry`, the CLI uses the proving registry. With one or more flags,
+Without `--registry`, the CLI uses the baseline registry. With one or more flags,
 it uses their combined configuration. Files are read as UTF-8 JSON before MLIR
 input; relative paths resolve against the working directory. Stdin remains
 reserved for MLIR, and registry failures produce no query output.
@@ -197,7 +197,7 @@ output contract and [CLI examples](cli-examples.md) for worked commands.
 
 ## Use a registry in Rust
 
-`DialectRegistry::core()` and `DialectRegistry::proving()` return the built-in
+`DialectRegistry::core()` and `DialectRegistry::baseline()` return the built-in
 registries. `DialectRegistry::from_name("stablehlo")` builds a bundled preset;
 `from_config_file` and `from_config_files` load JSON configurations.
 `RegistryConfig::from_json` followed by `build` constructs a registry from JSON text,

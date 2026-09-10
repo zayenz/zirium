@@ -17,7 +17,7 @@ use zirium::semantic::{
 fn fixture(name: &str) -> Vec<u8> {
     fs::read(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/corpus/mlir-22.1/semantic-proving")
+            .join("../../tests/corpus/mlir-22.1/semantic-baseline")
             .join(name),
     )
     .unwrap()

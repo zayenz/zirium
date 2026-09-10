@@ -383,7 +383,7 @@ impl Document {
             let Some(descriptor) = registry.operation(name) else {
                 continue;
             };
-            // The phase-4 proving corpus used a generic `func.func`-named
+            // The phase-4 baseline corpus used a generic `func.func`-named
             // container before the exact schema existed. Keep that explicit
             // handwritten fallback distinct from schema-backed functions.
             if name == "func.func" && self.attribute_id(operation, "function_type").is_none() {
@@ -708,7 +708,7 @@ impl Document {
     }
 
     fn resolve_call_target(&self, call: OperationId, callee: &str) -> Option<OperationId> {
-        let target = self.lookup_symbol(call, callee, DialectRegistry::proving())?;
+        let target = self.lookup_symbol(call, callee, DialectRegistry::baseline())?;
         (self.operation_name(target) == Some("func.func")).then_some(target)
     }
 

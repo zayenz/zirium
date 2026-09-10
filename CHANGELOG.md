@@ -106,7 +106,7 @@ and consistent handling for quoted symbols and aliased attribute values.
 - Fall back to generic printing when built-in custom assembly cannot preserve
   operation structure, locations, properties, or supported attribute spellings.
   Malformed generic arithmetic operations no longer panic in custom printing.
-- Accept named and nested `module` shorthand in proving and declarative
+- Accept named and nested `module` shorthand in baseline and declarative
   registries containing `builtin.module`; remove the CLI's source rewrite.
 - Reject CLI semantic lowering errors even when an unknown custom sibling
   requires best-effort recovery.
@@ -133,7 +133,7 @@ Zirium 0.0.5 improves recovery and semantic inspection of custom-format MLIR.
   from unregistered custom-format operations.
 - Suppress semantic diagnostics caused only by successful custom-operation
   recovery. The syntax diagnostic and `is_unparsed` identify each recovered op.
-- Compose operation shapes with empty, core, proving, or declarative registries
+- Compose operation shapes with empty, core, baseline, or declarative registries
   through `extend_operation_shapes`.
 - Expose form-independent `symbol_name`, `signature`, and `callee` operation
   roles in Rust and Python.

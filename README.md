@@ -131,7 +131,7 @@ Canonical output intentionally does not preserve comments, whitespace, aliases, 
 
 Generic quoted operations are handled without a dialect registry. Unknown dialect types and attributes keep their balanced bodies as opaque values.
 
-The proving registry covers a small set of Builtin, Func, Arith, and CF
+The baseline registry covers a small set of Builtin, Func, Arith, and CF
 operations. Bundled presets expose selected custom forms from other dialects
 for structural queries. Unsupported forms use best-effort recovery; presets do
 not implement full dialect verification or execution.

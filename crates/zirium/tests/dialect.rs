@@ -4083,7 +4083,7 @@ fn shaped_func_like_operations_own_trailing_locations() {
 
 #[test]
 fn declarative_operations_own_trailing_locations() {
-    let registry = DialectRegistry::proving();
+    let registry = DialectRegistry::baseline();
     for (name, source) in [
         ("builtin.module", "module @m {} loc(unknown)"),
         ("func.func", "func.func @f() { func.return } loc(unknown)"),
@@ -4193,7 +4193,7 @@ fn builtin_registries_accept_module_alias() {
     assert_eq!(document.statistics().operations, 2);
 
     let declarative = DialectRegistry::declarative(&["builtin.module"]).unwrap();
-    for registry in [DialectRegistry::proving(), &declarative] {
+    for registry in [DialectRegistry::baseline(), &declarative] {
         let parsed = ParsedFile::parse_with_registry(source, registry).unwrap();
         assert!(parsed.syntax().diagnostics().is_empty());
         assert!(
@@ -4277,7 +4277,7 @@ static COUNTING_VALUE_REGISTRY: DialectRegistry =
 fn parse_registered(source: &str) -> ParsedFile {
     ParsedFile::parse_with_registry(
         Arc::<[u8]>::from(source.as_bytes()),
-        DialectRegistry::proving(),
+        DialectRegistry::baseline(),
     )
     .unwrap()
 }
@@ -4285,7 +4285,7 @@ fn parse_registered(source: &str) -> ParsedFile {
 fn lower_registered(source: &str) -> zirium::semantic::Document {
     let parsed = parse_registered(source);
     let lowered =
-        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving());
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
     lowered
         .document
         .unwrap_or_else(|| panic!("registered lowering failed: {:?}", lowered.diagnostics))
@@ -4346,11 +4346,11 @@ fn handwritten_constant_has_dialect_cst_and_typed_semantics() {
     );
 
     let document =
-        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving())
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline())
             .document
             .unwrap();
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     let id = document.root_operations()[0];
     let constant = ArithConstantOp::cast(&document, id).unwrap();
@@ -4362,7 +4362,7 @@ fn handwritten_constant_has_dialect_cst_and_typed_semantics() {
 fn floating_constant_lowers_verifies_and_round_trips_in_both_print_modes() {
     let document = lower_registered("%c = arith.constant -1.25e+2 : f64");
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     let constant = ArithConstantOp::cast(&document, document.root_operations()[0]).unwrap();
     assert!(matches!(constant.value(), Some(AttributeValue::Float(value)) if value == "-1.25e+2"));
@@ -4377,7 +4377,7 @@ fn floating_constant_lowers_verifies_and_round_trips_in_both_print_modes() {
                 &mut text,
                 PrintLayout::Compact,
                 mode,
-                DialectRegistry::proving(),
+                DialectRegistry::baseline(),
             )
             .unwrap();
         let reparsed = if mode == DialectPrintMode::PreferCustom {
@@ -4404,7 +4404,7 @@ fn malformed_custom_syntax_recovers_to_the_next_operation() {
     );
     assert_eq!(parsed.syntax().file().operations().count(), 2);
     assert!(
-        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving(),)
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline(),)
             .document
             .is_none()
     );
@@ -4514,7 +4514,7 @@ fn malformed_declarative_fixture_keeps_cst_errors_and_following_operations() {
     let parsed = ParsedFile::parse_with_registry(
         include_bytes!("../../../tests/corpus/mlir-22.1/declarative-core/malformed.mlir")
             .as_slice(),
-        DialectRegistry::proving(),
+        DialectRegistry::baseline(),
     )
     .unwrap();
     let syntax = parsed.syntax();
@@ -4538,7 +4538,7 @@ fn malformed_declarative_fixture_keeps_cst_errors_and_following_operations() {
 fn registered_verifier_rejects_wrong_constant_value_kind() {
     let document = lower_registered("%c = arith.constant \"not an integer\" : i32");
     assert!(matches!(
-        document.verify_semantics(DialectRegistry::proving()),
+        document.verify_semantics(DialectRegistry::baseline()),
         Err(SemanticVerificationError::Operation { .. })
     ));
 }
@@ -4561,7 +4561,7 @@ fn custom_constant_lowering_rejects_value_and_result_kind_mismatches() {
     ] {
         let parsed = parse_registered(source);
         assert!(
-            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving())
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline())
                 .document
                 .is_none(),
             "accepted {source}"
@@ -4581,7 +4581,7 @@ fn generic_constants_lower_but_strict_verification_rejects_kind_mismatches() {
                 .document
                 .unwrap();
         assert!(matches!(
-            document.verify_semantics(DialectRegistry::proving()),
+            document.verify_semantics(DialectRegistry::baseline()),
             Err(SemanticVerificationError::Operation { .. })
         ));
     }
@@ -4597,7 +4597,7 @@ fn generic_only_and_prefer_custom_round_trip() {
             &mut generic,
             PrintLayout::Compact,
             DialectPrintMode::GenericOnly,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
     assert!(generic.contains("\"arith.constant\"()"));
@@ -4617,7 +4617,7 @@ fn generic_only_and_prefer_custom_round_trip() {
             &mut custom,
             PrintLayout::Compact,
             DialectPrintMode::PreferCustom,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
     assert_eq!(custom, "%v0 = arith.constant 7 : i32");
@@ -4635,7 +4635,7 @@ fn generic_only_and_prefer_custom_round_trip() {
             &mut fallback_text,
             PrintLayout::Compact,
             DialectPrintMode::PreferCustom,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
     assert_eq!(fallback_text, "\"unknown.op\"() : () -> ()");
@@ -4643,7 +4643,7 @@ fn generic_only_and_prefer_custom_round_trip() {
 
 #[test]
 fn unregistered_metadata_defaults_are_conservative() {
-    let registry = DialectRegistry::proving();
+    let registry = DialectRegistry::baseline();
     assert_eq!(registry.region("unknown.op", 0).kind, RegionKind::Ssacfg);
     assert!(!registry.region("unknown.op", 0).isolated_from_above);
     assert!(!registry.region("unknown.op", 0).requires_terminator);
@@ -4652,7 +4652,7 @@ fn unregistered_metadata_defaults_are_conservative() {
 
 #[test]
 fn registered_function_termination_metadata_is_explicit() {
-    let registry = DialectRegistry::proving();
+    let registry = DialectRegistry::baseline();
     assert!(registry.region("func.func", 0).requires_terminator);
     assert!(!registry.region("builtin.module", 0).requires_terminator);
     for name in ["func.return", "cf.br", "cf.cond_br"] {
@@ -4679,7 +4679,7 @@ fn registered_function_blocks_require_a_final_terminator() {
     ] {
         let document = lower_registered(source);
         assert!(matches!(
-            document.verify_semantics(DialectRegistry::proving()),
+            document.verify_semantics(DialectRegistry::baseline()),
             Err(SemanticVerificationError::Operation { message, .. }) if message == expected
         ));
     }
@@ -4697,7 +4697,7 @@ fn registered_function_blocks_require_a_final_terminator() {
   }
 }"#,
     );
-    valid.verify_semantics(DialectRegistry::proving()).unwrap();
+    valid.verify_semantics(DialectRegistry::baseline()).unwrap();
 }
 
 #[test]
@@ -4816,7 +4816,7 @@ fn declarative_program_rejects_duplicate_inherent_attributes() {
     ] {
         let parsed = parse_registered(source);
         let lowered =
-            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving());
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
         assert!(lowered.document.is_none());
         assert!(
             lowered
@@ -4833,7 +4833,7 @@ fn declarative_arithmetic_program_lowers_verifies_and_prints() {
         "%a = arith.constant 1 {tag = \"a\"} : i32\n%b = arith.constant 2 : i32\n%c = arith.addi %a, %b overflow<nsw> : i32",
     );
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     let mut text = String::new();
     document
@@ -4841,7 +4841,7 @@ fn declarative_arithmetic_program_lowers_verifies_and_prints() {
             &mut text,
             PrintLayout::Compact,
             DialectPrintMode::PreferCustom,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
     assert!(text.contains("arith.addi %v0, %v1 overflow<nsw> : i32"));
@@ -4863,7 +4863,7 @@ fn declarative_program_rejects_out_of_schema_material_and_bad_overflow() {
                 .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::Syntax)
         );
         let lowered =
-            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving());
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
         assert!(lowered.document.is_none());
     }
 }
@@ -4883,7 +4883,7 @@ fn overflow_flags_accept_trivia_and_lower_the_complete_exact_list() {
         );
         let document = lower_registered(&source);
         document
-            .verify_semantics(DialectRegistry::proving())
+            .verify_semantics(DialectRegistry::baseline())
             .unwrap();
         let addi = document
             .operations()
@@ -4963,7 +4963,7 @@ fn declarative_program_rejects_return_and_successor_mismatches() {
             .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::Syntax)
     );
     assert!(
-        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving())
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline())
             .document
             .is_none()
     );
@@ -4977,7 +4977,7 @@ fn declarative_program_rejects_return_and_successor_mismatches() {
         );
         let parsed = parse_registered(&source);
         let lowered =
-            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving());
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
         assert!(lowered.document.is_none());
     }
 }
@@ -4987,16 +4987,16 @@ fn declarative_strict_and_best_effort_paths_are_distinct() {
     let parsed = ParsedFile::parse_with_registry(
         include_bytes!("../../../tests/corpus/mlir-22.1/declarative-core/malformed.mlir")
             .as_slice(),
-        DialectRegistry::proving(),
+        DialectRegistry::baseline(),
     )
     .unwrap();
     let strict =
-        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving());
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
     assert!(strict.document.is_none());
     let best = lower_with_dialect_registry(
         &parsed,
         LoweringMode::BestEffort,
-        DialectRegistry::proving(),
+        DialectRegistry::baseline(),
     );
     assert!(best.document.is_some());
     assert!(!best.semantically_complete);
@@ -5020,7 +5020,7 @@ fn generic_fallback_remains_available_for_each_declarative_operation() {
             &mut text,
             PrintLayout::Compact,
             DialectPrintMode::GenericOnly,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
     let reparsed = ParsedFile::parse(Arc::<[u8]>::from(text.as_bytes())).unwrap();
@@ -5041,7 +5041,7 @@ fn declarative_return_and_branch_check_enclosing_types() {
 }) : () -> i32"#;
     let document = lower_registered(source);
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     let mut text = String::new();
     document
@@ -5049,7 +5049,7 @@ fn declarative_return_and_branch_check_enclosing_types() {
             &mut text,
             PrintLayout::Compact,
             DialectPrintMode::PreferCustom,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
     assert!(document.structurally_eq(&lower_registered(&text)));
@@ -5060,7 +5060,7 @@ fn declarative_return_and_branch_check_enclosing_types() {
             &mut generic,
             PrintLayout::Compact,
             DialectPrintMode::GenericOnly,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
     assert!(
@@ -5069,7 +5069,7 @@ fn declarative_return_and_branch_check_enclosing_types() {
     );
     let generic_document = lower_registered(&generic);
     generic_document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     assert!(document.structurally_eq(&generic_document));
 }
@@ -5114,7 +5114,7 @@ fn declarative_core_fixture_round_trips_custom_attribute_dictionaries() {
     let source = include_str!("../../../tests/corpus/mlir-22.1/declarative-core/valid.mlir");
     let document = lower_registered(source);
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     let mut text = String::new();
     document
@@ -5122,7 +5122,7 @@ fn declarative_core_fixture_round_trips_custom_attribute_dictionaries() {
             &mut text,
             PrintLayout::Compact,
             DialectPrintMode::PreferCustom,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
     assert!(text.contains("cf.br ^bb1 {tag = \"edge\"}"));
@@ -5131,14 +5131,14 @@ fn declarative_core_fixture_round_trips_custom_attribute_dictionaries() {
 }
 
 #[test]
-fn complete_proving_dialect_fixture_verifies_and_round_trips_both_modes() {
-    let source = include_str!("../../../tests/corpus/mlir-22.1/proving-dialects/valid.mlir");
+fn complete_baseline_dialect_fixture_verifies_and_round_trips_both_modes() {
+    let source = include_str!("../../../tests/corpus/mlir-22.1/baseline-dialects/valid.mlir");
     let document = lower_registered(source);
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     assert_eq!(
-        DialectRegistry::proving()
+        DialectRegistry::baseline()
             .operation_names()
             .collect::<Vec<_>>(),
         [
@@ -5183,7 +5183,7 @@ fn complete_proving_dialect_fixture_verifies_and_round_trips_both_modes() {
                 &mut text,
                 PrintLayout::Compact,
                 mode,
-                DialectRegistry::proving(),
+                DialectRegistry::baseline(),
             )
             .unwrap();
         let parsed = if mode == DialectPrintMode::PreferCustom {
@@ -5192,7 +5192,7 @@ fn complete_proving_dialect_fixture_verifies_and_round_trips_both_modes() {
             ParsedFile::parse(Arc::<[u8]>::from(text.as_bytes())).unwrap()
         };
         let lowered = if mode == DialectPrintMode::PreferCustom {
-            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving())
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline())
         } else {
             lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
         };
@@ -5204,9 +5204,9 @@ fn complete_proving_dialect_fixture_verifies_and_round_trips_both_modes() {
 }
 
 #[test]
-fn complete_proving_dialect_malformed_fixture_recovers() {
+fn complete_baseline_dialect_malformed_fixture_recovers() {
     let parsed = parse_registered(include_str!(
-        "../../../tests/corpus/mlir-22.1/proving-dialects/malformed.mlir"
+        "../../../tests/corpus/mlir-22.1/baseline-dialects/malformed.mlir"
     ));
     assert!(
         parsed
@@ -5233,7 +5233,7 @@ fn functions_check_signature_attributes_and_scoped_call_targets() {
 }"#;
     let document = lower_registered(valid);
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
 
     for source in [
@@ -5249,12 +5249,12 @@ fn functions_check_signature_attributes_and_scoped_call_targets() {
     ] {
         let parsed = parse_registered(&source);
         let lowered =
-            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving());
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
         let document = lowered
             .document
             .unwrap_or_else(|| panic!("{:?}", lowered.diagnostics));
         assert!(matches!(
-            document.verify_semantics(DialectRegistry::proving()),
+            document.verify_semantics(DialectRegistry::baseline()),
             Err(SemanticVerificationError::Operation { .. })
         ));
     }
@@ -5265,17 +5265,17 @@ fn zero_result_functions_and_unit_no_inline_use_the_registered_forms() {
     let document =
         lower_registered("builtin.module { func.func @decl() func.func @body() { func.return } }");
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
 
     let unit = lower_registered("builtin.module { func.func @f() attributes {no_inline} }");
-    unit.verify_semantics(DialectRegistry::proving()).unwrap();
+    unit.verify_semantics(DialectRegistry::baseline()).unwrap();
     let mut printed = String::new();
     unit.print_with_registry(
         &mut printed,
         PrintLayout::Compact,
         DialectPrintMode::PreferCustom,
-        DialectRegistry::proving(),
+        DialectRegistry::baseline(),
     )
     .unwrap();
     assert!(printed.contains("no_inline"));
@@ -5283,7 +5283,7 @@ fn zero_result_functions_and_unit_no_inline_use_the_registered_forms() {
     let integer = "builtin.module { func.func @f() attributes {no_inline = 1} }";
     let document = lower_registered(integer);
     assert!(matches!(
-        document.verify_semantics(DialectRegistry::proving()),
+        document.verify_semantics(DialectRegistry::baseline()),
         Err(SemanticVerificationError::Operation { .. })
     ));
 }
@@ -5299,13 +5299,13 @@ fn function_with_argument_prints_and_reparses_with_its_binding() {
             &mut text,
             PrintLayout::Compact,
             DialectPrintMode::PreferCustom,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
 
     let reparsed = lower_registered(&text);
     reparsed
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     let function = reparsed
         .operations()
@@ -5343,7 +5343,7 @@ fn function_with_argument_prints_and_reparses_with_its_binding() {
 
 #[test]
 fn conditional_branch_weights_require_two_nonnegative_i32_values() {
-    let source = include_str!("../../../tests/corpus/mlir-22.1/proving-dialects/valid.mlir");
+    let source = include_str!("../../../tests/corpus/mlir-22.1/baseline-dialects/valid.mlir");
     for weights in [
         "[1, 2]",
         "dense<[1, -2]> : vector<2xi32>",
@@ -5355,7 +5355,7 @@ fn conditional_branch_weights_require_two_nonnegative_i32_values() {
         let document = lower_registered(&source);
         assert!(
             matches!(
-                document.verify_semantics(DialectRegistry::proving()),
+                document.verify_semantics(DialectRegistry::baseline()),
                 Err(SemanticVerificationError::Operation { message, .. })
                     if message.contains("branch_weights")
             ),
@@ -5381,7 +5381,7 @@ fn dominance_is_checked_across_cfg_blocks() {
 }"#;
     let document = lower_registered(source);
     assert!(matches!(
-        document.verify_semantics(DialectRegistry::proving()),
+        document.verify_semantics(DialectRegistry::baseline()),
         Err(SemanticVerificationError::Operation { message, .. })
             if message == "SSA definition does not dominate its use"
     ));
@@ -5403,7 +5403,7 @@ fn dominance_is_checked_across_cfg_blocks() {
         .operations()
         .find(|operation| document.operation_name(*operation) == Some("func.return"))
         .unwrap();
-    assert!(!document.dominates(value, use_operation, DialectRegistry::proving()));
+    assert!(!document.dominates(value, use_operation, DialectRegistry::baseline()));
 }
 
 #[test]
@@ -5423,7 +5423,7 @@ fn hierarchical_dominance_accepts_outer_cfg_definitions_and_rejects_nested_escap
 }"#;
     let document = lower_registered(valid);
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     let definition = document
         .operations()
@@ -5443,7 +5443,7 @@ fn hierarchical_dominance_accepts_outer_cfg_definitions_and_rejects_nested_escap
         .operations()
         .find(|operation| document.operation_name(*operation) == Some("func.return"))
         .unwrap();
-    assert!(document.dominates(value, use_operation, DialectRegistry::proving()));
+    assert!(document.dominates(value, use_operation, DialectRegistry::baseline()));
 
     let escaped = r#"builtin.module {
   builtin.module @nested {
@@ -5455,7 +5455,7 @@ fn hierarchical_dominance_accepts_outer_cfg_definitions_and_rejects_nested_escap
 }"#;
     let parsed = parse_registered(escaped);
     let lowered =
-        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving());
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
     assert!(lowered.document.is_none());
 }
 

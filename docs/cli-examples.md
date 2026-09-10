@@ -16,7 +16,7 @@ The input files and reusable `.zirium` programs used below are checked in under
 files. The commands keep short queries inline so they can be read and changed
 without opening another file.
 
-The binary uses the proving registry and accepts ordinary, named, and nested
+The binary uses the baseline registry and accepts ordinary, named, and nested
 `module` shorthand. Use `--registry registry.json` to load caller-defined operation shapes; repeat
 the flag to combine files. See [custom formats](custom-formats.md)
 for the supported syntax and output boundaries.

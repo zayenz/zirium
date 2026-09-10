@@ -83,7 +83,7 @@ def main() -> None:
         source.write_bytes(
             block_rich_fixture(size) if args.shape == "block-rich" else fixture(size)
         )
-        registry = zirium.DialectRegistry.proving()
+        registry = zirium.DialectRegistry.baseline()
         zirium.parse_file(source, registry=registry)  # warm-up
         parse_ns, parsed = timed(
             runs, lambda: zirium.parse_file(source, registry=registry)

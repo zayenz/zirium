@@ -84,7 +84,7 @@ fn run() -> Result<(), String> {
         )
     })?;
     let registry = if registry_paths.is_empty() {
-        DialectRegistry::proving().clone()
+        DialectRegistry::baseline().clone()
     } else {
         DialectRegistry::from_config_files(&registry_paths)
             .map_err(|error| format!("could not load registry: {error}"))?

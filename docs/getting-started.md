@@ -248,7 +248,7 @@ follow first encounter order. The packed columns remain valid after edits;
 
 `validate_structure()` checks ownership, IDs, parent-child links, and operand targets. `verify_semantics()` also runs the schemas and verifiers in the registry associated with the parsed file.
 
-For the fixed Builtin, Func, Arith, and CF proving subset, construct a registry before parsing:
+For the fixed Builtin, Func, Arith, and CF baseline subset, construct a registry before parsing:
 
 ```python
 import zirium

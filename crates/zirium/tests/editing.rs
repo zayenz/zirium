@@ -47,10 +47,10 @@ fn hybrid(source: &[u8], mode: LoweringMode) -> zirium::semantic::Document {
 fn registered(source: &str) -> zirium::semantic::Document {
     let parsed = ParsedFile::parse_with_registry(
         Arc::<[u8]>::from(source.as_bytes()),
-        DialectRegistry::proving(),
+        DialectRegistry::baseline(),
     )
     .unwrap();
-    lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::proving())
+    lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline())
         .document
         .unwrap()
 }
@@ -58,13 +58,13 @@ fn registered(source: &str) -> zirium::semantic::Document {
 fn registered_best_effort(source: &str) -> zirium::semantic::Document {
     let parsed = ParsedFile::parse_with_registry(
         Arc::<[u8]>::from(source.as_bytes()),
-        DialectRegistry::proving(),
+        DialectRegistry::baseline(),
     )
     .unwrap();
     lower_with_dialect_registry(
         &parsed,
         LoweringMode::BestEffort,
-        DialectRegistry::proving(),
+        DialectRegistry::baseline(),
     )
     .document
     .unwrap()
@@ -128,7 +128,7 @@ fn unknown_spec(name: &str) -> OperationSpec {
 fn validate(document: &zirium::semantic::Document) {
     document.validate_structure().unwrap();
     document
-        .verify_semantics(DialectRegistry::proving())
+        .verify_semantics(DialectRegistry::baseline())
         .unwrap();
 }
 
@@ -350,7 +350,7 @@ fn rewire_all_uses_then_erase_preserves_other_ids_and_stales_erased_ids() {
         .result(ids[1], 0)
         .unwrap();
 
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     assert!(matches!(editor.erase(ids[0]), Err(EditError::LiveUses(id)) if id == ids[0]));
     editor.rewire_operand(ids[2], 0, replacement).unwrap();
     editor.erase(ids[0]).unwrap();
@@ -375,14 +375,14 @@ fn failed_commit_and_dropped_transaction_leave_original_untouched() {
     let constant = document.root_operations()[0];
     let revision = document.revision();
     let result = document
-        .edit(DialectRegistry::proving())
+        .edit(DialectRegistry::baseline())
         .unwrap()
         .remove_attribute(constant, "value");
     assert!(result.is_ok());
     // The preceding editor was dropped without committing.
     assert!(document.attribute_id(constant, "value").is_some());
 
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     editor.remove_attribute(constant, "value").unwrap();
     assert!(matches!(editor.commit(), Err(EditError::Semantic(_))));
     assert!(document.attribute_id(constant, "value").is_some());
@@ -405,7 +405,7 @@ fn failed_function_terminator_edits_are_atomic() {
     let terminator = document.block_operations(block).unwrap()[0];
     let revision = document.revision();
 
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     editor.erase(terminator).unwrap();
     assert!(matches!(
         editor.commit(),
@@ -415,7 +415,7 @@ fn failed_function_terminator_edits_are_atomic() {
     assert_eq!(document.revision(), revision);
     assert_eq!(document.block_operations(block).unwrap(), &[terminator]);
 
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     editor
         .insert(
             InsertionPoint::Block { block, index: 1 },
@@ -441,7 +441,7 @@ fn fixed_result_type_edit_preserves_result_identity() {
         .unwrap()
         .result(operation, 0)
         .unwrap();
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     assert!(matches!(
         editor.replace_result_types(operation, &[]),
         Err(EditError::ResultCountChange)
@@ -461,7 +461,7 @@ fn fixed_result_type_edit_preserves_result_identity() {
 fn insertion_updates_root_and_nested_block_relationships() {
     let mut roots = generic("\"existing\"() : () -> ()");
     let existing = roots.root_operations()[0];
-    let mut editor = roots.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = roots.edit(DialectRegistry::baseline()).unwrap();
     let inserted = editor
         .insert(InsertionPoint::Root(0), unknown_spec("inserted"))
         .unwrap();
@@ -473,7 +473,7 @@ fn insertion_updates_root_and_nested_block_relationships() {
     let container = nested.root_operations()[0];
     let region = nested.operation_regions(container).unwrap()[0];
     let block = nested.region(region).unwrap().blocks(&nested).unwrap()[0];
-    let mut editor = nested.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = nested.edit(DialectRegistry::baseline()).unwrap();
     let inserted = editor
         .insert(
             InsertionPoint::Block { block, index: 1 },
@@ -493,7 +493,7 @@ fn insertion_updates_root_and_nested_block_relationships() {
 fn attributes_properties_foreign_values_and_incomplete_documents_are_bounded() {
     let mut document = generic("\"editable\"() : () -> ()");
     let operation = document.root_operations()[0];
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     editor
         .set_attribute(
             operation,
@@ -532,7 +532,7 @@ fn attributes_properties_foreign_values_and_incomplete_documents_are_bounded() {
         .unwrap()
         .result(foreign, 0)
         .unwrap();
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     let mut spec = unknown_spec("bad.insert");
     spec.operands.push(foreign_value);
     assert!(matches!(
@@ -546,7 +546,7 @@ fn attributes_properties_foreign_values_and_incomplete_documents_are_bounded() {
             .document
             .unwrap();
     assert!(matches!(
-        incomplete.edit(DialectRegistry::proving()),
+        incomplete.edit(DialectRegistry::baseline()),
         Err(EditError::IncompleteDocument)
     ));
 }
@@ -582,7 +582,7 @@ fn successor_argument_rewire_allows_definition_deletion() {
         .result(constants[1], 0)
         .unwrap();
 
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     assert_eq!(editor.replace_all_uses(old_value, replacement).unwrap(), 1);
     editor.erase(constants[0]).unwrap();
     editor.commit().unwrap();
@@ -612,7 +612,7 @@ fn replace_all_uses_rejects_type_changes_and_indexes_successor_arguments() {
         .unwrap()
         .result(operations[1], 0)
         .unwrap();
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     assert_eq!(
         editor.replace_all_uses(from, to),
         Err(EditError::TypeMismatch)
@@ -797,7 +797,7 @@ fn lazy_indexes_replace_uses_and_rebuild_after_revision() {
     assert_eq!(document.statistics().use_index_entries, 2);
 
     let old_revision = document.revision();
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     assert_eq!(editor.replace_all_uses(from, to).unwrap(), 1);
     editor.erase(operations[0]).unwrap();
     editor.commit().unwrap();
@@ -838,12 +838,12 @@ fn symbol_and_dominance_indexes_follow_registered_descriptors() {
         .find(|operation| document.operation_name(*operation) == Some("func.call"))
         .unwrap();
     let callee = document
-        .lookup_symbol(call, "@callee", DialectRegistry::proving())
+        .lookup_symbol(call, "@callee", DialectRegistry::baseline())
         .unwrap();
     assert_eq!(document.operation_name(callee), Some("func.func"));
     assert!(
         document
-            .symbol_index_diagnostics(DialectRegistry::proving())
+            .symbol_index_diagnostics(DialectRegistry::baseline())
             .is_empty()
     );
     assert!(document.statistics().symbol_index_entries >= 2);
@@ -861,8 +861,8 @@ fn symbol_and_dominance_indexes_follow_registered_descriptors() {
         .unwrap()
         .result(constants[0], 0)
         .unwrap();
-    assert!(document.dominates(first, add, DialectRegistry::proving()));
-    assert!(!document.dominates(first, caller, DialectRegistry::proving()));
+    assert!(document.dominates(first, add, DialectRegistry::baseline()));
+    assert!(!document.dominates(first, caller, DialectRegistry::baseline()));
     assert!(document.statistics().dominance_index_entries > 0);
 }
 
@@ -886,11 +886,11 @@ fn registered_symbol_indexes_shadow_nested_scopes_and_report_unresolved_refs() {
         .operations()
         .filter(|operation| document.operation_name(*operation) == Some("func.call"))
         .collect::<Vec<_>>();
-    let outer_target = document.lookup_symbol(calls[0], "@f", DialectRegistry::proving());
-    let inner_target = document.lookup_symbol(calls[1], "@f", DialectRegistry::proving());
+    let outer_target = document.lookup_symbol(calls[0], "@f", DialectRegistry::baseline());
+    let inner_target = document.lookup_symbol(calls[1], "@f", DialectRegistry::baseline());
     assert!(outer_target.is_some() && inner_target.is_some());
     assert_ne!(outer_target, inner_target);
-    let diagnostics = document.symbol_index_diagnostics(DialectRegistry::proving());
+    let diagnostics = document.symbol_index_diagnostics(DialectRegistry::baseline());
     assert!(
         diagnostics
             .iter()
@@ -922,19 +922,19 @@ fn quoted_symbol_components_round_trip_and_resolve_without_splitting() {
         .filter(|operation| document.operation_name(*operation) == Some("func.call"))
         .collect::<Vec<_>>();
     let literal_separator = document
-        .lookup_symbol(calls[0], r#"@"a::b""#, DialectRegistry::proving())
+        .lookup_symbol(calls[0], r#"@"a::b""#, DialectRegistry::baseline())
         .unwrap();
     let equivalent_utf8 = document
-        .lookup_symbol(calls[1], r#"@"café""#, DialectRegistry::proving())
+        .lookup_symbol(calls[1], r#"@"café""#, DialectRegistry::baseline())
         .unwrap();
     let equivalent_quote = document
-        .lookup_symbol(calls[2], r#"@"say\"hi""#, DialectRegistry::proving())
+        .lookup_symbol(calls[2], r#"@"say\"hi""#, DialectRegistry::baseline())
         .unwrap();
     let nested = document
         .lookup_symbol(
             calls[3],
             r#"@outer::@"nested::name""#,
-            DialectRegistry::proving(),
+            DialectRegistry::baseline(),
         )
         .unwrap();
     assert_eq!(
@@ -992,24 +992,24 @@ fn concurrent_registry_queries_keep_matching_symbol_and_dominance_results() {
         .unwrap();
 
     std::thread::scope(|scope| {
-        for proving in [true, false].into_iter().cycle().take(16) {
+        for baseline in [true, false].into_iter().cycle().take(16) {
             let document = Arc::clone(&document);
             scope.spawn(move || {
-                let registry = if proving {
-                    DialectRegistry::proving()
+                let registry = if baseline {
+                    DialectRegistry::baseline()
                 } else {
                     &DialectRegistry::EMPTY
                 };
                 assert_eq!(
                     document.lookup_symbol(call, "@f", registry).is_some(),
-                    proving
+                    baseline
                 );
                 assert_eq!(
                     document
                         .symbol_index_diagnostics(registry)
                         .iter()
                         .any(|diagnostic| diagnostic.symbol == "missing"),
-                    proving
+                    baseline
                 );
                 assert!(document.dominates(value, return_operation, registry));
             });
@@ -1056,15 +1056,15 @@ fn indexed_block_argument_dominance_matches_cfg_expectations() {
         .operations()
         .find(|operation| document.operation_name(*operation) == Some("func.return"))
         .unwrap();
-    assert!(document.dominates(entry_value, return_operation, DialectRegistry::proving()));
-    assert!(!document.dominates(left_value, return_operation, DialectRegistry::proving()));
+    assert!(document.dominates(entry_value, return_operation, DialectRegistry::baseline()));
+    assert!(!document.dominates(left_value, return_operation, DialectRegistry::baseline()));
     assert!(!document.dominates(
         ValueId::BlockArgument {
             block: blocks[0],
             argument: 99,
         },
         return_operation,
-        DialectRegistry::proving()
+        DialectRegistry::baseline()
     ));
     let forged_result = ValueId::OperationResult {
         operation: document
@@ -1073,7 +1073,7 @@ fn indexed_block_argument_dominance_matches_cfg_expectations() {
             .unwrap(),
         result: 99,
     };
-    assert!(!document.dominates(forged_result, return_operation, DialectRegistry::proving()));
+    assert!(!document.dominates(forged_result, return_operation, DialectRegistry::baseline()));
     assert!(document.statistics().dominance_index_entries > 0);
 }
 
@@ -1119,7 +1119,7 @@ fn editor_commit_rejects_invisible_successor_argument_atomically() {
         argument: 0,
     };
 
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     editor
         .rewire_successor_argument(left_branch, 0, 0, right_value)
         .unwrap();
@@ -1145,7 +1145,7 @@ fn editor_commit_rejects_invisible_successor_argument_atomically() {
         block: blocks[1],
         argument: 0,
     };
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     editor
         .rewire_operand(return_operation, 0, left_value)
         .unwrap();
@@ -1190,10 +1190,10 @@ fn indexed_dominance_matches_full_verification_for_loops_and_unreachable_blocks(
         .unwrap();
     assert!(
         loop_document
-            .verify_semantics(DialectRegistry::proving())
+            .verify_semantics(DialectRegistry::baseline())
             .is_ok()
     );
-    assert!(loop_document.dominates(value, use_operation, DialectRegistry::proving()));
+    assert!(loop_document.dominates(value, use_operation, DialectRegistry::baseline()));
 
     let unreachable_document = registered_best_effort(
         r#"builtin.module {
@@ -1224,10 +1224,10 @@ fn indexed_dominance_matches_full_verification_for_loops_and_unreachable_blocks(
         .unwrap();
     assert!(
         unreachable_document
-            .verify_semantics(DialectRegistry::proving())
+            .verify_semantics(DialectRegistry::baseline())
             .is_ok()
     );
-    assert!(unreachable_document.dominates(value, use_operation, DialectRegistry::proving()));
+    assert!(unreachable_document.dominates(value, use_operation, DialectRegistry::baseline()));
     let statistics = unreachable_document.statistics();
     assert!(statistics.dominance_index_entries < statistics.operations + statistics.blocks * 20);
 }
@@ -1347,10 +1347,10 @@ fn committed_edit_invalidates_and_rebuilds_the_dominance_index() {
         .unwrap()
         .result(operations[0], 0)
         .unwrap();
-    assert!(document.dominates(value, operations[1], DialectRegistry::proving()));
+    assert!(document.dominates(value, operations[1], DialectRegistry::baseline()));
     assert!(document.statistics().dominance_index_entries > 0);
 
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     editor
         .set_attribute(
             operations[1],
@@ -1363,7 +1363,7 @@ fn committed_edit_invalidates_and_rebuilds_the_dominance_index() {
         .unwrap();
     editor.commit().unwrap();
     assert_eq!(document.statistics().dominance_index_entries, 0);
-    assert!(document.dominates(value, operations[1], DialectRegistry::proving()));
+    assert!(document.dominates(value, operations[1], DialectRegistry::baseline()));
     assert!(document.statistics().dominance_index_entries > 0);
 }
 
@@ -1391,7 +1391,7 @@ fn nested_block_argument_visibility_uses_enclosing_cfg_block() {
         block: outer_block,
         argument: 0,
     };
-    assert!(document.dominates(value, use_operation, DialectRegistry::proving()));
+    assert!(document.dominates(value, use_operation, DialectRegistry::baseline()));
 }
 
 #[test]
@@ -1418,7 +1418,7 @@ fn isolated_nested_region_rejects_outer_block_argument_capture() {
         block: outer_block,
         argument: 0,
     };
-    assert!(!document.dominates(value, return_operation, DialectRegistry::proving()));
+    assert!(!document.dominates(value, return_operation, DialectRegistry::baseline()));
 }
 
 #[test]
@@ -1437,7 +1437,7 @@ fn pool_compaction_reclaims_fragments_without_changing_live_ids() {
         .unwrap()
         .result(operations[1], 0)
         .unwrap();
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     for value in [second, first, second, first, second] {
         editor.rewire_operand(operations[2], 0, value).unwrap();
     }
@@ -1485,7 +1485,7 @@ fn pool_compaction_preserves_nested_entities_and_stales_erased_operations() {
     let property = document.attribute_id(properties, "discardable").unwrap();
     let before = document.statistics().pooled_list_entries;
 
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     let dead = editor
         .document()
         .operations()
@@ -1523,7 +1523,7 @@ fn stale_invalid_and_foreign_handles_have_distinct_edit_errors() {
     let mut document = generic("%x = \"value\"() : () -> i32");
     let local = document.root_operations()[0];
     let local_value = document.operation(local).unwrap().result(local, 0).unwrap();
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     let invalid = ValueId::OperationResult {
         operation: local,
         result: 99,
@@ -1595,7 +1595,7 @@ fn hybrid_edits_invalidate_syntax_retention_before_commit() {
     );
 
     let original = document.root_operations()[0];
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     editor
         .insert(InsertionPoint::Root(0), unknown_spec("inserted"))
         .unwrap();
@@ -1617,7 +1617,7 @@ fn hybrid_edits_invalidate_syntax_retention_before_commit() {
 #[test]
 fn invalid_insertion_position_does_not_orphan_staged_operation() {
     let mut document = generic("\"original\"() : () -> ()");
-    let mut editor = document.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
     assert_eq!(
         editor.insert(InsertionPoint::Root(usize::MAX), unknown_spec("invalid")),
         Err(EditError::InvalidPosition)
@@ -1635,7 +1635,7 @@ fn invalid_insertion_position_does_not_orphan_staged_operation() {
 fn provisional_handles_from_dropped_or_failed_transactions_are_stale() {
     let mut dropped = generic("\"original\"() : () -> ()");
     let dropped_operation = {
-        let mut editor = dropped.edit(DialectRegistry::proving()).unwrap();
+        let mut editor = dropped.edit(DialectRegistry::baseline()).unwrap();
         editor
             .insert(
                 InsertionPoint::Root(1),
@@ -1646,7 +1646,7 @@ fn provisional_handles_from_dropped_or_failed_transactions_are_stale() {
             )
             .unwrap()
     };
-    let mut editor = dropped.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = dropped.edit(DialectRegistry::baseline()).unwrap();
     assert!(matches!(
         editor.erase(dropped_operation),
         Err(EditError::StaleOperation(id)) if id == dropped_operation
@@ -1655,7 +1655,7 @@ fn provisional_handles_from_dropped_or_failed_transactions_are_stale() {
     let mut failed = registered("%constant = arith.constant 1 : i32");
     let original = failed.root_operations()[0];
     let (failed_operation, failed_value) = {
-        let mut editor = failed.edit(DialectRegistry::proving()).unwrap();
+        let mut editor = failed.edit(DialectRegistry::baseline()).unwrap();
         let operation = editor
             .insert(
                 InsertionPoint::Root(1),
@@ -1675,7 +1675,7 @@ fn provisional_handles_from_dropped_or_failed_transactions_are_stale() {
         assert!(matches!(editor.commit(), Err(EditError::Semantic(_))));
         (operation, value)
     };
-    let mut editor = failed.edit(DialectRegistry::proving()).unwrap();
+    let mut editor = failed.edit(DialectRegistry::baseline()).unwrap();
     assert!(matches!(
         editor.erase(failed_operation),
         Err(EditError::StaleOperation(id)) if id == failed_operation
