@@ -18,6 +18,11 @@ a Zirium source checkout, `python/zirium/__init__.pyi` is the compact typed API
 reference and `docs/getting-started.md` explains the main contracts. Do not
 install or upgrade the package unless asked.
 
+Outside a source checkout, consult the
+[getting-started guide](https://github.com/zayenz/zirium/blob/main/docs/getting-started.md)
+and [type declarations](https://github.com/zayenz/zirium/blob/main/python/zirium/__init__.pyi),
+selecting the project's release tag instead of `main` when available.
+
 ## Start with the normal flow
 
 ```python
@@ -60,8 +65,11 @@ semantic verification, analysis, or edits.
 - Use packed syntax or operation tables only for bulk inspection. Prefer normal
   wrappers for small traversals because they are clearer and checked.
 
-For caller-defined operation syntax, use the `zirium-custom-format` skill. For
-query-language or command-line work, use `zirium-cli` instead.
+For caller-defined syntax, consult the version-matched
+[custom-format guide](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md).
+The optional `zirium-custom-format` companion skill supports registry research
+when explicitly invoked. For command-line queries, consult `zirium --help` or
+the `zirium-cli` companion skill when installed.
 
 ## Verify proportionately
 

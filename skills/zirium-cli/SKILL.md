@@ -40,8 +40,10 @@ about recovered custom operations, semantic data may be incomplete.
 - Use `--strict` in automation and whenever incomplete semantics would make the
   answer misleading. Strict mode rejects recovery; it does not add dialect
   support or perform full dialect verification.
-- If the project needs a new registry format, use the `zirium-custom-format`
-  skill rather than guessing one here.
+- If the project needs a new registry format, consult the
+  [custom-format guide](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md)
+  for its Zirium version. The optional `zirium-custom-format` companion skill
+  supports that research when the user explicitly invokes it.
 
 ## Compose queries from the data flow
 

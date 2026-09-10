@@ -62,8 +62,11 @@ diagnostics instead of treating a missing strict document as an empty result.
 - Treat operation and value IDs as document-owned, generation-checked handles.
   Do not reuse erased handles or pass handles between documents.
 
-For caller-defined operation syntax, use the `zirium-custom-format` skill. For
-query-language or command-line work, use `zirium-cli` instead.
+For caller-defined syntax, consult the version-matched
+[custom-format guide](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md).
+The optional `zirium-custom-format` companion skill supports registry research
+when explicitly invoked. For command-line queries, consult `zirium --help` or
+the `zirium-cli` companion skill when installed.
 
 ## Verify proportionately
 
