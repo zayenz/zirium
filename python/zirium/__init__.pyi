@@ -446,6 +446,7 @@ class SemanticType:
         "integer",
         "float",
         "index",
+        "complex",
         "tuple",
         "tensor",
         "vector",
