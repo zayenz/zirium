@@ -145,6 +145,8 @@ become queries relative to the current function.
 `sort` orders a value stream lexically. `reverse` reverses an operation or
 value stream. `head(n)` keeps the first `n` items, while `tail(n)` keeps the
 last `n`; both preserve the retained items' order.
+These stages truncate an already computed stream. They do not avoid parsing the
+whole file or evaluating earlier stages.
 
 Use `sort_by(query)` to order operations by a derived key. The selector runs
 once for each operation and must return exactly one string or count. Sorting is
@@ -575,6 +577,9 @@ iterations, and dependency, ancestor, and subtree visits. These are deterministi
 not a time or byte-memory limit. CLI callers can set `--max-work N` and
 `--max-items N`; Rust callers can use `Query::evaluate_with_limits` and
 `EvaluationLimits`. A limit error follows the usual no-stdout CLI contract.
+The initial stream contains every operation, so it must fit `max_items` even
+when the first stage filters down to a small selection. The work limit does not
+bound MLIR parsing, printing, or the total bytes buffered across emissions.
 
 The common `fixpoint(closure)` query uses a worklist and visits dependencies once.
 A body with additional stages, including `emit` or `json`, runs step by step and

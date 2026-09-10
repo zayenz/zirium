@@ -798,29 +798,17 @@ fn sort_operations_by(
         };
         keyed.push((operation, key));
     }
-    keyed.sort_by(|left, right| {
-        let ordering = left.1.cmp(&right.1);
-        if descending {
-            ordering.reverse()
-        } else {
-            ordering
-        }
-    });
     if let Some(retain_all) = extrema {
-        let retain = if retain_all {
-            keyed
-                .first()
-                .map(|(_, extreme)| {
-                    keyed
-                        .iter()
-                        .take_while(|(_, candidate)| candidate == extreme)
-                        .count()
-                })
-                .unwrap_or(0)
-        } else {
-            1
-        };
-        keyed.truncate(retain);
+        let keys = keyed.iter().map(|(_, key)| key);
+        let extreme = if descending { keys.max() } else { keys.min() }
+            .cloned()
+            .expect("extrema reject empty streams before computing keys");
+        keyed.retain(|(_, key)| key == &extreme);
+        if !retain_all {
+            keyed.truncate(1);
+        }
+    } else {
+        keyed.sort_by(|left, right| left.1.cmp(&right.1));
     }
     Ok(keyed.into_iter().map(|(operation, _)| operation).collect())
 }
