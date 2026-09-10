@@ -4,6 +4,12 @@ use crate::source::TextRange;
 pub enum TokenKind {
     Identifier,
     Integer,
+    Number,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+    Colon,
     String,
     LParen,
     RParen,
@@ -126,12 +132,38 @@ pub fn lex(source: &str) -> Lexed<'_> {
                 }
                 TokenKind::Identifier
             }
-            b'0'..=b'9' => {
+            b'-' | b'0'..=b'9' => {
                 position += 1;
-                while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+                while bytes.get(position).is_some_and(|byte| {
+                    byte.is_ascii_digit() || matches!(byte, b'.' | b'e' | b'E' | b'+' | b'-')
+                }) {
                     position += 1;
                 }
-                TokenKind::Integer
+                if bytes[start..position].iter().all(u8::is_ascii_digit) {
+                    TokenKind::Integer
+                } else {
+                    TokenKind::Number
+                }
+            }
+            b'{' => {
+                position += 1;
+                TokenKind::LBrace
+            }
+            b'}' => {
+                position += 1;
+                TokenKind::RBrace
+            }
+            b'[' => {
+                position += 1;
+                TokenKind::LBracket
+            }
+            b']' => {
+                position += 1;
+                TokenKind::RBracket
+            }
+            b':' => {
+                position += 1;
+                TokenKind::Colon
             }
             b'(' => {
                 position += 1;
@@ -171,7 +203,9 @@ pub fn lex(source: &str) -> Lexed<'_> {
                             let escape_start = position;
                             position += 1;
                             match bytes.get(position) {
-                                Some(b'"' | b'\\') => position += 1,
+                                Some(
+                                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u',
+                                ) => position += 1,
                                 Some(_) => {
                                     position += 1;
                                     diagnostics.push(Diagnostic {

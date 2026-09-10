@@ -287,6 +287,7 @@ fn run() -> Result<(), String> {
                         | QueryOutput::Json(_)
                         | QueryOutput::Text(_)
                         | QueryOutput::Map(_)
+                        | QueryOutput::Array(_)
                 );
                 match output {
                     QueryOutput::Operations(selected) => document
@@ -305,6 +306,14 @@ fn run() -> Result<(), String> {
                             writeln!(answer, "{value}")
                                 .map_err(|error| EvaluationError::new(error.to_string()))?;
                         }
+                    }
+                    QueryOutput::Array(values) => {
+                        answer.extend_from_slice(
+                            serde_json::to_string_pretty(&values)
+                                .map_err(|error| EvaluationError::new(error.to_string()))?
+                                .as_bytes(),
+                        );
+                        answer.push(b'\n');
                     }
                     QueryOutput::Map(values) => {
                         answer.extend_from_slice(

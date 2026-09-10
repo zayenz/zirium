@@ -134,6 +134,64 @@ histogram. Maps can be nested. Key and value queries cannot edit or emit.
 Bindings used inside them still restore their saved results; they do not
 become queries relative to the current function.
 
+## Building JSON structures
+
+Object and array literals combine saved results into a larger report:
+
+```zirium
+functions = filter(op("func.func"));
+n = functions | count;
+counts = functions
+  | map_by(attr("sym_name"), children | subtree | names | tally);
+
+{
+  "title": "Report for {n} functions",
+  "function_count": n,
+  "operation_counts": counts,
+  "metadata": {"schema_version": 1, "static_counts": true},
+  "notes": ["Shared callees count once when using reachable", null]
+} | json
+```
+
+A bare binding inserts its saved result as structured data. A count stays a
+number, a map stays an object, and a stream becomes an array. Operation streams
+use the same inspection objects as `json`. Inserted data is copied into the
+new structure; subsequent edits do not change it.
+
+Strings and object keys use the same `{name}` interpolation as `print`.
+For example, `"count": n` stores a number, while `"count": "{n}"` stores a
+string. Interpolation accepts counts and single strings, including a literal
+array containing exactly one string. Use `{{` and `}}` for literal braces.
+Quotes, newlines, and other characters in inserted strings are escaped when
+JSON is emitted; inserted text is never parsed as JSON.
+
+Objects require quoted keys and reject duplicate keys, including duplicates
+created by interpolation. Values may be objects, arrays, strings, JSON numbers,
+`true`, `false`, `null`, or earlier bindings. Trailing commas and forward
+references are errors. Values cannot contain query pipelines; bind the result
+of a query first. All bindings retain their saved meaning inside literals.
+
+A literal is a pipeline stage that replaces the current result. It must start
+with `{` or `[`; scalars occur inside objects and arrays. Literals may be saved
+in bindings or embedded within one another:
+
+```zirium
+totals = names | tally;
+report = {"totals": totals, "complete": true};
+[report, {"note": "Counts include container operations"}] | json
+```
+
+Objects and arrays also print as JSON through implicit output or `emit`.
+`count` counts outer object keys or array elements. `markdown` accepts literal
+objects with its supported table shapes and arrays of scalars; deeper structures
+produce its usual shape diagnostic. Literal construction is not a selection
+query, so it cannot be used directly as a set operand or fixed-point body.
+
+The shared nesting, item, and work limits apply to literal construction.
+Inserted copies count toward the resulting structure's size, and empty
+containers count too. Numbers use the JSON representation's integer and
+floating-point ranges; use strings for numbers requiring arbitrary precision.
+
 ## Writing reports with Markdown and text
 
 Use `markdown` to emit a table from a histogram or a map of histograms.
@@ -175,7 +233,7 @@ The Markdown emitter supports these shapes:
 
 | Input | Output |
 | --- | --- |
-| String stream | A one-column table headed `Value`, preserving order and duplicates. |
+| String stream or scalar array | A one-column table headed `Value`, preserving order and duplicates. |
 | Map of scalars | A `Key` / `Value` table. |
 | Map of maps of scalars | Outer keys become rows; the union of inner keys becomes columns. |
 | Saved count | The number as a paragraph. |
@@ -555,7 +613,7 @@ program    = [ { binding | query ";" } query [ ";" ] ]
 binding    = identifier "=" query ";"
 query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
-stage      = identifier | "markdown" | "print" "(" string ")"
+stage      = object | array | identifier | "markdown" | "print" "(" string ")"
            | "tally" | "map_by" "(" query "," query ")"
            | "input" | "filter" "(" predicate ")"
            | ("defs" | "users") [ "(" integer ")" ]
@@ -573,16 +631,22 @@ primary    = "true" | "false" | "op" "(" string ")"
            | "has_attr" "(" string ")"
            | "string_attr_eq" "(" string "," string ")"
            | "(" predicate ")"
+object     = "{" [ string ":" value { "," string ":" value } ] "}"
+array      = "[" [ value { "," value } ] "]"
+value      = object | array | string | number | "true" | "false" | "null" | identifier
 integer    = digit { digit }
+number     = a JSON number
 ```
 
 Whitespace is insignificant between tokens. `#` begins a comment extending to
 the end of the line; inside a string it is a literal character. Strings use
-double quotes and support `\"` and `\\`. Other escapes are errors.
+double quotes and support JSON escapes: `\"`, `\\`, `\/`, `\b`, `\f`, `\n`,
+`\r`, `\t`, and `\uXXXX` (including valid surrogate pairs). Actual newlines
+and tabs are also allowed in query strings. Other escapes are errors.
 
-Query and predicate nesting share a 64-level limit. Materialized maps also have
-a 64-level nesting limit, including maps built through successive bindings.
-Nested map contents count toward `--max-items`, and copying saved results counts
+Query and predicate nesting share a 64-level limit. Materialized objects and arrays also have
+a 64-level nesting limit, including structures built through successive bindings.
+Nested contents count toward `--max-items`, and copying saved results counts
 toward `--max-work`. Long flat boolean chains,
 pipelines, and set chains do not require corresponding recursive nesting.
 The CLI reports query errors with a byte offset, line, column, and source

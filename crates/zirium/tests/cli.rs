@@ -2121,3 +2121,129 @@ fn markdown_bounds_the_dense_table_from_sparse_histograms() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn json_literals_combine_typed_bindings_and_interpolated_strings() {
+    let source = include_str!("../../../examples/cli/stablelm-decode.mlir");
+    let output = run_stdin_with_registry(
+        "stablehlo.json",
+        r#"M = filter(op("stablehlo.dot_general"));
+           N = M | count;
+           Counts = M | root(op("func.func")) | attr("sym_name") | tally;
+           Title = ["Matmul report"];
+           {
+             "title": "{Title}: {N} operations",
+             "count": N,
+             "counts": Counts,
+             "metadata": {"version": 1, "ratio": -2.5e-2, "enabled": true, "missing": null},
+             "notes": ["{{static}} counts", false, {"text": "quoted: \"hello\"\n\u03BB\uD83D\uDE00"}]
+           } | json"#,
+        source,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "title":"Matmul report: 19 operations", "count":19, "counts":{"main":19},
+            "metadata":{"version":1,"ratio":-0.025,"enabled":true,"missing":null},
+            "notes":["{static} counts",false,{"text":"quoted: \"hello\"\nλ😀"}]
+        })
+    );
+    let output = run_stdin(
+        r#"Key = ["summary"]; Names = names;
+           A = {"{Key}": Names}; [A, {"size": 1}, []]"#,
+        "module {}",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!([{"summary":["builtin.module"]},{"size":1},[]])
+    );
+    let output = run_stdin(r#"{"a": {"x": 1}, "b": {"y": 2}} | markdown"#, "module {}");
+    assert!(output.status.success());
+    assert_eq!(
+        output.stdout,
+        b"\n| Key | x | y |\n| --- | --- | --- |\n| a | 1 |  |\n| b |  | 2 |\n\n"
+    );
+    let output = run_stdin(
+        r#"print("one\ntwo\t\u03BB"); [1, "two", true, null] | markdown"#,
+        "module {}",
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        output.stdout,
+        "one\ntwo\tλ\n\n| Value |\n| --- |\n| 1 |\n| two |\n| true |\n|  |\n\n".as_bytes()
+    );
+}
+
+#[test]
+fn json_literal_errors_are_specific_and_leave_stdout_empty() {
+    for (query, error) in [
+        (
+            r#"print("prefix"); {"a": 1, "a": 2}"#,
+            "duplicate JSON object key",
+        ),
+        (
+            r#"K = ["a"]; {"a": 1, "{K}": 2}"#,
+            "duplicate JSON object key",
+        ),
+        (r#"{"x": missing}"#, "earlier binding"),
+        (r#"{"x": "{missing}"}"#, "earlier binding"),
+        (r#"A = [1, 2]; {"x": "{A}"}"#, "count or exactly one string"),
+        (r#"{unquoted: 1}"#, "quoted object key"),
+        (r#"{"x": 1,}"#, "quoted object key"),
+        ("[1,]", "expected a JSON value"),
+        ("[01]", "JSON number"),
+        ("[1e9999]", "JSON number"),
+        (r#"["\uD800"]"#, "Unicode sequence"),
+        ("[true false]", "expected `]`"),
+        ("fixpoint({})", "selection query"),
+        ("{} union {}", "selection queries"),
+        ("A = []; A | names", "requires operations"),
+        (
+            "A = []; fixpoint(A)",
+            "requires an operation or value stream",
+        ),
+    ] {
+        let output = run_stdin(query, "module {}");
+        assert!(!output.status.success(), "{query}");
+        assert!(output.stdout.is_empty(), "{query}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(error),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn json_literals_bound_reused_data_and_nesting() {
+    let output = run_stdin_with_options(
+        &["--max-items", "10"],
+        "A = [[], [], [], []]; [A, A, A]",
+        "module {}",
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("stream size limit"));
+    let mut query = String::from("A0 = {};");
+    for i in 1..70 {
+        query.push_str(&format!("A{i} = {{\"child\": A{}}};", i - 1));
+    }
+    query.push_str("A69");
+    let output = run_stdin(&query, "module {}");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("JSON nesting limit"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

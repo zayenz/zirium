@@ -1,0 +1,14 @@
+functions = filter(op("func.func"));
+n = functions | count;
+counts = functions
+  | map_by(attr("sym_name"), children | subtree | names | tally);
+
+{
+  "title": "Operation report for {n} functions",
+  "function_count": n,
+  "operation_counts": counts,
+  "metadata": {
+    "schema_version": 1,
+    "counting": "Explicitly represented operations in each function body"
+  }
+} | json

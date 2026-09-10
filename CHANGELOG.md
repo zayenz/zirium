@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add JSON object and array literals with typed binding insertion, string/key
+  interpolation, duplicate-key diagnostics, and bounded construction.
+- Support JSON string escapes, including Unicode, in query strings. Literal
+  scalar arrays can also be emitted as Markdown tables.
+
 - Add a `markdown` emitter for value lists, scalar maps, and maps of scalar maps,
   with escaped cells, sparse columns, shape diagnostics, and table size bounds.
 - Add `print("text {binding}")` for report text with count or single-string

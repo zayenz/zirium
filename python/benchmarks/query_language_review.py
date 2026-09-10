@@ -339,6 +339,31 @@ def markdown_report_probes():
         )
 
 
+def json_literal_probes():
+    source, _ = dag(0, 60)
+    counts = {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "stablehlo.constant": 1,
+        "stablehlo.add": 59,
+    }
+    for n in [16, 256, 2048]:
+        query = (
+            'N = filter(op("stablehlo.add")) | count; Counts = names | tally; '
+            '{"title": "{N} additions", "sections": ['
+            + ",".join(f'{{"index": {i}, "counts": Counts}}' for i in range(n))
+            + "]}"
+        )
+        row = run(f"json-literal-{n}-sections", query, source)
+        assert row.get("code") == 0, row
+        assert json.loads(row["stdout"]) == {
+            "title": "59 additions",
+            "sections": [{"index": i, "counts": counts} for i in range(n)],
+        }, row
+        row["checked"] = True
+
+
 def main():
     decoder = (ROOT / "examples/cli/stablelm-decode.mlir").read_text()
     semantic_probes(decoder)
@@ -466,6 +491,7 @@ def main():
     )
     aggregation_graph_probes()
     markdown_report_probes()
+    json_literal_probes()
     print(json.dumps(results, indent=2))
 
 

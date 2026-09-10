@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 use super::{EvaluationError, EvaluationState, QueryOutput, parser::PrintPart};
 
-pub(super) fn print(
+pub(super) fn interpolate(
     parts: &[PrintPart],
     state: &mut EvaluationState,
 ) -> Result<String, EvaluationError> {
@@ -14,9 +14,12 @@ pub(super) fn print(
             PrintPart::Binding(name) => match &state.bindings[name] {
                 QueryOutput::Count(count) => count.to_string(),
                 QueryOutput::Values(values) if values.len() == 1 => values[0].clone(),
+                QueryOutput::Array(values) if values.len() == 1 && values[0].is_string() => {
+                    values[0].as_str().unwrap().to_owned()
+                }
                 _ => {
                     return Err(EvaluationError::new(format!(
-                        "print interpolation `{{{name}}}` requires a count or exactly one string; project or count the binding first"
+                        "string interpolation `{{{name}}}` requires a count or exactly one string; project or count the binding first"
                     )));
                 }
             },
@@ -24,7 +27,6 @@ pub(super) fn print(
         state.charge(value.len())?;
         text.push_str(&value);
     }
-    text.push('\n');
     Ok(text)
 }
 
@@ -33,6 +35,11 @@ pub(super) fn markdown(
     state: &mut EvaluationState,
 ) -> Result<String, EvaluationError> {
     match output {
+        QueryOutput::Array(values) => {
+            let values = values.iter().map(scalar).collect::<Result<Vec<_>, _>>()
+                .map_err(|_| EvaluationError::new("markdown arrays require scalar elements; use json for nested arrays or objects"))?;
+            markdown(&QueryOutput::Values(values), state)
+        }
         QueryOutput::Count(count) => Ok(format!("\n{count}\n\n")),
         QueryOutput::Values(values) => {
             table_budget(values.len(), 1, state)?;

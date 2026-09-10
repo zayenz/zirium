@@ -274,3 +274,13 @@ zirium --preset stablehlo --strict \
 
 See [Markdown and text reports](query-language.md#writing-reports-with-markdown-and-text)
 for supported table shapes and interpolation rules.
+
+To package the histograms with metadata in one JSON document:
+
+```sh
+zirium --preset stablehlo --strict \
+  -f examples/cli/function-report-json.zirium examples/cli/stablelm-decode.mlir
+```
+
+The [literal syntax](query-language.md#building-json-structures) preserves numeric
+counts and nested maps while allowing interpolated report labels.

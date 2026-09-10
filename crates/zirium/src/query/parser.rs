@@ -36,6 +36,15 @@ pub enum PrintPart {
     Binding(String),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JsonLiteral {
+    Object(Vec<(Vec<PrintPart>, JsonLiteral)>),
+    Array(Vec<JsonLiteral>),
+    String(Vec<PrintPart>),
+    Scalar(serde_json::Value),
+    Binding(String),
+}
+
 impl Program {
     pub fn expression(&self) -> &Expression {
         &self.expression
@@ -168,6 +177,10 @@ impl Predicate {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
+    Literal {
+        value: JsonLiteral,
+        range: TextRange,
+    },
     Markdown {
         range: TextRange,
     },
@@ -271,7 +284,8 @@ pub enum Stage {
 impl Stage {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Markdown { range }
+            Self::Literal { range, .. }
+            | Self::Markdown { range }
             | Self::Print { range, .. }
             | Self::Binding { range, .. }
             | Self::Tally { range }
@@ -307,7 +321,8 @@ impl Stage {
             | Self::RemoveAttr { .. }
             | Self::Count { .. }
             | Self::Tally { .. }
-            | Self::MapBy { .. } => false,
+            | Self::MapBy { .. }
+            | Self::Literal { .. } => false,
             Self::Group { expression, .. } | Self::Fixpoint { expression, .. } => {
                 expression.is_selection_only()
             }
@@ -497,6 +512,13 @@ impl Parser<'_> {
     fn stage(&mut self, depth: usize) -> Option<Stage> {
         self.skip_trivia();
         let start = self.current().range().start();
+        if self.at(TokenKind::LBrace) || self.at(TokenKind::LBracket) {
+            let value = self.json_literal(depth + 1)?;
+            return Some(Stage::Literal {
+                value,
+                range: self.span(start),
+            });
+        }
         if self.at(TokenKind::LParen) {
             self.bump();
             let expression = Box::new(self.expression(depth + 1)?);
@@ -914,6 +936,83 @@ impl Parser<'_> {
         })
     }
 
+    fn json_literal(&mut self, depth: usize) -> Option<JsonLiteral> {
+        self.skip_trivia();
+        if depth >= self.nesting_limit {
+            self.error("query nesting limit exceeded");
+            return None;
+        }
+        match self.current().kind() {
+            TokenKind::LBrace => {
+                self.bump();
+                let mut entries = Vec::new();
+                self.skip_trivia();
+                if !self.at(TokenKind::RBrace) {
+                    loop {
+                        let (key, _) = self.string("expected a quoted object key")?;
+                        let key = self.print_parts(&key)?;
+                        self.expect(TokenKind::Colon, "expected `:` after object key")?;
+                        entries.push((key, self.json_literal(depth + 1)?));
+                        self.skip_trivia();
+                        if !self.at(TokenKind::Comma) {
+                            break;
+                        }
+                        self.bump();
+                    }
+                }
+                self.expect(TokenKind::RBrace, "expected `}` after object entries")?;
+                Some(JsonLiteral::Object(entries))
+            }
+            TokenKind::LBracket => {
+                self.bump();
+                let mut values = Vec::new();
+                self.skip_trivia();
+                if !self.at(TokenKind::RBracket) {
+                    loop {
+                        values.push(self.json_literal(depth + 1)?);
+                        self.skip_trivia();
+                        if !self.at(TokenKind::Comma) {
+                            break;
+                        }
+                        self.bump();
+                    }
+                }
+                self.expect(TokenKind::RBracket, "expected `]` after array elements")?;
+                Some(JsonLiteral::Array(values))
+            }
+            TokenKind::String => {
+                let (value, _) = self.string("expected a string")?;
+                Some(JsonLiteral::String(self.print_parts(&value)?))
+            }
+            TokenKind::Integer | TokenKind::Number => {
+                let Ok(value) = serde_json::from_str::<serde_json::Number>(self.current_text())
+                else {
+                    self.error("invalid or out-of-range JSON number");
+                    return None;
+                };
+                self.bump();
+                Some(JsonLiteral::Scalar(serde_json::Value::Number(value)))
+            }
+            TokenKind::Identifier => {
+                let name = self.identifier_text()?;
+                match name.as_str() {
+                    "true" => Some(JsonLiteral::Scalar(serde_json::Value::Bool(true))),
+                    "false" => Some(JsonLiteral::Scalar(serde_json::Value::Bool(false))),
+                    "null" => Some(JsonLiteral::Scalar(serde_json::Value::Null)),
+                    _ if self.bindings.contains(&name) => Some(JsonLiteral::Binding(name)),
+                    _ => {
+                        self.error_at_previous("expected an earlier binding or a JSON value");
+                        None
+                    }
+                }
+            }
+            _ => {
+                self.error("expected a JSON value or an earlier binding");
+                None
+            }
+        }
+    }
+
     fn print_parts(&mut self, template: &str) -> Option<Vec<PrintPart>> {
         let mut parts = Vec::new();
         let mut literal = String::new();
@@ -970,23 +1069,15 @@ impl Parser<'_> {
         }
         let token = self.bump();
         let text = &self.source[token.range().as_range()];
-        let mut value = String::new();
-        let inner = text
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .unwrap_or("");
-        let mut chars = inner.chars();
-        while let Some(ch) = chars.next() {
-            if ch == '\\' {
-                if let Some(escaped) = chars.next()
-                    && matches!(escaped, '"' | '\\')
-                {
-                    value.push(escaped);
-                }
-            } else {
-                value.push(ch);
-            }
-        }
+        // Keep multiline query strings while using the JSON escape decoder.
+        let normalized = text
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t");
+        let Ok(value) = serde_json::from_str::<String>(&normalized) else {
+            self.error_at_previous("invalid JSON string escape or Unicode sequence");
+            return None;
+        };
         Some((value, token.range()))
     }
 
@@ -1122,6 +1213,7 @@ fn is_reserved(name: &str) -> bool {
             | "not"
             | "true"
             | "false"
+            | "null"
             | "op"
             | "dialect"
             | "result_type"

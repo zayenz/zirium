@@ -14,6 +14,7 @@ use crate::{
 };
 
 pub mod lexer;
+mod literal;
 pub mod parser;
 mod render;
 
@@ -76,6 +77,7 @@ pub enum QueryOutput {
     Values(Vec<String>),
     Count(usize),
     Map(serde_json::Map<String, serde_json::Value>),
+    Array(Vec<serde_json::Value>),
     Json(String),
     Text(String),
 }
@@ -255,6 +257,17 @@ fn evaluate_pipeline(
     for stage in stages {
         budget.charge(output_size(&current).max(1))?;
         match stage {
+            parser::Stage::Literal { value, .. } => {
+                let value = literal::evaluate(value, document, budget, &mut 0)?;
+                if value_depth(&value) > parser::DEFAULT_NESTING_LIMIT {
+                    return Err(EvaluationError::new("JSON nesting limit exceeded"));
+                }
+                current = match value {
+                    serde_json::Value::Object(entries) => QueryOutput::Map(entries),
+                    serde_json::Value::Array(values) => QueryOutput::Array(values),
+                    _ => unreachable!("literal stages start with an object or array"),
+                };
+            }
             parser::Stage::Binding { name, .. } => {
                 budget.charge(output_size(&budget.bindings[name]).max(1))?;
                 current = budget.bindings[name].clone();
@@ -446,6 +459,7 @@ fn evaluate_pipeline(
                             | QueryOutput::Json(_)
                             | QueryOutput::Text(_)
                             | QueryOutput::Map(_)
+                            | QueryOutput::Array(_)
                     ) {
                         return Err(EvaluationError::new(
                             "fixpoint requires an operation or value stream",
@@ -520,7 +534,9 @@ fn evaluate_pipeline(
                 )?;
             }
             parser::Stage::Print { parts, .. } => {
-                emit(document, QueryOutput::Text(render::print(parts, budget)?))?;
+                let mut text = render::interpolate(parts, budget)?;
+                text.push('\n');
+                emit(document, QueryOutput::Text(text))?;
             }
             parser::Stage::Json { .. } => emit(
                 document,
@@ -570,6 +586,7 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Operations(selected) => selected.len(),
         QueryOutput::Values(values) => values.len(),
         QueryOutput::Map(values) => values.len(),
+        QueryOutput::Array(values) => values.len(),
         QueryOutput::Count(_) | QueryOutput::Json(_) | QueryOutput::Text(_) => 1,
     }
 }
@@ -585,18 +602,23 @@ fn value_depth(value: &serde_json::Value) -> usize {
 }
 
 // Bound nested aggregate contents as well as the outer map.
-fn output_size(output: &QueryOutput) -> usize {
-    fn value_size(value: &serde_json::Value) -> usize {
-        match value {
-            serde_json::Value::Object(entries) => {
-                entries.values().map(|value| 1 + value_size(value)).sum()
-            }
-            serde_json::Value::Array(values) => values.iter().map(value_size).sum(),
-            _ => 1,
+fn json_size(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(entries) => {
+            1 + entries
+                .values()
+                .map(|value| 1 + json_size(value))
+                .sum::<usize>()
         }
+        serde_json::Value::Array(values) => 1 + values.iter().map(json_size).sum::<usize>(),
+        _ => 1,
     }
+}
+
+fn output_size(output: &QueryOutput) -> usize {
     match output {
-        QueryOutput::Map(entries) => entries.values().map(|value| 1 + value_size(value)).sum(),
+        QueryOutput::Map(entries) => entries.values().map(|value| 1 + json_size(value)).sum(),
+        QueryOutput::Array(values) => 1 + values.iter().map(json_size).sum::<usize>(),
         _ => output_len(output),
     }
 }
@@ -824,6 +846,7 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
         ),
         QueryOutput::Values(values) => serde_json::json!(values),
         QueryOutput::Map(values) => serde_json::Value::Object(values.clone()),
+        QueryOutput::Array(values) => serde_json::Value::Array(values.clone()),
         QueryOutput::Count(count) => serde_json::json!(count),
         QueryOutput::Json(value) | QueryOutput::Text(value) => {
             serde_json::Value::String(value.clone())
