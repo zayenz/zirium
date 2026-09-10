@@ -1374,11 +1374,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             AttributeValue::Integer(v) | AttributeValue::Float(v) | AttributeValue::String(v) => {
                 self.sink.write_str(v)
             }
-            AttributeValue::Type(v) => {
-                self.sink.write_str("type<")?;
-                self.type_value(v)?;
-                self.sink.write_char('>')
-            }
+            AttributeValue::Type(v) => self.type_value(v),
             AttributeValue::Symbol(parts) => self
                 .sink
                 .write_str(&crate::semantic::format_symbol_path(parts, true)),

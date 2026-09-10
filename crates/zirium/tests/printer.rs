@@ -85,6 +85,20 @@ fn builtin_dense_arrays_print_canonically_and_reparse_typed() {
 }
 
 #[test]
+fn type_attributes_print_as_bare_mlir_types() {
+    let document = strict_document(
+        r#""vendor.type_holder"() {element = i32, signature = (f32) -> i1} : () -> ()"#,
+    );
+    let mut printed = String::new();
+    document.print(&mut printed, PrintLayout::Compact).unwrap();
+    assert_eq!(
+        printed,
+        r#""vendor.type_holder"() {element = i32, signature = (f32) -> i1} : () -> ()"#
+    );
+    assert!(document.structurally_eq(&strict_document(&printed)));
+}
+
+#[test]
 fn streams_to_fmt_and_io_sinks_deterministically() {
     let parsed = ParsedFile::parse(
         include_bytes!("../../../tests/corpus/mlir-22.1/generic-complete/valid.mlir").as_slice(),
