@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    io::{self, Read},
+    io::{self, Read, Write},
 };
 
 use zirium::{
@@ -22,7 +22,7 @@ fn main() {
 const HELP: &str = r#"Usage: zirium [OPTIONS] [QUERY] [INPUT ...]
        zirium [OPTIONS] -f PROGRAM [INPUT ...]
 
-Read MLIR from stdin when INPUT is omitted. An empty query prints the document.
+Read MLIR from stdin when INPUT is omitted or is -. An empty query prints the document.
 Input files are independent; files are never overwritten. Options may appear
 before or after QUERY. Use -- before paths beginning with a dash.
 
@@ -59,7 +59,7 @@ Reference: https://github.com/zayenz/zirium/blob/main/docs/query-language.md
 "#;
 
 fn run() -> Result<(), String> {
-    let mut arguments = env::args().skip(1);
+    let mut arguments = env::args_os().skip(1);
     let mut registry_paths = Vec::new();
     let mut presets = Vec::new();
     let mut strict = false;
@@ -68,33 +68,40 @@ fn run() -> Result<(), String> {
     let mut inline_query = None;
     let mut paths = Vec::new();
     while let Some(argument) = arguments.next() {
-        match argument.as_str() {
+        let option = argument.to_str().unwrap_or("");
+        match option {
             "-h" | "--help" => {
-                print!("{HELP}");
-                return Ok(());
+                return write_stdout([HELP]);
             }
             "--version" => {
-                println!("zirium {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
+                return write_stdout([format!("zirium {}\n", env!("CARGO_PKG_VERSION"))]);
             }
             "--list-presets" => {
-                for preset in DialectRegistry::preset_names() {
-                    println!("{preset}");
-                }
-                return Ok(());
+                return write_stdout(
+                    DialectRegistry::preset_names()
+                        .iter()
+                        .map(|name| format!("{name}\n")),
+                );
             }
-            "--preset" => presets.push(arguments.next().ok_or("missing name after --preset")?),
+            "--preset" => presets.push(
+                arguments
+                    .next()
+                    .ok_or("missing name after --preset")?
+                    .into_string()
+                    .map_err(|_| "preset name must be UTF-8")?,
+            ),
             "--strict" => strict = true,
             "--max-work" | "--max-items" => {
                 let value = arguments
                     .next()
-                    .ok_or_else(|| format!("missing number after {argument}"))?
-                    .parse::<usize>()
-                    .map_err(|_| format!("{argument} requires a positive integer"))?;
+                    .ok_or_else(|| format!("missing number after {option}"))?
+                    .to_str()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .ok_or_else(|| format!("{option} requires a positive integer"))?;
                 if value == 0 {
-                    return Err(format!("{argument} requires a positive integer"));
+                    return Err(format!("{option} requires a positive integer"));
                 }
-                if argument == "--max-work" {
+                if option == "--max-work" {
                     limits.max_work = value;
                 } else {
                     limits.max_items = value;
@@ -121,24 +128,33 @@ fn run() -> Result<(), String> {
             }
             "--" => {
                 if program_path.is_none() && inline_query.is_none() {
-                    inline_query = arguments.next();
+                    inline_query = arguments
+                        .next()
+                        .map(|query| query.into_string().map_err(|_| "query must be UTF-8"))
+                        .transpose()?;
                 }
                 paths.extend(arguments);
                 break;
             }
-            option if option.starts_with('-') => return Err(format!("unknown option: {option}")),
+            option if option.starts_with('-') && option != "-" => {
+                return Err(format!("unknown option: {option}"));
+            }
             _ => {
                 if program_path.is_some() || inline_query.is_some() {
                     paths.push(argument);
                 } else {
-                    inline_query = Some(argument);
+                    inline_query = Some(argument.into_string().map_err(|_| "query must be UTF-8")?);
                 }
             }
         }
     }
     let query_text = if let Some(path) = program_path {
-        fs::read_to_string(&path)
-            .map_err(|error| format!("could not read program file {path}: {error}"))?
+        fs::read_to_string(&path).map_err(|error| {
+            format!(
+                "could not read program file {}: {error}",
+                path.to_string_lossy()
+            )
+        })?
     } else {
         inline_query.unwrap_or_default()
     };
@@ -159,12 +175,18 @@ fn run() -> Result<(), String> {
     } else {
         let mut configs = Vec::new();
         for path in registry_paths {
-            let json = fs::read_to_string(&path)
-                .map_err(|error| format!("could not load registry {path}: {error}"))?;
-            configs.push(
-                RegistryConfig::from_json(&json)
-                    .map_err(|error| format!("could not load registry {path}: {error}"))?,
-            );
+            let json = fs::read_to_string(&path).map_err(|error| {
+                format!(
+                    "could not load registry {}: {error}",
+                    path.to_string_lossy()
+                )
+            })?;
+            configs.push(RegistryConfig::from_json(&json).map_err(|error| {
+                format!(
+                    "could not load registry {}: {error}",
+                    path.to_string_lossy()
+                )
+            })?);
         }
         if !presets.is_empty() {
             configs.push(RegistryConfig {
@@ -182,15 +204,19 @@ fn run() -> Result<(), String> {
     let inputs = if paths.is_empty() {
         vec![None]
     } else {
-        paths.into_iter().map(Some).collect()
+        paths
+            .into_iter()
+            .map(|path| (path != "-").then_some(path))
+            .collect()
     };
     let mut answers = Vec::new();
     for path in inputs {
         let (name, bytes) = match path {
             Some(path) => {
-                let bytes =
-                    fs::read(&path).map_err(|error| format!("could not read {path}: {error}"))?;
-                (path, bytes)
+                let bytes = fs::read(&path).map_err(|error| {
+                    format!("could not read {}: {error}", path.to_string_lossy())
+                })?;
+                (path.to_string_lossy().into_owned(), bytes)
             }
             None => {
                 let mut bytes = Vec::new();
@@ -330,11 +356,19 @@ fn run() -> Result<(), String> {
             })
             .map_err(|error| format!("could not evaluate {name}: {error}"))?;
     }
+    write_stdout(answers)
+}
+
+fn write_stdout(chunks: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Result<(), String> {
     let stdout = io::stdout();
     let mut output = stdout.lock();
-    use std::io::Write;
-    for answer in answers {
-        output.write_all(&answer).map_err(|e| e.to_string())?;
+    for chunk in chunks {
+        if let Err(error) = output.write_all(chunk.as_ref()) {
+            if error.kind() == io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(error.to_string());
+        }
     }
     Ok(())
 }

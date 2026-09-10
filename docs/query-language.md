@@ -29,7 +29,9 @@ input | emit
 ```
 
 The CLI accepts a query argument or a program file (`-f` / `--program-file`).
-With no arguments, it runs the empty program on standard input. Use an empty
+With no arguments, it runs the empty program on standard input. An input path
+of `-` also reads standard input, so `zirium 'count' -` works in a pipeline.
+Use an empty
 quoted argument to run the empty program on files:
 
 ```sh
@@ -52,6 +54,10 @@ scripts. Strict mode requires supported parsing; it does not enable full dialect
 verification or reconstruct operations implicit in custom assembly.
 
 Input files are independent documents. `input` never combines different files.
+Output is buffered until all inputs and statements succeed; a later error
+leaves stdout empty. Multiple results are concatenated, so multiple `json`
+outputs are separate JSON values rather than one combined JSON document.
+Closing an output pipe early (for example with `head`) exits quietly.
 The selected-fragment printer may change formatting even when printing the
 whole input. Use the library's original-output API to reproduce input bytes.
 

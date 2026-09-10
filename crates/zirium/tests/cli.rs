@@ -86,6 +86,58 @@ fn run_stdin(query: &str, input: &str) -> std::process::Output {
     run_stdin_with_options(&[], query, input)
 }
 
+#[test]
+fn explicit_stdin_path_works() {
+    let output = run_stdin_with_options(&["count"], "-", INPUT);
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(output.stdout, b"4\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_accepts_non_utf8_paths_and_closed_output_pipes() {
+    use std::os::{
+        fd::OwnedFd,
+        unix::{ffi::OsStringExt, net::UnixStream},
+    };
+
+    let path = std::env::temp_dir().join(std::ffi::OsString::from_vec(
+        format!("zirium-path-{}-", std::process::id())
+            .into_bytes()
+            .into_iter()
+            .chain([0xff])
+            .collect(),
+    ));
+    fs::write(&path, INPUT).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("count")
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(output.stdout, b"4\n");
+
+    for args in [
+        vec!["--help"],
+        vec!["--version"],
+        vec!["--list-presets"],
+        vec!["print(\"hello\")"],
+    ] {
+        let (reader, writer) = UnixStream::pair().unwrap();
+        drop(reader);
+        let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(OwnedFd::from(writer)))
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        assert!(output.stderr.is_empty());
+    }
+}
+
 fn run_stdin_with_options(options: &[&str], query: &str, input: &str) -> std::process::Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
         .args(options)
