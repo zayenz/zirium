@@ -64,6 +64,7 @@ class OperationShape:
     CALL_LIKE: OperationShape
     BINARY_OPERANDS: OperationShape
     OPTIONAL_TYPED_OPERANDS: OperationShape
+    ATTR_FIRST_OPTIONAL_TYPED_OPERANDS: OperationShape
     UNARY_OPERAND: OperationShape
     VARIADIC_OPERANDS: OperationShape
     LITERAL_ATTRIBUTE: OperationShape
