@@ -35,6 +35,15 @@ pub struct Expression {
 }
 
 impl Expression {
+    pub(crate) fn is_single_closure(&self) -> bool {
+        self.rest.is_empty()
+            && match self.first.as_slice() {
+                [Stage::Closure { .. }] => true,
+                [Stage::Group { expression, .. }] => expression.is_single_closure(),
+                _ => false,
+            }
+    }
+
     pub fn is_selection_only(&self) -> bool {
         self.first
             .iter()
@@ -62,6 +71,14 @@ pub enum Predicate {
     },
     Op {
         name: String,
+        range: TextRange,
+    },
+    Dialect {
+        name: String,
+        range: TextRange,
+    },
+    ResultType {
+        spelling: String,
         range: TextRange,
     },
     HasAttr {
@@ -96,6 +113,8 @@ impl Predicate {
         match self {
             Self::Bool { range, .. }
             | Self::Op { range, .. }
+            | Self::Dialect { range, .. }
+            | Self::ResultType { range, .. }
             | Self::HasAttr { range, .. }
             | Self::Attr { range, .. }
             | Self::Not { range, .. }
@@ -118,10 +137,15 @@ pub enum Stage {
     Closure {
         range: TextRange,
     },
+    Slice {
+        range: TextRange,
+    },
     Defs {
+        index: Option<usize>,
         range: TextRange,
     },
     Users {
+        index: Option<usize>,
         range: TextRange,
     },
     Parent {
@@ -142,6 +166,15 @@ pub enum Stage {
     },
     Attr {
         name: String,
+        range: TextRange,
+    },
+    Names {
+        range: TextRange,
+    },
+    ResultTypes {
+        range: TextRange,
+    },
+    OperandTypes {
         range: TextRange,
     },
     Group {
@@ -178,14 +211,18 @@ impl Stage {
             Self::Input { range }
             | Self::Filter { range, .. }
             | Self::Closure { range }
-            | Self::Defs { range }
-            | Self::Users { range }
+            | Self::Slice { range }
+            | Self::Defs { range, .. }
+            | Self::Users { range, .. }
             | Self::Parent { range }
             | Self::Children { range }
             | Self::Root { range, .. }
             | Self::Subtree { range }
             | Self::Unique { range }
             | Self::Attr { range, .. }
+            | Self::Names { range }
+            | Self::ResultTypes { range }
+            | Self::OperandTypes { range }
             | Self::Group { range, .. }
             | Self::Fixpoint { range, .. }
             | Self::SetAttr { range, .. }
@@ -364,8 +401,37 @@ impl Parser<'_> {
         Some(match name.as_str() {
             "input" => Stage::Input { range },
             "closure" => Stage::Closure { range },
-            "defs" => Stage::Defs { range },
-            "users" => Stage::Users { range },
+            "slice" => Stage::Slice { range },
+            "defs" | "users" => {
+                self.skip_trivia();
+                let index = if self.at(TokenKind::LParen) {
+                    self.bump();
+                    self.skip_trivia();
+                    if !self.at(TokenKind::Integer) {
+                        self.error("expected a non-negative operand or result index");
+                        return None;
+                    }
+                    let Ok(index) = self.current_text().parse::<usize>() else {
+                        self.error("operand or result index is too large");
+                        return None;
+                    };
+                    self.bump();
+                    self.expect(TokenKind::RParen, "expected `)` after index")?;
+                    Some(index)
+                } else {
+                    None
+                };
+                let range = if index.is_some() {
+                    self.span(start)
+                } else {
+                    range
+                };
+                if name == "defs" {
+                    Stage::Defs { index, range }
+                } else {
+                    Stage::Users { index, range }
+                }
+            }
             "parent" => Stage::Parent { range },
             "children" => Stage::Children { range },
             "subtree" => Stage::Subtree { range },
@@ -373,6 +439,9 @@ impl Parser<'_> {
             "count" => Stage::Count { range },
             "emit" => Stage::Emit { range },
             "json" => Stage::Json { range },
+            "names" => Stage::Names { range },
+            "result_types" => Stage::ResultTypes { range },
+            "operand_types" => Stage::OperandTypes { range },
             "filter" => {
                 self.expect(TokenKind::LParen, "expected `(` after filter")?;
                 let predicate = self.predicate(depth + 1)?;
@@ -532,6 +601,32 @@ impl Parser<'_> {
                     name,
                     range: self.span(start),
                 })
+            }
+            "dialect" | "result_type" => {
+                if depth >= self.nesting_limit {
+                    self.error("query nesting limit exceeded");
+                    return None;
+                }
+                self.expect(TokenKind::LParen, "expected `(` after predicate")?;
+                let (value, value_range) = self.string("expected a quoted name or type")?;
+                self.expect(TokenKind::RParen, "expected `)` after predicate argument")?;
+                if value.is_empty() {
+                    self.diagnostics.push(Diagnostic {
+                        message: "name or type must not be empty",
+                        range: value_range,
+                    });
+                }
+                if kind == "dialect" {
+                    Some(Predicate::Dialect {
+                        name: value,
+                        range: self.span(start),
+                    })
+                } else {
+                    Some(Predicate::ResultType {
+                        spelling: value,
+                        range: self.span(start),
+                    })
+                }
             }
             "has_attr" => {
                 if depth >= self.nesting_limit {

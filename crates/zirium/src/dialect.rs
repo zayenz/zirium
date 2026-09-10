@@ -700,7 +700,7 @@ impl DialectRegistry {
                     name.to_owned(),
                 ));
             }
-            if self.operation(name).is_some() || (name == "module" && self.module_alias) {
+            if self.custom_operation(name).is_some() {
                 return Err(DeclarativeRegistryError::RegisteredOperation(
                     name.to_owned(),
                 ));
@@ -797,10 +797,10 @@ impl DialectRegistry {
     }
 
     pub(crate) fn custom_operation(&self, spelling: &str) -> Option<&OperationDescriptor> {
-        self.operation(spelling).or_else(|| {
-            (spelling == "module" && self.module_alias)
-                .then(|| self.operation("builtin.module"))
-                .flatten()
+        self.operation(spelling).or_else(|| match spelling {
+            "module" if self.module_alias => self.operation("builtin.module"),
+            "return" => self.operation("func.return"),
+            _ => None,
         })
     }
 
@@ -923,7 +923,7 @@ fn validate_custom_operation_name(
             name.to_owned(),
         ));
     }
-    if registry.operation(name).is_some() || (name == "module" && registry.module_alias) {
+    if registry.custom_operation(name).is_some() {
         return Err(DeclarativeRegistryError::RegisteredOperation(
             name.to_owned(),
         ));
@@ -1620,7 +1620,11 @@ fn lower_no_results() -> Option<RegisteredLowering> {
 }
 
 fn lower_return(context: &RegisteredLoweringContext<'_>) -> Option<RegisteredLowering> {
-    let tail = context.spelling().split_once("func.return")?.1.trim();
+    let tail = context
+        .assembly_spelling()
+        .split_once(context.mnemonic())?
+        .1
+        .trim();
     let input = tail
         .rsplit_once(':')
         .map(|(_, types)| types.trim())

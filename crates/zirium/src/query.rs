@@ -1,12 +1,15 @@
 //! Composable operation-selection queries, editing, and output.
 
-use std::{collections::HashSet, fmt};
+use std::{
+    collections::{HashSet, VecDeque},
+    fmt,
+};
 
 use crate::{
     dialect::DialectRegistry,
     semantic::{
         AttributeSpec, AttributeValue, CfBrOp, CfCondBrOp, Document, FuncCallOp, OperationId,
-        Successor, UseSite, ValueId, ValueReference,
+        Successor, UseSite, ValueId, ValueReference, decode_mlir_string,
     },
 };
 
@@ -16,6 +19,52 @@ pub mod parser;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
     expression: parser::Expression,
+}
+
+/// Bounds evaluation work and the number of items in any one stream.
+/// Work counts stage inputs and dependency/subtree visits, not wall-clock time.
+#[derive(Clone, Copy, Debug)]
+pub struct EvaluationLimits {
+    pub max_work: usize,
+    pub max_items: usize,
+}
+
+impl Default for EvaluationLimits {
+    fn default() -> Self {
+        Self {
+            max_work: 10_000_000,
+            max_items: 1_000_000,
+        }
+    }
+}
+
+struct Budget {
+    remaining: usize,
+    max_items: usize,
+}
+
+impl Budget {
+    fn charge(&mut self, work: usize) -> Result<(), EvaluationError> {
+        self.remaining = self.remaining.checked_sub(work).ok_or_else(|| EvaluationError::new(
+            "query work limit exceeded; fixed points may need unique or a larger --max-work limit"
+        ))?;
+        Ok(())
+    }
+
+    fn check_items(&self, count: usize) -> Result<(), EvaluationError> {
+        if count > self.max_items {
+            return Err(EvaluationError::new(
+                "query stream size limit exceeded; use unique or a larger --max-items limit",
+            ));
+        }
+        Ok(())
+    }
+
+    fn collect<T>(&self, values: impl Iterator<Item = T>) -> Result<Vec<T>, EvaluationError> {
+        let values: Vec<_> = values.take(self.max_items.saturating_add(1)).collect();
+        self.check_items(values.len())?;
+        Ok(values)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,10 +153,31 @@ impl Query {
         &self,
         document: &mut Document,
         registry: &DialectRegistry,
+        emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+    ) -> Result<(), EvaluationError> {
+        self.evaluate_with_limits(document, registry, EvaluationLimits::default(), emit)
+    }
+
+    pub fn evaluate_with_limits(
+        &self,
+        document: &mut Document,
+        registry: &DialectRegistry,
+        limits: EvaluationLimits,
         mut emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
-        let input = QueryOutput::Operations(document.operations().collect());
-        let output = evaluate_expression(&self.expression, document, registry, input, &mut emit)?;
+        let mut budget = Budget {
+            remaining: limits.max_work,
+            max_items: limits.max_items,
+        };
+        let input = QueryOutput::Operations(budget.collect(document.operations())?);
+        let output = evaluate_expression(
+            &self.expression,
+            document,
+            registry,
+            input,
+            &mut emit,
+            &mut budget,
+        )?;
         if !self.expression.ends_with_emission() {
             emit(document, output)?;
         }
@@ -121,15 +191,24 @@ fn evaluate_expression(
     registry: &DialectRegistry,
     input: QueryOutput,
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+    budget: &mut Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     if expression.rest.is_empty() {
-        return evaluate_pipeline(&expression.first, document, registry, input, emit);
+        return evaluate_pipeline(&expression.first, document, registry, input, emit, budget);
     }
-    let first = evaluate_pipeline(&expression.first, document, registry, input.clone(), emit)?;
+    let first = evaluate_pipeline(
+        &expression.first,
+        document,
+        registry,
+        input.clone(),
+        emit,
+        budget,
+    )?;
     let mut selected = first;
     for (operator, stages) in &expression.rest {
-        let right = evaluate_pipeline(stages, document, registry, input.clone(), emit)?;
+        let right = evaluate_pipeline(stages, document, registry, input.clone(), emit, budget)?;
         selected = evaluate_set_operator(document, *operator, selected, right)?;
+        budget.check_items(output_len(&selected))?;
     }
     Ok(selected)
 }
@@ -140,12 +219,14 @@ fn evaluate_pipeline(
     registry: &DialectRegistry,
     input: QueryOutput,
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+    budget: &mut Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     let mut current = input;
     for stage in stages {
+        budget.charge(output_len(&current).max(1))?;
         match stage {
             parser::Stage::Input { .. } => {
-                current = QueryOutput::Operations(document.operations().collect())
+                current = QueryOutput::Operations(budget.collect(document.operations())?)
             }
             parser::Stage::Filter { predicate, .. } => {
                 let selected = operations_mut(&mut current, "filter")?;
@@ -153,23 +234,31 @@ fn evaluate_pipeline(
             }
             parser::Stage::Closure { .. } => {
                 let selected = take_operations(current, "closure")?;
-                current = QueryOutput::Operations(evaluate_closure(document, selected, registry)?);
+                current = QueryOutput::Operations(evaluate_closure(
+                    document, selected, registry, false, budget,
+                )?);
             }
-            parser::Stage::Defs { .. } => {
+            parser::Stage::Slice { .. } => {
+                let selected = take_operations(current, "slice")?;
+                current = QueryOutput::Operations(evaluate_slice(document, selected, budget)?);
+            }
+            parser::Stage::Defs { index, .. } => {
                 let selected = take_operations(current, "defs")?;
-                current = QueryOutput::Operations(evaluate_defs(document, &selected));
+                current =
+                    QueryOutput::Operations(evaluate_defs(document, &selected, *index, budget)?);
             }
-            parser::Stage::Users { .. } => {
+            parser::Stage::Users { index, .. } => {
                 let selected = take_operations(current, "users")?;
-                current = QueryOutput::Operations(evaluate_users(document, &selected));
+                current =
+                    QueryOutput::Operations(evaluate_users(document, &selected, *index, budget)?);
             }
             parser::Stage::Parent { .. } => {
                 let selected = take_operations(current, "parent")?;
-                current = QueryOutput::Operations(evaluate_parent(document, &selected));
+                current = QueryOutput::Operations(evaluate_parent(document, &selected, budget)?);
             }
             parser::Stage::Children { .. } => {
                 let selected = take_operations(current, "children")?;
-                current = QueryOutput::Operations(evaluate_children(document, &selected));
+                current = QueryOutput::Operations(evaluate_children(document, &selected, budget)?);
             }
             parser::Stage::Root { predicate, .. } => {
                 let selected = take_operations(current, "root")?;
@@ -179,7 +268,7 @@ fn evaluate_pipeline(
                 let selected = take_operations(current, "subtree")?;
                 let mut expanded = Vec::new();
                 for operation in selected {
-                    append_subtree(document, operation, &mut expanded);
+                    append_subtree(document, operation, &mut expanded, budget)?;
                 }
                 current = QueryOutput::Operations(expanded);
             }
@@ -190,26 +279,75 @@ fn evaluate_pipeline(
             },
             parser::Stage::Attr { name, .. } => {
                 let selected = take_operations(current, "attr")?;
-                current = QueryOutput::Values(evaluate_attr(document, &selected, name));
+                current = QueryOutput::Values(evaluate_attr(document, &selected, name)?);
+            }
+            parser::Stage::Names { .. } => {
+                let selected = take_operations(current, "names")?;
+                current = QueryOutput::Values(
+                    selected
+                        .iter()
+                        .filter_map(|&op| document.operation_name(op).map(str::to_owned))
+                        .collect(),
+                );
+            }
+            parser::Stage::ResultTypes { .. } => {
+                let selected = take_operations(current, "result_types")?;
+                current = QueryOutput::Values(
+                    budget.collect(
+                        selected
+                            .iter()
+                            .flat_map(|&op| document.result_types(op).unwrap_or(&[]))
+                            .filter_map(|&ty| document.type_spelling(ty).map(str::to_owned)),
+                    )?,
+                );
+            }
+            parser::Stage::OperandTypes { .. } => {
+                let selected = take_operations(current, "operand_types")?;
+                current = QueryOutput::Values(
+                    budget.collect(
+                        selected
+                            .iter()
+                            .flat_map(|&op| document.operands(op).unwrap_or(&[]))
+                            .filter_map(|&value| document.value_type(value).map(str::to_owned)),
+                    )?,
+                );
             }
             parser::Stage::Group { expression, .. } => {
-                current = evaluate_expression(expression, document, registry, current, emit)?;
+                current =
+                    evaluate_expression(expression, document, registry, current, emit, budget)?;
                 if matches!(current, QueryOutput::Count(_) | QueryOutput::Json(_)) {
                     return Ok(current);
                 }
             }
             parser::Stage::Fixpoint { expression, .. } => {
+                if expression.is_single_closure() {
+                    current = QueryOutput::Operations(evaluate_closure(
+                        document,
+                        take_operations(current, "closure")?,
+                        registry,
+                        true,
+                        budget,
+                    )?);
+                    continue;
+                }
                 // Brent's cycle detection keeps one checkpoint instead of storing
                 // every intermediate selection. Read-only bodies produce deterministic selections.
                 let mut checkpoint = current.clone();
                 let mut power = 1usize;
                 let mut distance = 0usize;
                 loop {
-                    let next =
-                        evaluate_expression(expression, document, registry, current.clone(), emit)?;
+                    let next = evaluate_expression(
+                        expression,
+                        document,
+                        registry,
+                        current.clone(),
+                        emit,
+                        budget,
+                    )?;
                     if matches!(next, QueryOutput::Count(_) | QueryOutput::Json(_)) {
                         unreachable!("parser checks fixpoint body");
                     }
+                    budget.charge(1)?;
                     if next == current {
                         break;
                     }
@@ -373,64 +511,95 @@ fn retain_unique<T: Clone + Eq + std::hash::Hash>(values: &mut Vec<T>) {
     values.retain(|value| seen.insert(value.clone()));
 }
 
-fn evaluate_defs(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
-    selected
-        .iter()
-        .flat_map(|&operation| document.operands(operation).unwrap_or(&[]))
-        .filter_map(|operand| match *operand {
-            ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => Some(operation),
-            ValueReference::Resolved(ValueId::BlockArgument { block, .. }) => document
-                .block(block)
-                .and_then(|block| document.region(block.parent_region()))
-                .map(|region| region.parent_operation()),
-            ValueReference::Invalid(_) => None,
-        })
-        .collect()
+fn evaluate_defs(
+    document: &Document,
+    selected: &[OperationId],
+    index: Option<usize>,
+    budget: &Budget,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    budget.collect(
+        selected
+            .iter()
+            .flat_map(|&operation| {
+                let operands = document.operands(operation).unwrap_or(&[]);
+                match index {
+                    Some(index) => operands.get(index).map(std::slice::from_ref).unwrap_or(&[]),
+                    None => operands,
+                }
+            })
+            .filter_map(|operand| match *operand {
+                ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => {
+                    Some(operation)
+                }
+                ValueReference::Resolved(ValueId::BlockArgument { block, .. }) => document
+                    .block(block)
+                    .and_then(|block| document.region(block.parent_region()))
+                    .map(|region| region.parent_operation()),
+                ValueReference::Invalid(_) => None,
+            }),
+    )
 }
 
-fn evaluate_users(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
-    selected
-        .iter()
-        .flat_map(|&operation| {
-            (0..document.result_types(operation).map_or(0, <[_]>::len) as u32).flat_map(
-                move |result| document.uses(ValueId::OperationResult { operation, result }),
-            )
-        })
-        .map(|site| match site {
-            UseSite::Operand { operation, .. } | UseSite::SuccessorArgument { operation, .. } => {
-                operation
-            }
-        })
-        .collect()
+fn evaluate_users(
+    document: &Document,
+    selected: &[OperationId],
+    index: Option<usize>,
+    budget: &Budget,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    budget.collect(
+        selected
+            .iter()
+            .flat_map(|&operation| {
+                let count = document.result_types(operation).map_or(0, <[_]>::len);
+                let results = match index {
+                    Some(index) if index < count => index..index + 1,
+                    Some(_) => 0..0,
+                    None => 0..count,
+                };
+                results.map(|result| result as u32).flat_map(move |result| {
+                    document.uses(ValueId::OperationResult { operation, result })
+                })
+            })
+            .map(|site| match site {
+                UseSite::Operand { operation, .. }
+                | UseSite::SuccessorArgument { operation, .. } => operation,
+            }),
+    )
 }
 
-fn evaluate_parent(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
-    selected
-        .iter()
-        .filter_map(|&operation| {
-            document
-                .operation(operation)?
-                .parent_block()
-                .and_then(|block| document.block(block))
-                .and_then(|block| document.region(block.parent_region()))
-                .map(|region| region.parent_operation())
-        })
-        .collect()
+fn evaluate_parent(
+    document: &Document,
+    selected: &[OperationId],
+    budget: &Budget,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    budget.collect(selected.iter().filter_map(|&operation| {
+        document
+            .operation(operation)?
+            .parent_block()
+            .and_then(|block| document.block(block))
+            .and_then(|block| document.region(block.parent_region()))
+            .map(|region| region.parent_operation())
+    }))
 }
 
-fn evaluate_children(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
-    selected
-        .iter()
-        .flat_map(|&operation| document.operation_regions(operation).unwrap_or(&[]))
-        .flat_map(|&region| {
-            document
-                .region(region)
-                .and_then(|region| region.blocks(document))
-                .unwrap_or(&[])
-        })
-        .flat_map(|&block| document.block_operations(block).unwrap_or(&[]))
-        .copied()
-        .collect()
+fn evaluate_children(
+    document: &Document,
+    selected: &[OperationId],
+    budget: &Budget,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    budget.collect(
+        selected
+            .iter()
+            .flat_map(|&operation| document.operation_regions(operation).unwrap_or(&[]))
+            .flat_map(|&region| {
+                document
+                    .region(region)
+                    .and_then(|region| region.blocks(document))
+                    .unwrap_or(&[])
+            })
+            .flat_map(|&block| document.block_operations(block).unwrap_or(&[]))
+            .copied(),
+    )
 }
 
 fn evaluate_root(
@@ -462,20 +631,20 @@ fn operation_parent(document: &Document, operation: OperationId) -> Option<Opera
         .map(|region| region.parent_operation())
 }
 
-fn evaluate_attr(document: &Document, selected: &[OperationId], name: &str) -> Vec<String> {
-    selected
-        .iter()
-        .filter_map(|&operation| {
-            let attribute = document.attribute_id(operation, name)?;
-            match document.attribute_value(attribute)? {
-                AttributeValue::String(spelling) => decode_mlir_string(spelling),
-                AttributeValue::Symbol(path) => Some(path.join("::")),
-                _ => document
-                    .attribute_spelling_value(attribute)
-                    .map(str::to_owned),
-            }
+fn evaluate_attr(
+    document: &Document,
+    selected: &[OperationId],
+    name: &str,
+) -> Result<Vec<String>, EvaluationError> {
+    selected.iter().filter_map(|&operation| {
+        let attribute = document.attribute_id(operation, name)?;
+        Some(match document.attribute_value(attribute)? {
+            AttributeValue::String(spelling) => decode_mlir_string(spelling).ok_or_else(||
+                EvaluationError::new(format!("attribute `{name}` cannot be decoded as UTF-8; use json to inspect its escaped spelling"))),
+            AttributeValue::Symbol(path) => Ok(path.join("::")),
+            _ => Ok(document.attribute_spelling_value(attribute)?.to_owned()),
         })
-        .collect()
+    }).collect()
 }
 
 fn output_json(document: &Document, output: &QueryOutput) -> Result<String, EvaluationError> {
@@ -498,6 +667,10 @@ fn output_json(document: &Document, output: &QueryOutput) -> Result<String, Eval
                     serde_json::json!({
                         "name": document.operation_name(operation),
                         "attributes": attributes,
+                        "operand_types": document.operands(operation).unwrap_or(&[]).iter()
+                            .map(|&value| document.value_type(value)).collect::<Vec<_>>(),
+                        "result_types": document.result_types(operation).unwrap_or(&[]).iter()
+                            .map(|&ty| document.type_spelling(ty)).collect::<Vec<_>>(),
                     })
                 })
                 .collect(),
@@ -518,6 +691,10 @@ fn evaluate_predicate(
     match predicate {
         parser::Predicate::Bool { value, .. } => *value,
         parser::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
+        parser::Predicate::Dialect { name, .. } => document.operation_name(operation)
+            .and_then(|op| op.split_once('.')).is_some_and(|(dialect, _)| dialect == name),
+        parser::Predicate::ResultType { spelling, .. } => document.result_types(operation).unwrap_or(&[])
+            .iter().any(|&ty| document.type_spelling(ty) == Some(spelling)),
         parser::Predicate::HasAttr { name, .. } => document
             .attribute_entries(operation)
             .is_some_and(|mut entries| entries.any(|(attribute, _)| attribute == name)),
@@ -533,39 +710,6 @@ fn evaluate_predicate(
     }
 }
 
-fn decode_mlir_string(spelling: &str) -> Option<String> {
-    let inner = spelling.strip_prefix('"')?.strip_suffix('"')?;
-    let bytes = inner.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut cursor = 0;
-    while cursor < bytes.len() {
-        if bytes[cursor] != b'\\' {
-            decoded.push(bytes[cursor]);
-            cursor += 1;
-            continue;
-        }
-        let escaped = *bytes.get(cursor + 1)?;
-        if matches!(escaped, b'\\' | b'"') {
-            decoded.push(escaped);
-            cursor += 2;
-        } else {
-            let low = *bytes.get(cursor + 2)?;
-            decoded.push((hex_digit(escaped)? << 4) | hex_digit(low)?);
-            cursor += 3;
-        }
-    }
-    String::from_utf8(decoded).ok()
-}
-
-fn hex_digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
 fn quote_mlir_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
@@ -576,13 +720,79 @@ fn edit_error(error: impl fmt::Display) -> EvaluationError {
     }
 }
 
+#[derive(Default)]
+struct ClosureSelection {
+    selected: HashSet<OperationId>,
+    pending: VecDeque<OperationId>,
+    // A selected operation need not have had its subtree retained yet.
+    expanded_subtrees: HashSet<OperationId>,
+}
+
+impl ClosureSelection {
+    fn insert(&mut self, operation: OperationId, budget: &Budget) -> Result<(), EvaluationError> {
+        if self.selected.insert(operation) {
+            budget.check_items(self.selected.len())?;
+            self.pending.push_back(operation);
+        }
+        Ok(())
+    }
+}
+
+// SSA-only traversal: block arguments are boundaries, and regions/callees are
+// not expanded implicitly. This is a structural slice, not a standalone program.
+fn evaluate_slice(
+    document: &Document,
+    seeds: Vec<OperationId>,
+    budget: &mut Budget,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    let mut selection = ClosureSelection::default();
+    for operation in seeds {
+        selection.insert(operation, budget)?;
+    }
+    while let Some(operation) = selection.pending.pop_front() {
+        budget.charge(1)?;
+        if document.operation_is_unparsed(operation) == Some(true) {
+            return Err(EvaluationError::new(
+                "slice requires parsed SSA operands; load the appropriate registry",
+            ));
+        }
+        budget.charge(document.operands(operation).unwrap_or(&[]).len())?;
+        for operand in document.operands(operation).unwrap_or(&[]) {
+            match *operand {
+                ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => {
+                    selection.insert(operation, budget)?
+                }
+                ValueReference::Resolved(ValueId::BlockArgument { .. }) => {}
+                ValueReference::Invalid(_) => {
+                    return Err(EvaluationError::new(
+                        "slice encountered an invalid SSA operand",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(source_ordered(document, selection.selected))
+}
+
 fn evaluate_closure(
     document: &Document,
     seeds: Vec<OperationId>,
     registry: &DialectRegistry,
+    transitive: bool,
+    budget: &mut Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
-    let mut selected = seeds.iter().copied().collect::<HashSet<_>>();
+    let mut selection = ClosureSelection::default();
     for operation in seeds {
+        selection.insert(operation, budget)?;
+    }
+    let seed_count = selection.pending.len();
+    let mut visited = 0;
+    while transitive || visited < seed_count {
+        let Some(operation) = selection.pending.pop_front() else {
+            break;
+        };
+        budget.charge(1)?;
+        visited += 1;
         let name = document
             .operation_name(operation)
             .unwrap_or("<invalid operation>");
@@ -613,19 +823,19 @@ fn evaluate_closure(
                             "closure could not resolve func.call callee `{callee}` in an enclosing symbol table"
                         ),
                     })?;
-            retain_subtree(document, target, &mut selected);
+            retain_subtree(document, target, &mut selection, budget)?;
         }
         if let Some(branch) = CfBrOp::cast(document, operation) {
             let successor = branch.successor().ok_or_else(|| EvaluationError {
                 message: "closure encountered cf.br without a successor".to_owned(),
             })?;
-            retain_successor_region(document, successor, name, &mut selected)?;
+            retain_successor_region(document, successor, name, &mut selection, budget)?;
         } else if let Some(branch) = CfCondBrOp::cast(document, operation) {
             let successors = branch.successors().ok_or_else(|| EvaluationError {
                 message: "closure encountered cf.cond_br without successors".to_owned(),
             })?;
             for &successor in successors {
-                retain_successor_region(document, successor, name, &mut selected)?;
+                retain_successor_region(document, successor, name, &mut selection, budget)?;
             }
         }
         if !document.successors(operation).unwrap_or(&[]).is_empty()
@@ -641,6 +851,7 @@ fn evaluate_closure(
                 message: format!("closure does not yet support symbol references on `{name}`"),
             });
         }
+        budget.charge(document.operands(operation).unwrap_or(&[]).len())?;
         for operand in document.operands(operation).unwrap_or(&[]) {
             match *operand {
                 ValueReference::Invalid(_) => {
@@ -649,7 +860,7 @@ fn evaluate_closure(
                     });
                 }
                 ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => {
-                    selected.insert(operation);
+                    selection.insert(operation, budget)?;
                 }
                 ValueReference::Resolved(ValueId::BlockArgument { block, .. }) => {
                     let owner = document
@@ -661,14 +872,14 @@ fn evaluate_closure(
                                     "closure could not resolve the owning scope for a block argument on `{name}`"
                                 ),
                             })?;
-                    retain_subtree(document, owner, &mut selected);
+                    retain_subtree(document, owner, &mut selection, budget)?;
                 }
             }
         }
     }
     Ok(document
         .operations()
-        .filter(|operation| selected.contains(operation))
+        .filter(|operation| selection.selected.contains(operation))
         .collect())
 }
 
@@ -676,7 +887,8 @@ fn retain_successor_region(
     document: &Document,
     successor: Successor,
     operation_name: &str,
-    selected: &mut HashSet<OperationId>,
+    selection: &mut ClosureSelection,
+    budget: &mut Budget,
 ) -> Result<(), EvaluationError> {
     let owner = document
         .block(successor.block())
@@ -687,18 +899,23 @@ fn retain_successor_region(
                 "closure encountered an invalid successor target on `{operation_name}`"
             ),
         })?;
-    retain_subtree(document, owner, selected);
+    retain_subtree(document, owner, selection, budget)?;
     Ok(())
 }
 
 fn retain_subtree(
     document: &Document,
     operation: OperationId,
-    selected: &mut HashSet<OperationId>,
-) {
+    selection: &mut ClosureSelection,
+    budget: &mut Budget,
+) -> Result<(), EvaluationError> {
     let mut pending = vec![operation];
     while let Some(operation) = pending.pop() {
-        selected.insert(operation);
+        if !selection.expanded_subtrees.insert(operation) {
+            continue;
+        }
+        budget.charge(1)?;
+        selection.insert(operation, budget)?;
         for &region in document.operation_regions(operation).unwrap_or(&[]) {
             for &block in document
                 .region(region)
@@ -709,11 +926,19 @@ fn retain_subtree(
             }
         }
     }
+    Ok(())
 }
 
-fn append_subtree(document: &Document, operation: OperationId, selected: &mut Vec<OperationId>) {
+fn append_subtree(
+    document: &Document,
+    operation: OperationId,
+    selected: &mut Vec<OperationId>,
+    budget: &mut Budget,
+) -> Result<(), EvaluationError> {
     let mut pending = vec![operation];
     while let Some(operation) = pending.pop() {
+        budget.charge(1)?;
+        budget.check_items(selected.len().saturating_add(1))?;
         selected.push(operation);
         let children = document
             .operation_regions(operation)
@@ -730,4 +955,5 @@ fn append_subtree(document: &Document, operation: OperationId, selected: &mut Ve
             .collect::<Vec<_>>();
         pending.extend(children.into_iter().rev());
     }
+    Ok(())
 }

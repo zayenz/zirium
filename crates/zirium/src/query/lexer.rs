@@ -3,6 +3,7 @@ use crate::source::TextRange;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     Identifier,
+    Integer,
     String,
     LParen,
     RParen,
@@ -122,6 +123,13 @@ pub fn lex(source: &str) -> Lexed<'_> {
                     position += 1;
                 }
                 TokenKind::Identifier
+            }
+            b'0'..=b'9' => {
+                position += 1;
+                while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+                    position += 1;
+                }
+                TokenKind::Integer
             }
             b'(' => {
                 position += 1;

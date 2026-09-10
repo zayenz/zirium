@@ -450,7 +450,7 @@ impl Parser<'_> {
             && self.nth_nontrivia(1) == Some(TokenKind::Equal)
     }
 
-    pub(super) fn inherent_attribute(&mut self) -> Result<bool, CompactError> {
+    pub(super) fn inherent_attribute(&mut self, paired: bool) -> Result<bool, CompactError> {
         let attribute = self.builder.start();
         let mut good = self.at_identifier() || self.at(TokenKind::String);
         if good {
@@ -461,6 +461,30 @@ impl Parser<'_> {
         self.trivia()?;
         good &= self.expect(TokenKind::Equal)?;
         self.trivia()?;
+        if paired {
+            // StableHLO dimension clauses are a pair, not just the first array.
+            // Keep their complete custom spelling as one opaque value.
+            let value = self.builder.start();
+            good &= self.at(TokenKind::LBracket);
+            good &= self.attribute_value()?;
+            self.trivia()?;
+            if matches!(self.current(), TokenKind::BareIdentifier | TokenKind::X)
+                && self.current_text() == "x"
+            {
+                self.bump()?;
+            } else {
+                self.diagnostic();
+                good = false;
+            }
+            self.trivia()?;
+            good &= self.at(TokenKind::LBracket);
+            good &= self.attribute_value()?;
+            self.builder
+                .complete_with_error(value, SyntaxKind::OpaqueAttribute, !good)?;
+            self.builder
+                .complete_with_error(attribute, SyntaxKind::Attribute, !good)?;
+            return Ok(good);
+        }
         good &= if self.at(TokenKind::BareIdentifier)
             && !matches!(
                 self.current_text(),

@@ -6,8 +6,89 @@ use std::{
 
 const INPUT: &str = "module {\n  // Initial value.\n  %c = arith.constant 7 : i32\n  // Double it.\n  %sum = arith.addi %c, %c : i32 // selected\n  \"example.observe\"(%sum) : (i32) -> ()\n}\n";
 
+#[test]
+fn stablehlo_decoder_supports_complete_dimension_queries_and_edits() {
+    let input = include_str!("../../../examples/cli/stablelm-decode.mlir");
+    for (query, expected) in [
+        (
+            r#"filter(op("stablehlo.dot_general")) | attr("contracting_dims") | unique"#,
+            "[0] x [1]\n[2] x [2]\n[2] x [0]\n",
+        ),
+        (r#"filter(op("func.return")) | count"#, "1\n"),
+        (
+            r#"filter(op("stablehlo.dot_general")) | fixpoint(closure) | count"#,
+            "236\n",
+        ),
+        (
+            r#"filter(op("stablehlo.dot_general")) | set_attr("review.tag", "matmul") | count"#,
+            "19\n",
+        ),
+    ] {
+        let output = run_stdin_with_registry("stablehlo.json", query, input);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
+        assert!(output.stderr.is_empty());
+    }
+    let edited = run_stdin_with_registry(
+        "stablehlo.json",
+        r#"filter(op("stablehlo.dot_general")) | set_attr("review.tag", "matmul") | input"#,
+        input,
+    );
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    let reparsed = run_stdin_with_registry(
+        "stablehlo.json",
+        r#"filter(has_attr("review.tag")) | attr("contracting_dims") | unique"#,
+        &String::from_utf8(edited.stdout).unwrap(),
+    );
+    assert!(
+        reparsed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reparsed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(reparsed.stdout).unwrap(),
+        "[[0], [1]]\n[[2], [2]]\n[[2], [0]]\n"
+    );
+}
+
+#[test]
+fn byte_string_projection_reports_failure_without_partial_output() {
+    let output = run_stdin(
+        r#"emit | attr("tag") | count"#,
+        r#"module { "vendor.thing"() {tag = "\FF"} : () -> () }"#,
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("UTF-8"));
+}
+
+#[test]
+fn recovery_warns_when_semantic_queries_may_be_incomplete() {
+    let output = run_stdin("count", "module { %x = vendor.thing : i32 }");
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"2\n");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("incomplete"));
+}
+
 fn run_stdin(query: &str, input: &str) -> std::process::Output {
+    run_stdin_with_options(&[], query, input)
+}
+
+fn run_stdin_with_options(options: &[&str], query: &str, input: &str) -> std::process::Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(options)
         .arg(query)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -18,6 +99,191 @@ fn run_stdin(query: &str, input: &str) -> std::process::Output {
         assert_eq!(error.kind(), ErrorKind::BrokenPipe, "{error}");
     }
     child.wait_with_output().unwrap()
+}
+
+#[test]
+fn fixed_points_bound_growth_and_keep_explicit_iteration_emissions() {
+    let input = "module { %c = arith.constant 1 : i32 }";
+    for (options, message) in [
+        (["--max-work", "1000"], "work limit"),
+        (["--max-items", "3"], "stream size limit"),
+    ] {
+        let output = run_stdin_with_options(&options, "emit | fixpoint(subtree) | count", input);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+    }
+    let output = run_stdin("fixpoint(subtree | unique) | count", input);
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"2\n");
+
+    let input = "module { %c = arith.constant 1 : i32 %a = arith.addi %c, %c : i32 %b = arith.addi %a, %c : i32 }";
+    let output = run_stdin(
+        r#"filter(op("arith.addi")) | fixpoint(closure | json) | count"#,
+        input,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // First expansion and the final unchanged iteration both emit all three ops.
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .matches("\"name\":")
+            .count(),
+        6
+    );
+    for query in [
+        r#"filter(op("arith.addi")) | fixpoint(closure) | count"#,
+        r#"filter(op("arith.addi")) | fixpoint(closure | unique) | count"#,
+    ] {
+        let output = run_stdin(query, input);
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"3\n");
+    }
+}
+
+#[test]
+fn worklist_closure_checks_new_dependencies_and_handles_deep_chains() {
+    let unknown = r#"module { %c = "vendor.constant"() : () -> i32 %a = arith.addi %c, %c : i32 }"#;
+    let output = run_stdin(
+        r#"filter(op("arith.addi")) | fixpoint(closure) | count"#,
+        unknown,
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("vendor.constant"));
+
+    let mut input = String::from("module { %v0 = arith.constant 1 : i32\n");
+    for i in 1..2000 {
+        input.push_str(&format!("%v{i} = arith.addi %v{}, %v0 : i32\n", i - 1));
+    }
+    input.push_str("%v2000 = \"arith.addi\"(%v1999, %v0) {seed = \"yes\"} : (i32, i32) -> i32\n");
+    input.push('}');
+    let output = run_stdin_with_options(
+        &["--max-work", "100000"],
+        r#"filter(has_attr("seed")) | fixpoint(closure) | count"#,
+        &input,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"2001\n");
+}
+
+#[test]
+fn cli_presets_strict_mode_and_inspection_work_together() {
+    let input = "module { %c = stablehlo.constant dense<1.0> : tensor<2xf32> %a = stablehlo.add %c, %c : tensor<2xf32> }";
+    let output = run_stdin_with_options(&["--strict"], "count", input);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("incomplete"));
+    for (query, expected) in [
+        (
+            r#"filter(dialect("stablehlo") and result_type("tensor<2xf32>")) | names"#,
+            "stablehlo.constant\nstablehlo.add\n",
+        ),
+        (
+            r#"filter(op("stablehlo.add")) | operand_types"#,
+            "tensor<2xf32>\ntensor<2xf32>\n",
+        ),
+        (
+            r#"filter(dialect("stablehlo")) | result_types | unique"#,
+            "tensor<2xf32>\n",
+        ),
+    ] {
+        let output = run_stdin_with_options(&["--preset", "stablehlo", "--strict"], query, input);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+    let help = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--preset"));
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["count", "--strict", "--preset", "stablehlo"])
+        .arg(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/cli/stablelm-decode.mlir"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"237\n");
+}
+
+#[test]
+fn indexed_navigation_and_ssa_slices_isolate_one_return_path() {
+    let input = r#"module {
+      func.func @paths(%arg: i32) -> (i32, i32) {
+        %c = arith.constant 1 : i32
+        %left = arith.addi %arg, %c : i32
+        %right = "arith.muli"(%c, %c) : (i32, i32) -> i32
+        return %left, %right : i32, i32
+      }
+    }"#;
+    for (query, expected) in [
+        (
+            r#"filter(op("func.return")) | defs(0) | slice | names"#,
+            "arith.constant\narith.addi\n",
+        ),
+        (
+            r#"filter(op("func.return")) | defs(1) | slice | names"#,
+            "arith.constant\narith.muli\n",
+        ),
+        (r#"filter(op("func.return")) | defs(2) | count"#, "0\n"),
+        (
+            r#"filter(op("arith.addi")) | defs(0) | names"#,
+            "func.func\n",
+        ),
+    ] {
+        let output = run_stdin(query, input);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
+    }
+    let input = r#"module {
+      %a, %b = "test.split"() : () -> (i32, i32)
+      "test.left"(%a) : (i32) -> ()
+      "test.right"(%b, %b) : (i32, i32) -> ()
+    }"#;
+    for (index, expected) in [(0, "test.left\n"), (1, "test.right\ntest.right\n"), (2, "")] {
+        let output = run_stdin(
+            &format!("filter(op(\"test.split\")) | users({index}) | names"),
+            input,
+        );
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+    for query in [
+        "defs(-1)",
+        "users(9999999999999999999999999999999)",
+        "defs()",
+    ] {
+        assert!(!run_stdin(query, input).status.success(), "{query}");
+    }
 }
 
 fn run_stdin_with_registry(registry: &str, query: &str, input: &str) -> std::process::Output {

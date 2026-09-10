@@ -23,6 +23,11 @@ Registries containing the built-in `builtin.module` grammar accept `module` as
 its shorthand, including named and nested modules. The empty registry does not
 enable that grammar.
 
+Registries containing `func.return` also accept `return` shorthand. Return type
+lists may be parenthesized or comma-separated without parentheses. These names
+are reserved against conflicting configured shapes and formats when the
+corresponding built-in grammar is present.
+
 ## Use a registry in Python
 
 Pass the registry when parsing:

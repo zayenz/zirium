@@ -53,40 +53,51 @@ width and depth are more useful than a pass/fail deadline.
 
 ## Recorded measurements
 
-Measured on Apple M1 Max, macOS arm64, rustc 1.98.1, using the release command
-above and the query implementation in `ad1d3c7`. No concurrent build was
-running. Values below are median microseconds per evaluation.
+Measured on Apple M1 Max, macOS arm64, rustc 1.98.1, on 2026-09-10 after
+the query-review fixes to `d0c9705`. No concurrent build or test was running.
+Values below are median microseconds per evaluation.
 
 | Case | 113 operations | 897 operations | 7,169 operations |
 | --- | ---: | ---: | ---: |
-| Direct name scan | 0.44 | 3.52 | 31.57 |
-| Count | 0.62 | 2.82 | 21.61 |
-| Name filter | 1.39 | 9.41 | 71.06 |
-| Boolean filter | 3.78 | 29.05 | 227.09 |
-| Users | 14.11 | 109.80 | 880.43 |
-| Union of navigations | 32.84 | 247.10 | 1,985.23 |
-| Root and filter | 17.71 | 135.82 | 1,102.11 |
-| One closure step | 9.37 | 73.39 | 584.65 |
-| Fixed-point closure | 50.42 | 390.47 | 3,121.13 |
-| Emit, users, count | 8.33 | 64.18 | 496.60 |
+| Direct name scan | 0.42 | 3.31 | 31.40 |
+| Count | 0.60 | 2.58 | 20.34 |
+| Name filter | 1.48 | 9.67 | 74.95 |
+| Boolean filter | 4.04 | 29.62 | 235.00 |
+| Users | 4.11 | 30.04 | 233.74 |
+| Union of navigations | 16.30 | 119.04 | 942.29 |
+| Subtree and filter | 6.28 | 45.48 | 356.16 |
+| One closure step | 11.02 | 86.26 | 680.16 |
+| Fixed-point closure | 20.78 | 160.73 | 1,297.54 |
+| Emit, users, count | 3.36 | 24.39 | 189.95 |
 
-Query parsing medians ranged from 0.14 to 1.52 microseconds. The name-filter
-pipeline cost about 2.3 times the direct scan at the largest width, including
-selection construction and scalar emission. Width scaling was approximately
-linear for these cases; navigation and set composition cost more than a scan.
+The name-filter pipeline cost about 2.4 times the direct scan at the largest
+width, including selection construction and scalar emission. Width scaling
+was approximately linear for these cases. `users` counts use sites, including
+the first addition's two uses of its constant; its expected count is
+`width * (depth + 1)`.
 
-Deep dependency slices show a different limit:
+Deep dependency slices now use a worklist:
 
 | Additions in one chain | Total operations | Fixed-point closure, median ms |
 | ---: | ---: | ---: |
-| 16 | 20 | 0.035 |
-| 128 | 132 | 1.725 |
-| 1,024 | 1,028 | 108.059 |
+| 16 | 20 | 0.0046 |
+| 128 | 132 | 0.0316 |
+| 1,024 | 1,028 | 0.2440 |
 
-Each fixed-point iteration reapplies the query to the entire current selection.
-Closure also scans document order when forming its result. On a chain, the
-selection grows one dependency step at a time, so this repeats increasing work
-and produces approximately quadratic growth. Deep slices were therefore
-substantially more expensive than shallow ones in this run. Use these depth
-cases when evaluating optimizations, and check that fixed-point semantics, error
-handling, and per-iteration emissions still hold.
+Before the worklist change, the same 1,024-addition case took 117.29 ms in the
+review run: repeated whole-selection evaluation produced approximately quadratic
+growth. Pure `fixpoint(closure)` now visits each dependency once and forms the
+source-ordered result once. Scope retention also avoids revisiting subtrees
+already expanded during that evaluation. One closure step has a small additional
+bookkeeping cost; in the 7,169-operation case it increased from 614 to 680 µs.
+
+Arbitrary fixed points, including `fixpoint(closure | emit)`, still execute each
+iteration to preserve query and emission semantics. Those queries can remain
+quadratic on a deep chain. Evaluation work and stream-size limits prevent
+unbounded duplicate growth; see the [language reference](../query-language.md).
+
+The [CLI stress harness](../../python/benchmarks/query_language_review.py) includes
+process startup, parsing, lowering, and printing/counting. With one warmup and
+three measured subprocess runs, its 8,192-addition closure fell from 7.39 seconds
+to 50.24 ms. Counting the same input took 47.83 ms. These end-to-end numbers
+should not be compared directly with evaluator-only timings.

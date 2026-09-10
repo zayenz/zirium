@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Preserve both sides of StableHLO dot dimension clauses and accept `return`
+  shorthand plus unparenthesized multi-operand return type lists.
+- Warn when CLI recovery leaves semantic information incomplete; add `--strict`,
+  repeatable `--preset`, `--list-presets`, `--help`, and `--version`. Options may
+  also follow the query. Read input files one at a time while retaining atomic
+  stdout across the whole invocation.
+- Bound query work and stream size with configurable evaluation limits. Use a
+  worklist for `fixpoint(closure)` and avoid repeated retained-subtree traversal.
+  Queries emitting each iteration retain their step-by-step behavior.
+- Reject undecodable attribute projections instead of silently dropping values;
+  share string decoding with the semantic API.
+- Add `names`, `operand_types`, `result_types`, `dialect`, and `result_type` for
+  inspection, and include type arrays in operation JSON. Add indexed `defs` and
+  `users`, plus SSA-only `slice` that stops at block arguments.
+- Correct the query profiling fixture's expected use-site count and document
+  recovery, compact reductions, slicing, and fixed-point limits.
+
 ## 0.0.12
 
 Zirium 0.0.12 expands the registry catalog and makes configured coverage

@@ -38,7 +38,7 @@ fn cases(width: usize, depth: usize) -> Vec<Case> {
         Case {
             name: "users",
             source: r#"filter(op("arith.constant")) | users | count"#,
-            expected: width * depth,
+            expected: width * (depth + 1),
         },
         Case {
             name: "union",

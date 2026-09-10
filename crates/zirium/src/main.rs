@@ -4,11 +4,11 @@ use std::{
 };
 
 use zirium::{
-    dialect::DialectRegistry,
+    dialect::{DialectRegistry, RegistryConfig},
     parser::ParseDiagnosticKind,
     parser::ParsedFile,
     printer::PrintLayout,
-    query::{EvaluationError, Query, QueryOutput},
+    query::{EvaluationError, EvaluationLimits, Query, QueryOutput},
     semantic::{LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention},
 };
 
@@ -19,14 +19,81 @@ fn main() {
     }
 }
 
+const HELP: &str = r#"Usage: zirium [OPTIONS] [QUERY] [INPUT ...]
+       zirium [OPTIONS] -f PROGRAM [INPUT ...]
+
+Read MLIR from stdin when INPUT is omitted. An empty query prints the document.
+Input files are independent; files are never overwritten. Options may appear
+before or after QUERY. Use -- before paths beginning with a dash.
+
+Options:
+  -h, --help              Show this help
+  --version               Show the version
+  --preset NAME           Load a bundled dialect preset (repeatable)
+  --list-presets          List bundled presets
+  --registry FILE         Load a JSON registry (repeatable; combines with presets)
+  -f, --program-file FILE Read the query from a file instead of an argument
+  --strict                Reject incomplete parsing instead of warning
+  --max-work N            Evaluation work limit (default 10000000)
+  --max-items N           Maximum items per stream (default 1000000)
+
+Examples:
+  zirium 'filter(op("arith.addi")) | users | unique | count' input.mlir
+  zirium --preset stablehlo --strict 'filter(op("stablehlo.dot_general")) | json' model.mlir
+  zirium -f analysis.zirium model.mlir
+
+Stages: input, filter(predicate), defs, defs(index), users, users(index), parent,
+children, root(predicate), subtree, closure, slice, fixpoint(query), unique, attr("name"), names, result_types,
+operand_types, set_attr("name", "value"), remove_attr("name"), emit, json, count.
+Combine selections with union, intersect, except. Group them before counting.
+Navigation preserves duplicates; use unique to count distinct operations.
+Predicates: true, false, op("name"), dialect("name"), result_type("type"),
+has_attr("name"), string_attr_eq("name", "value"); combine with not, and, or.
+Reference: https://github.com/zayenz/zirium/blob/main/docs/query-language.md
+"#;
+
 fn run() -> Result<(), String> {
     let mut arguments = env::args().skip(1);
     let mut registry_paths = Vec::new();
+    let mut presets = Vec::new();
+    let mut strict = false;
+    let mut limits = EvaluationLimits::default();
     let mut program_path = None;
     let mut inline_query = None;
     let mut paths = Vec::new();
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
+            "-h" | "--help" => {
+                print!("{HELP}");
+                return Ok(());
+            }
+            "--version" => {
+                println!("zirium {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "--list-presets" => {
+                for preset in DialectRegistry::preset_names() {
+                    println!("{preset}");
+                }
+                return Ok(());
+            }
+            "--preset" => presets.push(arguments.next().ok_or("missing name after --preset")?),
+            "--strict" => strict = true,
+            "--max-work" | "--max-items" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| format!("missing number after {argument}"))?
+                    .parse::<usize>()
+                    .map_err(|_| format!("{argument} requires a positive integer"))?;
+                if value == 0 {
+                    return Err(format!("{argument} requires a positive integer"));
+                }
+                if argument == "--max-work" {
+                    limits.max_work = value;
+                } else {
+                    limits.max_items = value;
+                }
+            }
             "--registry" => {
                 let path = arguments.next().ok_or("missing path after --registry")?;
                 if path == "-" {
@@ -37,8 +104,8 @@ fn run() -> Result<(), String> {
                 registry_paths.push(path);
             }
             "-f" | "--program-file" => {
-                if program_path.is_some() {
-                    return Err("program file may only be supplied once".into());
+                if program_path.is_some() || inline_query.is_some() {
+                    return Err("supply one inline query or one program file".into());
                 }
                 program_path = Some(
                     arguments
@@ -47,7 +114,7 @@ fn run() -> Result<(), String> {
                 );
             }
             "--" => {
-                if program_path.is_none() {
+                if program_path.is_none() && inline_query.is_none() {
                     inline_query = arguments.next();
                 }
                 paths.extend(arguments);
@@ -55,13 +122,11 @@ fn run() -> Result<(), String> {
             }
             option if option.starts_with('-') => return Err(format!("unknown option: {option}")),
             _ => {
-                if program_path.is_some() {
+                if program_path.is_some() || inline_query.is_some() {
                     paths.push(argument);
                 } else {
                     inline_query = Some(argument);
                 }
-                paths.extend(arguments);
-                break;
             }
         }
     }
@@ -83,31 +148,51 @@ fn run() -> Result<(), String> {
             " ".repeat(column)
         )
     })?;
-    let registry = if registry_paths.is_empty() {
+    let registry = if registry_paths.is_empty() && presets.is_empty() {
         DialectRegistry::baseline().clone()
     } else {
-        DialectRegistry::from_config_files(&registry_paths)
+        let mut configs = Vec::new();
+        for path in registry_paths {
+            let json = fs::read_to_string(&path)
+                .map_err(|error| format!("could not load registry {path}: {error}"))?;
+            configs.push(
+                RegistryConfig::from_json(&json)
+                    .map_err(|error| format!("could not load registry {path}: {error}"))?,
+            );
+        }
+        if !presets.is_empty() {
+            configs.push(RegistryConfig {
+                presets,
+                builtins: Vec::new(),
+                operation_shapes: Vec::new(),
+                operation_formats: Vec::new(),
+            });
+        }
+        RegistryConfig::build_many(&configs)
             .map_err(|error| format!("could not load registry: {error}"))?
     };
     let registry = &registry;
     let inputs = if paths.is_empty() {
-        let mut bytes = Vec::new();
-        io::stdin()
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("could not read stdin: {error}"))?;
-        vec![("stdin".to_owned(), bytes)]
+        vec![None]
     } else {
-        paths
-            .into_iter()
-            .map(|path| {
-                fs::read(&path)
-                    .map(|bytes| (path.clone(), bytes))
-                    .map_err(|error| format!("could not read {path}: {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?
+        paths.into_iter().map(Some).collect()
     };
     let mut answers = Vec::new();
-    for (name, bytes) in inputs {
+    for path in inputs {
+        let (name, bytes) = match path {
+            Some(path) => {
+                let bytes =
+                    fs::read(&path).map_err(|error| format!("could not read {path}: {error}"))?;
+                (path, bytes)
+            }
+            None => {
+                let mut bytes = Vec::new();
+                io::stdin()
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| format!("could not read stdin: {error}"))?;
+                ("stdin".to_owned(), bytes)
+            }
+        };
         let parsed = ParsedFile::parse_with_registry(bytes, registry)
             .map_err(|error| format!("could not parse {name}: {error}"))?;
         let recovered_unknown_custom =
@@ -142,6 +227,19 @@ fn run() -> Result<(), String> {
                 "could not parse {name}: {}",
                 diagnostics.join("; ")
             ));
+        }
+        if recovered_unknown_custom {
+            let count = parsed.syntax().diagnostics().len();
+            let first = parsed.syntax().diagnostics()[0].range();
+            let message = format!(
+                "{name}: incomplete semantic information ({count} recovered custom operations; first at bytes {}..{}); load a dialect with --preset NAME or --registry FILE",
+                first.start(),
+                first.end()
+            );
+            if strict {
+                return Err(message);
+            }
+            eprintln!("zirium: warning: {message}; --strict rejects recovery");
         }
         let lowered = lower_with_dialect_registry_and_retention(
             &parsed,
@@ -180,7 +278,7 @@ fn run() -> Result<(), String> {
                 format!("could not lower {name}: {detail}")
             })?;
         query
-            .evaluate(&mut document, registry, |document, output| {
+            .evaluate_with_limits(&mut document, registry, limits, |document, output| {
                 let mut answer = Vec::new();
                 let scalar = matches!(
                     output,

@@ -1791,6 +1791,37 @@ pub(super) fn lower_dictionary(
                     attribute_range,
                     "malformed attribute value".into(),
                 ))
+            } else if kind == "inherent attribute"
+                && matches!(name.as_ref(), "contracting_dims" | "batching_dims")
+                && tree
+                    .children(attribute)
+                    .into_iter()
+                    .flatten()
+                    .any(|child| tree.kind(child) == Some(SyntaxKind::OpaqueAttribute))
+            {
+                // A paired custom clause prints generically as two arrays;
+                // keep its original spelling for inspection.
+                let mut expansion = AliasExpansionState::new(doc.alias_expansion_depth_limit);
+                AttributeValue::Array(
+                    tree.children(attribute)
+                        .into_iter()
+                        .flatten()
+                        .filter(|&child| tree.kind(child) == Some(SyntaxKind::OpaqueAttribute))
+                        .flat_map(|child| tree.children(child).into_iter().flatten())
+                        .filter(|&child| tree.kind(child) == Some(SyntaxKind::ArrayAttribute))
+                        .filter_map(|child| tree.text_range(child))
+                        .map(|range| {
+                            lower_attribute_value(
+                                text(bytes, range),
+                                range,
+                                type_aliases,
+                                attribute_aliases,
+                                &mut expansion,
+                                doc,
+                            )
+                        })
+                        .collect(),
+                )
             } else {
                 let mut expansion = AliasExpansionState::new(doc.alias_expansion_depth_limit);
                 lower_attribute_value(

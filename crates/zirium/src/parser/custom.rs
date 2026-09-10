@@ -271,8 +271,14 @@ impl DialectParser<'_, '_> {
             self.parser.expect(TokenKind::RParen)?;
             Ok(count)
         } else {
-            let good = self.parser.type_syntax(0)?;
-            Ok(usize::from(good))
+            let mut count = usize::from(self.parser.type_syntax(0)?);
+            while self.parser.nth_nontrivia(0) == Some(TokenKind::Comma) {
+                self.parser.trivia()?;
+                self.parser.bump()?;
+                self.parser.trivia()?;
+                count += usize::from(self.parser.type_syntax(0)?);
+            }
+            Ok(count)
         }
     }
 }
@@ -460,7 +466,7 @@ pub(super) fn shaped_operation(
                 }
             }
         }
-        OperationShape::OperandClauses => good &= operand_clauses(parser)?,
+        OperationShape::OperandClauses => good &= operand_clauses(parser, operation)?,
         OperationShape::RegionClauses => good &= region_clauses(parser, operation)?,
         OperationShape::OptionalTypedOperands => {
             good &= optional_typed_operands(parser, false)?;
@@ -551,7 +557,7 @@ fn optional_typed_operands(
     Ok(good)
 }
 
-fn operand_clauses(parser: &mut Parser<'_>) -> Result<bool, CompactError> {
+fn operand_clauses(parser: &mut Parser<'_>, operation: &str) -> Result<bool, CompactError> {
     let mut good = true;
     let mut delimiters = Vec::new();
     loop {
@@ -615,7 +621,9 @@ fn operand_clauses(parser: &mut Parser<'_>) -> Result<bool, CompactError> {
             && parser.inherent_attribute_starts()
             && !named_delimited_rhs_contains_operand(parser)
         {
-            good &= parser.inherent_attribute()?;
+            let paired = operation == "stablehlo.dot_general"
+                && matches!(parser.current_text(), "contracting_dims" | "batching_dims");
+            good &= parser.inherent_attribute(paired)?;
             parser.trivia()?;
             continue;
         }
@@ -716,7 +724,7 @@ fn region_clauses(parser: &mut Parser<'_>, operation: &str) -> Result<bool, Comp
             && parser.inherent_attribute_starts()
             && !named_delimited_rhs_contains_operand(parser)
         {
-            good &= parser.inherent_attribute()?;
+            good &= parser.inherent_attribute(false)?;
             if regionless_reduce {
                 parser.trivia()?;
                 if parser.at(TokenKind::Colon) && signature_type_follows(parser) {

@@ -43,6 +43,10 @@ For example, this selects every `arith.addi` operation in `input.mlir`:
 zirium 'filter(op("arith.addi"))' input.mlir
 ```
 
+Use `zirium --help` for CLI options and `--list-presets` for dialect coverage.
+For semantic queries on StableHLO, pass `--preset stablehlo --strict` to reject
+unsupported custom forms rather than continuing with incomplete information.
+
 The [query language reference](https://github.com/zayenz/zirium/blob/main/docs/query-language.md)
 lists every predicate and pipeline stage. The
 [CLI examples](https://github.com/zayenz/zirium/blob/main/docs/cli-examples.md)

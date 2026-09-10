@@ -1551,7 +1551,7 @@ impl Document {
     }
 }
 
-fn decode_mlir_string(spelling: &str) -> Option<String> {
+pub(crate) fn decode_mlir_string(spelling: &str) -> Option<String> {
     let inner = spelling.strip_prefix('"')?.strip_suffix('"')?;
     let bytes = inner.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());

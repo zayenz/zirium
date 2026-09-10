@@ -4,6 +4,11 @@ Bundled presets register selected custom operation forms for structural parsing
 and lowering. Each includes the core module and function grammar. Use them to
 expose operands, result types, attributes, and supported regions to queries.
 
+Load a preset in the CLI with `zirium --preset stablehlo --strict QUERY INPUT`.
+Use `--list-presets` to discover names. Repeat `--preset` to combine dialects;
+it can also be combined with `--registry` files. `--strict` rejects recovered
+custom operations instead of warning about incomplete query information.
+
 Load a preset in Python with `DialectRegistry.from_name("stablehlo")`, or combine
 presets in a JSON registry:
 
@@ -68,6 +73,10 @@ Common limits affect how you can use these presets:
   positional overflow, exact, or fast-math modifiers.
 - Unsupported custom forms use best-effort recovery. Inspect parsing and
   lowering diagnostics before relying on semantic structure or editing output.
+- Compact StableHLO reductions using `applies` retain their explicit textual
+  structure without synthesizing an implicit reducer body. Dot dimension pairs
+  retain both sides in attribute projection and print generically as nested
+  arrays. These are structural representations of the custom clauses.
 
 Presets provide structural support. Full dialect verification, type inference,
 execution, target checks, and serialization are outside their scope. StableHLO

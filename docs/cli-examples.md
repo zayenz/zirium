@@ -16,9 +16,15 @@ The input files and reusable `.zirium` programs used below are checked in under
 files. Short queries are shown inline so you can read and change them directly.
 
 The binary defaults to the baseline registry, which accepts ordinary, named,
-and nested `module` shorthand. Use `--registry registry.json` to load presets
+and nested `module` shorthand. Use `--preset stablehlo` for a bundled dialect or
+`--registry registry.json` to load presets
 or caller-defined operations; repeat the flag to combine files. See
 [custom formats](custom-formats.md) for configuration and output behavior.
+
+`zirium --help` lists options, and `zirium --list-presets` lists available
+dialects. Recovery warnings on stderr mean semantic queries may be incomplete;
+add `--strict` to reject such input in scripts. Options can appear before or
+after the query argument. Use `--` before input paths beginning with a dash.
 
 The commands below assume `target/debug` is on `PATH`:
 
@@ -112,9 +118,9 @@ structure and tensor shapes are unchanged.
 The first query below counts every operation. The second counts reductions:
 
 ```console
-$ zirium 'count' examples/cli/stablelm-decode.mlir
+$ zirium --preset stablehlo --strict 'count' examples/cli/stablelm-decode.mlir
 237
-$ zirium 'filter(op("stablehlo.reduce")) | count' examples/cli/stablelm-decode.mlir
+$ zirium --preset stablehlo --strict 'filter(op("stablehlo.reduce")) | count' examples/cli/stablelm-decode.mlir
 14
 ```
 
@@ -129,13 +135,67 @@ matrix multiplications:
 ```console
 $ cat examples/cli/stablehlo-matmul-count.zirium
 filter(op("stablehlo.dot_general")) | count
-$ zirium --program-file examples/cli/stablehlo-matmul-count.zirium examples/cli/stablelm-decode.mlir
+$ zirium --preset stablehlo --strict --program-file examples/cli/stablehlo-matmul-count.zirium examples/cli/stablelm-decode.mlir
 19
 ```
 
 The nineteen operations comprise nine matrix multiplications in each decoder
 layer and one final projection to logits. A program file contains only Zirium
 source; surrounding whitespace and the final newline are ignored.
+
+The count is structural: compact reductions using `applies stablehlo.add` do
+not synthesize reducer-body operations. Use an explicit-region input if those
+operations must participate in queries.
+
+## Inspect shapes and operation kinds
+
+Name and type projections make inventories easy to pipe into ordinary tools:
+
+```sh
+zirium --preset stablehlo --strict \
+  'filter(dialect("stablehlo")) | names' examples/cli/stablelm-decode.mlir \
+  | sort | uniq -c | sort -nr
+
+zirium --preset stablehlo --strict \
+  'filter(op("stablehlo.dot_general")) | result_types | unique' \
+  examples/cli/stablelm-decode.mlir
+```
+
+Use `result_type("tensor<32xf32>")` to select that exact result type, or `json`
+to inspect operand types, result types, and complete dimension clauses together.
+Paired custom dimensions such as `[0] x [1]` remain intact in attribute projection.
+
+## Inspect a single output computation
+
+The decoder returns logits, a key cache, and a value cache. Select the first
+return operand and follow its SSA definitions, stopping at function inputs:
+
+```sh
+zirium --preset stablehlo --strict \
+  'filter(op("func.return")) | defs(0) | slice' \
+  examples/cli/stablelm-decode.mlir
+```
+
+Change the index to `1` or `2` for either cache. `slice` does not expand symbols
+or region bodies. At a multi-result operation it follows all explicit operands,
+without inferring result-specific dependencies. The output remains an inspection
+fragment. Use `fixpoint(closure)` when retaining scopes and supported callees is
+more important than a narrow slice.
+
+## Keep operations satisfying a relationship
+
+Find matmuls that directly feed an addition by intersecting the matmul set with
+the definitions used by additions:
+
+```sh
+zirium --preset stablehlo --strict \
+  '(filter(op("stablehlo.dot_general")) intersect (filter(op("stablehlo.add")) | defs)) | json' \
+  examples/cli/stablelm-decode.mlir
+```
+
+This finds ten matmuls in the decoder and retains the matmul selection. No
+separate relationship-predicate syntax is needed for this case. Use `users(0)` to follow only the first result of a
+multi-result operation.
 
 ## Tag selected operations
 

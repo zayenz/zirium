@@ -11,7 +11,7 @@ This finds `arith.addi` operations, follows their direct users, and keeps those
 with an `analysis.tag` attribute.
 `filter` always tests the current operation stream. Navigation replaces that
 stream; edits preserve it. Navigation preserves order and duplicates. Set
-operators and `closure` produce source-ordered sets; `unique` explicitly
+operators on operations, `closure`, and `slice` produce source-ordered sets; `unique` explicitly
 removes duplicates from other streams.
 
 `input` and a final `emit` are implicit. These programs print the same document:
@@ -36,7 +36,20 @@ quoted argument to run the empty program on files:
 zirium '' input.mlir
 zirium 'filter(op("arith.addi")) | count' input.mlir
 zirium -f query.zirium input.mlir
+zirium --preset stablehlo --strict 'filter(op("stablehlo.dot_general")) | count' model.mlir
 ```
+
+Use `zirium --help` for CLI usage and `zirium --list-presets` for bundled dialects.
+`--preset NAME` and `--registry FILE` are repeatable and combine their registries.
+Options can appear before or after the query; `--` ends option processing.
+`-f` replaces the inline query rather than adding another program.
+
+Without a registry option, Zirium uses the baseline registry. Unsupported custom
+operations may still support name and structural queries, but their operands,
+attributes, and types can be incomplete. The CLI warns on stderr when it recovers
+these operations. Use `--strict` to reject recovery with no stdout, especially in
+scripts. Strict mode requires supported parsing; it does not enable full dialect
+verification or reconstruct operations implicit in custom assembly.
 
 Input files are independent documents. `input` never combines different files.
 The selected-fragment printer may change formatting even when printing the
@@ -50,6 +63,8 @@ Predicates test one operation. They appear inside `filter(...)`.
 | --- | --- |
 | `true` / `false` | Every operation / no operation. |
 | `op("name")` | An operation with exactly this full name. |
+| `dialect("name")` | An operation whose name starts with exactly this dialect followed by a dot. |
+| `result_type("type")` | An operation with at least one result whose retained type spelling equals this string. |
 | `has_attr("name")` | An operation with this attribute, regardless of its value. |
 | `string_attr_eq("name", "value")` | An operation whose named attribute is a string equal to this decoded value. |
 
@@ -69,6 +84,11 @@ String equality compares decoded values. For example,
 `message = "say \22hi\22"`. It does not compare numeric attributes or their
 printed spellings.
 
+For example, `filter(dialect("stablehlo") and result_type("tensor<32xf32>"))`
+finds StableHLO operations producing that tensor type. Type matching is exact
+spelling matching; use `result_types` or operation JSON to inspect shapes and
+element types when more involved analysis is needed.
+
 Operation names must be non-empty. Attribute names use dotted ASCII
 identifiers: each component starts with a letter or underscore, followed by
 letters, digits, or underscores. `analysis.tag` and `_zirium.state_2` are valid.
@@ -80,16 +100,21 @@ letters, digits, or underscores. `analysis.tag` and `_zirium.state_2` are valid.
 | `input` | Every operation in the current document, including earlier edits. |
 | `defs` | Operations directly defining operands of the selected operations. A block argument resolves to the operation owning its region. |
 | `users` | Operations directly using results of the selected operations. |
+| `defs(index)` | The definition of one zero-based operand of each selected operation. |
+| `users(index)` | Uses of one zero-based result of each selected operation. |
 | `parent` | Each selected operation's immediate enclosing operation. |
 | `children` | Operations directly contained in the selected operations' regions and blocks. |
 | `root(predicate)` | The nearest operation on each selected operation's ancestor chain that matches the predicate. |
 | `subtree` | Each selected operation and all its descendants. |
 | `closure` | The selection plus one step of supported dependency expansion. |
+| `slice` | The selection and its transitive SSA definitions, stopping at block arguments. |
 
 `defs`, `users`, `parent`, and `children` move one step and replace the input
 selection. They do not automatically keep it. `parent` drops operations with no
 enclosing operation. `defs` and `users` are not inverse relationships: a block
 argument belongs to an enclosing operation rather than an operation result.
+An out-of-range navigation index drops that input item. Indexed navigation
+preserves duplicates just like its unindexed form.
 
 `root(predicate)` tests each selected operation, then walks toward the document
 root until it finds a match. It returns at most one match for each input item.
@@ -125,6 +150,31 @@ participate in filtering, counting, or editing.
 Fragments may omit SSA definitions and users, so they are not guaranteed to
 be standalone valid MLIR. Select the needed dependencies explicitly.
 
+Use `slice` to inspect a computation without expanding the whole function when
+an operand is a function input:
+
+```zirium
+# Follow the first returned value, for example logits rather than cache outputs.
+filter(op("func.return")) | defs(0) | slice
+```
+
+`slice` follows explicit SSA operands only. It does not expand callees, successors,
+or region bodies, and does not infer which operands affect individual results of
+a multi-result operation. Generic quoted operations need no registration for
+this traversal; recovered unparsed operations and invalid operands are errors.
+Use `closure` when retaining complete scopes and supported symbol dependencies
+is the desired behavior.
+
+`defs(index)` still maps a block argument directly to its owning operation. If
+the selected return operand is itself a function argument, that navigation
+selects the function; `slice` does not undo that selection. Starting `slice` at
+the return instead retains the return and stops at its argument operands.
+
+Compact StableHLO reductions using `applies stablehlo.add` are represented as a
+single operation. Their implicit reducer body is not synthesized, so `children`
+is empty and operation counts differ from the explicit-region spelling. Counts
+describe the parsed structural representation, not normalized MLIR.
+
 ## Combining queries
 
 `union`, `intersect`, and `except` are infix operators between selection
@@ -149,6 +199,10 @@ This combines the definitions and users of the selected adds. It does not run
 | `left union right` | Operations in either result. |
 | `left intersect right` | Operations in both results. |
 | `left except right` | Operations in the left result but not the right. |
+
+Set operators also accept value streams. Value union keeps first appearance
+from left then right; intersection and difference preserve left-side order.
+Both operands must produce the same stream kind.
 
 Pipes bind more tightly than set operators. All set operators have equal
 precedence and associate left to right. Parenthesize a set expression before
@@ -211,6 +265,23 @@ The same rule applies to `parent`: repeatedly moving beyond the document's
 roots eventually gives an empty selection. Use `root(predicate)` to find a
 matching ancestor and `subtree` to expand a selected fragment.
 
+Duplicate-preserving expansion need not converge: `fixpoint(subtree)` keeps
+adding copies when an ancestor and its descendant are selected. Use
+`fixpoint(subtree | unique)` when a set is intended. Cycle detection catches
+repeating selections; evaluation limits also stop streams that keep growing.
+
+By default, each evaluation permits 10,000,000 work units and 1,000,000 items per
+stream. Work counts stage input items (at least one per stage), fixed-point
+iterations, and dependency/subtree visits. These are deterministic safeguards,
+not a time or byte-memory limit. CLI callers can set `--max-work N` and
+`--max-items N`; Rust callers can use `Query::evaluate_with_limits` and
+`EvaluationLimits`. A limit error follows the usual no-stdout CLI contract.
+
+The common `fixpoint(closure)` query uses a worklist and visits dependencies once.
+A body with additional stages, including `emit` or `json`, runs step by step and
+retains its per-iteration output. Deep slices with per-iteration output can still
+be expensive and may need a larger work limit.
+
 ## Projection and uniqueness
 
 `attr("name")` replaces each operation with its named attribute value and drops
@@ -218,6 +289,18 @@ operations without that attribute. It decodes string and symbol attributes.
 For other attribute kinds, it returns the MLIR spelling. Operation-only stages,
 including navigation, filtering, and edits, reject value streams. `emit` and
 the implicit final emission print one projected value per line.
+
+An attribute string that cannot be decoded as UTF-8 produces an error rather
+than disappearing from the stream. Use operation `json` to inspect its escaped
+spelling. Paired StableHLO dot dimensions preserve both sides: for example,
+`attr("contracting_dims")` returns `[0] x [1]`. Generic fragment printing
+represents this custom clause as nested arrays `[[0], [1]]`.
+
+`names` projects operation names. `result_types` and `operand_types` project
+retained type spellings in result or operand order, flattening across selected
+operations. These stages produce value streams and preserve duplicates. For
+example, `filter(dialect("stablehlo")) | names | unique` lists the StableHLO
+operation kinds present in the input.
 
 `unique` keeps the first copy of each operation or value. It preserves stream
 order. For example, this prints the names of functions that contain a matrix
@@ -258,8 +341,10 @@ no stage may follow it. To emit a fragment and then count it, use `emit | count`
 
 `json` emits the current stream as a JSON array and passes the stream onward.
 For value streams, the array contains strings. For operation streams, each
-entry contains the operation name and an object of attribute spellings. This
-format favors inspection and interchange; Zirium cannot read it back as MLIR.
+entry contains the operation name, an object of attribute spellings, and
+`operand_types` and `result_types` arrays. Unknown type
+information can appear as a placeholder or JSON null on incompletely understood
+input. This format favors inspection and interchange; Zirium cannot read it back as MLIR.
 Like `emit`, a final `json` suppresses the implicit final emission.
 
 Consecutive fragment outputs are separated by `// -----`. Counts are plain
@@ -275,9 +360,10 @@ program    = [ query ]
 query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
 stage      = "input" | "filter" "(" predicate ")"
-           | "defs" | "users" | "parent" | "children" | "closure"
+           | ("defs" | "users") [ "(" integer ")" ]
+           | "parent" | "children" | "closure" | "slice"
            | "root" "(" predicate ")" | "subtree" | "unique"
-           | "attr" "(" string ")" | "json"
+           | "attr" "(" string ")" | "names" | "result_types" | "operand_types" | "json"
            | "fixpoint" "(" query ")" | "(" query ")"
            | "set_attr" "(" string "," string ")"
            | "remove_attr" "(" string ")" | "emit" | "count"
@@ -285,9 +371,11 @@ predicate  = and-expr { "or" and-expr }
 and-expr   = not-expr { "and" not-expr }
 not-expr   = { "not" } primary
 primary    = "true" | "false" | "op" "(" string ")"
+           | "dialect" "(" string ")" | "result_type" "(" string ")"
            | "has_attr" "(" string ")"
            | "string_attr_eq" "(" string "," string ")"
            | "(" predicate ")"
+integer    = digit { digit }
 ```
 
 Whitespace is insignificant between tokens. `#` begins a comment extending to
