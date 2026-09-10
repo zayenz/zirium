@@ -105,56 +105,60 @@ impl OperandCount {
     }
 }
 
-/// A built-in custom assembly implementation.
+/// Exact custom assembly and semantic handling for one baseline operation.
+///
+/// Reusable structural grammars belong in [`OperationShape`] or
+/// [`OperationFormat`]. Each variant here names the operation whose parsing,
+/// lowering, verification, and printing it implements.
 ///
 /// [`DialectRegistry::new`] enforces the following descriptor contract. Symbol
 /// flags are shown as `defines_symbol / symbol_table / uses_symbols`.
 ///
 /// | Variant | Operation | Operands / results | Required attributes | Regions | Symbol flags |
 /// | --- | --- | --- | --- | --- | --- |
-/// | `Module` | `builtin.module` | 0 / 0 | none | one isolated `Ssacfg` | true / true / false |
-/// | `Function` | `func.func` | 0 / 0 | `sym_name`, `function_type` | one isolated `Ssacfg` | true / false / false |
-/// | `Call` | `func.call` | variadic / variadic | `callee` | none | false / false / true |
-/// | `ConditionalBranch` | `cf.cond_br` | variadic / 0 | none | none | false / false / false |
-/// | `TypedAttribute` | `arith.constant` | 0 / 1 | `value` | none | false / false / false |
-/// | `BinaryOperands` | `arith.addi` | 2 / 1 | none | none | false / false / false |
-/// | `OptionalTypedOperands` | `func.return` | variadic / 0 | none | none | false / false / false |
-/// | `TypedSuccessor` | `cf.br` | 0 / 0 | none | none | false / false / false |
+/// | `BuiltinModule` | `builtin.module` | 0 / 0 | none | one isolated `Ssacfg` | true / true / false |
+/// | `FuncFunc` | `func.func` | 0 / 0 | `sym_name`, `function_type` | one isolated `Ssacfg` | true / false / false |
+/// | `FuncCall` | `func.call` | variadic / variadic | `callee` | none | false / false / true |
+/// | `CfCondBr` | `cf.cond_br` | variadic / 0 | none | none | false / false / false |
+/// | `ArithConstant` | `arith.constant` | 0 / 1 | `value` | none | false / false / false |
+/// | `ArithAddi` | `arith.addi` | 2 / 1 | none | none | false / false / false |
+/// | `FuncReturn` | `func.return` | variadic / 0 | none | none | false / false / false |
+/// | `CfBr` | `cf.br` | 0 / 0 | none | none | false / false / false |
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssemblyProgram {
-    Module,
-    Function,
-    Call,
-    ConditionalBranch,
-    TypedAttribute,
-    BinaryOperands,
-    OptionalTypedOperands,
-    TypedSuccessor,
+    BuiltinModule,
+    FuncFunc,
+    FuncCall,
+    CfCondBr,
+    ArithConstant,
+    ArithAddi,
+    FuncReturn,
+    CfBr,
 }
 
 impl AssemblyProgram {
     const fn operation_name(self) -> &'static str {
         match self {
-            Self::Module => "builtin.module",
-            Self::Function => "func.func",
-            Self::Call => "func.call",
-            Self::ConditionalBranch => "cf.cond_br",
-            Self::TypedAttribute => "arith.constant",
-            Self::BinaryOperands => "arith.addi",
-            Self::OptionalTypedOperands => "func.return",
-            Self::TypedSuccessor => "cf.br",
+            Self::BuiltinModule => "builtin.module",
+            Self::FuncFunc => "func.func",
+            Self::FuncCall => "func.call",
+            Self::CfCondBr => "cf.cond_br",
+            Self::ArithConstant => "arith.constant",
+            Self::ArithAddi => "arith.addi",
+            Self::FuncReturn => "func.return",
+            Self::CfBr => "cf.br",
         }
     }
 
     pub(crate) const fn inherent_attribute(self) -> Option<&'static str> {
         match self {
-            Self::Module => Some("sym_name"),
-            Self::Function => Some("sym_name"),
-            Self::Call => Some("callee"),
-            Self::ConditionalBranch => None,
-            Self::TypedAttribute => Some("value"),
-            Self::BinaryOperands => Some("overflowFlags"),
-            Self::OptionalTypedOperands | Self::TypedSuccessor => None,
+            Self::BuiltinModule => Some("sym_name"),
+            Self::FuncFunc => Some("sym_name"),
+            Self::FuncCall => Some("callee"),
+            Self::CfCondBr => None,
+            Self::ArithConstant => Some("value"),
+            Self::ArithAddi => Some("overflowFlags"),
+            Self::FuncReturn | Self::CfBr => None,
         }
     }
 
@@ -163,14 +167,14 @@ impl AssemblyProgram {
         context: &RegisteredLoweringContext<'_>,
     ) -> Option<RegisteredLowering> {
         match self {
-            Self::Module => lower_module(context),
-            Self::Function => lower_function(context),
-            Self::Call => lower_call(context),
-            Self::ConditionalBranch => lower_no_results("cf.cond_br"),
-            Self::TypedAttribute => lower_arith_constant(context),
-            Self::BinaryOperands => lower_addi(context),
-            Self::OptionalTypedOperands => lower_return(context),
-            Self::TypedSuccessor => lower_no_results(self.operation_name()),
+            Self::BuiltinModule => lower_module(context),
+            Self::FuncFunc => lower_function(context),
+            Self::FuncCall => lower_call(context),
+            Self::CfCondBr => lower_no_results("cf.cond_br"),
+            Self::ArithConstant => lower_arith_constant(context),
+            Self::ArithAddi => lower_addi(context),
+            Self::FuncReturn => lower_return(context),
+            Self::CfBr => lower_no_results(self.operation_name()),
         }
     }
 
@@ -180,14 +184,14 @@ impl AssemblyProgram {
         operation: OperationId,
     ) -> Result<(), &'static str> {
         match self {
-            Self::Module => crate::semantic::verify_builtin_module(document, operation),
-            Self::Function => crate::semantic::verify_func_func(document, operation),
-            Self::Call => crate::semantic::verify_func_call(document, operation),
-            Self::ConditionalBranch => crate::semantic::verify_cf_cond_br(document, operation),
-            Self::TypedAttribute => verify_arith_constant(document, operation),
-            Self::BinaryOperands => verify_addi(document, operation),
-            Self::OptionalTypedOperands => crate::semantic::verify_func_return(document, operation),
-            Self::TypedSuccessor => crate::semantic::verify_cf_br(document, operation),
+            Self::BuiltinModule => crate::semantic::verify_builtin_module(document, operation),
+            Self::FuncFunc => crate::semantic::verify_func_func(document, operation),
+            Self::FuncCall => crate::semantic::verify_func_call(document, operation),
+            Self::CfCondBr => crate::semantic::verify_cf_cond_br(document, operation),
+            Self::ArithConstant => verify_arith_constant(document, operation),
+            Self::ArithAddi => verify_addi(document, operation),
+            Self::FuncReturn => crate::semantic::verify_func_return(document, operation),
+            Self::CfBr => crate::semantic::verify_cf_br(document, operation),
         }
     }
 
@@ -207,27 +211,27 @@ impl AssemblyProgram {
                 .accepts(document.result_types(operation)?.len())
             || document.properties(operation)?.next().is_some()
             || document.operation_location(operation)?.is_some()
-            || (!matches!(self, Self::Module | Self::Function)
+            || (!matches!(self, Self::BuiltinModule | Self::FuncFunc)
                 && !document.operation_regions(operation)?.is_empty())
-            || (!matches!(self, Self::TypedSuccessor | Self::ConditionalBranch)
+            || (!matches!(self, Self::CfBr | Self::CfCondBr)
                 && !document.successors(operation)?.is_empty())
         {
             return None;
         }
         // Return assembly also works in generic containers without a known
         // function signature; its contextual verifier is not a print precondition.
-        if self != Self::OptionalTypedOperands {
+        if self != Self::FuncReturn {
             self.verify(document, operation).ok()?;
         }
         match self {
-            Self::Module => print_module(document, operation),
-            Self::Function => print_function(document, operation),
-            Self::Call => print_call(document, operation),
-            Self::ConditionalBranch => print_cond_branch(document, operation),
-            Self::TypedAttribute => print_arith_constant(document, operation),
-            Self::BinaryOperands => print_addi(document, operation),
-            Self::OptionalTypedOperands => print_return(document, operation),
-            Self::TypedSuccessor => print_branch(document, operation),
+            Self::BuiltinModule => print_module(document, operation),
+            Self::FuncFunc => print_function(document, operation),
+            Self::FuncCall => print_call(document, operation),
+            Self::CfCondBr => print_cond_branch(document, operation),
+            Self::ArithConstant => print_arith_constant(document, operation),
+            Self::ArithAddi => print_addi(document, operation),
+            Self::FuncReturn => print_return(document, operation),
+            Self::CfBr => print_branch(document, operation),
         }
     }
 }
@@ -479,7 +483,7 @@ impl DialectRegistry {
                 );
                 let schema = operations[index].schema;
                 match program {
-                    AssemblyProgram::Module => {
+                    AssemblyProgram::BuiltinModule => {
                         assert!(
                             matches!(schema.operands, OperandCount::Exact(0))
                                 && matches!(schema.results, ResultCount::Exact(0))
@@ -495,7 +499,7 @@ impl DialectRegistry {
                             "module schema is inconsistent"
                         );
                     }
-                    AssemblyProgram::Function => {
+                    AssemblyProgram::FuncFunc => {
                         assert!(
                             matches!(schema.operands, OperandCount::Exact(0))
                                 && matches!(schema.results, ResultCount::Exact(0))
@@ -514,7 +518,7 @@ impl DialectRegistry {
                             "function schema is inconsistent"
                         );
                     }
-                    AssemblyProgram::Call => {
+                    AssemblyProgram::FuncCall => {
                         assert!(
                             matches!(schema.operands, OperandCount::Variadic)
                                 && matches!(schema.results, ResultCount::Variadic)
@@ -527,7 +531,7 @@ impl DialectRegistry {
                             "call schema is inconsistent"
                         );
                     }
-                    AssemblyProgram::ConditionalBranch => {
+                    AssemblyProgram::CfCondBr => {
                         assert!(
                             matches!(schema.operands, OperandCount::Variadic)
                                 && matches!(schema.results, ResultCount::Exact(0))
@@ -540,7 +544,7 @@ impl DialectRegistry {
                             "conditional branch schema is inconsistent"
                         );
                     }
-                    AssemblyProgram::TypedAttribute => {
+                    AssemblyProgram::ArithConstant => {
                         assert!(
                             matches!(schema.operands, OperandCount::Exact(0))
                                 && matches!(schema.results, ResultCount::Exact(1))
@@ -553,7 +557,7 @@ impl DialectRegistry {
                             "typed attribute schema is inconsistent"
                         );
                     }
-                    AssemblyProgram::BinaryOperands => {
+                    AssemblyProgram::ArithAddi => {
                         assert!(
                             matches!(schema.operands, OperandCount::Exact(2))
                                 && matches!(schema.results, ResultCount::Exact(1))
@@ -566,7 +570,7 @@ impl DialectRegistry {
                             "binary operand schema is inconsistent"
                         );
                     }
-                    AssemblyProgram::OptionalTypedOperands => {
+                    AssemblyProgram::FuncReturn => {
                         assert!(
                             matches!(schema.operands, OperandCount::Variadic)
                                 && matches!(schema.results, ResultCount::Exact(0))
@@ -579,7 +583,7 @@ impl DialectRegistry {
                             "optional operand schema is inconsistent"
                         );
                     }
-                    AssemblyProgram::TypedSuccessor => {
+                    AssemblyProgram::CfBr => {
                         assert!(
                             matches!(schema.operands, OperandCount::Exact(0))
                                 && matches!(schema.results, ResultCount::Exact(0))
@@ -1885,7 +1889,7 @@ static BUILTIN_MODULE: OperationDescriptor = OperationDescriptor {
     lower: None,
     verify: None,
     print: None,
-    assembly: Some(AssemblyProgram::Module),
+    assembly: Some(AssemblyProgram::BuiltinModule),
     schema: OperationSchema {
         operands: OperandCount::Exact(0),
         results: ResultCount::Exact(0),
@@ -1907,7 +1911,7 @@ static FUNC_FUNC: OperationDescriptor = OperationDescriptor {
     lower: None,
     verify: None,
     print: None,
-    assembly: Some(AssemblyProgram::Function),
+    assembly: Some(AssemblyProgram::FuncFunc),
     schema: OperationSchema {
         operands: OperandCount::Exact(0),
         results: ResultCount::Exact(0),
@@ -1929,7 +1933,7 @@ static FUNC_CALL: OperationDescriptor = OperationDescriptor {
     lower: None,
     verify: None,
     print: None,
-    assembly: Some(AssemblyProgram::Call),
+    assembly: Some(AssemblyProgram::FuncCall),
     schema: OperationSchema {
         operands: OperandCount::Variadic,
         results: ResultCount::Variadic,
@@ -1951,7 +1955,7 @@ static CF_COND_BR: OperationDescriptor = OperationDescriptor {
     lower: None,
     verify: None,
     print: None,
-    assembly: Some(AssemblyProgram::ConditionalBranch),
+    assembly: Some(AssemblyProgram::CfCondBr),
     schema: OperationSchema {
         operands: OperandCount::Variadic,
         results: ResultCount::Exact(0),
@@ -1973,7 +1977,7 @@ static ARITH_CONSTANT: OperationDescriptor = OperationDescriptor {
     lower: None,
     verify: None,
     print: None,
-    assembly: Some(AssemblyProgram::TypedAttribute),
+    assembly: Some(AssemblyProgram::ArithConstant),
     schema: OperationSchema {
         operands: OperandCount::Exact(0),
         results: ResultCount::Exact(1),
@@ -1995,7 +1999,7 @@ static ARITH_ADDI: OperationDescriptor = OperationDescriptor {
     lower: None,
     verify: None,
     print: None,
-    assembly: Some(AssemblyProgram::BinaryOperands),
+    assembly: Some(AssemblyProgram::ArithAddi),
     schema: OperationSchema {
         operands: OperandCount::Exact(2),
         results: ResultCount::Exact(1),
@@ -2016,7 +2020,7 @@ static FUNC_RETURN: OperationDescriptor = OperationDescriptor {
     lower: None,
     verify: None,
     print: None,
-    assembly: Some(AssemblyProgram::OptionalTypedOperands),
+    assembly: Some(AssemblyProgram::FuncReturn),
     schema: OperationSchema {
         operands: OperandCount::Variadic,
         results: ResultCount::Exact(0),
@@ -2037,7 +2041,7 @@ static CF_BR: OperationDescriptor = OperationDescriptor {
     lower: None,
     verify: None,
     print: None,
-    assembly: Some(AssemblyProgram::TypedSuccessor),
+    assembly: Some(AssemblyProgram::CfBr),
     schema: OperationSchema {
         operands: OperandCount::Exact(0),
         results: ResultCount::Exact(0),

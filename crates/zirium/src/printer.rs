@@ -974,8 +974,8 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             if matches!(
                 assembly,
                 Some(
-                    crate::dialect::AssemblyProgram::Module
-                        | crate::dialect::AssemblyProgram::Function
+                    crate::dialect::AssemblyProgram::BuiltinModule
+                        | crate::dialect::AssemblyProgram::FuncFunc
                 )
             ) {
                 let regions = self.doc.operation_regions(id).ok_or(fmt::Error)?;
@@ -983,7 +983,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                     return self.region(
                         *region,
                         indent,
-                        assembly == Some(crate::dialect::AssemblyProgram::Function),
+                        assembly == Some(crate::dialect::AssemblyProgram::FuncFunc),
                     );
                 }
             }

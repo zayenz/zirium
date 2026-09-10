@@ -4709,7 +4709,7 @@ fn registration_rejects_a_program_with_an_inconsistent_schema() {
         lower: None,
         verify: None,
         print: None,
-        assembly: Some(AssemblyProgram::BinaryOperands),
+        assembly: Some(AssemblyProgram::ArithAddi),
         schema: OperationSchema {
             operands: OperandCount::Exact(1),
             results: ResultCount::Exact(1),
@@ -4729,7 +4729,7 @@ fn registration_rejects_a_program_with_an_inconsistent_schema() {
         lower: None,
         verify: None,
         print: None,
-        assembly: Some(AssemblyProgram::BinaryOperands),
+        assembly: Some(AssemblyProgram::ArithAddi),
         schema: OperationSchema {
             operands: OperandCount::Exact(2),
             results: ResultCount::Exact(1),
@@ -4748,35 +4748,35 @@ fn registration_rejects_inconsistent_required_attribute_lists() {
     let cases = [
         (
             "arith.constant",
-            AssemblyProgram::TypedAttribute,
+            AssemblyProgram::ArithConstant,
             OperandCount::Exact(0),
             1,
             &["wrong"] as &'static [&'static str],
         ),
         (
             "arith.constant",
-            AssemblyProgram::TypedAttribute,
+            AssemblyProgram::ArithConstant,
             OperandCount::Exact(0),
             1,
             &["value", "extra"],
         ),
         (
             "arith.addi",
-            AssemblyProgram::BinaryOperands,
+            AssemblyProgram::ArithAddi,
             OperandCount::Exact(2),
             1,
             &["overflowFlags"],
         ),
         (
             "func.return",
-            AssemblyProgram::OptionalTypedOperands,
+            AssemblyProgram::FuncReturn,
             OperandCount::Variadic,
             0,
             &["value"],
         ),
         (
             "cf.br",
-            AssemblyProgram::TypedSuccessor,
+            AssemblyProgram::CfBr,
             OperandCount::Exact(0),
             0,
             &["successor"],
@@ -5468,7 +5468,7 @@ fn module_and_function_registration_checks_all_metadata() {
         lower: None,
         verify: None,
         print: None,
-        assembly: Some(AssemblyProgram::Module),
+        assembly: Some(AssemblyProgram::BuiltinModule),
         schema: OperationSchema {
             operands: OperandCount::Exact(0),
             results: ResultCount::Exact(0),
@@ -5506,7 +5506,7 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
     let cases = [
         (
             "builtin.module",
-            AssemblyProgram::Module,
+            AssemblyProgram::BuiltinModule,
             OperationSchema {
                 operands: OperandCount::Exact(0),
                 results: ResultCount::Exact(0),
@@ -5521,7 +5521,7 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
         ),
         (
             "func.func",
-            AssemblyProgram::Function,
+            AssemblyProgram::FuncFunc,
             OperationSchema {
                 operands: OperandCount::Exact(0),
                 results: ResultCount::Exact(0),
@@ -5536,7 +5536,7 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
         ),
         (
             "func.call",
-            AssemblyProgram::Call,
+            AssemblyProgram::FuncCall,
             OperationSchema {
                 operands: OperandCount::Variadic,
                 results: ResultCount::Variadic,
@@ -5551,7 +5551,7 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
         ),
         (
             "cf.cond_br",
-            AssemblyProgram::ConditionalBranch,
+            AssemblyProgram::CfCondBr,
             OperationSchema {
                 operands: OperandCount::Variadic,
                 results: ResultCount::Exact(0),
@@ -5566,7 +5566,7 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
         ),
         (
             "arith.constant",
-            AssemblyProgram::TypedAttribute,
+            AssemblyProgram::ArithConstant,
             OperationSchema {
                 operands: OperandCount::Exact(0),
                 results: ResultCount::Exact(1),
@@ -5577,7 +5577,7 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
         ),
         (
             "arith.addi",
-            AssemblyProgram::BinaryOperands,
+            AssemblyProgram::ArithAddi,
             OperationSchema {
                 operands: OperandCount::Exact(2),
                 results: ResultCount::Exact(1),
@@ -5592,7 +5592,7 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
         ),
         (
             "func.return",
-            AssemblyProgram::OptionalTypedOperands,
+            AssemblyProgram::FuncReturn,
             OperationSchema {
                 operands: OperandCount::Variadic,
                 results: ResultCount::Exact(0),
@@ -5607,7 +5607,7 @@ fn registration_rejects_wrong_fixed_descriptor_metadata() {
         ),
         (
             "cf.br",
-            AssemblyProgram::TypedSuccessor,
+            AssemblyProgram::CfBr,
             OperationSchema {
                 operands: OperandCount::Exact(0),
                 results: ResultCount::Exact(0),

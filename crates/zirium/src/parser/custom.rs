@@ -17,7 +17,7 @@ impl DialectParser<'_, '_> {
             .assembly
             .expect("validated assembly program")
         {
-            AssemblyProgram::Module => {
+            AssemblyProgram::BuiltinModule => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
                 self.parser.trivia()?;
                 if self.parser.at(TokenKind::AtIdentifier) {
@@ -41,7 +41,7 @@ impl DialectParser<'_, '_> {
                 }
                 self.complete_operation(good)
             }
-            AssemblyProgram::Function => {
+            AssemblyProgram::FuncFunc => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
                 self.parser.trivia()?;
                 if self.parser.at(TokenKind::BareIdentifier)
@@ -79,7 +79,7 @@ impl DialectParser<'_, '_> {
                 }
                 self.complete_operation(good)
             }
-            AssemblyProgram::Call => {
+            AssemblyProgram::FuncCall => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
                 self.parser.trivia()?;
                 good &= self.parser.symbol_reference()?;
@@ -95,7 +95,7 @@ impl DialectParser<'_, '_> {
                 self.parser.function_type()?;
                 self.complete_operation(good)
             }
-            AssemblyProgram::ConditionalBranch => {
+            AssemblyProgram::CfCondBr => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
                 self.parser.trivia()?;
                 good &= self.parse_operand()?;
@@ -119,8 +119,8 @@ impl DialectParser<'_, '_> {
                 }
                 self.complete_operation(good)
             }
-            AssemblyProgram::TypedAttribute => self.parse_zero_operand_constant(),
-            AssemblyProgram::BinaryOperands => {
+            AssemblyProgram::ArithConstant => self.parse_zero_operand_constant(),
+            AssemblyProgram::ArithAddi => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
                 self.parser.trivia()?;
                 for index in 0..2 {
@@ -165,7 +165,7 @@ impl DialectParser<'_, '_> {
                 good &= self.parser.type_syntax(0)?;
                 self.complete_operation(good)
             }
-            AssemblyProgram::OptionalTypedOperands => {
+            AssemblyProgram::FuncReturn => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
                 self.parser.trivia()?;
                 let mut operand_count = 0;
@@ -203,7 +203,7 @@ impl DialectParser<'_, '_> {
                 }
                 self.complete_operation(good)
             }
-            AssemblyProgram::TypedSuccessor => {
+            AssemblyProgram::CfBr => {
                 let mut good = self.parser.expect(TokenKind::BareIdentifier)?;
                 self.parser.trivia()?;
                 let list = self.parser.builder.start();
