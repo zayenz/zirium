@@ -7,33 +7,35 @@ description: Research MLIR dialects in the user's repository and create or refin
 
 ## Goal
 
-Work in the repository where this skill was installed. Produce a small, working
-Zirium registry configuration based on its dialect definitions and emitted MLIR.
-Distinguish MLIR's custom assembly format from Zirium's `operation_formats` and
-reusable operation shapes.
+In the repository or input set the user identifies, produce a small, working
+Zirium registry configuration based on real dialect definitions and emitted
+MLIR. Distinguish MLIR's custom assembly format from Zirium's
+`operation_formats` and reusable operation shapes.
 
-Do not require a Zirium source checkout or executable, inspect locally installed
-Zirium files, install or upgrade Zirium, change Zirium itself, or copy files
-into Zirium's repository unless the user explicitly changes the task's scope.
+Do not require a Zirium source checkout or executable, install or upgrade
+Zirium, change Zirium itself, or copy files into a Zirium checkout unless the
+user explicitly makes that part of the task.
 
-Zirium's format support is under active development. Before designing formats,
-open the latest [custom-format documentation on
-GitHub](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md).
-Follow its links to current registry examples, APIs, or tests when useful. Use
-the latest documentation as the design baseline rather than assumptions encoded
-in this skill, but do not treat an omitted feature as a permanent exclusion.
+Zirium's format support evolves quickly. Determine the Zirium version selected
+by the target project when possible, then consult the matching documentation or
+source. For the current format model, start with the [custom-format guide on
+GitHub](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md) and
+follow its links to registry examples, APIs, and focused tests. If the project
+uses an older release, verify that any current feature you rely on exists in
+that release.
 
 ## Start with the user
 
-Inspect the repository to learn whether it uses Zirium through Rust, Python, the
-CLI, or has not integrated it yet. Dependency manifests and existing code are
-enough; do not inspect installed packages or executables.
+Identify the target repository or MLIR input set from the user's request. If it
+is ambiguous, ask before writing files. Inspect dependency manifests, lockfiles,
+existing code, and commands to learn whether the project uses Zirium through
+Rust, Python, the CLI, or has not integrated it yet, and which version it uses.
 
 Scan enough of the repository to ask concrete questions, then ask the user before choosing formats:
 
 - Which dialects or operations matter first, and is the goal a representative subset or broad coverage?
 - Where are representative `.mlir` files or commands that emit them, including important syntax variants?
-- How will this repository use Zirium: Rust, Python, or CLI? What must work—parsing, semantic inspection, queries, editing, custom output, or round trips—and where should the registry live?
+- How will the project use Zirium: Rust, Python, or CLI? What must work—parsing, semantic inspection, queries, editing, custom output, or round trips—and where should the registry live?
 
 Ask follow-up questions when the source and examples disagree or an optional
 form changes the appropriate registration. Do not silently choose a narrower
@@ -62,10 +64,12 @@ rg -n --glob '*.mlir' --glob '*.td' 'DIALECT_PREFIX|OP_CLASS' PATH
 
 ## Choose a Zirium format
 
-Use the latest GitHub documentation to map the dialect syntax to Zirium. If a
-capability remains unclear, inspect the linked Zirium registry examples and
-focused source or tests on GitHub. Do not inspect a local installation, and do
-not assume Zirium accepts the full MLIR ODS `assemblyFormat` language.
+Use documentation that matches the project's Zirium version to map the dialect
+syntax to Zirium. If a capability remains unclear, inspect focused registry
+examples, source, or tests for that version. A local Zirium checkout may be used
+when it is already the project's dependency or the user points to it; do not
+assume one exists. Zirium does not necessarily accept the full MLIR ODS
+`assemblyFormat` language.
 
 For each operation, choose the smallest current mechanism that matches the required examples:
 
@@ -82,7 +86,7 @@ directives, properties, and contextual type inference.
 
 ## Implement and check
 
-Create or update the user-requested registry JSON in the current repository,
+Create or update the user-requested registry JSON in the target project,
 preserving unrelated entries. A typical starting point is:
 
 ```json
@@ -97,8 +101,9 @@ Validate through the repository's existing Zirium integration when one is alread
 - Test editing, custom output, or round trips only when they are part of the requested behavior.
 
 Do not install Zirium merely to validate the result. If no usable integration
-exists, check the JSON syntax and review it against the latest documentation,
-then give the user a focused Rust, Python, or CLI example to run later.
+exists, check the JSON syntax and review it against the appropriate
+documentation, then give the user a focused Rust, Python, or CLI example to run
+later.
 
 Use a few high-value examples rather than manufacturing a large test suite. When
 a form fails, reduce it to the smallest informative snippet, compare it with the

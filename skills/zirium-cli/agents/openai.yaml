@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zirium CLI"
+  short_description: "Query and edit MLIR with the Zirium CLI"
+  default_prompt: "Use $zirium-cli to inspect, query, report on, or edit textual MLIR with the installed Zirium command-line tool."

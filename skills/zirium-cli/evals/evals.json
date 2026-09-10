@@ -1,0 +1,30 @@
+{
+  "skill_name": "zirium-cli",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I have model.mlir using StableHLO. Give me a Zirium CLI command that reports a JSON histogram of operation names inside each func.func. I need scripts to fail if Zirium only partially understands custom syntax.",
+      "expected_output": "A command using the stablehlo preset, strict mode, map_by over functions, subtree traversal, names, tally, and JSON, with a concise explanation.",
+      "files": [],
+      "expectations": [
+        "The command passes both --preset stablehlo and --strict.",
+        "The query selects func.func operations and uses map_by with attr(\"sym_name\") as the key.",
+        "The per-function value query traverses the function body with children and subtree, then produces a names histogram with tally.",
+        "The result is explicitly emitted as JSON and the explanation identifies it as a per-function operation-name histogram."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Use Zirium to add analysis.tag=review to every arith.addi in input.mlir and save a complete edited MLIR document to tagged.mlir without overwriting the input. Explain how I should verify it.",
+      "expected_output": "A safe shell command that performs the edit in a do statement, emits the complete document once, redirects to a new file, verifies the semantic result strictly, and warns that printing may produce a non-minimal textual diff.",
+      "files": [],
+      "expectations": [
+        "The query selects arith.addi and calls set_attr(\"analysis.tag\", \"review\").",
+        "The edit runs in a do statement and a following emit prints the complete document once before shell redirection.",
+        "The command reads input.mlir and redirects stdout to tagged.mlir without overwriting input.mlir.",
+        "The verification advice checks command success or stderr and uses a strict negative Zirium query to confirm every addition has the requested value.",
+        "The answer warns that complete output can normalize unrelated textual presentation, so a diff need not contain only the attribute additions."
+      ]
+    }
+  ]
+}
