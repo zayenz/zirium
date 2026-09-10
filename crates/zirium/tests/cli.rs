@@ -93,13 +93,10 @@ fn explicit_stdin_path_works() {
     assert_eq!(output.stdout, b"4\n");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
-fn cli_accepts_non_utf8_paths_and_closed_output_pipes() {
-    use std::os::{
-        fd::OwnedFd,
-        unix::{ffi::OsStringExt, net::UnixStream},
-    };
+fn cli_accepts_non_utf8_paths() {
+    use std::os::unix::ffi::OsStringExt;
 
     let path = std::env::temp_dir().join(std::ffi::OsString::from_vec(
         format!("zirium-path-{}-", std::process::id())
@@ -117,7 +114,12 @@ fn cli_accepts_non_utf8_paths_and_closed_output_pipes() {
     fs::remove_file(path).unwrap();
     assert!(output.status.success(), "{:?}", output.stderr);
     assert_eq!(output.stdout, b"4\n");
+}
 
+#[cfg(unix)]
+#[test]
+fn cli_handles_closed_output_pipes() {
+    use std::os::{fd::OwnedFd, unix::net::UnixStream};
     for args in [
         vec!["--help"],
         vec!["--version"],
