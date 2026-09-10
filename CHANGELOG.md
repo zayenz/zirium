@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Avoid repeated whole-document scans when printing selected operations and
+  their trailing comments.
+- Reject stale or foreign selection handles before writing output.
+- Accept `-` for CLI standard input and native file paths; exit quietly when
+  a downstream pipe closes.
+- Count ancestor visits against query work limits and select extrema without
+  sorting the whole stream.
+- Include complex types in Python's type declarations.
+- Clarify release lockfile updates, query evaluation costs, and independent
+  installation of the agent skills.
+
 ## 0.0.13
 
 Zirium 0.0.13 expands structural queries and declarative custom-operation

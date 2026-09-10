@@ -6,6 +6,11 @@ recorded runs and implementation revisions. They are useful for comparisons on
 the same hardware and compiler; they are not performance guarantees for the
 current checkout.
 
+For CLI selection output, run
+`python3 python/benchmarks/selection_printing_benchmark.py` after building the
+release binary. The [0.1.0 review](release-0.1.0-review.md) records the fixture,
+before/after measurements, and remaining cost boundaries.
+
 ## Parser design
 
 The parser stores transient events in four bytes, compacts them directly into a

@@ -359,6 +359,13 @@ their identity across commits. Erased operation handles raise
 `StaleHandleError` when used. A handle from another document raises
 `ForeignHandleError`.
 
+Python edit specifications copy existing semantic values: `AttributeSpecHandle`
+wraps an existing attribute, and `OperationSpec` takes existing types and values
+from the same document. They do not parse fresh type or attribute strings.
+Insertion supports regionless operations and returns no provisional handle;
+look up the inserted operation after the context commits. Use the Rust API when
+the task needs richer construction through `TypeSpec` and `AttributeSpec`.
+
 Source-preserving output remains available after edits that can map back to an
 existing operation or block, such as the attribute replacement above. It copies
 unedited ranges directly and regenerates dirty ranges. Inserting or erasing an
