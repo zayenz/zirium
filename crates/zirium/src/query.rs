@@ -26,7 +26,8 @@ pub struct Query {
 }
 
 /// Bounds evaluation work and the number of items in any one stream.
-/// Work counts stage inputs and dependency/subtree visits, not wall-clock time.
+/// Work counts stage inputs and dependency, ancestor, and subtree visits,
+/// not wall-clock time.
 #[derive(Clone, Copy, Debug)]
 pub struct EvaluationLimits {
     pub max_work: usize,
@@ -381,7 +382,8 @@ fn evaluate_pipeline(
             }
             parser::Stage::Root { predicate, .. } => {
                 let selected = take_operations(current, "root")?;
-                current = QueryOutput::Operations(evaluate_root(document, &selected, predicate));
+                current =
+                    QueryOutput::Operations(evaluate_root(document, &selected, predicate, budget)?);
             }
             parser::Stage::Subtree { .. } => {
                 let selected = take_operations(current, "subtree")?;
@@ -1001,20 +1003,21 @@ fn evaluate_root(
     document: &Document,
     selected: &[OperationId],
     predicate: &parser::Predicate,
-) -> Vec<OperationId> {
-    selected
-        .iter()
-        .filter_map(|&operation| {
-            let mut candidate = Some(operation);
-            while let Some(operation) = candidate {
-                if evaluate_predicate(predicate, document, operation) {
-                    return Some(operation);
-                }
-                candidate = operation_parent(document, operation);
+    budget: &mut EvaluationState,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    let mut roots = Vec::new();
+    for &operation in selected {
+        let mut candidate = Some(operation);
+        while let Some(operation) = candidate {
+            budget.charge(1)?;
+            if evaluate_predicate(predicate, document, operation) {
+                roots.push(operation);
+                break;
             }
-            None
-        })
-        .collect()
+            candidate = operation_parent(document, operation);
+        }
+    }
+    Ok(roots)
 }
 
 fn operation_parent(document: &Document, operation: OperationId) -> Option<OperationId> {

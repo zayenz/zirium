@@ -93,6 +93,18 @@ fn explicit_stdin_path_works() {
     assert_eq!(output.stdout, b"4\n");
 }
 
+#[test]
+fn ancestor_traversal_consumes_the_work_budget() {
+    let input = "module { func.func @f() { return } }";
+    let output = run_stdin_with_options(&["--max-work", "4"], "root(false) | count", input);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("work limit"));
+    let output = run_stdin_with_options(&["--max-work", "100"], "root(false) | count", input);
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"0\n");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn cli_accepts_non_utf8_paths() {
