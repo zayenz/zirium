@@ -88,7 +88,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, `vector`, `wasmssa`, `x86vector`, and `xegpu` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, `vector`, `wasmssa`, `x86vector`, `xegpu`, and `xevm` presets were checked against
 LLVM 22.1.0.
 TOSA registers 91 of the 94 operations defined by its main, utility, and shape
 operation files. `tosa.variable`, `tosa.variable_read`, and
@@ -1401,6 +1401,42 @@ barrier semantics, type inference, target checks, or execution semantics. The
 recurring mixed-index and property-dictionary forms may justify generic format
 features once those features can preserve operand and attribute roles without
 adding dialect-specific parsing.
+
+XeVM defines exactly 23 concrete `xevm.*` operations in LLVM 22.1
+`XeVMOps.td`. The GPU-to-XeVM conversion pipeline, target translation, and
+target-interface registration are not operations and are outside this
+inventory. The preset registers `xevm.blockload` and `xevm.blockload2d`.
+Both spell every operand and result type in a complete functional trailer, so
+the clause shape exposes their SSA operands, result, ordinary attributes, and
+property dictionaries without inference. Their load-cache-control attributes
+remain opaque values while retaining their full spelling.
+
+The other 21 operations remain on whole-operation recovery:
+
+- `xevm.blockstore`, `xevm.blockstore2d`, `xevm.prefetch`, and
+  `xevm.blockprefetch2d` have property dictionaries and parenthesized
+  operand-only type trailers. The current clause shape requires a result side
+  for a parenthesized function trailer, while the typed-operand shape cannot
+  retain properties.
+- `xevm.mma` has a complete heterogeneous functional type, but its optional
+  accumulator and required inline `shape = <...>` and `types = <...>` payloads
+  do not fit an ordinary attribute dictionary. Treating those payloads as
+  generic punctuation would lose their attribute roles.
+- `xevm.memfence` consists of memory-scope and address-space properties with no
+  type trailer. The 15 `local_id.*`, `local_size.*`, `group_id.*`,
+  `group_count.*`, `lane_id`, `subgroup_id`, and `subgroup_size` operations
+  spell a result type but may insert an optional `range` attribute first.
+  Registering only their shorter spelling would make the complete standard
+  form a shape mismatch rather than an unknown operation recovered as a unit.
+
+No XeVM operation owns a region or successor or has a symbol role. XeVM defines
+no dialect types; unknown `!xevm.*` types and all `#xevm.*` attributes,
+including cache controls, scopes, address spaces, MMA descriptors, and target
+attributes, remain balanced opaque dialect values. The preset adds no XeVM
+verification, property interpretation, memory semantics, target checks, type
+inference, translation, or execution semantics. Operand-only property forms
+may justify a generic extension when another dialect demonstrates the same
+need; XeVM alone does not warrant the added parser surface.
 
 SparseTensor defines 37 operations in LLVM 22.1, excluding the separate
 Transform dialect extension. The preset registers 10 exact forms. `new`,

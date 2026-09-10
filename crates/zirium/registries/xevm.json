@@ -1,0 +1,14 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "xevm.blockload", "shape": "operand_clauses"},
+    {"name": "xevm.blockload2d", "shape": "operand_clauses"}
+  ],
+  "operation_formats": []
+}

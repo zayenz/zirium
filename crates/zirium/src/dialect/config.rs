@@ -90,6 +90,7 @@ const PRESET_NAMES: &[&str] = &[
     "wasmssa",
     "x86vector",
     "xegpu",
+    "xevm",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -141,6 +142,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "wasmssa" => Some(include_str!("../../registries/wasmssa.json")),
         "x86vector" => Some(include_str!("../../registries/x86vector.json")),
         "xegpu" => Some(include_str!("../../registries/xegpu.json")),
+        "xevm" => Some(include_str!("../../registries/xevm.json")),
         _ => None,
     }
 }

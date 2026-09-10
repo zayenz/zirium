@@ -9532,3 +9532,168 @@ fn xegpu_indexed_property_and_positional_forms_recover() {
         );
     }
 }
+
+#[test]
+fn xevm_preset_exposes_complete_memory_and_matrix_forms() {
+    assert!(DialectRegistry::preset_names().contains(&"xevm"));
+    let registry = DialectRegistry::from_name("xevm").unwrap();
+    let source = br#"module {
+      func.func @forms(%ptr: !llvm.ptr<1>, %width: i32, %height: i32,
+          %pitch: i32, %x: i32, %y: i32) {
+        %loaded = xevm.blockload %ptr
+          <{cache_control = #xevm.load_cache_control<L1uc_L2uc_L3uc>}>
+          {tag = "load"} : (!llvm.ptr<1>) -> vector<4xi16>
+        %tile = xevm.blockload2d %ptr, %width, %height, %pitch, %x, %y
+          <{elem_size_in_bits = 16 : i32, tile_width = 16 : i32,
+            tile_height = 8 : i32, v_blocks = 1 : i32, transpose = false,
+            pack_register = false}>
+          {tag = "load2d"} : (!llvm.ptr<1>, i32, i32, i32, i32, i32) -> vector<8xi16>
+        %opaque = "test.values"() {target = #xevm.target<O = 3, chip = "pvc">,
+          scope = #xevm.mem_scope<workgroup>} : () -> !xevm.opaque<"T">
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, signature, tag) in [
+        (
+            "xevm.blockload",
+            1,
+            1,
+            "(!llvm.ptr<1>) -> vector<4xi16>",
+            "\"load\"",
+        ),
+        (
+            "xevm.blockload2d",
+            6,
+            1,
+            "(!llvm.ptr<1>, i32, i32, i32, i32, i32) -> vector<8xi16>",
+            "\"load2d\"",
+        ),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(attribute, value)| attribute == "tag" && value == tag),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn xevm_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("xevm").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/xevm.json")).unwrap();
+    let supported = ["xevm.blockload", "xevm.blockload2d"];
+    let recovery = [
+        "xevm.blockstore",
+        "xevm.blockstore2d",
+        "xevm.memfence",
+        "xevm.prefetch",
+        "xevm.blockprefetch2d",
+        "xevm.mma",
+        "xevm.local_id.x",
+        "xevm.local_id.y",
+        "xevm.local_id.z",
+        "xevm.local_size.x",
+        "xevm.local_size.y",
+        "xevm.local_size.z",
+        "xevm.group_id.x",
+        "xevm.group_id.y",
+        "xevm.group_id.z",
+        "xevm.group_count.x",
+        "xevm.group_count.y",
+        "xevm.group_count.z",
+        "xevm.lane_id",
+        "xevm.subgroup_id",
+        "xevm.subgroup_size",
+    ];
+    assert_eq!(config.operation_shapes.len(), supported.len());
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(supported.len() + recovery.len(), 23);
+    for name in supported {
+        assert_eq!(
+            registry.operation_shape(name),
+            Some(OperationShape::OperandClauses),
+            "{name}"
+        );
+    }
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn xevm_operand_only_fence_matrix_and_range_forms_recover_at_boundaries() {
+    let registry = DialectRegistry::from_name("xevm").unwrap();
+    let source = br#"module {
+      func.func @gaps(%ptr: !llvm.ptr<1>, %value: vector<4xi32>,
+          %a: vector<8xi16>, %b: vector<8xi32>, %c: vector<8xf32>) {
+        xevm.blockstore %ptr, %value : (!llvm.ptr<1>, vector<4xi32>)
+        xevm.prefetch %ptr : (!llvm.ptr<1>)
+        xevm.memfence <{addrspace = #xevm.addr_space<global>,
+          scope = #xevm.mem_scope<workgroup>}>
+        %product = xevm.mma %a, %b, %c
+          {shape = <m = 8, n = 16, k = 16>,
+           types = <d = f32, a = f16, b = f16, c = f32>} :
+          (vector<8xi16>, vector<8xi32>, vector<8xf32>) -> vector<8xf32>
+        %id = xevm.local_id.x range #llvm.constant_range<0, 64> : i32
+        %size = xevm.subgroup_size : i64
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name)),
+            "{name}"
+        );
+    }
+}
