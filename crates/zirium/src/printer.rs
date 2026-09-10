@@ -133,6 +133,8 @@ impl Document {
 
     /// Prints selected operations with the operation, region, and block shells
     /// that contain them. Unselected siblings are omitted.
+    ///
+    /// Rejects stale or foreign operation handles before writing any output.
     pub fn write_selection<W: io::Write>(
         &self,
         sink: &mut W,
@@ -140,6 +142,10 @@ impl Document {
         layout: PrintLayout,
         registry: &DialectRegistry,
     ) -> Result<(), PrintError> {
+        for &operation in selected {
+            self.check_operation(operation)
+                .map_err(|error| PrintError::UnsafeSelection(error.to_string()))?;
+        }
         let mut selected = selected.iter().copied().collect::<HashSet<_>>();
         let mut worklist = selected.iter().copied().collect::<Vec<_>>();
         while let Some(operation) = worklist.pop() {

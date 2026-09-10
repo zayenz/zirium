@@ -212,6 +212,28 @@ fn strict_document(source: &str) -> zirium::semantic::Document {
 }
 
 #[test]
+fn selection_rejects_foreign_and_erased_handles_before_writing() {
+    let mut document = strict_document("\"keep\"() : () -> ()\n\"erase\"() : () -> ()");
+    let foreign = strict_document("\"other\"() : () -> ()").root_operations()[0];
+    let erased = document.root_operations()[1];
+    let registry = DialectRegistry::EMPTY;
+    let mut edit = document.edit(&registry).unwrap();
+    edit.erase(erased).unwrap();
+    edit.commit().unwrap();
+    for invalid in [foreign, erased] {
+        let mut output = Vec::new();
+        let result = document.write_selection(
+            &mut output,
+            &[document.root_operations()[0], invalid],
+            PrintLayout::Pretty,
+            &DialectRegistry::EMPTY,
+        );
+        assert!(matches!(result, Err(PrintError::UnsafeSelection(_))));
+        assert!(output.is_empty());
+    }
+}
+
+#[test]
 fn structural_equality_ignores_source_spelling_and_formatting() {
     let first = strict_document(
         r#"%first = "producer"() : () -> i32
