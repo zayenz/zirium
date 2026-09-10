@@ -15,11 +15,12 @@ use crate::{
 
 pub mod lexer;
 pub mod parser;
+mod render;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
     expression: parser::Expression,
-    bindings: Vec<(String, parser::Expression)>,
+    statements: Vec<parser::Statement>,
 }
 
 /// Bounds evaluation work and the number of items in any one stream.
@@ -76,6 +77,7 @@ pub enum QueryOutput {
     Count(usize),
     Map(serde_json::Map<String, serde_json::Value>),
     Json(String),
+    Text(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,7 +147,7 @@ impl Query {
             .expect("diagnostic-free query has a program");
         Ok(Self {
             expression: program.expression,
-            bindings: program.bindings,
+            statements: program.statements,
         })
     }
 
@@ -175,8 +177,12 @@ impl Query {
             max_items: limits.max_items,
         };
         let input = QueryOutput::Operations(budget.collect(document.operations())?);
-        for (name, expression) in &self.bindings {
-            let value = evaluate_expression(
+        for statement in &self.statements {
+            let expression = match statement {
+                parser::Statement::Binding { expression, .. }
+                | parser::Statement::Query(expression) => expression,
+            };
+            let output = evaluate_expression(
                 expression,
                 document,
                 registry,
@@ -184,7 +190,15 @@ impl Query {
                 &mut emit,
                 &mut budget,
             )?;
-            budget.bindings.insert(name.clone(), value);
+            match statement {
+                parser::Statement::Binding { name, .. } => {
+                    budget.bindings.insert(name.clone(), output);
+                }
+                parser::Statement::Query(_) if !expression.ends_with_emission() => {
+                    emit(document, output)?
+                }
+                parser::Statement::Query(_) => {}
+            }
         }
         let output = evaluate_expression(
             &self.expression,
@@ -428,7 +442,10 @@ fn evaluate_pipeline(
                     )?;
                     if matches!(
                         next,
-                        QueryOutput::Count(_) | QueryOutput::Json(_) | QueryOutput::Map(_)
+                        QueryOutput::Count(_)
+                            | QueryOutput::Json(_)
+                            | QueryOutput::Text(_)
+                            | QueryOutput::Map(_)
                     ) {
                         return Err(EvaluationError::new(
                             "fixpoint requires an operation or value stream",
@@ -496,6 +513,15 @@ fn evaluate_pipeline(
             }
             parser::Stage::Count { .. } => return Ok(QueryOutput::Count(output_len(&current))),
             parser::Stage::Emit { .. } => emit(document, current.clone())?,
+            parser::Stage::Markdown { .. } => {
+                emit(
+                    document,
+                    QueryOutput::Text(render::markdown(&current, budget)?),
+                )?;
+            }
+            parser::Stage::Print { parts, .. } => {
+                emit(document, QueryOutput::Text(render::print(parts, budget)?))?;
+            }
             parser::Stage::Json { .. } => emit(
                 document,
                 QueryOutput::Json(output_json(document, &current)?),
@@ -544,7 +570,7 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Operations(selected) => selected.len(),
         QueryOutput::Values(values) => values.len(),
         QueryOutput::Map(values) => values.len(),
-        QueryOutput::Count(_) | QueryOutput::Json(_) => 1,
+        QueryOutput::Count(_) | QueryOutput::Json(_) | QueryOutput::Text(_) => 1,
     }
 }
 
@@ -799,7 +825,9 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
         QueryOutput::Values(values) => serde_json::json!(values),
         QueryOutput::Map(values) => serde_json::Value::Object(values.clone()),
         QueryOutput::Count(count) => serde_json::json!(count),
-        QueryOutput::Json(value) => serde_json::Value::String(value.clone()),
+        QueryOutput::Json(value) | QueryOutput::Text(value) => {
+            serde_json::Value::String(value.clone())
+        }
     }
 }
 

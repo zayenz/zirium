@@ -264,3 +264,13 @@ operations. Add `reachable |` before `names` to include supported callees'
 bodies, counting shared operations once. See
 [bindings and aggregation](query-language.md#naming-intermediate-results) for
 the evaluation rules and the distinction between body and reachable counts.
+
+For a Markdown report with an interpolated function count and explanatory text:
+
+```sh
+zirium --preset stablehlo --strict \
+  -f examples/cli/function-report.zirium examples/cli/stablelm-decode.mlir
+```
+
+See [Markdown and text reports](query-language.md#writing-reports-with-markdown-and-text)
+for supported table shapes and interpolation rules.

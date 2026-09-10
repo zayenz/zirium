@@ -75,12 +75,13 @@ The final expression also starts with all operations.
 Names use ASCII letters, digits, and underscores, starting with a letter or
 underscore. Stage names, predicate names, and language keywords are reserved.
 Bindings cannot be reassigned, refer forward, or refer to themselves. Each
-binding needs a trailing semicolon, followed by one final expression.
+binding needs a trailing semicolon. Query statements may follow bindings or
+appear between them.
 
 Bindings preserve order and duplicates. Saved operations refer to the live
 document, so later edits are visible through those operations. Projected strings
 and aggregates retain their saved values. Bindings cannot edit or emit; put
-those stages in the final expression. Use `union` to combine saved selections;
+those stages in a query statement. Use `union` to combine saved selections;
 `or` combines predicates inside `filter`.
 
 ## Counting values and building maps
@@ -132,6 +133,77 @@ the same representation as `json`. For example, replace `names | tally` with
 histogram. Maps can be nested. Key and value queries cannot edit or emit.
 Bindings used inside them still restore their saved results; they do not
 become queries relative to the current function.
+
+## Writing reports with Markdown and text
+
+Use `markdown` to emit a table from a histogram or a map of histograms.
+Use `print("text")` for headings and explanatory text between results:
+
+```zirium
+functions = filter(op("func.func"));
+n = functions | count;
+
+print("# Function operation report");
+print("");
+print("Functions inspected: {n}");
+functions
+| map_by(attr("sym_name"), children | subtree | names | tally)
+| markdown;
+print("Counts describe explicitly represented operations.");
+```
+
+Each semicolon ends a statement. Statements run in order, and each query
+statement starts with every operation in the current document. Its result is
+implicitly emitted unless it ends with an explicit emitter. Bindings may appear
+between query statements; they are evaluated where written and never emit.
+The final query statement may omit its semicolon. A program containing bindings
+still needs a query statement after its last binding.
+
+`print` appends a newline. It leaves the current stream unchanged, so it also
+works inside a pipeline. A final `print` suppresses implicit output, just like
+a final `json` or `markdown`. Use `print("")` for a blank line. Template
+strings can span actual lines; the string escape rules below still apply.
+
+Interpolation uses `{name}`, where `name` is an earlier binding containing a
+count or exactly one string. Empty or multiple strings, maps, and operation
+selections produce a diagnostic: project or count them first. Interpolation
+does not evaluate expressions or traverse map fields. Write `{{` and `}}`
+for literal braces. Inserted values are plain text, with no Markdown escaping
+and no further interpolation.
+
+The Markdown emitter supports these shapes:
+
+| Input | Output |
+| --- | --- |
+| String stream | A one-column table headed `Value`, preserving order and duplicates. |
+| Map of scalars | A `Key` / `Value` table. |
+| Map of maps of scalars | Outer keys become rows; the union of inner keys becomes columns. |
+| Saved count | The number as a paragraph. |
+| Empty stream or map | The paragraph *No entries.* |
+
+For example, `{"a": {"add": 2}, "b": {"add": 1, "mul": 3}}` renders as:
+
+| Key | add | mul |
+| --- | --- | --- |
+| a | 2 | |
+| b | 1 | 3 |
+
+Map rows and columns are sorted lexically. Missing cells are blank, not inferred
+to be zero. Scalars are strings, numbers, booleans, or null; null also produces
+a blank cell. An inner map with no keys contributes a row with blank cells.
+If all inner maps are empty, the table has only its `Key` column.
+
+Operation streams, mixed scalar/map rows, arrays inside maps, and deeper maps
+produce a shape diagnostic. Use `names`, `tally`, or `map_by` to form a
+table, or use `json` for deeper data. The diagnostic identifies the offending
+entry or cell when possible.
+
+`markdown` preserves the current result, as `json` does. It surrounds its
+output with blank lines, escapes Markdown and HTML characters in cells, and
+renders embedded newlines as `<br>`. The table uses GitHub-flavored Markdown.
+The expanded table, including missing cells and headers, must fit
+`--max-items`; emitted text also consumes `--max-work`. A late shape or
+interpolation error leaves CLI stdout empty, including earlier `print` output.
 
 ## Counting reachable operations
 
@@ -453,11 +525,11 @@ filter(op("arith.addi")) | emit | users
 
 This prints the adds, then their users. Each explicit emission captures the
 document at that point, before later edits. An implicit final emission prints
-the result unless the program ends with an explicit `emit`, including inside
+the result unless the query statement ends with an explicit emitter, including inside
 a final group. `emit | emit` therefore prints twice, while `emit` prints once.
 Nested queries do not implicitly reset to `input` or emit their results. A fixed-point
 body ending in `emit` emits each iteration; the enclosing program still emits
-its final result unless it ends with an explicit `emit`.
+its final result unless the statement ends with an explicit emitter.
 
 `count` prints the stream's size followed by a newline. It is terminal;
 no stage may follow it. To emit a fragment and then count it, use `emit | count`.
@@ -479,11 +551,12 @@ emission callback and can choose their own buffering policy.
 ## Grammar and diagnostics
 
 ```text
-program    = [ { binding } query ]
+program    = [ { binding | query ";" } query [ ";" ] ]
 binding    = identifier "=" query ";"
 query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
-stage      = identifier | "tally" | "map_by" "(" query "," query ")"
+stage      = identifier | "markdown" | "print" "(" string ")"
+           | "tally" | "map_by" "(" query "," query ")"
            | "input" | "filter" "(" predicate ")"
            | ("defs" | "users") [ "(" integer ")" ]
            | "parent" | "children" | "closure" | "slice" | "reachable"

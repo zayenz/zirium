@@ -1994,3 +1994,130 @@ fn reachable_counts_shared_and_recursive_callee_bodies_once() {
         );
     }
 }
+
+#[test]
+fn markdown_reports_combine_statements_interpolation_and_sparse_tables() {
+    let source = r#"module {
+      func.func @a() { func.return }
+      func.func @b() { %x = arith.constant 1 : i32
+        func.return }
+    }"#;
+    let query = r##"F = filter(op("func.func"));
+        N = F | count;
+        print("# Report");
+        print("{N} functions");
+        F | map_by(attr("sym_name"), children | names | tally) | markdown;
+        print("{{done}}");
+    "##;
+    let output = run_stdin(query, source);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "# Report\n2 functions\n\n| Key | arith.constant | func.return |\n| --- | --- | --- |\n| a |  | 1 |\n| b | 1 | 1 |\n\n{done}\n"
+    );
+
+    // Each statement starts from the document; declarations run where written.
+    let output = run_stdin(
+        r#"filter(op("func.func")) | set_attr("tag", "marked") | count;
+           T = filter(op("func.func")) | attr("tag") | unique;
+           print("Tag: {T}");
+           filter(op("func.return")) | names | tally | markdown;
+           N = count; print("Total: {N}");"#,
+        source,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "2\nTag: marked\n\n| Key | Value |\n| --- | --- |\n| func.return | 2 |\n\nTotal: 6\n"
+    );
+}
+
+#[test]
+fn markdown_escapes_cells_and_rejects_unsuitable_shapes_atomically() {
+    let output = run_stdin(
+        r#"attr("tag") | markdown"#,
+        r#""test.op"() {tag = "a|b\5C<em>\0A*x*"} : () -> ()"#,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "\n| Value |\n| --- |\n| a\\|b\\\\&lt;em&gt;<br>\\*x\\* |\n\n"
+    );
+    for query in [
+        "filter(false) | names | markdown",
+        "filter(false) | names | tally | markdown",
+    ] {
+        let output = run_stdin(query, "module {}");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"\n_No entries._\n\n");
+    }
+    for (query, error) in [
+        (r#"print("prefix"); input | markdown"#, "markdown requires"),
+        (r#"map_by(names, names) | markdown"#, "incompatible shape"),
+        (
+            r#"map_by(names, map_by(names, names)) | markdown"#,
+            "expected a scalar",
+        ),
+        (
+            r#"N = names | tally; print("{N}")"#,
+            "requires a count or exactly one string",
+        ),
+        (
+            r#"N = filter(false) | names; print("{N}")"#,
+            "requires a count or exactly one string",
+        ),
+        (
+            r#"print("{later}"); later = count; later"#,
+            "earlier binding",
+        ),
+        (r#"print("{broken")"#, "unclosed interpolation"),
+        (r#"print("broken}")"#, "unmatched closing brace"),
+        (r#"X = print("bad"); X"#, "cannot edit or emit"),
+        (r#"X = names | markdown; X"#, "cannot edit or emit"),
+        (r#"map_by(names, markdown)"#, "cannot edit or emit"),
+    ] {
+        let output = run_stdin(query, "module {}");
+        assert!(!output.status.success(), "{query}");
+        assert!(output.stdout.is_empty(), "{query}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(error),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn markdown_bounds_the_dense_table_from_sparse_histograms() {
+    let mut source = String::from("module {");
+    for i in 0..20 {
+        source.push_str(&format!(
+            r#""test.op"() {{row = "r{i}", column = "c{i}"}} : () -> ()"#
+        ));
+    }
+    source.push('}');
+    let output = run_stdin_with_options(
+        &["--max-items", "100"],
+        r#"filter(op("test.op")) | map_by(attr("row"), attr("column") | tally) | markdown"#,
+        &source,
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("stream size limit"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

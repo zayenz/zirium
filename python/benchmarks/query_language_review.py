@@ -309,6 +309,36 @@ def aggregation_graph_probes():
     )
 
 
+def markdown_report_probes():
+    for n in [1, 32, 256, 1024]:
+        lines = ["module {"]
+        for i in range(n):
+            lines.append(f"func.func @f{i}(%arg: tensor<f32>) {{")
+            for j in range(i % 3 + 1):
+                lines.append(f"%v{j} = stablehlo.add %arg, %arg : tensor<f32>")
+            lines += ["func.return", "}"]
+        lines.append("}")
+        expected = (
+            f"Functions: {n}\n\n"
+            "| Key | func.return | stablehlo.add |\n"
+            "| --- | --- | --- |\n"
+            + "".join(
+                f"| f{i} | 1 | {i % 3 + 1} |\n"
+                for i in sorted(range(n), key=lambda i: f"f{i}")
+            )
+            + "\nDone.\n"
+        )
+        run(
+            f"markdown-report-{n}",
+            'F = filter(op("func.func")); N = F | count; '
+            'print("Functions: {N}"); '
+            'F | map_by(attr("sym_name"), children | names | tally) | markdown; '
+            'print("Done.");',
+            "\n".join(lines),
+            expected=expected,
+        )
+
+
 def main():
     decoder = (ROOT / "examples/cli/stablelm-decode.mlir").read_text()
     semantic_probes(decoder)
@@ -435,6 +465,7 @@ def main():
         dag(0, 3)[0],
     )
     aggregation_graph_probes()
+    markdown_report_probes()
     print(json.dumps(results, indent=2))
 
 

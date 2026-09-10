@@ -1,0 +1,13 @@
+functions = filter(op("func.func"));
+n = functions | count;
+
+print("# Function operation report");
+print("");
+print("Functions inspected: {n}");
+functions
+| map_by(
+    attr("sym_name"),
+    children | subtree | names | tally
+  )
+| markdown;
+print("Counts describe explicitly represented operations in each function body.");

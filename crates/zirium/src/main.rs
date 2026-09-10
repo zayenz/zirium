@@ -285,6 +285,7 @@ fn run() -> Result<(), String> {
                     QueryOutput::Count(_)
                         | QueryOutput::Values(_)
                         | QueryOutput::Json(_)
+                        | QueryOutput::Text(_)
                         | QueryOutput::Map(_)
                 );
                 match output {
@@ -313,7 +314,9 @@ fn run() -> Result<(), String> {
                         );
                         answer.push(b'\n');
                     }
-                    QueryOutput::Json(json) => answer.extend_from_slice(json.as_bytes()),
+                    QueryOutput::Json(json) | QueryOutput::Text(json) => {
+                        answer.extend_from_slice(json.as_bytes())
+                    }
                 }
                 answers.push((answer, scalar));
                 Ok(())

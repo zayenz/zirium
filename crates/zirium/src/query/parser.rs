@@ -16,8 +16,24 @@ pub enum SetOperator {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
-    pub bindings: Vec<(String, Expression)>,
+    pub statements: Vec<Statement>,
     pub(crate) expression: Expression,
+}
+
+/// Statements run in order before the final expression.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Statement {
+    Binding {
+        name: String,
+        expression: Expression,
+    },
+    Query(Expression),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrintPart {
+    Literal(String),
+    Binding(String),
 }
 
 impl Program {
@@ -61,7 +77,9 @@ impl Expression {
                 Stage::SetAttr { .. }
                 | Stage::RemoveAttr { .. }
                 | Stage::Emit { .. }
-                | Stage::Json { .. } => false,
+                | Stage::Json { .. }
+                | Stage::Markdown { .. }
+                | Stage::Print { .. } => false,
                 Stage::Group { expression, .. } | Stage::Fixpoint { expression, .. } => {
                     expression.is_read_only()
                 }
@@ -73,7 +91,10 @@ impl Expression {
     pub(crate) fn ends_with_emission(&self) -> bool {
         self.rest.is_empty()
             && self.first.last().is_some_and(|stage| match stage {
-                Stage::Emit { .. } | Stage::Json { .. } => true,
+                Stage::Emit { .. }
+                | Stage::Json { .. }
+                | Stage::Markdown { .. }
+                | Stage::Print { .. } => true,
                 Stage::Group { expression, .. } => expression.ends_with_emission(),
                 _ => false,
             })
@@ -147,6 +168,13 @@ impl Predicate {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
+    Markdown {
+        range: TextRange,
+    },
+    Print {
+        parts: Vec<PrintPart>,
+        range: TextRange,
+    },
     Binding {
         name: String,
         range: TextRange,
@@ -243,7 +271,9 @@ pub enum Stage {
 impl Stage {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Binding { range, .. }
+            Self::Markdown { range }
+            | Self::Print { range, .. }
+            | Self::Binding { range, .. }
             | Self::Tally { range }
             | Self::MapBy { range, .. }
             | Self::Reachable { range }
@@ -360,7 +390,7 @@ impl Parser<'_> {
         self.skip_trivia();
         if self.at(TokenKind::Eof) {
             return Some(Program {
-                bindings: Vec::new(),
+                statements: Vec::new(),
                 expression: Expression {
                     first: Vec::new(),
                     rest: Vec::new(),
@@ -368,41 +398,49 @@ impl Parser<'_> {
                 },
             });
         }
-        let mut bindings = Vec::new();
+        let mut statements = Vec::new();
         loop {
             self.skip_trivia();
             let next = self.tokens[self.cursor + 1..]
                 .iter()
                 .find(|token| token.kind() != TokenKind::Trivia);
-            if !self.at(TokenKind::Identifier)
-                || !next.is_some_and(|token| token.kind() == TokenKind::Equals)
+            if self.at(TokenKind::Identifier)
+                && next.is_some_and(|token| token.kind() == TokenKind::Equals)
             {
-                break;
+                let name = self.identifier_text()?;
+                if is_reserved(&name) || self.bindings.contains(&name) {
+                    self.error_at_previous("binding name is reserved or already defined");
+                    return None;
+                }
+                self.expect(TokenKind::Equals, "expected `=` after binding name")?;
+                let expression = self.expression(0)?;
+                if !expression.is_read_only() {
+                    self.error("bindings cannot edit or emit; use a separate query statement");
+                    return None;
+                }
+                self.expect(TokenKind::Semicolon, "expected `;` after binding")?;
+                self.bindings.insert(name.clone());
+                statements.push(Statement::Binding { name, expression });
+                continue;
             }
-            let name = self.identifier_text()?;
-            if is_reserved(&name) || self.bindings.contains(&name) {
-                self.error_at_previous("binding name is reserved or already defined");
-                return None;
-            }
-            self.expect(TokenKind::Equals, "expected `=` after binding name")?;
             let expression = self.expression(0)?;
-            if !expression.is_read_only() {
-                self.error("bindings cannot edit or emit; put output in the final expression");
-                return None;
+            self.skip_trivia();
+            if self.at(TokenKind::Semicolon) {
+                self.bump();
+                self.skip_trivia();
+                if !self.at(TokenKind::Eof) {
+                    statements.push(Statement::Query(expression));
+                    continue;
+                }
             }
-            self.expect(TokenKind::Semicolon, "expected `;` after binding")?;
-            self.bindings.insert(name.clone());
-            bindings.push((name, expression));
+            if !self.at(TokenKind::Eof) {
+                self.error("expected `|`, a set operator, `;`, or end of query");
+            }
+            return Some(Program {
+                statements,
+                expression,
+            });
         }
-        let expression = self.expression(0)?;
-        self.skip_trivia();
-        if !self.at(TokenKind::Eof) {
-            self.error("expected `|`, a set operator, or end of query");
-        }
-        Some(Program {
-            bindings,
-            expression,
-        })
     }
 
     fn expression(&mut self, depth: usize) -> Option<Expression> {
@@ -535,6 +573,17 @@ impl Parser<'_> {
             "count" => Stage::Count { range },
             "emit" => Stage::Emit { range },
             "json" => Stage::Json { range },
+            "markdown" => Stage::Markdown { range },
+            "print" => {
+                self.expect(TokenKind::LParen, "expected `(` after print")?;
+                let (template, _) = self.string("expected a print template string")?;
+                self.expect(TokenKind::RParen, "expected `)` after print template")?;
+                let parts = self.print_parts(&template)?;
+                Stage::Print {
+                    parts,
+                    range: self.span(start),
+                }
+            }
             "names" => Stage::Names { range },
             "result_types" => Stage::ResultTypes { range },
             "operand_types" => Stage::OperandTypes { range },
@@ -865,6 +914,54 @@ impl Parser<'_> {
         })
     }
 
+    fn print_parts(&mut self, template: &str) -> Option<Vec<PrintPart>> {
+        let mut parts = Vec::new();
+        let mut literal = String::new();
+        let mut chars = template.chars().peekable();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '{' | '}' if chars.peek() == Some(&ch) => {
+                    chars.next();
+                    literal.push(ch);
+                }
+                '{' => {
+                    let mut name = String::new();
+                    loop {
+                        match chars.next() {
+                            Some('}') => break,
+                            Some(ch) => name.push(ch),
+                            None => {
+                                self.error_at_previous(
+                                    "unclosed interpolation; use {name} or {{ for a literal brace",
+                                );
+                                return None;
+                            }
+                        }
+                    }
+                    if !self.bindings.contains(&name) {
+                        self.error_at_previous(
+                            "interpolation requires the name of an earlier binding",
+                        );
+                        return None;
+                    }
+                    if !literal.is_empty() {
+                        parts.push(PrintPart::Literal(std::mem::take(&mut literal)));
+                    }
+                    parts.push(PrintPart::Binding(name));
+                }
+                '}' => {
+                    self.error_at_previous("unmatched closing brace; use }} for a literal brace");
+                    return None;
+                }
+                _ => literal.push(ch),
+            }
+        }
+        if !literal.is_empty() {
+            parts.push(PrintPart::Literal(literal));
+        }
+        Some(parts)
+    }
+
     fn string(&mut self, message: &'static str) -> Option<(String, TextRange)> {
         self.skip_trivia();
         if !self.at(TokenKind::String) {
@@ -1013,6 +1110,8 @@ fn is_reserved(name: &str) -> bool {
             | "count"
             | "emit"
             | "json"
+            | "markdown"
+            | "print"
             | "tally"
             | "map_by"
             | "union"

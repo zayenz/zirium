@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a `markdown` emitter for value lists, scalar maps, and maps of scalar maps,
+  with escaped cells, sparse columns, shape diagnostics, and table size bounds.
+- Add `print("text {binding}")` for report text with count or single-string
+  interpolation. Allow semicolon-separated query statements interleaved with
+  immutable bindings; each query statement starts from the document.
+
 - Add immutable query bindings, value histograms with `tally`, and per-operation
   maps with `map_by(key, value)`. Maps support nested JSON output and bounded
   aggregate size.
