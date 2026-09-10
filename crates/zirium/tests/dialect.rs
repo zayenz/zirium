@@ -9310,3 +9310,225 @@ fn x86vector_preset_inventory_and_recovery_match_llvm_22_1() {
             .any(|operation| { document.operation_name(operation) == Some("test.after") })
     );
 }
+
+#[test]
+fn xegpu_preset_exposes_complete_functional_and_barrier_forms() {
+    assert!(DialectRegistry::preset_names().contains(&"xegpu"));
+    let registry = DialectRegistry::from_name("xegpu").unwrap();
+    let source = br#"module {
+      func.func @forms(
+          %base: ui64, %offsets: vector<16xindex>,
+          %lhs: vector<8x16xf16>, %rhs: vector<16x16xf16>,
+          %acc: vector<8x16xf32>, %id: i8, %count: i8,
+          %slm: memref<4096xi8, 3>) {
+        %desc = xegpu.create_tdesc %base, %offsets {tag = "descriptor"} :
+          ui64, vector<16xindex> -> !xegpu.tensor_desc<16xf32, #xegpu.scatter_tdesc_attr<>>
+        %product = xegpu.dpas %lhs, %rhs, %acc
+          {tag = "dpas", policy = #xegpu.cache_hint<cached>} :
+          vector<8x16xf16>, vector<16x16xf16>, vector<8x16xf32> -> vector<8x16xf32>
+        %product_no_acc = xegpu.dpas %lhs, %rhs {tag = "dpas-no-acc"} :
+          vector<8x16xf16>, vector<16x16xf16> -> vector<8x16xf32>
+        %barrier = xegpu.init_nbarrier %id, %count {tag = "init"} :
+          i8, i8 -> !xegpu.nbarrier
+        xegpu.nbarrier_arrive %barrier {tag = "arrive"} : !xegpu.nbarrier
+        xegpu.nbarrier_wait %barrier {tag = "wait"} : !xegpu.nbarrier
+        %memory = xegpu.create_mem_desc %slm {tag = "memory"} :
+          memref<4096xi8, 3> -> !xegpu.mem_desc<32x64xf16, #xegpu.mem_layout<stride = [1, 32], block = [16, 16]>>
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, results, signature, tag) in [
+        (
+            "xegpu.create_tdesc",
+            2,
+            1,
+            "ui64, vector<16xindex> -> !xegpu.tensor_desc<16xf32, #xegpu.scatter_tdesc_attr<>>",
+            "\"descriptor\"",
+        ),
+        (
+            "xegpu.dpas",
+            3,
+            1,
+            "vector<8x16xf16>, vector<16x16xf16>, vector<8x16xf32> -> vector<8x16xf32>",
+            "\"dpas\"",
+        ),
+        (
+            "xegpu.init_nbarrier",
+            2,
+            1,
+            "i8, i8 -> !xegpu.nbarrier",
+            "\"init\"",
+        ),
+        (
+            "xegpu.nbarrier_arrive",
+            1,
+            0,
+            "(!xegpu.nbarrier) -> ()",
+            "\"arrive\"",
+        ),
+        (
+            "xegpu.nbarrier_wait",
+            1,
+            0,
+            "(!xegpu.nbarrier) -> ()",
+            "\"wait\"",
+        ),
+        (
+            "xegpu.create_mem_desc",
+            1,
+            1,
+            "(memref<4096xi8, 3>) -> !xegpu.mem_desc<32x64xf16, #xegpu.mem_layout<stride = [1, 32], block = [16, 16]>>",
+            "\"memory\"",
+        ),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(
+            document.result_types(operation).unwrap().len(),
+            results,
+            "{name}"
+        );
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(name, value)| name == "tag" && value == tag)
+        );
+        assert!(document.operation_regions(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+    }
+
+    let dpas = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("xegpu.dpas"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(dpas)
+            .unwrap()
+            .any(|(name, value)| { name == "policy" && value == "#xegpu.cache_hint<cached>" })
+    );
+    let dpas_signatures = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("xegpu.dpas"))
+        .map(|operation| {
+            document
+                .type_spelling(document.function_type(operation).unwrap())
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        dpas_signatures,
+        [
+            "vector<8x16xf16>, vector<16x16xf16>, vector<8x16xf32> -> vector<8x16xf32>",
+            "vector<8x16xf16>, vector<16x16xf16> -> vector<8x16xf32>",
+        ]
+    );
+}
+
+#[test]
+fn xegpu_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("xegpu").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/xegpu.json")).unwrap();
+    let supported = [
+        ("xegpu.create_tdesc", OperationShape::BinaryOperands),
+        ("xegpu.dpas", OperationShape::OperandClauses),
+        ("xegpu.init_nbarrier", OperationShape::BinaryOperands),
+        (
+            "xegpu.nbarrier_arrive",
+            OperationShape::OptionalTypedOperands,
+        ),
+        ("xegpu.nbarrier_wait", OperationShape::OptionalTypedOperands),
+        ("xegpu.create_mem_desc", OperationShape::UnaryOperand),
+    ];
+    let recovery = [
+        "xegpu.create_nd_tdesc",
+        "xegpu.prefetch_nd",
+        "xegpu.load_nd",
+        "xegpu.store_nd",
+        "xegpu.update_nd_offset",
+        "xegpu.prefetch",
+        "xegpu.load",
+        "xegpu.store",
+        "xegpu.update_offset",
+        "xegpu.atomic_rmw",
+        "xegpu.alloc_nbarrier",
+        "xegpu.fence",
+        "xegpu.convert_layout",
+        "xegpu.load_matrix",
+        "xegpu.store_matrix",
+    ];
+    assert_eq!(config.operation_shapes.len(), supported.len());
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(supported.len() + recovery.len(), 21);
+    for (name, shape) in supported {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn xegpu_indexed_property_and_positional_forms_recover() {
+    let registry = DialectRegistry::from_name("xegpu").unwrap();
+    let source = br#"module {
+      func.func @gaps(%memory: memref<24x32xf32>, %tdesc: !xegpu.tensor_desc<8x16xf32>,
+          %offset: index, %vector: vector<8x16xf32>, %mask: vector<8x16xi1>) {
+        %created = xegpu.create_nd_tdesc %memory[0, %offset] :
+          memref<24x32xf32> -> !xegpu.tensor_desc<8x16xf32>
+        %loaded = xegpu.load_nd %tdesc[%offset, 0]
+          <{l1_hint = #xegpu.cache_hint<cached>}> :
+          !xegpu.tensor_desc<8x16xf32> -> vector<8x16xf32>
+        %updated = xegpu.update_nd_offset %tdesc, [%offset, 16] :
+          !xegpu.tensor_desc<8x16xf32>
+        xegpu.atomic_rmw addf %tdesc, %mask, %vector :
+          !xegpu.tensor_desc<8x16xf32>, vector<8x16xi1>, vector<8x16xf32> -> vector<8x16xf32>
+        xegpu.alloc_nbarrier 8
+        xegpu.fence memory_kind = global, fence_scope = workgroup
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| { diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation })
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    for name in ["test.after", "func.return"] {
+        assert!(
+            document
+                .operations()
+                .any(|operation| document.operation_name(operation) == Some(name))
+        );
+    }
+}

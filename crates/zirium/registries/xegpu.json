@@ -1,0 +1,18 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "xegpu.create_tdesc", "shape": "binary_operands"},
+    {"name": "xegpu.dpas", "shape": "operand_clauses"},
+    {"name": "xegpu.init_nbarrier", "shape": "binary_operands"},
+    {"name": "xegpu.nbarrier_arrive", "shape": "optional_typed_operands"},
+    {"name": "xegpu.nbarrier_wait", "shape": "optional_typed_operands"},
+    {"name": "xegpu.create_mem_desc", "shape": "unary_operand"}
+  ],
+  "operation_formats": []
+}

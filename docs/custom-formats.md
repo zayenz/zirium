@@ -52,6 +52,7 @@ It does not establish that the operation can be verified or rewritten.
 | Vector preset | Core plus 9 structurally exact forms among 39 Vector operations. |
 | WasmSSA preset | Core plus the exact `wasmssa.return` form among 73 operations. |
 | X86Vector preset | Core plus 6 structurally exact forms among 12 X86Vector operations. |
+| XeGPU preset | Core plus 6 structurally exact forms among 21 XeGPU operations. |
 | SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
 | SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
 | Declarative | A selected subset of the proving catalog. |
@@ -87,7 +88,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, `vector`, `wasmssa`, and `x86vector` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, `vector`, `wasmssa`, `x86vector`, and `xegpu` presets were checked against
 LLVM 22.1.0.
 TOSA registers 91 of the 94 operations defined by its main, utility, and shape
 operation files. `tosa.variable`, `tosa.variable_read`, and
@@ -1358,6 +1359,48 @@ format feature. No X86Vector operation owns a region or successor or has a
 symbol role. Builtin vector and memref types need no dialect descriptors. The
 preset adds no target-feature checks, intrinsic verification, type inference,
 memory semantics, or execution semantics.
+
+XeGPU defines exactly 21 concrete `xegpu.*` operations in LLVM 22.1
+`XeGPUOps.td`. Operations from `XeGPUTransformOps.td` use the `transform.*`
+namespace and are not part of this inventory. The preset registers six forms
+whose printed types describe every operand and result. `xegpu.create_tdesc`
+and `xegpu.init_nbarrier` are binary operations with complete functional type
+trailers. `xegpu.create_mem_desc` is the corresponding complete unary
+conversion. `xegpu.nbarrier_arrive` and `xegpu.nbarrier_wait` each expose one
+typed barrier operand and no result. `xegpu.dpas` has two required operands,
+an optional accumulator, and a complete functional type in both cases; the
+clause shape therefore preserves its heterogeneous operands and single result
+without inference.
+
+The other 15 operations remain on whole-operation recovery, grouped by the
+structure their concrete syntax requires:
+
+- `xegpu.create_nd_tdesc`, `xegpu.prefetch_nd`, `xegpu.load_nd`,
+  `xegpu.store_nd`, `xegpu.update_nd_offset`, `xegpu.load_matrix`, and
+  `xegpu.store_matrix` use mixed static/dynamic index lists. Their compact
+  syntax interleaves SSA operands and integer entries, and several forms infer
+  index operand types or descriptor results.
+- `xegpu.prefetch`, `xegpu.load`, and `xegpu.store` combine optional scattered
+  offsets with heterogeneous source, mask, and value operands. Property
+  dictionaries hold cache, layout, alignment, or chunk-size settings, and the
+  no-result forms use operand-only type trailers.
+- `xegpu.update_offset` spells its two operand types but infers a result equal
+  to the descriptor type. `xegpu.convert_layout` has an exact same-type
+  operand/result relationship through `AllTypesMatch`, but its two required
+  layout properties precede that shared type. Registering either operation
+  with a nearby reusable shape would assign a printed type or property to the
+  wrong semantic role.
+- `xegpu.atomic_rmw` and `xegpu.fence` begin with required positional
+  attributes. `xegpu.alloc_nbarrier` is an untyped positional integer
+  attribute. None maps honestly to the literal-result shape.
+
+No XeGPU operation owns a region or successor or has a symbol role. The
+`!xegpu` types and `#xegpu` attributes remain balanced opaque dialect values;
+the preset does not implement descriptor/layout verification, memory or
+barrier semantics, type inference, target checks, or execution semantics. The
+recurring mixed-index and property-dictionary forms may justify generic format
+features once those features can preserve operand and attribute roles without
+adding dialect-specific parsing.
 
 SparseTensor defines 37 operations in LLVM 22.1, excluding the separate
 Transform dialect extension. The preset registers 10 exact forms. `new`,
