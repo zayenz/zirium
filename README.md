@@ -6,7 +6,7 @@ LLVM. The parser preserves the original bytes, including comments, whitespace,
 malformed syntax, and invalid UTF-8. A separate semantic representation supports
 verification and structural edits.
 
-Version 0.0.12 is experimental. It targets MLIR 22.1 textual syntax and supports
+Version 0.0.13 is experimental. It targets MLIR 22.1 textual syntax and supports
 selected custom dialect forms. The API may change without a migration path;
 bytecode and ODS/TableGen loading are unsupported.
 
