@@ -436,6 +436,24 @@ fn invalid_format_error_names_the_entry_and_rule() {
 }
 
 #[test]
+fn formats_with_untyped_ssa_operands_fail_during_registry_construction() {
+    for format in [
+        "$operands attr-dict",
+        "$operands attr-dict `:` type($results)",
+        "$operands attr-dict `:` type($result)",
+    ] {
+        let error = match registry(format).build() {
+            Ok(_) => panic!("accepted {format}"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("every SSA operand capture needs a type assignment"),
+            "{format}: {error}"
+        );
+    }
+}
+
+#[test]
 fn failed_alternatives_recover_once_and_preserve_the_next_operation() {
     let registry = RegistryConfig::from_json(
         r#"{"builtins":[],"operation_shapes":[],"operation_alternatives":[{

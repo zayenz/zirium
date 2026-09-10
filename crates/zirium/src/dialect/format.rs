@@ -169,7 +169,7 @@ fn scan(description: &str) -> Result<Vec<FormatStep>, String> {
             offset += close + 1;
             continue;
         }
-        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let end = directive_end(rest);
         let word = &rest[..end];
         let step = if word == "$operands" {
             FormatStep::Capture(FormatCapture::Operands)
@@ -190,6 +190,19 @@ fn scan(description: &str) -> Result<Vec<FormatStep>, String> {
         return Err("operation format must not be empty".into());
     }
     Ok(elements)
+}
+
+fn directive_end(text: &str) -> usize {
+    let mut parentheses = 0usize;
+    for (offset, character) in text.char_indices() {
+        match character {
+            '(' => parentheses += 1,
+            ')' => parentheses = parentheses.saturating_sub(1),
+            _ if character.is_ascii_whitespace() && parentheses == 0 => return offset,
+            _ => {}
+        }
+    }
+    text.len()
 }
 
 fn validate_literal(literal: &str, offset: usize) -> Result<(), String> {
@@ -319,7 +332,7 @@ fn validate(steps: &[FormatStep]) -> Result<(), String> {
                     return Err("type($operands) requires an operand capture".into());
                 }
                 FormatTarget::Operand(index)
-                    if !variadic_operands && !indexed_operands.contains(index) =>
+                    if variadic_operands || !indexed_operands.contains(index) =>
                 {
                     return Err(format!("type target $operands[{index}] is not captured"));
                 }
@@ -347,6 +360,14 @@ fn validate(steps: &[FormatStep]) -> Result<(), String> {
                 return Err(format!("type target {target:?} is assigned more than once"));
             }
         }
+    }
+    let operands_assigned = assigned.contains(&FormatTarget::Operands)
+        || (!indexed_operands.is_empty()
+            && indexed_operands
+                .iter()
+                .all(|index| assigned.contains(&FormatTarget::Operand(*index))));
+    if has_operands && !operands_assigned {
+        return Err("every SSA operand capture needs a type assignment".into());
     }
     Ok(())
 }
@@ -379,8 +400,21 @@ mod tests {
             "$operands attr-dict attr-dict",
             "$callee type($value)",
             "$operands types($results)",
+            "$operands attr-dict",
+            "$operands attr-dict `:` type($results)",
+            "$operands attr-dict `:` type($result)",
+            "$operands type($operands[0])",
         ] {
             assert!(OperationFormat::parse(format).is_err(), "accepted {format}");
         }
+    }
+
+    #[test]
+    fn unknown_directive_diagnostic_includes_parenthesized_arguments() {
+        let error = OperationFormat::parse("frobnicate($operands, $results)").unwrap_err();
+        assert!(
+            error.contains(r#"unknown directive "frobnicate($operands, $results)""#),
+            "{error}"
+        );
     }
 }
