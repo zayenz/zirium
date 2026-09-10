@@ -48,6 +48,7 @@ It does not establish that the operation can be verified or rewritten.
 | Shape preset | Core plus 20 structurally exact forms among 40 Shape operations. |
 | Tensor preset | Core plus 4 structurally exact forms among 21 Tensor operations. |
 | Transform preset | Core plus 7 structurally exact forms among 38 core and PDL-extension operations. |
+| UB preset | Core plus both UB operations; the positional long poison form remains on recovery. |
 | SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
 | SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
 | Declarative | A selected subset of the proving catalog. |
@@ -83,7 +84,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, and `transform` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, and `ub` presets were checked against
 LLVM 22.1.0.
 TOSA registers 91 of the 94 operations defined by its main, utility, and shape
 operation files. `tosa.variable`, `tosa.variable_read`, and
@@ -1225,6 +1226,22 @@ opaque dialect values. The preset adds no transform execution, failure
 propagation, payload matching, handle/result or block-argument inference,
 symbol resolution, or verifier semantics. The current seven forms did not
 motivate a new format feature.
+
+UB defines exactly two operations and one attribute in LLVM 22.1. The preset
+registers both operations. Short-form `ub.poison` has no operands and exposes
+its single explicitly typed result; an ordinary attribute dictionary remains
+queryable before the result type. `ub.unreachable`, which LLVM declares a
+terminator, preserves its exact zero-operand, zero-result spelling. Neither
+operation owns regions, successors, or symbols.
+
+The long poison spelling, `ub.poison <#ub.poison> : type`, remains on
+whole-operation recovery because its optional positional poison value is not
+an ordinary attribute dictionary, and treating it as a generic operand clause
+would discard its `value` role. This single optional clause does not justify a
+new format primitive. The bare `#ub.poison` attribute is supported through the
+ordinary opaque dialect-attribute path; UB defines no dialect types. The preset
+adds no poison propagation, constant folding, undefined-behavior execution, or
+dialect-specific verification.
 
 SparseTensor defines 37 operations in LLVM 22.1, excluding the separate
 Transform dialect extension. The preset registers 10 exact forms. `new`,

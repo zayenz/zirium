@@ -85,6 +85,7 @@ const PRESET_NAMES: &[&str] = &[
     "spirv",
     "tensor",
     "transform",
+    "ub",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -131,6 +132,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "spirv" => Some(include_str!("../../registries/spirv.json")),
         "tensor" => Some(include_str!("../../registries/tensor.json")),
         "transform" => Some(include_str!("../../registries/transform.json")),
+        "ub" => Some(include_str!("../../registries/ub.json")),
         _ => None,
     }
 }

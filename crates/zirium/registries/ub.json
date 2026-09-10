@@ -1,0 +1,14 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "ub.poison", "shape": "variadic_operands"},
+    {"name": "ub.unreachable", "shape": "attr_first_optional_typed_operands"}
+  ],
+  "operation_formats": []
+}

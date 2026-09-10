@@ -8685,3 +8685,116 @@ fn transform_positional_inferred_and_region_forms_recover_at_boundaries() {
                 && value == "#transform.param_operand<index = 0>")
     );
 }
+
+#[test]
+fn ub_preset_exposes_short_poison_and_unreachable_structure() {
+    assert!(DialectRegistry::preset_names().contains(&"ub"));
+    let registry = DialectRegistry::from_name("ub").unwrap();
+    let source = br#"module {
+      func.func @forms() {
+        %poison = ub.poison {tag = #ub.poison} : vector<4xi32>
+        "test.use"(%poison) : (vector<4xi32>) -> ()
+        ub.unreachable {tag = "terminator"}
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    let poison = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("ub.poison"))
+        .unwrap();
+    assert!(document.operands(poison).unwrap().is_empty());
+    assert_eq!(document.result_types(poison).unwrap().len(), 1);
+    assert_eq!(
+        document.type_spelling(document.function_type(poison).unwrap()),
+        Some("() -> vector<4xi32>")
+    );
+    assert!(matches!(
+        document.type_value(document.result_types(poison).unwrap()[0]),
+        Some(TypeValue::Vector { .. })
+    ));
+    assert!(
+        document
+            .attributes(poison)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "#ub.poison")
+    );
+    assert!(document.operation_regions(poison).unwrap().is_empty());
+    assert!(document.successors(poison).unwrap().is_empty());
+
+    let unreachable = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("ub.unreachable"))
+        .unwrap();
+    assert!(document.operands(unreachable).unwrap().is_empty());
+    assert!(document.result_types(unreachable).unwrap().is_empty());
+    assert_eq!(
+        document.type_spelling(document.function_type(unreachable).unwrap()),
+        Some("() -> ()")
+    );
+    assert!(
+        document
+            .attributes(unreachable)
+            .unwrap()
+            .any(|(name, value)| name == "tag" && value == "\"terminator\"")
+    );
+    assert!(document.operation_regions(unreachable).unwrap().is_empty());
+    assert!(document.successors(unreachable).unwrap().is_empty());
+}
+
+#[test]
+fn ub_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("ub").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/ub.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 2);
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(registry.operation_names().count(), 4);
+    for (name, shape) in [
+        ("ub.poison", OperationShape::VariadicOperands),
+        (
+            "ub.unreachable",
+            OperationShape::AttrFirstOptionalTypedOperands,
+        ),
+    ] {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+
+    // The optional positional PoisonAttrInterface payload in the long poison
+    // form is intentionally not mistaken for an ordinary attribute dictionary.
+    let source = br#"module {
+      func.func @long_form() {
+        %poison = ub.poison <#ub.poison> : i32
+        "test.after"() {marker = #ub.poison} : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| matches!(diagnostic.kind(), ParseDiagnosticKind::ShapeMismatch(_)))
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    let after = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("test.after"))
+        .unwrap();
+    assert!(
+        document
+            .attributes(after)
+            .unwrap()
+            .any(|(name, value)| name == "marker" && value == "#ub.poison")
+    );
+}
