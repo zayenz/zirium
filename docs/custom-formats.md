@@ -259,9 +259,10 @@ it uses their combined configuration. Files are read as UTF-8 JSON before MLIR
 input; relative paths resolve against the working directory. Stdin remains
 reserved for MLIR, and registry failures produce no query output.
 
-Place `--registry` before an inline query. With `-f`/`--program-file`, registry
-options may appear before or after the program-file pair, until the first input
-path. Remaining arguments are input paths. `--` ends option parsing.
+Options may appear before or after an inline query or program-file pair. The
+first non-option argument is the inline query; later non-option arguments are
+input paths. Option parsing continues between input paths until `--`, which is
+required before a path beginning with a dash.
 
 The CLI can select or count recovered unknown custom operations. It rejects
 other syntax errors and semantic lowering diagnostics. Semantic mutations

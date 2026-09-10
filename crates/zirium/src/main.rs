@@ -43,8 +43,10 @@ Examples:
   zirium -f analysis.zirium model.mlir
 
 Stages: input, filter(predicate), defs, defs(index), users, users(index), parent,
-children, root(predicate), subtree, closure, slice, fixpoint(query), unique, attr("name"), names, result_types,
-operand_types, set_attr("name", "value"), remove_attr("name"), emit, json, count.
+children, root(predicate), subtree, closure, slice, reachable, fixpoint(query),
+unique, attr("name"), names, result_types, operand_types, tally,
+map_by(key, value), set_attr("name", "value"), remove_attr("name"), emit, json,
+markdown, print("text"), count.
 Combine selections with union, intersect, except. Group them before counting.
 Navigation preserves duplicates; use unique to count distinct operations.
 Predicates: true, false, op("name"), dialect("name"), result_type("type"),

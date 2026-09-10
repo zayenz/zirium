@@ -210,7 +210,17 @@ fn cli_presets_strict_mode_and_inspection_work_together() {
         .output()
         .unwrap();
     assert!(help.status.success());
-    assert!(String::from_utf8_lossy(&help.stdout).contains("--preset"));
+    let help = String::from_utf8_lossy(&help.stdout);
+    for term in [
+        "--preset",
+        "reachable",
+        "tally",
+        "map_by(key, value)",
+        "markdown",
+        "print(\"text\")",
+    ] {
+        assert!(help.contains(term), "help omits {term}");
+    }
     let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
         .args(["count", "--strict", "--preset", "stablehlo"])
         .arg(

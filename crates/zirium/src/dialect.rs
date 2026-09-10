@@ -661,8 +661,8 @@ impl DialectRegistry {
 
     /// Lists every operation registered for custom-form parsing.
     ///
-    /// This includes static descriptors, caller-supplied shapes, and format
-    /// descriptions. Each name occurs once.
+    /// This includes static descriptors, caller-supplied shapes, format
+    /// descriptions, and operations with alternative grammars. Each name occurs once.
     pub fn operation_names(&self) -> impl Iterator<Item = &str> + '_ {
         self.operations
             .iter()
