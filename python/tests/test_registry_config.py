@@ -183,7 +183,9 @@ def test_call_target_attribute_is_configurable_and_introspectable():
     )
 
     assert registry.call_target_attribute("vendor.invoke") == "target"
-    assert zirium.DialectRegistry.baseline().call_target_attribute("func.call") == "callee"
+    assert (
+        zirium.DialectRegistry.baseline().call_target_attribute("func.call") == "callee"
+    )
     assert registry.call_target_attribute("vendor.missing") is None
 
     with pytest.raises(ValueError, match="requires a call_like shape"):
