@@ -31,9 +31,21 @@ Choose the new version and update these files:
 - `crates/zirium-python/Cargo.toml`
 - `pyproject.toml`
 - `CHANGELOG.md`
+- Version references in `README.md` and `docs/compatibility.md`
 
-Keep the three package versions identical and refresh `Cargo.lock` after
-changing them. Run the local quality checks described in the
+Keep the three package versions identical and refresh both lockfiles after
+changing them:
+
+```sh
+cargo check --workspace
+uv lock
+```
+
+Commit `Cargo.lock` and `uv.lock` with the version changes. The editable Python
+package's version is recorded in `uv.lock`; leaving it unchanged makes the
+release's locked environment check fail.
+
+Run the local quality checks described in the
 [compatibility guide](compatibility.md), then inspect the package contents:
 
 ```sh
@@ -49,12 +61,12 @@ approves publication.
 
 ## Publish a version
 
-Tag the checked commit and push only that tag. The commands below use 0.0.3
+Tag the checked commit and push only that tag. The commands below use 0.1.0
 as an example; substitute the version being released throughout.
 
 ```sh
-git tag -a v0.0.3 -m "Zirium 0.0.3"
-git push origin v0.0.3
+git tag -a v0.1.0 -m "Zirium 0.1.0"
+git push origin v0.1.0
 ```
 
 Do not use `git push --tags`. This repository may contain local tags that are
@@ -77,8 +89,8 @@ After approving the deployment, query the Rust package and install the Python
 package from their registries:
 
 ```sh
-cargo info zirium@0.0.3
-uv run --no-project --isolated --with zirium==0.0.3 python -c \
+cargo info zirium@0.1.0
+uv run --no-project --isolated --with zirium==0.1.0 python -c \
   'import zirium; assert zirium.parse_text("\"test\"() : () -> ()")'
 ```
 
@@ -94,7 +106,7 @@ commit it to `main`, then run the updated workflow against the existing tag.
 Select only the registry whose upload has not succeeded:
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v0.0.3 -f registry=pypi
+gh workflow run release.yml --ref main -f tag=v0.1.0 -f registry=pypi
 ```
 
 Use `registry=crates-io` for a Rust-only retry or `registry=both` if neither

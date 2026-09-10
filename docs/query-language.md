@@ -571,7 +571,7 @@ repeating selections; evaluation limits also stop streams that keep growing.
 
 By default, each evaluation permits 10,000,000 work units and 1,000,000 items per
 stream. Work counts stage input items (at least one per stage), fixed-point
-iterations, and dependency/subtree visits. These are deterministic safeguards,
+iterations, and dependency, ancestor, and subtree visits. These are deterministic safeguards,
 not a time or byte-memory limit. CLI callers can set `--max-work N` and
 `--max-items N`; Rust callers can use `Query::evaluate_with_limits` and
 `EvaluationLimits`. A limit error follows the usual no-stdout CLI contract.

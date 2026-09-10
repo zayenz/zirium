@@ -127,13 +127,26 @@ operations. Bundled presets expose selected custom forms from other dialects
 for structural queries. Unsupported forms use best-effort recovery; presets do
 not implement full dialect verification or execution.
 
-The [custom-format guide](docs/custom-formats.md) explains registry configuration,
+The [custom-format guide](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md) explains registry configuration,
 operation shapes, and use from Rust, Python, and the CLI. The
-[preset reference](docs/registry-presets.md) groups the available dialects and
+[preset reference](https://github.com/zayenz/zirium/blob/main/docs/registry-presets.md) groups the available dialects and
 links to their exact registry definitions.
 
 The [corpus notes](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/README.md)
 describe how syntax compatibility is checked against `llvmorg-22.1.0`.
+
+## Agent skills
+
+The repository includes optional skills for agents working with Zirium:
+
+- [CLI](https://github.com/zayenz/zirium/blob/main/skills/zirium-cli/SKILL.md): queries, reports, dependency slices, and complete-document edits.
+- [Python](https://github.com/zayenz/zirium/blob/main/skills/zirium-python/SKILL.md): typed API usage, diagnostics, retention, and transactions.
+- [Rust](https://github.com/zayenz/zirium/blob/main/skills/zirium-rust/SKILL.md): library integration and document ownership.
+- [Custom formats](https://github.com/zayenz/zirium/blob/main/skills/zirium-custom-format/SKILL.md): research a project's dialect and build a registry; explicitly invoked as `$zirium-custom-format`.
+
+Each skill folder is self-contained and can be installed independently through
+your agent's skill mechanism. These files are distributed in the repository,
+separately from the Python wheel and Rust crate.
 
 ## Repository layout
 
@@ -144,6 +157,7 @@ python/zirium/          Python package and type declarations
 python/tests/           Python API tests
 tests/corpus/           Versioned MLIR compatibility corpus
 docs/                   Usage, compatibility, and architecture notes
+skills/                 Agent guidance for CLI, libraries, and custom formats
 fuzz/                   Lexer and parser fuzz targets
 ```
 
