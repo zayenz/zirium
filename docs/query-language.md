@@ -134,6 +134,29 @@ histogram. Maps can be nested. Key and value queries cannot edit or emit.
 Bindings used inside them still restore their saved results; they do not
 become queries relative to the current function.
 
+## Ordering, bounds, and extrema
+
+`sort` orders a value stream lexically. `reverse` reverses an operation or
+value stream. `head(n)` keeps the first `n` items, while `tail(n)` keeps the
+last `n`; both preserve the retained items' order.
+
+Use `sort_by(query)` to order operations by a derived key. The selector runs
+once for each operation and must return exactly one string or count. Sorting is
+stable, so operations with equal keys retain their previous order:
+
+```zirium
+filter(op("func.func")) | sort_by(attr("sym_name")) | head(10)
+```
+
+`min` and `max` return the lexical minimum or maximum of a non-empty value
+stream. `min_by(query)` and `max_by(query)` return one operation using the same
+selector rules as `sort_by`; the first operation wins a tie. All four report an
+error on an empty stream. Use `reverse` after `sort` or `sort_by` for descending
+order.
+
+Maps remain sorted lexically by key. Ordering stages do not rank `tally` or
+`map_by` maps.
+
 ## Building JSON structures
 
 Object and array literals combine saved results into a larger report:
@@ -640,6 +663,9 @@ query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
 stage      = object | array | identifier | "markdown" | "print" "(" string ")"
            | "tally" | "map_by" "(" query "," query ")"
+           | "sort" | "sort_by" "(" query ")" | "reverse"
+           | ("head" | "tail") "(" integer ")"
+           | "min" | "min_by" "(" query ")" | "max" | "max_by" "(" query ")"
            | "input" | "filter" "(" predicate ")"
            | ("defs" | "users") [ "(" integer ")" ]
            | "parent" | "children" | "closure" | "slice" | "reachable"

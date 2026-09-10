@@ -1580,6 +1580,79 @@ fn do_statement_keeps_edits_without_emitting_its_selection() {
 }
 
 #[test]
+fn ordering_bounds_and_extrema_compose_on_streams() {
+    let input = r#"module {
+  "vendor.item"() {id = 1, label = "beta"} : () -> ()
+  "vendor.item"() {id = 2, label = "alpha"} : () -> ()
+  "vendor.item"() {id = 3, label = "alpha"} : () -> ()
+}"#;
+    for (query, expected) in [
+        (
+            r#"filter(op("vendor.item")) | attr("label") | sort"#,
+            "alpha\nalpha\nbeta\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | sort_by(attr("label")) | attr("id")"#,
+            "2\n3\n1\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | sort_by(children | count) | attr("id")"#,
+            "1\n2\n3\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | sort_by(attr("label")) | reverse | attr("id")"#,
+            "1\n3\n2\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | head(2) | attr("id")"#,
+            "1\n2\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | tail(2) | attr("id")"#,
+            "2\n3\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | attr("label") | min"#,
+            "alpha\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | attr("label") | max"#,
+            "beta\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | min_by(attr("label")) | attr("id")"#,
+            "2\n",
+        ),
+        (
+            r#"filter(op("vendor.item")) | max_by(attr("label")) | attr("id")"#,
+            "1\n",
+        ),
+    ] {
+        let output = run_stdin(query, input);
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
+    }
+
+    for query in [
+        "filter(false) | names | min",
+        "filter(false) | min_by(names)",
+        "saved = count; saved | count",
+    ] {
+        let output = run_stdin(query, input);
+        assert!(!output.status.success(), "{query}");
+        assert!(output.stdout.is_empty(), "{query}");
+    }
+}
+
+#[test]
 fn subtree_expands_the_selected_fragment_without_selecting_siblings() {
     let input = include_str!("../../../examples/cli/calls.mlir");
     for (query, expected) in [

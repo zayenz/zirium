@@ -30,6 +30,8 @@ fn query_boundaries_and_edit_validation() {
         "(defs | emit) union users",
         "(defs union users) | filter(true)",
         "fixpoint(filter(true) union users)",
+        "names | sort | reverse | head(10) | tail(3) | min | max",
+        "sort_by(attr(\"rank\")) | min_by(children | count) | max_by(names)",
         r#"do filter(op("x")) | set_attr("tag", "hot"); emit"#,
         r#"do filter(op("x")) | set_attr("tag", "hot");"#,
     ] {
@@ -47,6 +49,10 @@ fn query_boundaries_and_edit_validation() {
         "filter(true) |",
         "()",
         "fixpoint()",
+        "head(-1)",
+        "tail()",
+        "sort_by(set_attr(\"tag\", \"x\"))",
+        "min_by(emit)",
     ] {
         assert!(Query::parse(source).is_err(), "{source}");
     }
@@ -184,6 +190,24 @@ fn parser_builds_ranged_relationship_stages() {
             .as_range(),
         18..22
     );
+}
+
+#[test]
+fn parser_builds_ordering_reduction_and_bound_stages() {
+    let source = r#"sort_by(attr("rank")) | reverse | head(10) | tail(3) | min_by(children | count) | max_by(names)"#;
+    let parsed = parse(&lex(source));
+    assert!(parsed.diagnostics().is_empty());
+    assert!(matches!(
+        parsed.program().unwrap().expression().first.as_slice(),
+        [
+            Stage::SortBy { .. },
+            Stage::Reverse { .. },
+            Stage::Head { count: 10, .. },
+            Stage::Tail { count: 3, .. },
+            Stage::MinBy { .. },
+            Stage::MaxBy { .. }
+        ]
+    ));
 }
 
 #[test]

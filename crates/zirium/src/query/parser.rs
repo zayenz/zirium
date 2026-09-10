@@ -95,6 +95,9 @@ impl Expression {
                 Stage::Group { expression, .. } | Stage::Fixpoint { expression, .. } => {
                     expression.is_read_only()
                 }
+                Stage::SortBy { selector, .. }
+                | Stage::MinBy { selector, .. }
+                | Stage::MaxBy { selector, .. } => selector.is_read_only(),
                 Stage::MapBy { key, value, .. } => key.is_read_only() && value.is_read_only(),
                 _ => true,
             })
@@ -243,6 +246,38 @@ pub enum Stage {
     Unique {
         range: TextRange,
     },
+    Sort {
+        range: TextRange,
+    },
+    SortBy {
+        selector: Box<Expression>,
+        range: TextRange,
+    },
+    Reverse {
+        range: TextRange,
+    },
+    Head {
+        count: usize,
+        range: TextRange,
+    },
+    Tail {
+        count: usize,
+        range: TextRange,
+    },
+    Min {
+        range: TextRange,
+    },
+    MinBy {
+        selector: Box<Expression>,
+        range: TextRange,
+    },
+    Max {
+        range: TextRange,
+    },
+    MaxBy {
+        selector: Box<Expression>,
+        range: TextRange,
+    },
     Attr {
         name: String,
         range: TextRange,
@@ -305,6 +340,15 @@ impl Stage {
             | Self::Root { range, .. }
             | Self::Subtree { range }
             | Self::Unique { range }
+            | Self::Sort { range }
+            | Self::SortBy { range, .. }
+            | Self::Reverse { range }
+            | Self::Head { range, .. }
+            | Self::Tail { range, .. }
+            | Self::Min { range }
+            | Self::MinBy { range, .. }
+            | Self::Max { range }
+            | Self::MaxBy { range, .. }
             | Self::Attr { range, .. }
             | Self::Names { range }
             | Self::ResultTypes { range }
@@ -612,6 +656,46 @@ impl Parser<'_> {
             "children" => Stage::Children { range },
             "subtree" => Stage::Subtree { range },
             "unique" => Stage::Unique { range },
+            "sort" => Stage::Sort { range },
+            "sort_by" | "min_by" | "max_by" => {
+                self.expect(TokenKind::LParen, "expected `(` after selector stage")?;
+                let selector = Box::new(self.expression(depth + 1)?);
+                self.expect(TokenKind::RParen, "expected `)` after selector query")?;
+                if !selector.is_read_only() {
+                    self.error("selector queries cannot edit or emit");
+                    return None;
+                }
+                let range = self.span(start);
+                match name.as_str() {
+                    "sort_by" => Stage::SortBy { selector, range },
+                    "min_by" => Stage::MinBy { selector, range },
+                    "max_by" => Stage::MaxBy { selector, range },
+                    _ => unreachable!(),
+                }
+            }
+            "reverse" => Stage::Reverse { range },
+            "head" | "tail" => {
+                self.expect(TokenKind::LParen, "expected `(` after head or tail")?;
+                self.skip_trivia();
+                if !self.at(TokenKind::Integer) {
+                    self.error("expected a non-negative item count");
+                    return None;
+                }
+                let Ok(count) = self.current_text().parse::<usize>() else {
+                    self.error("item count is too large");
+                    return None;
+                };
+                self.bump();
+                self.expect(TokenKind::RParen, "expected `)` after item count")?;
+                let range = self.span(start);
+                if name == "head" {
+                    Stage::Head { count, range }
+                } else {
+                    Stage::Tail { count, range }
+                }
+            }
+            "min" => Stage::Min { range },
+            "max" => Stage::Max { range },
             "count" => Stage::Count { range },
             "emit" => Stage::Emit { range },
             "json" => Stage::Json { range },
@@ -1212,6 +1296,15 @@ fn is_reserved(name: &str) -> bool {
             | "root"
             | "subtree"
             | "unique"
+            | "sort"
+            | "sort_by"
+            | "reverse"
+            | "head"
+            | "tail"
+            | "min"
+            | "min_by"
+            | "max"
+            | "max_by"
             | "attr"
             | "names"
             | "result_types"

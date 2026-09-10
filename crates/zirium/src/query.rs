@@ -83,6 +83,12 @@ pub enum QueryOutput {
     Text(String),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SortKey {
+    Count(usize),
+    Text(String),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryError {
     pub position: usize,
@@ -394,6 +400,49 @@ fn evaluate_pipeline(
                     ));
                 }
             },
+            parser::Stage::Sort { .. } => {
+                let QueryOutput::Values(values) = &mut current else {
+                    return Err(EvaluationError::new(
+                        "sort requires a value stream; use names or attr first",
+                    ));
+                };
+                values.sort();
+            }
+            parser::Stage::SortBy { selector, .. } => {
+                let selected = take_operations(current, "sort_by")?;
+                current = QueryOutput::Operations(sort_operations_by(
+                    selected, selector, document, registry, emit, budget, false, false,
+                )?);
+            }
+            parser::Stage::Reverse { .. } => match &mut current {
+                QueryOutput::Operations(values) => values.reverse(),
+                QueryOutput::Values(values) => values.reverse(),
+                _ => {
+                    return Err(EvaluationError::new(
+                        "reverse requires an operation or value stream",
+                    ));
+                }
+            },
+            parser::Stage::Head { count, .. } => truncate_stream(&mut current, *count, false)?,
+            parser::Stage::Tail { count, .. } => truncate_stream(&mut current, *count, true)?,
+            parser::Stage::Min { .. } => {
+                current = QueryOutput::Values(extreme_value(current, false)?);
+            }
+            parser::Stage::Max { .. } => {
+                current = QueryOutput::Values(extreme_value(current, true)?);
+            }
+            parser::Stage::MinBy { selector, .. } => {
+                let selected = take_operations(current, "min_by")?;
+                current = QueryOutput::Operations(sort_operations_by(
+                    selected, selector, document, registry, emit, budget, false, true,
+                )?);
+            }
+            parser::Stage::MaxBy { selector, .. } => {
+                let selected = take_operations(current, "max_by")?;
+                current = QueryOutput::Operations(sort_operations_by(
+                    selected, selector, document, registry, emit, budget, true, true,
+                )?);
+            }
             parser::Stage::Attr { name, .. } => {
                 let selected = take_operations(current, "attr")?;
                 current = QueryOutput::Values(evaluate_attr(document, &selected, name)?);
@@ -530,7 +579,9 @@ fn evaluate_pipeline(
                     editor.commit().map_err(edit_error)?;
                 }
             }
-            parser::Stage::Count { .. } => return Ok(QueryOutput::Count(output_len(&current))),
+            parser::Stage::Count { .. } => {
+                return Ok(QueryOutput::Count(countable_len(&current)?));
+            }
             parser::Stage::Emit { .. } => emit(document, current.clone())?,
             parser::Stage::Markdown { .. } => {
                 emit(
@@ -586,14 +637,119 @@ fn take_operations(output: QueryOutput, stage: &str) -> Result<Vec<OperationId>,
     }
 }
 
+fn countable_len(output: &QueryOutput) -> Result<usize, EvaluationError> {
+    match output {
+        QueryOutput::Operations(selected) => Ok(selected.len()),
+        QueryOutput::Values(values) => Ok(values.len()),
+        QueryOutput::Map(values) => Ok(values.len()),
+        QueryOutput::Array(values) => Ok(values.len()),
+        QueryOutput::Count(_) | QueryOutput::Json(_) | QueryOutput::Text(_) => Err(
+            EvaluationError::new("count requires a stream, map, or array"),
+        ),
+    }
+}
+
 fn output_len(output: &QueryOutput) -> usize {
     match output {
-        QueryOutput::Operations(selected) => selected.len(),
+        QueryOutput::Operations(values) => values.len(),
         QueryOutput::Values(values) => values.len(),
         QueryOutput::Map(values) => values.len(),
         QueryOutput::Array(values) => values.len(),
         QueryOutput::Count(_) | QueryOutput::Json(_) | QueryOutput::Text(_) => 1,
     }
+}
+
+fn truncate_stream(
+    output: &mut QueryOutput,
+    count: usize,
+    from_end: bool,
+) -> Result<(), EvaluationError> {
+    fn truncate<T>(values: &mut Vec<T>, count: usize, from_end: bool) {
+        if from_end {
+            let keep_from = values.len().saturating_sub(count);
+            values.drain(..keep_from);
+        } else {
+            values.truncate(count);
+        }
+    }
+    match output {
+        QueryOutput::Operations(values) => truncate(values, count, from_end),
+        QueryOutput::Values(values) => truncate(values, count, from_end),
+        _ => {
+            return Err(EvaluationError::new(
+                "head and tail require an operation or value stream",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn extreme_value(output: QueryOutput, maximum: bool) -> Result<Vec<String>, EvaluationError> {
+    let QueryOutput::Values(values) = output else {
+        return Err(EvaluationError::new(
+            "min and max require a value stream; use names or attr first",
+        ));
+    };
+    let value = if maximum {
+        values.into_iter().max()
+    } else {
+        values.into_iter().min()
+    }
+    .ok_or_else(|| EvaluationError::new("min and max require a non-empty value stream"))?;
+    Ok(vec![value])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sort_operations_by(
+    selected: Vec<OperationId>,
+    selector: &parser::Expression,
+    document: &mut Document,
+    registry: &DialectRegistry,
+    emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+    budget: &mut EvaluationState,
+    descending: bool,
+    one: bool,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    if one && selected.is_empty() {
+        return Err(EvaluationError::new(
+            "min_by and max_by require a non-empty operation stream",
+        ));
+    }
+    let mut keyed = Vec::with_capacity(selected.len());
+    for operation in selected {
+        let output = evaluate_expression(
+            selector,
+            document,
+            registry,
+            QueryOutput::Operations(vec![operation]),
+            emit,
+            budget,
+        )?;
+        let key = match output {
+            QueryOutput::Count(value) => SortKey::Count(value),
+            QueryOutput::Values(mut values) if values.len() == 1 => {
+                SortKey::Text(values.pop().unwrap())
+            }
+            _ => {
+                return Err(EvaluationError::new(
+                    "sort selector must produce exactly one string or count per operation",
+                ));
+            }
+        };
+        keyed.push((operation, key));
+    }
+    keyed.sort_by(|left, right| {
+        let ordering = left.1.cmp(&right.1);
+        if descending {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+    });
+    if one {
+        keyed.truncate(1);
+    }
+    Ok(keyed.into_iter().map(|(operation, _)| operation).collect())
 }
 
 fn value_depth(value: &serde_json::Value) -> usize {

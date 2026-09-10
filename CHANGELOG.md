@@ -22,6 +22,9 @@ formats, and adds composable report generation.
   immutable bindings; each query statement starts from the document.
 - Add `do query;` statements for edits whose result should not be emitted.
   Later statements see the edits, while explicit emitters inside `do` still run.
+- Add stable value and operation ordering with `sort`, `sort_by`, `reverse`,
+  `head`, and `tail`. Add `min`, `min_by`, `max`, and `max_by` reductions.
+- Reject `count` applied to an existing scalar count or rendered output.
 - Concatenate statement and multi-input outputs exactly as emitted instead of
   inserting automatic `// -----` separators; reports can add explicit text.
 
