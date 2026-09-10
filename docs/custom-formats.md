@@ -12,7 +12,7 @@ It does not establish that the operation can be verified or rewritten.
 | Core | `builtin.module`, `func.func`, `func.call`, and `func.return`. |
 | Proving | Core plus `arith.constant`, `arith.addi`, `cf.br`, and `cf.cond_br`. |
 | StableHLO preset | Core plus 96 common StableHLO custom forms. |
-| TOSA preset | Core plus 93 TOSA tensor, shape, control-flow, and utility forms. |
+| TOSA preset | Core plus 91 of 94 TOSA tensor, shape, control-flow, and utility forms. |
 | SCF preset | Core plus 11 of 12 SCF operations, including structured regions and loop header bindings. |
 | Linalg preset | Core plus all 99 core, structured, relayout, and generated named Linalg operations. |
 | OpenACC preset | Core plus 35 mapping, bounds-accessor, region, and terminator forms. |
@@ -34,18 +34,23 @@ It does not establish that the operation can be verified or rewritten.
 | Index preset | Core plus the 2 explicitly typed casts among 26 Index operations. |
 | IRDL preset | Core only; all 17 IRDL operations remain on recovery. |
 | LLVM preset | Core plus 138 explicit core and intrinsic forms among 284 LLVM operations. |
+| Math preset | Core plus 40 structurally exact forms among 46 Math operations. |
 | MemRef preset | Core plus 11 structurally exact forms among 32 MemRef operations. |
 | MLProgram preset | Core plus 2 structurally exact terminators among 11 MLProgram operations. |
 | MPI preset | Core plus 4 structurally exact forms among 15 MPI operations. |
+| Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | NVGPU preset | Core plus 7 structurally exact forms among 24 NVGPU operations. |
 | NVVM preset | Core plus 71 structurally exact forms among 185 NVVM operations. |
 | OpenMP preset | Core plus 8 structurally exact forms among 54 OpenMP operations. |
 | PDL preset | Core only; all 15 PDL operations remain on recovery. |
 | PDLInterp preset | Core only; all 39 PDLInterp operations remain on recovery. |
 | Ptr preset | Core plus default forms of 4 among 13 Ptr operations. |
+| Quant preset | Core plus all 3 Quant operations. |
 | ROCDL preset | Core plus 125 structurally exact forms among 323 ROCDL operations. |
-| Shard preset | Core plus 1 structurally exact form among 22 Shard operations. |
 | Shape preset | Core plus 20 structurally exact forms among 40 Shape operations. |
+| SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
+| SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
+| SPIR-V preset | Core plus 132 structurally exact forms among 306 SPIR-V operations. |
 | Tensor preset | Core plus 4 structurally exact forms among 21 Tensor operations. |
 | Transform preset | Core plus 7 structurally exact forms among 38 core and PDL-extension operations. |
 | UB preset | Core plus both UB operations; the positional long poison form remains on recovery. |
@@ -53,8 +58,7 @@ It does not establish that the operation can be verified or rewritten.
 | WasmSSA preset | Core plus the exact `wasmssa.return` form among 73 operations. |
 | X86Vector preset | Core plus 6 structurally exact forms among 12 X86Vector operations. |
 | XeGPU preset | Core plus 6 structurally exact forms among 21 XeGPU operations. |
-| SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
-| SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
+| XeVM preset | Core plus 2 structurally exact forms among 23 XeVM operations. |
 | Declarative | A selected subset of the proving catalog. |
 | Operation shapes | Caller-named operations using one of the supported structural grammars. |
 
@@ -88,14 +92,18 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, `vector`, `wasmssa`, `x86vector`, `xegpu`, and `xevm` presets were checked against
-LLVM 22.1.0.
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`,
+`dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`,
+`ml_program`, `mpi`, `shard`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`,
+`ptr`, `quant`, `rocdl`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`,
+`transform`, `ub`, `vector`, `wasmssa`, `x86vector`, `xegpu`, and `xevm`
+presets were checked against LLVM 22.1.0.
 TOSA registers 91 of the 94 operations defined by its main, utility, and shape
 operation files. `tosa.variable`, `tosa.variable_read`, and
 `tosa.variable_write` remain on the generic recovery path because their custom
 forms carry positional symbols that the reusable structural signatures cannot
 preserve; treating `variable_write` as an operand-clause form would also invent
-a result. SCF registers all 12 operations. Linalg registers all 99 operations: its 16 core/structured
+a result. SCF registers 11 of its 12 operations. Linalg registers all 99 operations: its 16 core/structured
 operations, both relayout operations, and 81 generated named operations.
 Tensor-result forms expose their trailing result types; buffer forms without a
 result signature remain usable through recovery where their custom spelling has
