@@ -653,19 +653,19 @@ impl Document {
         let Some(tree) = self.syntax_tree() else {
             return range;
         };
-        let end = (0..tree.token_count())
-            .filter_map(|index| tree.token(index).copied())
-            .filter(|token| {
-                range.start() <= token.range().start() && token.range().end() <= range.end()
-            })
-            .filter(|token| {
+        let tokens = tree.tokens(tree.root()).unwrap_or(&[]);
+        let end_index = tokens.partition_point(|token| token.range().end() <= range.end());
+        let end = tokens[..end_index]
+            .iter()
+            .rev()
+            .take_while(|token| range.start() <= token.range().start())
+            .find(|token| {
                 !matches!(
                     token.kind(),
                     TokenKind::Whitespace | TokenKind::LineComment | TokenKind::Eof
                 )
             })
             .map(|token| token.range().end())
-            .max()
             .unwrap_or(range.end());
         TextRange::new(range.start(), end).expect("trimmed source range remains ordered")
     }
@@ -708,6 +708,7 @@ struct Printer<'a, W> {
     mode: DialectPrintMode,
     registry: &'a DialectRegistry,
     selected: Option<&'a HashSet<OperationId>>,
+    custom_value_replacements: HashMap<String, String>,
 }
 impl<'a, W: fmt::Write> Printer<'a, W> {
     fn new(
@@ -762,6 +763,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             mode,
             registry,
             selected: None,
+            custom_value_replacements: HashMap::new(),
         }
     }
     fn new_selection(
@@ -774,6 +776,17 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
     ) -> Self {
         let mut printer = Self::new(doc, sink, layout, DialectPrintMode::PreferCustom, registry);
         printer.selected = Some(selected);
+        // The ordinary printer already assigned canonical names. Compute the
+        // selection's changes once, rather than rescanning every value for
+        // every custom operation being printed.
+        printer.custom_value_replacements = printer
+            .values
+            .iter()
+            .filter_map(|(value, canonical)| {
+                let spelling = values.get(value)?;
+                (canonical != spelling).then(|| (canonical.clone(), spelling.clone()))
+            })
+            .collect();
         printer.values = values;
         printer
     }
@@ -802,14 +815,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         })
     }
     fn rewrite_custom_value_names(&self, custom: String) -> String {
-        let replacements = self
-            .values
-            .iter()
-            .filter_map(|(&value, spelling)| {
-                let canonical = self.doc.value_spelling(ValueReference::Resolved(value))?;
-                (canonical != *spelling).then_some((canonical, spelling.as_str()))
-            })
-            .collect::<HashMap<_, _>>();
+        let replacements = &self.custom_value_replacements;
         if replacements.is_empty() {
             return custom;
         }
@@ -825,7 +831,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             rewritten.push_str(&custom[cursor..range.start]);
             let spelling = &custom[range.clone()];
             if token.kind() == TokenKind::PercentIdentifier {
-                rewritten.push_str(replacements.get(spelling).copied().unwrap_or(spelling));
+                rewritten.push_str(replacements.get(spelling).map_or(spelling, String::as_str));
             } else {
                 rewritten.push_str(spelling);
             }
