@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Split parser grammar and semantic-value lowering into private modules by
+  responsibility, preserving public interfaces and behavior.
 - Avoid repeated whole-document scans when printing selected operations and
   their trailing comments.
 - Reject stale or foreign selection handles before writing output.

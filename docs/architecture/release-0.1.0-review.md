@@ -20,7 +20,7 @@ builds. It did not independently verify every dialect against upstream tools.
 
 | Area | Assessment |
 | --- | --- |
-| Code organisation | Clear ownership boundaries and useful modules. Large grammar and semantic-value files deserve focused maintenance, but a broad refactor would add release risk without a demonstrated benefit. |
+| Code organisation | Clear ownership boundaries and useful modules. The large grammar and semantic-value files are now split by responsibility, preserving their existing interfaces and algorithms. |
 | Rust interface | Explicit and predictable. Registry and retention choices are verbose but meaningful. Checked handles and atomic edit commits provide useful guarantees. |
 | Python interface | Convenient for inspection, with typed wrappers and packed tables for bulk access. Editing is deliberately narrower than the Rust API. |
 | CLI | Useful for scripts and interactive analysis. Diagnostics, strict mode, program files, and predictable output contracts are strong. Standard input and pipe handling are corrected. |
@@ -59,6 +59,21 @@ builds. It did not independently verify every dialect against upstream tools.
 
 These are focused corrections. The review preserves the existing representation,
 query grammar, public editing model, and registry design.
+
+**Module organisation**
+
+The reorganisation groups the existing implementation by responsibility:
+
+- `parser/grammar.rs` retains parser entrypoints, operation and region parsing,
+  and token access. Its `attributes`, `types`, and `recovery` submodules hold
+  attribute syntax, type and affine syntax, and diagnostics and recovery.
+- `semantic/values.rs` retains shared text helpers, alias expansion state,
+  symbol handling, and SSA resolution. Its `types`, `attributes`, `locations`,
+  and `affine` submodules hold the corresponding lowering code.
+
+Both module families remain private. Public entrypoints and lowering interfaces
+are unchanged. Existing function bodies were checked against the originals,
+allowing only visibility and formatting differences.
 
 **Printing measurements**
 
