@@ -49,6 +49,7 @@ It does not establish that the operation can be verified or rewritten.
 | Tensor preset | Core plus 4 structurally exact forms among 21 Tensor operations. |
 | Transform preset | Core plus 7 structurally exact forms among 38 core and PDL-extension operations. |
 | UB preset | Core plus both UB operations; the positional long poison form remains on recovery. |
+| Vector preset | Core plus 9 structurally exact forms among 39 Vector operations. |
 | SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
 | SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
 | Declarative | A selected subset of the proving catalog. |
@@ -84,7 +85,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, and `ub` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, and `vector` presets were checked against
 LLVM 22.1.0.
 TOSA registers 91 of the 94 operations defined by its main, utility, and shape
 operation files. `tosa.variable`, `tosa.variable_read`, and
@@ -1242,6 +1243,52 @@ new format primitive. The bare `#ub.poison` attribute is supported through the
 ordinary opaque dialect-attribute path; UB defines no dialect types. The preset
 adds no poison propagation, constant folding, undefined-behavior execution, or
 dialect-specific verification.
+
+Vector defines 39 concrete `vector.*` operations in LLVM 22.1
+`VectorOps.td`: 38 records whose names start with `Vector_`, including the
+plain `Op` definition of `vector.fma`, plus the atypically named
+`VectorScaleOp` definition of `vector.vscale`. The 32 operations in
+`VectorTransformOps.td` have `transform.*` names and are outside this inventory.
+The preset registers nine structurally exact forms.
+`vector.broadcast`, `vector.extract_strided_slice`, `vector.shape_cast`,
+`vector.bitcast`, and `vector.type_cast` expose one operand with independently
+spelled source and result types. The slice form also preserves its named
+offset, size, and stride attributes. `vector.interleave` exposes two same-typed
+inputs and its conversion result, while `vector.fma` exposes three same-typed
+inputs and result. `vector.step` has no operands and one explicitly typed
+result. `vector.yield` accepts its optional dictionary before zero or more
+typed operands and always has zero results.
+
+The other 30 operations remain on whole-operation recovery:
+
+- `vector.reduction`, `vector.multi_reduction`, `vector.scan`,
+  `vector.contract`, `vector.shuffle`, `vector.constant_mask`, and
+  `vector.transpose` carry required positional enum, map, mask, dimension, or
+  permutation attributes. Their inferred result relationships must not be
+  replaced by a nearby explicit signature.
+- `vector.extract`, `vector.insert`, and both `vector.scalable.*` forms use
+  positional static/dynamic indices. `vector.insert_strided_slice` combines
+  differently typed inputs with named attributes. `vector.outerproduct` has
+  optional accumulator and kind clauses.
+- The transfer, load/store, masked load/store, gather/scatter, expand-load,
+  and compress-store forms interleave indexed and heterogeneous operands.
+  Their compact type trailers infer index types and, for stores, optional or
+  absent results.
+- `vector.to_elements` and `vector.from_elements` infer scalar arity or operand
+  types from a vector type. `vector.create_mask` similarly infers index operand
+  types; `vector.deinterleave` spells one result type for two results.
+  `vector.vscale` infers its `index` result and has no typed boundary.
+- `vector.mask` owns the dialect's only operation region and uses a custom
+  parser for optional passthrough and result types. `vector.print` has optional
+  source, punctuation, and string clauses.
+
+No Vector operation has successors. Vector types are builtin types and remain
+available through the ordinary type parser. The preset adds no vector
+verification, type or arity inference, masking, transfer, or reduction
+semantics. Positional attributes and indexed heterogeneous operands recur
+across the gaps, but supporting them honestly requires a generic role-aware
+format facility rather than a Vector-only shortcut; this preset adds no new
+format mechanism.
 
 SparseTensor defines 37 operations in LLVM 22.1, excluding the separate
 Transform dialect extension. The preset registers 10 exact forms. `new`,

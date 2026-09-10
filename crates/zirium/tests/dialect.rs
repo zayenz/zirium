@@ -31,6 +31,181 @@ fn verify_test_type(spelling: &str) -> Result<(), &'static str> {
 }
 
 #[test]
+fn vector_preset_exposes_complete_explicit_roles() {
+    assert!(DialectRegistry::preset_names().contains(&"vector"));
+    let registry = DialectRegistry::from_name("vector").unwrap();
+    let source = br#"module {
+      func.func @forms(%scalar: f32, %a: vector<2xf32>, %b: vector<2xf32>,
+          %wide: vector<4xf32>, %bits: vector<2xi32>, %mem: memref<2x2xf32>) {
+        %broadcast = vector.broadcast %scalar {tag = "broadcast"} : f32 to vector<2xf32>
+        %interleave = vector.interleave %a, %b {tag = "interleave"} : vector<2xf32> -> vector<4xf32>
+        %fma = vector.fma %a, %b, %a {tag = "fma"} : vector<2xf32>
+        %slice = vector.extract_strided_slice %wide {offsets = [0], sizes = [2], strides = [1], tag = "slice"} : vector<4xf32> to vector<2xf32>
+        %shape = vector.shape_cast %wide {tag = "shape"} : vector<4xf32> to vector<2x2xf32>
+        %bitcast = vector.bitcast %bits {tag = "bits"} : vector<2xi32> to vector<4xi16>
+        %view = vector.type_cast %mem {tag = "view"} : memref<2x2xf32> to memref<vector<2x2xf32>>
+        %step = vector.step {tag = "step"} : vector<2xindex>
+        vector.yield {tag = "empty"}
+        vector.yield {tag = "typed"} %a : vector<2xf32>
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, signature) in [
+        ("vector.broadcast", 1, "(f32) -> vector<2xf32>"),
+        (
+            "vector.interleave",
+            2,
+            "(vector<2xf32>, vector<2xf32>) -> vector<4xf32>",
+        ),
+        (
+            "vector.fma",
+            3,
+            "(vector<2xf32>, vector<2xf32>, vector<2xf32>) -> vector<2xf32>",
+        ),
+        (
+            "vector.extract_strided_slice",
+            1,
+            "(vector<4xf32>) -> vector<2xf32>",
+        ),
+        ("vector.shape_cast", 1, "(vector<4xf32>) -> vector<2x2xf32>"),
+        ("vector.bitcast", 1, "(vector<2xi32>) -> vector<4xi16>"),
+        (
+            "vector.type_cast",
+            1,
+            "(memref<2x2xf32>) -> memref<vector<2x2xf32>>",
+        ),
+        ("vector.step", 0, "() -> vector<2xindex>"),
+    ] {
+        let operation = document
+            .operations()
+            .find(|op| document.operation_name(*op) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(document.result_types(operation).unwrap().len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document.operation_regions(operation).unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(document.successors(operation).unwrap().is_empty(), "{name}");
+        assert!(document.attribute_id(operation, "tag").is_some(), "{name}");
+    }
+    let yields = document
+        .operations()
+        .filter(|op| document.operation_name(*op) == Some("vector.yield"))
+        .collect::<Vec<_>>();
+    assert_eq!(document.operands(yields[0]).unwrap().len(), 0);
+    assert_eq!(document.operands(yields[1]).unwrap().len(), 1);
+    assert_eq!(
+        document.type_spelling(document.function_type(yields[1]).unwrap()),
+        Some("(vector<2xf32>) -> ()")
+    );
+    for operation in yields {
+        assert!(document.result_types(operation).unwrap().is_empty());
+        assert!(document.operation_regions(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+        assert!(document.attribute_id(operation, "tag").is_some());
+    }
+    let slice = document
+        .operations()
+        .find(|op| document.operation_name(*op) == Some("vector.extract_strided_slice"))
+        .unwrap();
+    for attribute in ["offsets", "sizes", "strides", "tag"] {
+        assert!(
+            document.attribute_id(slice, attribute).is_some(),
+            "{attribute}"
+        );
+    }
+}
+
+#[test]
+fn vector_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("vector").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/vector.json")).unwrap();
+    let supported = [
+        ("vector.broadcast", OperationShape::UnaryOperand),
+        ("vector.interleave", OperationShape::BinaryOperands),
+        ("vector.fma", OperationShape::VariadicOperands),
+        ("vector.extract_strided_slice", OperationShape::UnaryOperand),
+        ("vector.shape_cast", OperationShape::UnaryOperand),
+        ("vector.bitcast", OperationShape::UnaryOperand),
+        ("vector.type_cast", OperationShape::UnaryOperand),
+        ("vector.step", OperationShape::OperandClauses),
+        (
+            "vector.yield",
+            OperationShape::AttrFirstOptionalTypedOperands,
+        ),
+    ];
+    assert_eq!(config.operation_shapes.len(), supported.len());
+    assert!(config.operation_formats.is_empty());
+    for (name, shape) in supported {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+    let recovery = "
+        vector.contract vector.reduction vector.multi_reduction vector.shuffle
+        vector.deinterleave vector.extract vector.to_elements vector.from_elements
+        vector.insert vector.scalable.insert vector.scalable.extract vector.insert_strided_slice
+        vector.outerproduct vector.transfer_read vector.transfer_write vector.load vector.store
+        vector.maskedload vector.maskedstore vector.gather vector.scatter vector.expandload
+        vector.compressstore vector.constant_mask vector.create_mask vector.mask vector.transpose
+        vector.print vector.vscale vector.scan
+    ";
+    assert_eq!(supported.len() + recovery.split_whitespace().count(), 39);
+    for name in recovery.split_whitespace() {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn vector_indexed_and_region_forms_recover_at_operation_boundaries() {
+    let registry = DialectRegistry::from_name("vector").unwrap();
+    let source = br#"module {
+      func.func @gaps(%base: memref<4xf32>, %index: index, %padding: f32,
+          %mask: vector<2xi1>, %value: vector<2xf32>) {
+        %read = vector.transfer_read %base[%index], %padding : memref<4xf32>, vector<2xf32>
+        %masked = vector.mask %mask { vector.yield %value : vector<2xf32> } : vector<2xf32>
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|d| d.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|op| document.operation_name(op) == Some("test.after"))
+    );
+}
+
+#[test]
 fn tensor_preset_exposes_only_complete_explicit_signatures() {
     assert!(DialectRegistry::preset_names().contains(&"tensor"));
     let registry = DialectRegistry::from_name("tensor").unwrap();

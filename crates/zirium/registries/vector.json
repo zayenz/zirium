@@ -1,0 +1,21 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "vector.broadcast", "shape": "unary_operand"},
+    {"name": "vector.interleave", "shape": "binary_operands"},
+    {"name": "vector.fma", "shape": "variadic_operands"},
+    {"name": "vector.extract_strided_slice", "shape": "unary_operand"},
+    {"name": "vector.shape_cast", "shape": "unary_operand"},
+    {"name": "vector.bitcast", "shape": "unary_operand"},
+    {"name": "vector.type_cast", "shape": "unary_operand"},
+    {"name": "vector.step", "shape": "operand_clauses"},
+    {"name": "vector.yield", "shape": "attr_first_optional_typed_operands"}
+  ],
+  "operation_formats": []
+}
