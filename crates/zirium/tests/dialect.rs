@@ -387,6 +387,11 @@ fn operation_shapes_extend_existing_registries() {
 #[test]
 fn named_stablehlo_registry_parses_and_lowers_its_supported_custom_forms() {
     let registry = DialectRegistry::from_name("stablehlo").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/stablehlo.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 95);
+    assert_eq!(config.operation_formats.len(), 1);
+    assert_eq!(config.operation_formats[0].name, "stablehlo.select");
+    assert_eq!(registry.operation_shape("stablehlo.select"), None);
     for name in [
         "stablehlo.add",
         "stablehlo.and",
@@ -450,11 +455,11 @@ fn named_stablehlo_registry_parses_and_lowers_its_supported_custom_forms() {
 fn stablehlo_preset_structures_common_attribute_heavy_forms() {
     let registry = DialectRegistry::from_name("stablehlo").unwrap();
     let source = br#"module {
-      func.func @main(%input: tensor<4x4xf32>, %start: tensor<i32>) -> tensor<2x4xf32> {
+      func.func @main(%input: tensor<4x4xf32>, %start: tensor<i32>, %pred: tensor<2x4xi1>) -> tensor<2x4xf32> {
         %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
         %slice = stablehlo.dynamic_slice %input, %start, %start, sizes = [2, 4] : (tensor<4x4xf32>, tensor<i32>, tensor<i32>) -> tensor<2x4xf32>
         %broadcast = stablehlo.broadcast_in_dim %zero, dims = [] : (tensor<f32>) -> tensor<2x4xf32>
-        %result = stablehlo.add %slice, %broadcast : tensor<2x4xf32>
+        %result = stablehlo.select %pred, %slice, %broadcast {tag = "select"} : tensor<2x4xi1>, tensor<2x4xf32>
         func.return %result : tensor<2x4xf32>
       }
     }"#;
@@ -482,6 +487,17 @@ fn stablehlo_preset_structures_common_attribute_heavy_forms() {
         .unwrap();
     assert_eq!(document.operands(broadcast).unwrap().len(), 1);
     assert!(document.attribute_id(broadcast, "dims").is_some());
+
+    let select = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("stablehlo.select"))
+        .unwrap();
+    assert_eq!(document.operands(select).unwrap().len(), 3);
+    assert_eq!(
+        document.type_spelling(document.function_type(select).unwrap()),
+        Some("(tensor<2x4xi1>, tensor<2x4xf32>, tensor<2x4xf32>) -> tensor<2x4xf32>")
+    );
+    assert!(document.attribute_id(select, "tag").is_some());
 
     let constant = document
         .operations()
@@ -2962,10 +2978,15 @@ fn llvm_preset_exposes_core_and_intrinsic_function_types() {
 #[test]
 fn llvm_preset_inventory_matches_llvm_22_1_assembly_families() {
     let registry = DialectRegistry::from_name("llvm").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/llvm.json")).unwrap();
     // LLVMOps.td contains 80 concrete operations and LLVMIntrinsicOps.td 204.
     // The preset covers 43 core and 95 intrinsic custom forms plus four core
     // container operations inherited by every bundled dialect preset.
     assert_eq!(registry.operation_names().count(), 142);
+    assert_eq!(config.operation_shapes.len(), 137);
+    assert_eq!(config.operation_formats.len(), 1);
+    assert_eq!(config.operation_formats[0].name, "llvm.select");
+    assert_eq!(registry.operation_shape("llvm.select"), None);
     assert_eq!(
         registry.operation_shape("llvm.add"),
         Some(OperationShape::BinaryOperands)

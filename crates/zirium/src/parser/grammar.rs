@@ -69,6 +69,7 @@ fn produce_operation_events(
         diagnostics: Vec::new(),
         limits,
         nesting_depth: 0,
+        furthest_attempt: 0,
         source,
         registry,
     };
@@ -110,6 +111,7 @@ pub(super) struct Parser<'a> {
     pub(super) diagnostics: Vec<ParseDiagnostic>,
     pub(super) limits: ParserLimits,
     pub(super) nesting_depth: usize,
+    pub(super) furthest_attempt: usize,
     pub(super) source: &'a [u8],
     pub(super) registry: &'a DialectRegistry,
 }
@@ -216,6 +218,10 @@ impl Parser<'_> {
                         descriptor,
                     });
                 }
+            }
+            if let Some(alternatives) = self.registry.operation_grammars(name) {
+                let name = name.to_owned();
+                return alternative_operation(self, marker, alternatives, &name);
             }
             if let Some(shape) = self.registry.operation_shape(name) {
                 let name = name.to_owned();
@@ -1284,6 +1290,7 @@ impl Parser<'_> {
         if oversized {
             self.diagnostics.push(ParseDiagnostic {
                 range: numeric_range,
+                operation_range: None,
                 kind: ParseDiagnosticKind::Syntax,
             });
             self.builder
@@ -1672,6 +1679,27 @@ impl Parser<'_> {
     fn diagnostic_kind(&mut self, kind: ParseDiagnosticKind) {
         self.diagnostics.push(ParseDiagnostic {
             range: self.tokens[self.position].range(),
+            operation_range: None,
+            kind,
+        });
+    }
+    pub(super) fn reset_attempt_failure(&mut self, position: usize) {
+        self.furthest_attempt = position;
+    }
+    pub(super) fn record_attempt_failure(&mut self) {
+        self.furthest_attempt = self.furthest_attempt.max(self.position);
+    }
+    fn diagnostic_mismatch(
+        &mut self,
+        kind: ParseDiagnosticKind,
+        position: usize,
+        operation_position: usize,
+    ) {
+        self.diagnostics.push(ParseDiagnostic {
+            range: self.tokens[position.min(self.tokens.len() - 1)].range(),
+            operation_range: Some(
+                self.tokens[operation_position.min(self.tokens.len() - 1)].range(),
+            ),
             kind,
         });
     }
@@ -1718,8 +1746,19 @@ impl Parser<'_> {
         self.builder.rewind(events);
         self.diagnostics.truncate(diagnostics);
         self.nesting_depth = nesting_depth;
-        self.diagnostic_kind(ParseDiagnosticKind::ShapeMismatch(shape));
+        self.diagnostic_mismatch(
+            ParseDiagnosticKind::ShapeMismatch(shape),
+            self.furthest_attempt,
+            position,
+        );
         self.recover_custom_operation(marker)
+    }
+    pub(super) fn rewind_shaped_operation(&mut self, checkpoint: (usize, usize, usize, usize)) {
+        let (position, events, diagnostics, nesting_depth) = checkpoint;
+        self.position = position;
+        self.builder.rewind(events);
+        self.diagnostics.truncate(diagnostics);
+        self.nesting_depth = nesting_depth;
     }
     pub(super) fn recover_format_mismatch(
         &mut self,
@@ -1731,7 +1770,11 @@ impl Parser<'_> {
         self.builder.rewind(events);
         self.diagnostics.truncate(diagnostics);
         self.nesting_depth = nesting_depth;
-        self.diagnostic_kind(ParseDiagnosticKind::FormatMismatch);
+        self.diagnostic_mismatch(
+            ParseDiagnosticKind::FormatMismatch,
+            self.furthest_attempt,
+            position,
+        );
         self.recover_custom_operation(marker)
     }
     fn ensure_progress(&mut self, before: usize) -> Result<(), CompactError> {

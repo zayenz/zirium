@@ -290,6 +290,53 @@ pub(super) fn shaped_operation(
     operation: &str,
 ) -> Result<(), CompactError> {
     let checkpoint = parser.shaped_operation_checkpoint();
+    parser.reset_attempt_failure(checkpoint.0);
+    if shaped_operation_attempt(parser, marker, shape, operation)? {
+        Ok(())
+    } else {
+        parser.recover_shape_mismatch(marker, shape, checkpoint)
+    }
+}
+
+pub(super) fn alternative_operation(
+    parser: &mut Parser<'_>,
+    marker: Marker,
+    alternatives: &[OperationGrammar],
+    operation: &str,
+) -> Result<(), CompactError> {
+    let checkpoint = parser.shaped_operation_checkpoint();
+    parser.reset_attempt_failure(checkpoint.0);
+    for (index, alternative) in alternatives.iter().enumerate() {
+        parser.rewind_shaped_operation(checkpoint);
+        for _ in 0..index {
+            let selected = parser.builder.start();
+            parser
+                .builder
+                .complete(selected, SyntaxKind::FormatAlternative)?;
+        }
+        let matched = match alternative {
+            OperationGrammar::Shape(shape) => {
+                shaped_operation_attempt(parser, marker, *shape, operation)?
+            }
+            OperationGrammar::Format(format) => {
+                formatted_operation_attempt(parser, marker, format)?
+            }
+        };
+        if matched {
+            return Ok(());
+        }
+    }
+    parser.rewind_shaped_operation(checkpoint);
+    parser.recover_format_mismatch(marker, checkpoint)
+}
+
+pub(super) fn shaped_operation_attempt(
+    parser: &mut Parser<'_>,
+    marker: Marker,
+    shape: OperationShape,
+    operation: &str,
+) -> Result<bool, CompactError> {
+    let checkpoint = parser.shaped_operation_checkpoint();
     let mut good = parser.expect(TokenKind::BareIdentifier)?;
     parser.trivia()?;
     match shape {
@@ -491,12 +538,14 @@ pub(super) fn shaped_operation(
     }
     let crossed_line = parser.trivia_crosses_line(boundary_trivia);
     if !good || !parser.shaped_operation_boundary(crossed_line) {
-        return parser.recover_shape_mismatch(marker, shape, checkpoint);
+        parser.record_attempt_failure();
+        parser.rewind_shaped_operation(checkpoint);
+        return Ok(false);
     }
     parser
         .builder
         .complete_with_error(marker, SyntaxKind::DialectOperation, !good)?;
-    Ok(())
+    Ok(true)
 }
 
 fn optional_typed_operands(
@@ -949,26 +998,42 @@ pub(super) fn formatted_operation(
     format: &OperationFormat,
 ) -> Result<(), CompactError> {
     let checkpoint = parser.shaped_operation_checkpoint();
+    parser.reset_attempt_failure(checkpoint.0);
+    if formatted_operation_attempt(parser, marker, format)? {
+        Ok(())
+    } else {
+        parser.recover_format_mismatch(marker, checkpoint)
+    }
+}
+
+pub(super) fn formatted_operation_attempt(
+    parser: &mut Parser<'_>,
+    marker: Marker,
+    format: &OperationFormat,
+) -> Result<bool, CompactError> {
+    let checkpoint = parser.shaped_operation_checkpoint();
     let mut good = parser.expect(TokenKind::BareIdentifier)?;
     parser.trivia()?;
     let mut nodes = Vec::new();
+    let mut operand_count = 0;
     let mut boundary_trivia = parser.position;
     for step in format.steps() {
         let consumes_source = !matches!(step, FormatStep::Begin(_) | FormatStep::End(_));
-        match *step {
-            FormatStep::Begin(kind) => nodes.push((kind, parser.builder.start())),
+        match step {
+            FormatStep::Begin(kind) => nodes.push((*kind, parser.builder.start())),
             FormatStep::End(kind) => {
                 let Some((started_kind, started)) = nodes.pop() else {
                     good = false;
                     parser.diagnostic();
                     continue;
                 };
-                debug_assert_eq!(started_kind, kind);
-                parser.builder.complete(started, kind)?;
+                debug_assert_eq!(started_kind, *kind);
+                parser.builder.complete(started, *kind)?;
             }
-            FormatStep::Capture(FormatBinding::Operands) => {
+            FormatStep::Capture(FormatCapture::Operands) => {
                 while parser.at(TokenKind::PercentIdentifier) {
                     good &= shaped_operand(parser)?;
+                    operand_count += 1;
                     parser.trivia()?;
                     if !parser.at(TokenKind::Comma) {
                         break;
@@ -977,38 +1042,36 @@ pub(super) fn formatted_operation(
                     parser.trivia()?;
                 }
             }
-            FormatStep::Capture(FormatBinding::Value) => good &= parser.constant_value()?,
-            FormatStep::Capture(FormatBinding::Results | FormatBinding::Result) => {
-                unreachable!("result bindings only occur in type directives")
+            FormatStep::Capture(FormatCapture::Operand(_)) => {
+                good &= shaped_operand(parser)?;
+                operand_count += 1;
             }
+            FormatStep::Capture(FormatCapture::Value) => good &= parser.constant_value()?,
+            FormatStep::Capture(FormatCapture::Callee) => good &= parser.symbol_reference()?,
             FormatStep::AttributeDictionary => {
                 if parser.at(TokenKind::LBrace) {
                     parser.attribute_dict()?;
                 }
             }
-            FormatStep::Literal(FormatLiteral::Colon) => {
-                good &= parser.expect(TokenKind::Colon)?;
-            }
-            FormatStep::Literal(FormatLiteral::To) => {
-                if parser.at(TokenKind::BareIdentifier) && parser.current_text() == "to" {
+            FormatStep::Literal(literal) => {
+                if parser.current_text() == literal {
                     parser.bump()?;
                 } else {
                     parser.diagnostic();
                     good = false;
                 }
             }
-            FormatStep::Literal(FormatLiteral::Into) => {
-                if parser.at(TokenKind::BareIdentifier) && parser.current_text() == "into" {
-                    parser.bump()?;
-                } else {
-                    parser.diagnostic();
-                    good = false;
-                }
-            }
-            FormatStep::Type(binding) => {
-                if matches!(binding, FormatBinding::Operands | FormatBinding::Results)
-                    && parser.at(TokenKind::LParen)
-                {
+            FormatStep::Type(capture) => {
+                if capture.is_per_operand_list() {
+                    for index in 0..operand_count {
+                        if index > 0 {
+                            good &= parser.expect(TokenKind::Comma)?;
+                            parser.trivia()?;
+                        }
+                        good &= parser.type_syntax(0)?;
+                        parser.trivia()?;
+                    }
+                } else if capture.accepts_parenthesized_list() && parser.at(TokenKind::LParen) {
                     parser.type_list(0)?;
                 } else {
                     good &= parser.type_syntax(0)?;
@@ -1036,12 +1099,14 @@ pub(super) fn formatted_operation(
     }
     let crossed_line = parser.trivia_crosses_line(boundary_trivia);
     if !good || !parser.shaped_operation_boundary(crossed_line) {
-        return parser.recover_format_mismatch(marker, checkpoint);
+        parser.record_attempt_failure();
+        parser.rewind_shaped_operation(checkpoint);
+        return Ok(false);
     }
     parser
         .builder
         .complete(marker, SyntaxKind::DialectOperation)?;
-    Ok(())
+    Ok(true)
 }
 
 fn shaped_operand(parser: &mut Parser<'_>) -> Result<bool, CompactError> {

@@ -321,6 +321,7 @@ base_syntax_views!(
     OpaqueAttributeBody,
     OpaqueType,
     OpaqueTypeBody,
+    FormatAlternative,
     Error,
 );
 

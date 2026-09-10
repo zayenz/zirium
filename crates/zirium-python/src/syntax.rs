@@ -26,6 +26,7 @@ fn parser_diagnostic_message(
     kind: zirium::parser::ParseDiagnosticKind,
     source: &[u8],
     range: TextRange,
+    operation_range: Option<TextRange>,
 ) -> String {
     use zirium::parser::ParseDiagnosticKind;
     match kind {
@@ -42,6 +43,7 @@ fn parser_diagnostic_message(
             }
         }
         ParseDiagnosticKind::ShapeMismatch(shape) => {
+            let range = operation_range.unwrap_or(range);
             let name = source
                 .get(range.start() as usize..range.end() as usize)
                 .map(String::from_utf8_lossy)
@@ -63,6 +65,7 @@ fn parser_diagnostic_message(
             format!("custom operation `{name}` does not match registered shape `{shape}`")
         }
         ParseDiagnosticKind::FormatMismatch => {
+            let range = operation_range.unwrap_or(range);
             let name = source
                 .get(range.start() as usize..range.end() as usize)
                 .map(String::from_utf8_lossy)
@@ -559,6 +562,7 @@ impl File {
                     diagnostic.kind(),
                     self.parsed.original_bytes(),
                     diagnostic.range(),
+                    diagnostic.operation_range(),
                 ),
                 range: (diagnostic.range().start(), diagnostic.range().end()),
             });
@@ -803,6 +807,7 @@ kind_catalog!(
         OpaqueTypeBody,
         Error,
         FileMetadata,
+        FormatAlternative,
     ]
 );
 

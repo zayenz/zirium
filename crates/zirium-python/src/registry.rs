@@ -1,6 +1,6 @@
 use super::*;
 use pyo3::types::{PyDict, PyMapping, PyMappingMethods, PyTuple};
-use zirium::dialect::{RegistryConfig, RegistryConfigError};
+use zirium::dialect::{OperationAlternative, RegistryConfig, RegistryConfigError};
 
 #[derive(Clone)]
 pub(super) enum RegistryKind {
@@ -105,6 +105,24 @@ impl DialectRegistryHandle {
             .registry()
             .operation_shape(name)
             .map(CoreOperationShape::name)
+    }
+
+    fn operation_alternatives(&self, name: &str) -> Option<Vec<(String, String)>> {
+        Some(
+            self.kind
+                .registry()
+                .operation_alternatives(name)?
+                .into_iter()
+                .map(|alternative| match alternative {
+                    OperationAlternative::Shape(shape) => {
+                        ("shape".to_owned(), shape.name().to_owned())
+                    }
+                    OperationAlternative::Format(format) => {
+                        ("format".to_owned(), format.to_owned())
+                    }
+                })
+                .collect(),
+        )
     }
 
     #[staticmethod]

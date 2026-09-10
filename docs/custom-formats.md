@@ -76,10 +76,14 @@ assert registry.operation_shape("missing.operation") is None
 ```
 
 `operation_names()` returns a sorted tuple containing built-ins, preset entries,
-caller-supplied shapes, and configured formats. `operation_shape()` returns the
+caller-supplied shapes, configured formats, and alternatives. `operation_shape()` returns the
 configuration spelling for shape-backed operations. It returns `None` both for
 format-backed and unregistered names; use membership in `operation_names()` to
 distinguish those cases.
+
+`operation_alternatives(name)` returns the locally ordered alternatives as
+`("shape", value)` or `("format", value)` pairs, and returns `None` for a
+single-grammar or unregistered operation.
 
 ## Configure a registry with JSON
 
@@ -96,6 +100,15 @@ the caller's default registry; include every preset and built-in you need.
   ],
   "operation_formats": [
     {"name": "vendor.widen", "format": "$operands attr-dict `:` type($operands) `into` type($results)"}
+  ],
+  "operation_alternatives": [
+    {
+      "name": "vendor.literal_or_dimension",
+      "alternatives": [
+        {"format": "$value `:` type($value) attr-dict `:` type($result)"},
+        {"shape": "operand_clauses"}
+      ]
+    }
   ]
 }
 ```
@@ -106,6 +119,7 @@ the caller's default registry; include every preset and built-in you need.
 | `builtins` | Operation names selected from the baseline catalog. Required; may be empty. |
 | `operation_shapes` | Exact operation names paired with reusable grammars. Required; may be empty. |
 | `operation_formats` | Exact operation names paired with validated format descriptions. Defaults to an empty list. |
+| `operation_alternatives` | Exact operation names paired with two or more ordered shape or format alternatives. Defaults to an empty list. |
 
 The built-in catalog contains the eight operations listed under core and baseline
 above. Selecting a built-in uses its existing implementation.
@@ -135,18 +149,60 @@ must not become a result type for a store operation with no results.
 
 ### Format descriptions
 
-`operation_formats` describes the order of operands or a literal value, an
-optional attribute dictionary, fixed tokens, and type captures. Operand forms
-accept `to` or `into` as the result-type separator, as in the JSON example.
-The supported literals are `:`, `to`, and `into`. The typed-literal form is:
+`operation_formats` compiles a sequence of captures, exact tokens, an optional
+attribute dictionary, and type assignments. The supported elements are:
+
+| Element | Input and semantic role |
+| --- | --- |
+| `$operands` | Zero or more comma-separated SSA operands. |
+| `$operands[0]`, `$operands[1]`, ... | A fixed number of SSA operands. Indices must occur once, in order from zero. Put a `` `,` `` literal between them. |
+| `$value` | An inline literal attribute stored as `value`. |
+| `$callee` | A symbol reference stored as `callee`. This does not enable dependency traversal by itself. |
+| `attr-dict` | An attribute dictionary when one is present. The directive may occur at most once and may be omitted from the description. |
+| `` `token` `` | One exact MLIR lexer token, such as `` `:` ``, `` `->` ``, `` `to` ``, or `` `as` ``. |
+| `type(...)` | One type assigned to one or more listed targets. Aggregate operand and result targets also accept parenthesized type lists. |
+| `types($operands)` | A bare comma-separated list containing exactly one type per operand. |
+
+The original conversion and typed-literal descriptions remain valid:
 
 ```
+$operands attr-dict `:` type($operands) `to` type($results)
 $value `:` type($value) attr-dict `:` type($result)
 ```
 
-The registry validates descriptions when constructed. This is a limited format
-language; Zirium does not interpret arbitrary MLIR assembly-format strings or
-load ODS/TableGen files.
+`type($operands)` preserves its original broadcast rule: one type applies to
+every operand. It also accepts a parenthesized list. `type($results)` accepts one
+result type or a parenthesized list. Use several targets when one printed type
+has several roles:
+
+```
+$operands attr-dict `:` type($operands, $results)
+```
+
+Use indexed operands when arity or nonuniform sharing matters. This three-input
+example assigns the second printed type to both branch values:
+
+```
+$operands[0] `,` $operands[1] `,` $operands[2] attr-dict `:` type($operands[0]) `,` type($operands[1], $operands[2]) `->` type($results)
+```
+
+Every SSA operand and result needs a type assignment for semantic lowering.
+The registry validates directive structure when constructed and validates list
+sizes against the operation when lowering. Invalid descriptions report the
+operation name and the failing rule. Zirium does not interpret arbitrary MLIR
+assembly-format strings, optional groups, repetition, regions, or ODS/TableGen.
+
+### Operation alternatives
+
+Use `operation_alternatives` when one operation has two or more complete
+spellings. Each alternative contains exactly one `shape` or `format`. Zirium
+tries them in listed order and records the selected branch for lowering. If all
+branches fail, it recovers the operation once and reports a format mismatch.
+
+Alternatives are explicit so an accidental duplicate operation remains an
+error. Identical ordered entries can be shared by multiple registry files. A
+different alternative or a different order is a conflict; file order never
+selects a definition.
 
 ### Load and combine configurations
 

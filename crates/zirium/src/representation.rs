@@ -72,6 +72,7 @@ pub enum SyntaxKind {
     OpaqueTypeBody,
     Error,
     FileMetadata,
+    FormatAlternative,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,7 +133,7 @@ impl PackedEvent {
             },
             3 => {
                 let kind = (payload & ((1 << Self::KIND_BITS) - 1)) as u8;
-                debug_assert!(kind <= SyntaxKind::FileMetadata as u8);
+                debug_assert!(kind <= SyntaxKind::FormatAlternative as u8);
                 // SAFETY: start events are packed only from valid SyntaxKind values.
                 let kind = unsafe { std::mem::transmute::<u8, SyntaxKind>(kind) };
                 let forward = payload >> Self::KIND_BITS;

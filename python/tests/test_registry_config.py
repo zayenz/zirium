@@ -12,6 +12,7 @@ def test_file_dict_and_pydantic_registry_agree():
     config = json.loads((EXAMPLES / "registry.json").read_text())
     model = zirium.RegistryConfig.model_validate(config)
     config["operation_formats"] = []
+    config["operation_alternatives"] = []
     assert model.model_dump(mode="json") == config
     assert json.loads(model.model_dump_json()) == config
     assert model.model_json_schema()["additionalProperties"] is False
@@ -212,6 +213,52 @@ def test_operation_formats_round_trip_and_parse_captured_roles():
     key = literal.attribute_by_name("k")
     assert value is not None and value.spelling == "1 : i64"
     assert key is not None and key.spelling == "2 : i64"
+
+
+def test_operation_alternatives_are_validated_inspectable_and_lowered():
+    alternatives = zirium.OperationAlternativesConfig(
+        name="a.Choice",
+        alternatives=[
+            zirium.OperationGrammarConfig(
+                format="$value `:` type($value) attr-dict `:` type($result)"
+            ),
+            zirium.OperationGrammarConfig(shape="operand_clauses"),
+        ],
+    )
+    registry = zirium.DialectRegistry.from_config(
+        zirium.RegistryConfig(
+            builtins=[],
+            operation_shapes=[],
+            operation_alternatives=[alternatives],
+        )
+    )
+    assert registry.operation_alternatives("a.Choice") == [
+        (
+            "format",
+            "$value `:` type($value) attr-dict `:` type($result)",
+        ),
+        ("shape", "operand_clauses"),
+    ]
+    parsed = zirium.parse_text(
+        "%literal = a.Choice 0.0 : f64 : f32\n"
+        "%dimension = a.Choice dim(#a.dimension<3>) : i32",
+        registry=registry,
+    )
+    assert parsed.diagnostics == []
+    document = parsed.lower_strict().document
+    assert document is not None
+    choices = document.operation_table("a.Choice")
+    assert choices.count == 2
+    assert choices.operation(0).attribute_by_name("value") is not None
+    assert choices.operation(1).attribute_by_name("value") is None
+
+    with pytest.raises(ValidationError, match="exactly one"):
+        zirium.OperationGrammarConfig(shape="operand_clauses", format="$value")
+    with pytest.raises(ValidationError, match="at least two"):
+        zirium.OperationAlternativesConfig(
+            name="a.Bad",
+            alternatives=[zirium.OperationGrammarConfig(shape="operand_clauses")],
+        )
 
 
 def test_invalid_operation_format_names_its_entry():

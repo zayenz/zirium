@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class OperationShapeConfig(BaseModel):
@@ -34,6 +34,50 @@ class OperationFormatConfig(BaseModel):
     format: str
 
 
+class OperationGrammarConfig(BaseModel):
+    """Select exactly one shape or format for an operation alternative."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    shape: (
+        Literal[
+            "func_like",
+            "call_like",
+            "binary_operands",
+            "optional_typed_operands",
+            "attr_first_optional_typed_operands",
+            "unary_operand",
+            "variadic_operands",
+            "literal_attribute",
+            "operand_clauses",
+            "region_clauses",
+        ]
+        | None
+    ) = None
+    format: str | None = None
+
+    @model_validator(mode="after")
+    def select_one_grammar(self):
+        if (self.shape is None) == (self.format is None):
+            raise ValueError("an alternative requires exactly one shape or format")
+        return self
+
+
+class OperationAlternativesConfig(BaseModel):
+    """Assign two or more ordered syntax alternatives to one operation."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    name: str
+    alternatives: list[OperationGrammarConfig]
+
+    @model_validator(mode="after")
+    def require_multiple_grammars(self):
+        if len(self.alternatives) < 2:
+            raise ValueError("operation alternatives require at least two grammars")
+        return self
+
+
 class RegistryConfig(BaseModel):
     """A complete registry composed from presets and explicit entries."""
 
@@ -43,3 +87,6 @@ class RegistryConfig(BaseModel):
     builtins: list[str]
     operation_shapes: list[OperationShapeConfig]
     operation_formats: list[OperationFormatConfig] = Field(default_factory=list)
+    operation_alternatives: list[OperationAlternativesConfig] = Field(
+        default_factory=list
+    )

@@ -429,9 +429,11 @@ pub struct RegisteredLoweringContext<'a> {
     arguments: Vec<RegisteredArgument<'a>>,
     function_results: Option<&'a str>,
     function_type: Option<&'a str>,
+    format_types: Vec<&'a str>,
     literal_value: Option<&'a str>,
     operand_count: usize,
     result_count: usize,
+    format_alternative: usize,
 }
 
 pub struct RegisteredArgument<'a> {
@@ -467,6 +469,9 @@ impl<'a> RegisteredLoweringContext<'a> {
     pub fn function_type(&self) -> Option<&'a str> {
         self.function_type
     }
+    pub(crate) fn format_types(&self) -> &[&'a str] {
+        &self.format_types
+    }
     pub(crate) fn literal_value(&self) -> Option<&'a str> {
         self.literal_value
     }
@@ -475,6 +480,9 @@ impl<'a> RegisteredLoweringContext<'a> {
     }
     pub(crate) const fn result_count(&self) -> usize {
         self.result_count
+    }
+    pub(crate) const fn format_alternative(&self) -> usize {
+        self.format_alternative
     }
 }
 

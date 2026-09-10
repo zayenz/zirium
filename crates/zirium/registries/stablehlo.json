@@ -84,7 +84,6 @@
     {"name": "stablehlo.round_nearest_even", "shape": "unary_operand"},
     {"name": "stablehlo.rsqrt", "shape": "unary_operand"},
     {"name": "stablehlo.scatter", "shape": "region_clauses"},
-    {"name": "stablehlo.select", "shape": "operand_clauses"},
     {"name": "stablehlo.select_and_scatter", "shape": "region_clauses"},
     {"name": "stablehlo.shift_left", "shape": "binary_operands"},
     {"name": "stablehlo.shift_right_arithmetic", "shape": "binary_operands"},
@@ -104,5 +103,10 @@
     {"name": "stablehlo.while", "shape": "region_clauses"},
     {"name": "stablehlo.xor", "shape": "binary_operands"}
   ],
-  "operation_formats": []
+  "operation_formats": [
+    {
+      "name": "stablehlo.select",
+      "format": "$operands[0] `,` $operands[1] `,` $operands[2] attr-dict `:` type($operands[0]) `,` type($operands[1], $operands[2], $results)"
+    }
+  ]
 }

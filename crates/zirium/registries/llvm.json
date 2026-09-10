@@ -41,7 +41,6 @@
     {"name": "llvm.fpext", "shape": "unary_operand"},
     {"name": "llvm.fptrunc", "shape": "unary_operand"},
     {"name": "llvm.va_arg", "shape": "unary_operand"},
-    {"name": "llvm.select", "shape": "operand_clauses"},
     {"name": "llvm.freeze", "shape": "unary_operand"},
     {"name": "llvm.return", "shape": "optional_typed_operands"},
     {"name": "llvm.resume", "shape": "optional_typed_operands"},
@@ -148,5 +147,10 @@
     {"name": "llvm.intr.debugtrap", "shape": "optional_typed_operands"},
     {"name": "llvm.intr.stepvector", "shape": "variadic_operands"}
   ],
-  "operation_formats": []
+  "operation_formats": [
+    {
+      "name": "llvm.select",
+      "format": "$operands[0] `,` $operands[1] `,` $operands[2] attr-dict `:` type($operands[0]) `,` type($operands[1], $operands[2], $results)"
+    }
+  ]
 }

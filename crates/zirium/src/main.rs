@@ -166,6 +166,7 @@ fn run() -> Result<(), String> {
                 builtins: Vec::new(),
                 operation_shapes: Vec::new(),
                 operation_formats: Vec::new(),
+                operation_alternatives: Vec::new(),
             });
         }
         RegistryConfig::build_many(&configs)

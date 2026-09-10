@@ -5,7 +5,9 @@ from os import PathLike
 from types import TracebackType
 from typing import Any, Literal, Self, TypeAlias
 
+from .config import OperationAlternativesConfig as OperationAlternativesConfig
 from .config import OperationFormatConfig as OperationFormatConfig
+from .config import OperationGrammarConfig as OperationGrammarConfig
 from .config import (
     OperationShapeConfig as OperationShapeConfig,
 )
@@ -78,6 +80,9 @@ class DialectRegistry:
     def preset_names() -> tuple[str, ...]: ...
     def operation_names(self) -> tuple[str, ...]: ...
     def operation_shape(self, name: str) -> str | None: ...
+    def operation_alternatives(
+        self, name: str
+    ) -> list[tuple[Literal["shape", "format"], str]] | None: ...
     @staticmethod
     def from_name(name: str) -> DialectRegistry: ...
     @staticmethod

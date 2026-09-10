@@ -7,8 +7,8 @@
 
 use crate::{
     dialect::{
-        DialectRegistry, FormatBinding, FormatLiteral, FormatStep, OperationDescriptor,
-        OperationFormat, OperationShape,
+        DialectRegistry, FormatCapture, FormatStep, OperationDescriptor, OperationFormat,
+        OperationGrammar, OperationShape,
     },
     lexer::{Diagnostic as LexDiagnostic, Lexed, LexerLimits, TokenKind, lex_with_limits},
     representation::{
@@ -398,6 +398,7 @@ impl std::error::Error for ResourceLimitError {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParseDiagnostic {
     range: TextRange,
+    operation_range: Option<TextRange>,
     kind: ParseDiagnosticKind,
 }
 
@@ -435,6 +436,9 @@ impl ParseDiagnostic {
     pub fn kind(self) -> ParseDiagnosticKind {
         self.kind
     }
+    pub fn operation_range(self) -> Option<TextRange> {
+        self.operation_range
+    }
 }
 
 mod custom;
@@ -442,7 +446,7 @@ mod grammar;
 mod syntax;
 
 pub use custom::DialectParser;
-use custom::{formatted_operation, shaped_operation};
+use custom::{alternative_operation, formatted_operation, shaped_operation};
 #[doc(hidden)]
 pub use grammar::parse_brace_fixture;
 use grammar::{Parser, close_for};

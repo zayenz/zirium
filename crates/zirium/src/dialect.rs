@@ -5,9 +5,10 @@ use std::sync::OnceLock;
 mod config;
 mod format;
 pub use config::{
-    OperationFormatConfig, OperationShapeConfig, RegistryConfig, RegistryConfigError,
+    OperationAlternativesConfig, OperationFormatConfig, OperationGrammarConfig,
+    OperationShapeConfig, RegistryConfig, RegistryConfigError,
 };
-pub(crate) use format::{FormatBinding, FormatLiteral, FormatStep, OperationFormat};
+pub(crate) use format::{FormatCapture, FormatStep, FormatTarget, OperationFormat};
 
 use crate::{
     SyntaxKind,
@@ -324,9 +325,11 @@ pub struct AttributeDescriptor {
 #[derive(Debug, PartialEq, Eq)]
 pub enum DeclarativeRegistryError {
     InvalidOperationName(String),
-    InvalidOperationFormat(String),
+    InvalidOperationFormat { name: String, reason: String },
     ConflictingShape(String),
     ConflictingFormat(String),
+    ConflictingAlternatives(String),
+    InvalidOperationAlternatives(String),
     UnknownOperation(String),
     DuplicateOperation(String),
     EmptyOperation,
@@ -345,11 +348,20 @@ impl std::fmt::Display for DeclarativeRegistryError {
             Self::ConflictingFormat(name) => {
                 write!(formatter, "conflicting operation formats for: {name}")
             }
+            Self::ConflictingAlternatives(name) => {
+                write!(formatter, "conflicting operation alternatives for: {name}")
+            }
+            Self::InvalidOperationAlternatives(name) => {
+                write!(
+                    formatter,
+                    "operation alternatives require at least two valid grammars: {name}"
+                )
+            }
             Self::InvalidOperationName(name) => {
                 write!(formatter, "invalid custom operation name: {name:?}")
             }
-            Self::InvalidOperationFormat(name) => {
-                write!(formatter, "invalid operation format for: {name}")
+            Self::InvalidOperationFormat { name, reason } => {
+                write!(formatter, "invalid operation format for {name}: {reason}")
             }
             Self::UnknownOperation(name) => {
                 write!(formatter, "unknown declarative operation: {name}")
@@ -425,6 +437,20 @@ impl OperationShape {
 
 impl std::error::Error for DeclarativeRegistryError {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OperationGrammar {
+    Shape(OperationShape),
+    Format(OperationFormat),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationAlternative<'a> {
+    Shape(OperationShape),
+    Format(&'a str),
+}
+
+type OwnedOperationAlternatives = Box<[(String, Box<[OperationGrammar]>)]>;
+
 /// A fixed collection of operation, type, and attribute descriptors.
 ///
 /// Use [`Self::EMPTY`] for generic quoted syntax, [`Self::core`] or
@@ -437,6 +463,7 @@ pub struct DialectRegistry {
     attributes: &'static [AttributeDescriptor],
     operation_shapes: Option<Box<[(String, OperationShape)]>>,
     operation_formats: Option<Box<[(String, OperationFormat)]>>,
+    operation_alternatives: Option<OwnedOperationAlternatives>,
     module_alias: bool,
 }
 
@@ -474,6 +501,7 @@ impl DialectRegistry {
             attributes,
             operation_shapes: None,
             operation_formats: None,
+            operation_alternatives: None,
             module_alias: false,
         };
         let mut index = 0;
@@ -626,6 +654,12 @@ impl DialectRegistry {
                     .flatten()
                     .map(|(name, _)| name.as_str()),
             )
+            .chain(
+                self.operation_alternatives
+                    .iter()
+                    .flatten()
+                    .map(|(name, _)| name.as_str()),
+            )
     }
 
     pub fn operation_shape(&self, name: &str) -> Option<OperationShape> {
@@ -640,6 +674,29 @@ impl DialectRegistry {
             .as_deref()?
             .iter()
             .find_map(|(candidate, format)| (candidate == name).then_some(format))
+    }
+
+    pub(crate) fn operation_grammars(&self, name: &str) -> Option<&[OperationGrammar]> {
+        self.operation_alternatives
+            .as_deref()?
+            .iter()
+            .find_map(|(candidate, alternatives)| {
+                (candidate == name).then_some(alternatives.as_ref())
+            })
+    }
+
+    pub fn operation_alternatives(&self, name: &str) -> Option<Vec<OperationAlternative<'_>>> {
+        Some(
+            self.operation_grammars(name)?
+                .iter()
+                .map(|grammar| match grammar {
+                    OperationGrammar::Shape(shape) => OperationAlternative::Shape(*shape),
+                    OperationGrammar::Format(format) => {
+                        OperationAlternative::Format(format.description())
+                    }
+                })
+                .collect(),
+        )
     }
 
     /// Builds an owned registry containing the core operations plus caller-named operations
@@ -657,6 +714,7 @@ impl DialectRegistry {
             attributes: &[],
             operation_shapes: None,
             operation_formats: None,
+            operation_alternatives: None,
             module_alias: true,
         }
         .extend_operation_shapes(operation_shapes)
@@ -706,6 +764,7 @@ impl DialectRegistry {
                 ));
             }
             if self.operation_format(name).is_some()
+                || self.operation_grammars(name).is_some()
                 || shapes.iter().any(|(candidate, _)| candidate == name)
             {
                 return Err(DeclarativeRegistryError::DuplicateOperation(
@@ -720,6 +779,7 @@ impl DialectRegistry {
             attributes: self.attributes,
             operation_shapes: Some(shapes.into_boxed_slice()),
             operation_formats: self.operation_formats.clone(),
+            operation_alternatives: self.operation_alternatives.clone(),
             module_alias: self.module_alias,
         })
     }
@@ -737,14 +797,19 @@ impl DialectRegistry {
         for &(name, description) in operation_formats {
             validate_custom_operation_name(self, name)?;
             if self.operation_shape(name).is_some()
+                || self.operation_grammars(name).is_some()
                 || formats.iter().any(|(candidate, _)| candidate == name)
             {
                 return Err(DeclarativeRegistryError::DuplicateOperation(
                     name.to_owned(),
                 ));
             }
-            let format = OperationFormat::parse(description)
-                .ok_or_else(|| DeclarativeRegistryError::InvalidOperationFormat(name.to_owned()))?;
+            let format = OperationFormat::parse(description).map_err(|reason| {
+                DeclarativeRegistryError::InvalidOperationFormat {
+                    name: name.to_owned(),
+                    reason,
+                }
+            })?;
             formats.push((name.to_owned(), format));
         }
         Ok(Self {
@@ -753,6 +818,61 @@ impl DialectRegistry {
             attributes: self.attributes,
             operation_shapes: self.operation_shapes.clone(),
             operation_formats: Some(formats.into_boxed_slice()),
+            operation_alternatives: self.operation_alternatives.clone(),
+            module_alias: self.module_alias,
+        })
+    }
+
+    pub(crate) fn extend_operation_alternatives(
+        &self,
+        entries: &[(String, Vec<config::OperationGrammarConfig>)],
+    ) -> Result<Self, DeclarativeRegistryError> {
+        let mut alternatives = self
+            .operation_alternatives
+            .as_deref()
+            .unwrap_or_default()
+            .to_vec();
+        for (name, descriptions) in entries {
+            validate_custom_operation_name(self, name)?;
+            if descriptions.len() < 2
+                || self.operation_shape(name).is_some()
+                || self.operation_format(name).is_some()
+                || alternatives.iter().any(|(candidate, _)| candidate == name)
+            {
+                return Err(if descriptions.len() < 2 {
+                    DeclarativeRegistryError::InvalidOperationAlternatives(name.clone())
+                } else {
+                    DeclarativeRegistryError::DuplicateOperation(name.clone())
+                });
+            }
+            let mut compiled = Vec::with_capacity(descriptions.len());
+            for description in descriptions {
+                match (&description.shape, &description.format) {
+                    (Some(shape), None) => compiled.push(OperationGrammar::Shape(*shape)),
+                    (None, Some(format)) => compiled.push(OperationGrammar::Format(
+                        OperationFormat::parse(format).map_err(|reason| {
+                            DeclarativeRegistryError::InvalidOperationFormat {
+                                name: name.clone(),
+                                reason,
+                            }
+                        })?,
+                    )),
+                    _ => {
+                        return Err(DeclarativeRegistryError::InvalidOperationAlternatives(
+                            name.clone(),
+                        ));
+                    }
+                }
+            }
+            alternatives.push((name.clone(), compiled.into_boxed_slice()));
+        }
+        Ok(Self {
+            operations: self.operations,
+            types: self.types,
+            attributes: self.attributes,
+            operation_shapes: self.operation_shapes.clone(),
+            operation_formats: self.operation_formats.clone(),
+            operation_alternatives: Some(alternatives.into_boxed_slice()),
             module_alias: self.module_alias,
         })
     }
@@ -868,6 +988,7 @@ impl DialectRegistry {
                     .into_boxed_slice(),
             ),
             operation_formats: None,
+            operation_alternatives: None,
             module_alias: operation_names.contains(&"builtin.module"),
         })
     }
@@ -903,6 +1024,20 @@ impl DialectRegistry {
             for (name, format) in formats.iter() {
                 hash = mix(hash, name.as_bytes());
                 hash = mix(hash, &format.identity_bytes().collect::<Vec<_>>());
+            }
+        }
+        if let Some(alternatives) = &self.operation_alternatives {
+            for (name, grammars) in alternatives.iter() {
+                hash = mix(hash, name.as_bytes());
+                for grammar in grammars {
+                    match grammar {
+                        OperationGrammar::Shape(shape) => hash = mix(hash, &[0, *shape as u8]),
+                        OperationGrammar::Format(format) => {
+                            hash = mix(hash, &[1]);
+                            hash = mix(hash, &format.identity_bytes().collect::<Vec<_>>());
+                        }
+                    }
+                }
             }
         }
         for descriptor in self.types {
@@ -1291,43 +1426,107 @@ pub(crate) fn lower_operation_format(
     format: &OperationFormat,
     context: &RegisteredLoweringContext<'_>,
 ) -> Option<RegisteredLowering> {
-    if format.captures(FormatBinding::Operands) {
-        let separator = if format
-            .steps()
-            .contains(&FormatStep::Literal(FormatLiteral::Into))
-        {
-            "into"
-        } else {
-            "to"
-        };
-        let (input, result) = split_top_level_keyword(context.function_type()?, separator)?;
-        let input = input.trim();
-        let input_types = crate::semantic::split_registered_types(input);
-        let inputs = if input_types.len() == 1 {
-            std::iter::repeat_n(input_types[0].as_str(), context.operand_count())
-                .collect::<Vec<_>>()
-                .join(", ")
-        } else {
-            input_types.join(", ")
-        };
-        let result = result.trim();
-        return Some(RegisteredLowering {
-            result_types: crate::semantic::split_registered_types(result),
-            function_type: format!("({inputs}) -> {result}"),
-            attributes: Vec::new(),
-        });
+    if format.types().len() != context.format_types().len() {
+        return None;
     }
+    let mut inputs = vec![None; context.operand_count()];
+    let mut results = vec![None; context.result_count()];
+    for (capture, spelling) in format.types().iter().zip(context.format_types()) {
+        let spelling = spelling.trim();
+        if capture.is_per_operand_list() {
+            let types = crate::semantic::split_registered_types(spelling);
+            if types.len() != inputs.len() {
+                return None;
+            }
+            for (slot, ty) in inputs.iter_mut().zip(types) {
+                if slot.replace(ty).is_some() {
+                    return None;
+                }
+            }
+            continue;
+        }
 
-    if format.captures(FormatBinding::Value) {
-        let value = context.literal_value()?.trim();
-        let result = context.function_type()?.trim();
-        return Some(RegisteredLowering {
-            result_types: crate::semantic::split_registered_types(result),
-            function_type: format!("() -> {result}"),
-            attributes: vec![("value", value.to_owned())],
-        });
+        let aggregate = capture.targets().len() == 1
+            && matches!(
+                capture.targets()[0],
+                FormatTarget::Operands | FormatTarget::Results
+            );
+        let captured_types = crate::semantic::split_registered_types(spelling);
+        for target in capture.targets() {
+            match *target {
+                FormatTarget::Operands => {
+                    let assigned = if aggregate && captured_types.len() > 1 {
+                        captured_types.clone()
+                    } else if captured_types.len() == 1 {
+                        std::iter::repeat_n(captured_types[0].clone(), inputs.len()).collect()
+                    } else {
+                        return None;
+                    };
+                    if assigned.len() != inputs.len() {
+                        return None;
+                    }
+                    for (slot, ty) in inputs.iter_mut().zip(assigned) {
+                        if slot.replace(ty).is_some() {
+                            return None;
+                        }
+                    }
+                }
+                FormatTarget::Operand(index) => {
+                    if captured_types.len() != 1
+                        || inputs
+                            .get_mut(index)?
+                            .replace(captured_types[0].clone())
+                            .is_some()
+                    {
+                        return None;
+                    }
+                }
+                FormatTarget::Results => {
+                    let assigned = if capture.targets().len() > 1 && captured_types.len() == 1 {
+                        std::iter::repeat_n(captured_types[0].clone(), results.len()).collect()
+                    } else if aggregate {
+                        captured_types.clone()
+                    } else {
+                        return None;
+                    };
+                    if assigned.len() != results.len() {
+                        return None;
+                    }
+                    for (slot, ty) in results.iter_mut().zip(assigned) {
+                        if slot.replace(ty).is_some() {
+                            return None;
+                        }
+                    }
+                }
+                FormatTarget::Result => {
+                    if captured_types.len() != 1
+                        || results.len() != 1
+                        || results[0].replace(captured_types[0].clone()).is_some()
+                    {
+                        return None;
+                    }
+                }
+                FormatTarget::Value => {}
+            }
+        }
     }
-    None
+    let inputs = inputs.into_iter().collect::<Option<Vec<_>>>()?;
+    let results = results.into_iter().collect::<Option<Vec<_>>>()?;
+    let result_text = type_list_text(&results);
+    let mut attributes = Vec::new();
+    if format.captures_value() {
+        let value = context.literal_value()?.trim();
+        let value = strip_top_level_attribute(value).trim();
+        attributes.push(("value", value.to_owned()));
+    }
+    if format.captures_callee() {
+        attributes.push(("callee", context.leading_symbol()?.trim().to_owned()));
+    }
+    Some(RegisteredLowering {
+        result_types: results,
+        function_type: format!("({}) -> {result_text}", inputs.join(", ")),
+        attributes,
+    })
 }
 
 fn verify_arith_constant(document: &Document, operation: OperationId) -> Result<(), &'static str> {
@@ -2007,5 +2206,6 @@ static CORE_REGISTRY: DialectRegistry = DialectRegistry {
     attributes: &[],
     operation_shapes: None,
     operation_formats: None,
+    operation_alternatives: None,
     module_alias: true,
 };
