@@ -22,6 +22,7 @@ mod render;
 pub struct Query {
     expression: parser::Expression,
     statements: Vec<parser::Statement>,
+    emit_final_result: bool,
 }
 
 /// Bounds evaluation work and the number of items in any one stream.
@@ -150,13 +151,15 @@ impl Query {
         Ok(Self {
             expression: program.expression,
             statements: program.statements,
+            emit_final_result: program.emit_final_result,
         })
     }
 
     /// Evaluates against the current document, invoking `emit` at each explicit
-    /// emission and for the implicit final output. The callback sees each edit
-    /// as it exists at that point. Callers that need all-or-nothing output should
-    /// buffer emissions until evaluation succeeds. Edits commit per stage.
+    /// emission and for the implicit final output unless it is suppressed by a
+    /// final `do` statement. The callback sees each edit as it exists at that
+    /// point. Callers that need all-or-nothing output should buffer emissions
+    /// until evaluation succeeds. Edits commit per stage.
     pub fn evaluate(
         &self,
         document: &mut Document,
@@ -182,6 +185,7 @@ impl Query {
         for statement in &self.statements {
             let expression = match statement {
                 parser::Statement::Binding { expression, .. }
+                | parser::Statement::Do(expression)
                 | parser::Statement::Query(expression) => expression,
             };
             let output = evaluate_expression(
@@ -196,6 +200,7 @@ impl Query {
                 parser::Statement::Binding { name, .. } => {
                     budget.bindings.insert(name.clone(), output);
                 }
+                parser::Statement::Do(_) => {}
                 parser::Statement::Query(_) if !expression.ends_with_emission() => {
                     emit(document, output)?
                 }
@@ -210,7 +215,7 @@ impl Query {
             &mut emit,
             &mut budget,
         )?;
-        if !self.expression.ends_with_emission() {
+        if self.emit_final_result && !self.expression.ends_with_emission() {
             emit(document, output)?;
         }
         Ok(())

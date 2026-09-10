@@ -47,6 +47,8 @@ children, root(predicate), subtree, closure, slice, reachable, fixpoint(query),
 unique, attr("name"), names, result_types, operand_types, tally,
 map_by(key, value), set_attr("name", "value"), remove_attr("name"), emit, json,
 markdown, print("text"), count.
+Statements: prefix a query with `do` and end it with `;` to keep edits while
+suppressing that statement's implicit result.
 Combine selections with union, intersect, except. Group them before counting.
 Navigation preserves duplicates; use unique to count distinct operations.
 Predicates: true, false, op("name"), dialect("name"), result_type("type"),
@@ -283,15 +285,6 @@ fn run() -> Result<(), String> {
         query
             .evaluate_with_limits(&mut document, registry, limits, |document, output| {
                 let mut answer = Vec::new();
-                let scalar = matches!(
-                    output,
-                    QueryOutput::Count(_)
-                        | QueryOutput::Values(_)
-                        | QueryOutput::Json(_)
-                        | QueryOutput::Text(_)
-                        | QueryOutput::Map(_)
-                        | QueryOutput::Array(_)
-                );
                 match output {
                     QueryOutput::Operations(selected) => document
                         .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
@@ -330,7 +323,7 @@ fn run() -> Result<(), String> {
                         answer.extend_from_slice(json.as_bytes())
                     }
                 }
-                answers.push((answer, scalar));
+                answers.push(answer);
                 Ok(())
             })
             .map_err(|error| format!("could not evaluate {name}: {error}"))?;
@@ -338,13 +331,8 @@ fn run() -> Result<(), String> {
     let stdout = io::stdout();
     let mut output = stdout.lock();
     use std::io::Write;
-    let mut previous_scalar = true;
-    for (index, (answer, scalar)) in answers.into_iter().enumerate() {
-        if index != 0 && !scalar && !previous_scalar {
-            output.write_all(b"// -----\n").map_err(|e| e.to_string())?;
-        }
+    for answer in answers {
         output.write_all(&answer).map_err(|e| e.to_string())?;
-        previous_scalar = scalar;
     }
     Ok(())
 }

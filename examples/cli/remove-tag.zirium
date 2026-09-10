@@ -1,1 +1,2 @@
-filter(string_attr_eq("analysis.tag", "old")) | remove_attr("analysis.tag") | input | emit
+do filter(string_attr_eq("analysis.tag", "old")) | remove_attr("analysis.tag");
+emit

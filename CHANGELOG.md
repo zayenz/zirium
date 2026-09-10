@@ -20,6 +20,10 @@ formats, and adds composable report generation.
 - Add `print("text {binding}")` for report text with count or single-string
   interpolation. Allow semicolon-separated query statements interleaved with
   immutable bindings; each query statement starts from the document.
+- Add `do query;` statements for edits whose result should not be emitted.
+  Later statements see the edits, while explicit emitters inside `do` still run.
+- Concatenate statement and multi-input outputs exactly as emitted instead of
+  inserting automatic `// -----` separators; reports can add explicit text.
 
 - Add immutable query bindings, value histograms with `tally`, and per-operation
   maps with `map_by(key, value)`. Maps support nested JSON output and bounded

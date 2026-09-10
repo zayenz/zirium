@@ -30,6 +30,8 @@ fn query_boundaries_and_edit_validation() {
         "(defs | emit) union users",
         "(defs union users) | filter(true)",
         "fixpoint(filter(true) union users)",
+        r#"do filter(op("x")) | set_attr("tag", "hot"); emit"#,
+        r#"do filter(op("x")) | set_attr("tag", "hot");"#,
     ] {
         Query::parse(source).unwrap_or_else(|error| panic!("{source}: {error}"));
     }
@@ -66,6 +68,25 @@ fn query_boundaries_and_edit_validation() {
             .contains("control characters")
     );
     Query::parse(r#"set_attr("tag", "quoted \"value\" \\ path")"#).unwrap();
+}
+
+#[test]
+fn parser_distinguishes_do_statements_from_emitting_queries() {
+    let parsed = parse(&lex(
+        r#"do filter(op("x")) | set_attr("tag", "hot"); filter(has_attr("tag"))"#,
+    ));
+    let program = parsed.program().unwrap();
+    assert!(matches!(
+        program.statements.as_slice(),
+        [zirium::query::parser::Statement::Do(_)]
+    ));
+    assert!(matches!(
+        program.expression().first.as_slice(),
+        [Stage::Filter { .. }]
+    ));
+
+    let missing_semicolon = Query::parse(r#"do set_attr("tag", "hot")"#).unwrap_err();
+    assert!(missing_semicolon.message.contains("`;` after do statement"));
 }
 
 #[test]

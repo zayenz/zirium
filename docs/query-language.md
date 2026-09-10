@@ -217,6 +217,22 @@ between query statements; they are evaluated where written and never emit.
 The final query statement may omit its semicolon. A program containing bindings
 still needs a query statement after its last binding.
 
+Prefix a query with `do` to evaluate it while suppressing its implicit result.
+This makes edit-only statements explicit and lets a later statement choose what
+to print:
+
+```zirium
+do filter(op("arith.addi"))
+   | set_attr("analysis.tag", "review");
+
+emit
+```
+
+The edit remains visible to later statements, and the final `emit` prints the
+complete edited document once. A `do` statement requires its trailing
+semicolon, including at the end of a program. Explicit emitters inside its query
+still emit; `do` suppresses only the implicit result.
+
 `print` appends a newline. It leaves the current stream unchanged, so it also
 works inside a pipeline. A final `print` suppresses implicit output, just like
 a final `json` or `markdown`. Use `print("")` for a blank line. Template
@@ -575,6 +591,10 @@ attributes are ignored. Both preserve the selection. Later filters and
 `input` see the edits. Attribute values passed to `set_attr` cannot contain
 control characters. Each edit stage commits atomically.
 
+Use a `do` statement when an edit should not itself produce output. A following
+query starts from the complete edited document, so `do EDIT; emit` prints one
+whole document without first printing the edited selection.
+
 `emit` prints the current fragment and passes the same selection onward:
 
 ```zirium
@@ -600,17 +620,22 @@ information can appear as a placeholder or JSON null on incompletely understood
 input. This format favors inspection and interchange; Zirium cannot read it back as MLIR.
 Like `emit`, a final `json` suppresses the implicit final emission.
 
-Consecutive fragment outputs are separated by `// -----`. Counts are plain
-lines. The CLI buffers all emissions across all input files until processing
-succeeds: a query, evaluation, or printing error produces no standard output.
-Input files are never overwritten. Rust callers use the `Query::evaluate`
-emission callback and can choose their own buffering policy.
+Statement outputs and results from multiple input files are concatenated
+without an automatic separator. Use `print` when a report needs headings,
+spacing, or a delimiter. Counts are plain lines. The CLI buffers all emissions
+across all input files until processing succeeds: a query, evaluation, or
+printing error produces no standard output. Input files are never overwritten.
+Rust callers use the `Query::evaluate` emission callback and can choose their
+own buffering policy.
 
 ## Grammar and diagnostics
 
 ```text
-program    = [ { binding | query ";" } query [ ";" ] ]
+program    = empty | { statement } final
+statement  = binding | do-statement | query ";"
+final      = query [ ";" ] | do-statement
 binding    = identifier "=" query ";"
+do-statement = "do" query ";"
 query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
 stage      = object | array | identifier | "markdown" | "print" "(" string ")"

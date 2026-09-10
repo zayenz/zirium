@@ -1,1 +1,2 @@
-filter(op("arith.addi")) | set_attr("analysis.tag", "review") | input | emit
+do filter(op("arith.addi")) | set_attr("analysis.tag", "review");
+emit

@@ -218,6 +218,7 @@ fn cli_presets_strict_mode_and_inspection_work_together() {
         "map_by(key, value)",
         "markdown",
         "print(\"text\")",
+        "do",
     ] {
         assert!(help.contains(term), "help omits {term}");
     }
@@ -1080,7 +1081,7 @@ fn long_program_file_flag_keeps_mlir_file_arguments() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "// -----\n");
+    assert!(output.stdout.is_empty());
 }
 
 #[test]
@@ -1208,7 +1209,7 @@ fn inline_nested_operation_does_not_steal_parent_comment() {
 }
 
 #[test]
-fn files_frame_empty_answers() {
+fn multiple_empty_file_results_produce_no_output() {
     let directory = std::env::temp_dir();
     let first = directory.join(format!("zirium-cli-{}-a.mlir", std::process::id()));
     let second = directory.join(format!("zirium-cli-{}-b.mlir", std::process::id()));
@@ -1223,7 +1224,7 @@ fn files_frame_empty_answers() {
     let _ = fs::remove_file(first);
     let _ = fs::remove_file(second);
     assert!(output.status.success());
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "// -----\n");
+    assert!(output.stdout.is_empty());
 }
 
 #[test]
@@ -1547,11 +1548,35 @@ fn implicit_input_and_emit_cover_empty_programs_and_explicit_taps() {
     }
     let twice = run_stdin("emit | emit", INPUT);
     assert!(twice.status.success());
-    let parts = String::from_utf8(twice.stdout).unwrap();
-    assert_eq!(
-        parts.split("// -----\n").collect::<Vec<_>>(),
-        vec![String::from_utf8_lossy(&expected.stdout); 2]
+    assert_eq!(twice.stdout, [expected.stdout.as_slice(); 2].concat());
+}
+
+#[test]
+fn do_statement_keeps_edits_without_emitting_its_selection() {
+    let output = run_stdin(
+        r#"do filter(op("arith.addi")) | set_attr("analysis.tag", "review"); emit"#,
+        INPUT,
     );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.matches("analysis.tag = \"review\"").count(), 1);
+    assert!(!stdout.contains("// -----"));
+    assert!(stdout.contains("example.observe"));
+
+    let silent = run_stdin(
+        r#"do filter(op("arith.addi")) | set_attr("analysis.tag", "review");"#,
+        INPUT,
+    );
+    assert!(silent.status.success());
+    assert!(silent.stdout.is_empty());
+
+    let explicit = run_stdin("do emit;", INPUT);
+    assert!(explicit.status.success());
+    assert_eq!(explicit.stdout, run_stdin("emit", INPUT).stdout);
 }
 
 #[test]
@@ -1729,21 +1754,22 @@ fn emit_captures_each_pipeline_position_before_later_edits() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let text = String::from_utf8(output.stdout).unwrap();
-    let fragments = text.split("// -----\n").collect::<Vec<_>>();
-    assert_eq!(fragments.len(), 3);
-    assert!(!fragments[0].contains("tag ="));
-    assert!(fragments[1].contains("tag = \"new\""));
-    assert_eq!(fragments[0], fragments[2]);
+    let before = run_stdin(r#"filter(op("arith.addi"))"#, INPUT).stdout;
+    let tagged = run_stdin(
+        r#"filter(op("arith.addi")) | set_attr("tag", "new")"#,
+        INPUT,
+    )
+    .stdout;
+    assert_eq!(
+        output.stdout,
+        [&before[..], &tagged[..], &before[..]].concat()
+    );
 
     let output = run_stdin(r#"filter(op("arith.addi")) | emit | users"#, INPUT);
     assert!(output.status.success());
-    let text = String::from_utf8(output.stdout).unwrap();
-    let fragments = text.split("// -----\n").collect::<Vec<_>>();
-    assert_eq!(fragments.len(), 2);
-    assert!(fragments[0].contains("arith.addi"));
-    assert!(!fragments[0].contains("example.observe"));
-    assert!(fragments[1].contains("example.observe"));
+    let add = run_stdin(r#"filter(op("arith.addi"))"#, INPUT).stdout;
+    let user = run_stdin(r#"filter(op("arith.addi")) | users"#, INPUT).stdout;
+    assert_eq!(output.stdout, [&add[..], &user[..]].concat());
 
     let iterations = run_stdin(
         r#"filter(op("arith.addi")) | fixpoint(closure | emit) | count"#,

@@ -199,12 +199,13 @@ multi-result operation.
 
 ## Tag selected operations
 
-Edits preserve the current selection. Appending `input | emit`
-returns to the whole edited document and prints all operations:
+Edits preserve the current selection. A `do` statement suppresses the edited
+selection's implicit output; the following `emit` starts from the whole edited
+document and prints all operations once:
 
 ```sh
 zirium \
-  'filter(op("arith.addi")) | set_attr("analysis.tag", "review") | input | emit' \
+  'do filter(op("arith.addi")) | set_attr("analysis.tag", "review"); emit' \
   examples/cli/arithmetic.mlir
 ```
 
@@ -220,7 +221,7 @@ input:
 
 ```sh
 zirium \
-  'filter(string_attr_eq("analysis.tag", "old")) | remove_attr("analysis.tag") | input | emit' \
+  'do filter(string_attr_eq("analysis.tag", "old")) | remove_attr("analysis.tag"); emit' \
   < examples/cli/arithmetic.mlir
 ```
 
@@ -232,11 +233,14 @@ The same query is available as
 ## Inspect an intermediate selection
 
 `emit` prints the selection and passes it to the next stage. This prints the
-add, then its direct users, separated by `// -----`:
+add, then its direct users, back-to-back:
 
 ```sh
 zirium 'filter(op("arith.addi")) | emit | users' examples/cli/arithmetic.mlir
 ```
+
+Zirium does not insert separators between statement or intermediate outputs.
+Use `print("text")` when a report needs an explicit heading or delimiter.
 
 ## Work inside a function fragment
 

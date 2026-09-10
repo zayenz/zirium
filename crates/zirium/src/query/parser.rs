@@ -18,15 +18,18 @@ pub enum SetOperator {
 pub struct Program {
     pub statements: Vec<Statement>,
     pub(crate) expression: Expression,
+    pub(crate) emit_final_result: bool,
 }
 
-/// Statements run in order before the final expression.
+/// Statements run in order before the final expression. `Do` suppresses only
+/// the expression's implicit result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Statement {
     Binding {
         name: String,
         expression: Expression,
     },
+    Do(Expression),
     Query(Expression),
 }
 
@@ -411,11 +414,27 @@ impl Parser<'_> {
                     rest: Vec::new(),
                     range: self.current().range(),
                 },
+                emit_final_result: true,
             });
         }
         let mut statements = Vec::new();
         loop {
             self.skip_trivia();
+            if self.at_identifier("do") {
+                self.bump();
+                let expression = self.expression(0)?;
+                self.expect(TokenKind::Semicolon, "expected `;` after do statement")?;
+                self.skip_trivia();
+                if self.at(TokenKind::Eof) {
+                    return Some(Program {
+                        statements,
+                        expression,
+                        emit_final_result: false,
+                    });
+                }
+                statements.push(Statement::Do(expression));
+                continue;
+            }
             let next = self.tokens[self.cursor + 1..]
                 .iter()
                 .find(|token| token.kind() != TokenKind::Trivia);
@@ -454,6 +473,7 @@ impl Parser<'_> {
             return Some(Program {
                 statements,
                 expression,
+                emit_final_result: true,
             });
         }
     }
@@ -1180,6 +1200,7 @@ fn is_reserved(name: &str) -> bool {
     matches!(
         name,
         "input"
+            | "do"
             | "filter"
             | "closure"
             | "slice"
