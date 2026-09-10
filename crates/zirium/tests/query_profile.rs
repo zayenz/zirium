@@ -46,8 +46,8 @@ fn cases(width: usize, depth: usize) -> Vec<Case> {
             expected: width * (depth + 1),
         },
         Case {
-            name: "root",
-            source: r#"filter(op("func.func")) | root | filter(op("arith.addi")) | count"#,
+            name: "subtree",
+            source: r#"filter(op("func.func")) | subtree | filter(op("arith.addi")) | count"#,
             expected: width * depth,
         },
         Case {
@@ -114,7 +114,9 @@ fn evaluate(query: &Query, document: &mut Document) -> usize {
         .evaluate(document, DialectRegistry::baseline(), |_, output| {
             checksum += match output {
                 QueryOutput::Count(count) => count,
-                QueryOutput::Selection(selected) => selected.len(),
+                QueryOutput::Operations(selected) => selected.len(),
+                QueryOutput::Values(values) => values.len(),
+                QueryOutput::Json(json) => json.len(),
             };
             Ok(())
         })

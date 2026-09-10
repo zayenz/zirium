@@ -19,6 +19,10 @@ inspectable.
   format descriptions.
 - Store parser events in a four-byte transient representation and release the
   event buffer before trimming the completed CST, reducing peak parse memory.
+- Model query results as ordered streams with explicit `unique`, add
+  predicate-based ancestor lookup through `root(predicate)`, rename downward
+  expansion to `subtree`, project attributes with `attr`, and emit streams as
+  JSON with `json`.
 
 ## 0.0.11
 

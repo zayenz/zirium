@@ -20,8 +20,10 @@ pub struct Query {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryOutput {
-    Selection(Vec<OperationId>),
+    Operations(Vec<OperationId>),
+    Values(Vec<String>),
     Count(usize),
+    Json(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,10 +106,9 @@ impl Query {
         registry: &DialectRegistry,
         mut emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
-        let selected = document.operations().collect();
-        let output =
-            evaluate_expression(&self.expression, document, registry, selected, &mut emit)?;
-        if !self.expression.ends_with_emit() {
+        let input = QueryOutput::Operations(document.operations().collect());
+        let output = evaluate_expression(&self.expression, document, registry, input, &mut emit)?;
+        if !self.expression.ends_with_emission() {
             emit(document, output)?;
         }
         Ok(())
@@ -118,87 +119,98 @@ fn evaluate_expression(
     expression: &parser::Expression,
     document: &mut Document,
     registry: &DialectRegistry,
-    input: Vec<OperationId>,
+    input: QueryOutput,
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
 ) -> Result<QueryOutput, EvaluationError> {
     if expression.rest.is_empty() {
         return evaluate_pipeline(&expression.first, document, registry, input, emit);
     }
     let first = evaluate_pipeline(&expression.first, document, registry, input.clone(), emit)?;
-    let QueryOutput::Selection(mut selected) = first else {
-        unreachable!("parser checks set operands")
-    };
+    let mut selected = first;
     for (operator, stages) in &expression.rest {
-        let QueryOutput::Selection(right) =
-            evaluate_pipeline(stages, document, registry, input.clone(), emit)?
-        else {
-            unreachable!("parser checks set operands")
-        };
-        let mut left = selected.into_iter().collect::<HashSet<_>>();
-        let right = right.into_iter().collect::<HashSet<_>>();
-        match operator {
-            parser::SetOperator::Union => left.extend(right),
-            parser::SetOperator::Intersect => left.retain(|operation| right.contains(operation)),
-            parser::SetOperator::Except => left.retain(|operation| !right.contains(operation)),
-        }
-        selected = source_ordered(document, left);
+        let right = evaluate_pipeline(stages, document, registry, input.clone(), emit)?;
+        selected = evaluate_set_operator(document, *operator, selected, right)?;
     }
-    Ok(QueryOutput::Selection(selected))
+    Ok(selected)
 }
 
 fn evaluate_pipeline(
     stages: &[parser::Stage],
     document: &mut Document,
     registry: &DialectRegistry,
-    mut selected: Vec<OperationId>,
+    input: QueryOutput,
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
 ) -> Result<QueryOutput, EvaluationError> {
+    let mut current = input;
     for stage in stages {
         match stage {
-            parser::Stage::Input { .. } => selected = document.operations().collect(),
+            parser::Stage::Input { .. } => {
+                current = QueryOutput::Operations(document.operations().collect())
+            }
             parser::Stage::Filter { predicate, .. } => {
+                let selected = operations_mut(&mut current, "filter")?;
                 selected.retain(|&operation| evaluate_predicate(predicate, document, operation));
             }
             parser::Stage::Closure { .. } => {
-                selected = evaluate_closure(document, selected, registry)?
+                let selected = take_operations(current, "closure")?;
+                current = QueryOutput::Operations(evaluate_closure(document, selected, registry)?);
             }
-            parser::Stage::Defs { .. } => selected = evaluate_defs(document, &selected),
-            parser::Stage::Users { .. } => selected = evaluate_users(document, &selected),
-            parser::Stage::Parent { .. } => selected = evaluate_parent(document, &selected),
-            parser::Stage::Children { .. } => selected = evaluate_children(document, &selected),
-            parser::Stage::Root { .. } => {
-                let mut expanded = HashSet::new();
+            parser::Stage::Defs { .. } => {
+                let selected = take_operations(current, "defs")?;
+                current = QueryOutput::Operations(evaluate_defs(document, &selected));
+            }
+            parser::Stage::Users { .. } => {
+                let selected = take_operations(current, "users")?;
+                current = QueryOutput::Operations(evaluate_users(document, &selected));
+            }
+            parser::Stage::Parent { .. } => {
+                let selected = take_operations(current, "parent")?;
+                current = QueryOutput::Operations(evaluate_parent(document, &selected));
+            }
+            parser::Stage::Children { .. } => {
+                let selected = take_operations(current, "children")?;
+                current = QueryOutput::Operations(evaluate_children(document, &selected));
+            }
+            parser::Stage::Root { predicate, .. } => {
+                let selected = take_operations(current, "root")?;
+                current = QueryOutput::Operations(evaluate_root(document, &selected, predicate));
+            }
+            parser::Stage::Subtree { .. } => {
+                let selected = take_operations(current, "subtree")?;
+                let mut expanded = Vec::new();
                 for operation in selected {
-                    if !expanded.contains(&operation) {
-                        retain_subtree(document, operation, &mut expanded);
-                    }
+                    append_subtree(document, operation, &mut expanded);
                 }
-                selected = source_ordered(document, expanded);
+                current = QueryOutput::Operations(expanded);
+            }
+            parser::Stage::Unique { .. } => match &mut current {
+                QueryOutput::Operations(selected) => retain_unique(selected),
+                QueryOutput::Values(values) => retain_unique(values),
+                QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
+            },
+            parser::Stage::Attr { name, .. } => {
+                let selected = take_operations(current, "attr")?;
+                current = QueryOutput::Values(evaluate_attr(document, &selected, name));
             }
             parser::Stage::Group { expression, .. } => {
-                match evaluate_expression(expression, document, registry, selected, emit)? {
-                    QueryOutput::Selection(result) => selected = result,
-                    output => return Ok(output),
+                current = evaluate_expression(expression, document, registry, current, emit)?;
+                if matches!(current, QueryOutput::Count(_) | QueryOutput::Json(_)) {
+                    return Ok(current);
                 }
             }
             parser::Stage::Fixpoint { expression, .. } => {
                 // Brent's cycle detection keeps one checkpoint instead of storing
                 // every intermediate selection. Read-only bodies produce deterministic selections.
-                let mut checkpoint = selected.clone();
+                let mut checkpoint = current.clone();
                 let mut power = 1usize;
                 let mut distance = 0usize;
                 loop {
-                    let QueryOutput::Selection(next) = evaluate_expression(
-                        expression,
-                        document,
-                        registry,
-                        selected.clone(),
-                        emit,
-                    )?
-                    else {
-                        unreachable!("parser checks fixpoint body")
-                    };
-                    if next == selected {
+                    let next =
+                        evaluate_expression(expression, document, registry, current.clone(), emit)?;
+                    if matches!(next, QueryOutput::Count(_) | QueryOutput::Json(_)) {
+                        unreachable!("parser checks fixpoint body");
+                    }
+                    if next == current {
                         break;
                     }
                     if next == checkpoint {
@@ -208,16 +220,17 @@ fn evaluate_pipeline(
                                     .into(),
                         });
                     }
-                    selected = next;
+                    current = next;
                     distance += 1;
                     if distance == power {
-                        checkpoint = selected.clone();
+                        checkpoint = current.clone();
                         power = power.saturating_mul(2);
                         distance = 0;
                     }
                 }
             }
             parser::Stage::SetAttr { name, value, .. } => {
+                let selected = operations(&current, "set_attr")?;
                 let mut editor = document.edit(registry).map_err(edit_error)?;
                 let spelling = quote_mlir_string(value);
                 for operation in selected.iter().copied().collect::<HashSet<_>>() {
@@ -235,6 +248,7 @@ fn evaluate_pipeline(
                 editor.commit().map_err(edit_error)?;
             }
             parser::Stage::RemoveAttr { name, .. } => {
+                let selected = operations(&current, "remove_attr")?;
                 let targets = selected
                     .iter()
                     .copied()
@@ -255,11 +269,59 @@ fn evaluate_pipeline(
                     editor.commit().map_err(edit_error)?;
                 }
             }
-            parser::Stage::Count { .. } => return Ok(QueryOutput::Count(selected.len())),
-            parser::Stage::Emit { .. } => emit(document, QueryOutput::Selection(selected.clone()))?,
+            parser::Stage::Count { .. } => return Ok(QueryOutput::Count(output_len(&current))),
+            parser::Stage::Emit { .. } => emit(document, current.clone())?,
+            parser::Stage::Json { .. } => emit(
+                document,
+                QueryOutput::Json(output_json(document, &current)?),
+            )?,
         }
     }
-    Ok(QueryOutput::Selection(selected))
+    Ok(current)
+}
+
+fn operations<'a>(
+    output: &'a QueryOutput,
+    stage: &str,
+) -> Result<&'a [OperationId], EvaluationError> {
+    match output {
+        QueryOutput::Operations(selected) => Ok(selected),
+        QueryOutput::Values(_) => Err(EvaluationError::new(format!(
+            "{stage} requires operations, but the current stream contains values"
+        ))),
+        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
+    }
+}
+
+fn operations_mut<'a>(
+    output: &'a mut QueryOutput,
+    stage: &str,
+) -> Result<&'a mut Vec<OperationId>, EvaluationError> {
+    match output {
+        QueryOutput::Operations(selected) => Ok(selected),
+        QueryOutput::Values(_) => Err(EvaluationError::new(format!(
+            "{stage} requires operations, but the current stream contains values"
+        ))),
+        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
+    }
+}
+
+fn take_operations(output: QueryOutput, stage: &str) -> Result<Vec<OperationId>, EvaluationError> {
+    match output {
+        QueryOutput::Operations(selected) => Ok(selected),
+        QueryOutput::Values(_) => Err(EvaluationError::new(format!(
+            "{stage} requires operations, but the current stream contains values"
+        ))),
+        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
+    }
+}
+
+fn output_len(output: &QueryOutput) -> usize {
+    match output {
+        QueryOutput::Operations(selected) => selected.len(),
+        QueryOutput::Values(values) => values.len(),
+        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
+    }
 }
 
 fn source_ordered(document: &Document, selected: HashSet<OperationId>) -> Vec<OperationId> {
@@ -269,8 +331,50 @@ fn source_ordered(document: &Document, selected: HashSet<OperationId>) -> Vec<Op
         .collect()
 }
 
+fn evaluate_set_operator(
+    document: &Document,
+    operator: parser::SetOperator,
+    left: QueryOutput,
+    right: QueryOutput,
+) -> Result<QueryOutput, EvaluationError> {
+    match (left, right) {
+        (QueryOutput::Operations(left), QueryOutput::Operations(right)) => {
+            let mut left = left.into_iter().collect::<HashSet<_>>();
+            let right = right.into_iter().collect::<HashSet<_>>();
+            match operator {
+                parser::SetOperator::Union => left.extend(right),
+                parser::SetOperator::Intersect => {
+                    left.retain(|operation| right.contains(operation))
+                }
+                parser::SetOperator::Except => left.retain(|operation| !right.contains(operation)),
+            }
+            Ok(QueryOutput::Operations(source_ordered(document, left)))
+        }
+        (QueryOutput::Values(mut left), QueryOutput::Values(right)) => {
+            let right_set = right.iter().cloned().collect::<HashSet<_>>();
+            match operator {
+                parser::SetOperator::Union => left.extend(right),
+                parser::SetOperator::Intersect => left.retain(|value| right_set.contains(value)),
+                parser::SetOperator::Except => left.retain(|value| !right_set.contains(value)),
+            }
+            retain_unique(&mut left);
+            Ok(QueryOutput::Values(left))
+        }
+        (QueryOutput::Operations(_), QueryOutput::Values(_))
+        | (QueryOutput::Values(_), QueryOutput::Operations(_)) => Err(EvaluationError::new(
+            "set operands must produce the same kind of stream",
+        )),
+        _ => unreachable!("parser checks set operands"),
+    }
+}
+
+fn retain_unique<T: Clone + Eq + std::hash::Hash>(values: &mut Vec<T>) {
+    let mut seen = HashSet::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
 fn evaluate_defs(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
-    let definitions = selected
+    selected
         .iter()
         .flat_map(|&operation| document.operands(operation).unwrap_or(&[]))
         .filter_map(|operand| match *operand {
@@ -281,12 +385,11 @@ fn evaluate_defs(document: &Document, selected: &[OperationId]) -> Vec<Operation
                 .map(|region| region.parent_operation()),
             ValueReference::Invalid(_) => None,
         })
-        .collect();
-    source_ordered(document, definitions)
+        .collect()
 }
 
 fn evaluate_users(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
-    let users = selected
+    selected
         .iter()
         .flat_map(|&operation| {
             (0..document.result_types(operation).map_or(0, <[_]>::len) as u32).flat_map(
@@ -298,12 +401,11 @@ fn evaluate_users(document: &Document, selected: &[OperationId]) -> Vec<Operatio
                 operation
             }
         })
-        .collect();
-    source_ordered(document, users)
+        .collect()
 }
 
 fn evaluate_parent(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
-    let parents = selected
+    selected
         .iter()
         .filter_map(|&operation| {
             document
@@ -313,12 +415,11 @@ fn evaluate_parent(document: &Document, selected: &[OperationId]) -> Vec<Operati
                 .and_then(|block| document.region(block.parent_region()))
                 .map(|region| region.parent_operation())
         })
-        .collect();
-    source_ordered(document, parents)
+        .collect()
 }
 
 fn evaluate_children(document: &Document, selected: &[OperationId]) -> Vec<OperationId> {
-    let children = selected
+    selected
         .iter()
         .flat_map(|&operation| document.operation_regions(operation).unwrap_or(&[]))
         .flat_map(|&region| {
@@ -329,8 +430,84 @@ fn evaluate_children(document: &Document, selected: &[OperationId]) -> Vec<Opera
         })
         .flat_map(|&block| document.block_operations(block).unwrap_or(&[]))
         .copied()
-        .collect();
-    source_ordered(document, children)
+        .collect()
+}
+
+fn evaluate_root(
+    document: &Document,
+    selected: &[OperationId],
+    predicate: &parser::Predicate,
+) -> Vec<OperationId> {
+    selected
+        .iter()
+        .filter_map(|&operation| {
+            let mut candidate = Some(operation);
+            while let Some(operation) = candidate {
+                if evaluate_predicate(predicate, document, operation) {
+                    return Some(operation);
+                }
+                candidate = operation_parent(document, operation);
+            }
+            None
+        })
+        .collect()
+}
+
+fn operation_parent(document: &Document, operation: OperationId) -> Option<OperationId> {
+    document
+        .operation(operation)?
+        .parent_block()
+        .and_then(|block| document.block(block))
+        .and_then(|block| document.region(block.parent_region()))
+        .map(|region| region.parent_operation())
+}
+
+fn evaluate_attr(document: &Document, selected: &[OperationId], name: &str) -> Vec<String> {
+    selected
+        .iter()
+        .filter_map(|&operation| {
+            let attribute = document.attribute_id(operation, name)?;
+            match document.attribute_value(attribute)? {
+                AttributeValue::String(spelling) => decode_mlir_string(spelling),
+                AttributeValue::Symbol(path) => Some(path.join("::")),
+                _ => document
+                    .attribute_spelling_value(attribute)
+                    .map(str::to_owned),
+            }
+        })
+        .collect()
+}
+
+fn output_json(document: &Document, output: &QueryOutput) -> Result<String, EvaluationError> {
+    let value = match output {
+        QueryOutput::Operations(selected) => serde_json::Value::Array(
+            selected
+                .iter()
+                .map(|&operation| {
+                    let attributes = document
+                        .attributes(operation)
+                        .into_iter()
+                        .flatten()
+                        .map(|(name, spelling)| {
+                            (
+                                name.to_owned(),
+                                serde_json::Value::String(spelling.to_owned()),
+                            )
+                        })
+                        .collect::<serde_json::Map<_, _>>();
+                    serde_json::json!({
+                        "name": document.operation_name(operation),
+                        "attributes": attributes,
+                    })
+                })
+                .collect(),
+        ),
+        QueryOutput::Values(values) => serde_json::json!(values),
+        QueryOutput::Count(_) | QueryOutput::Json(_) => unreachable!("terminal output"),
+    };
+    serde_json::to_string_pretty(&value)
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| EvaluationError::new(format!("could not encode JSON: {error}")))
 }
 
 fn evaluate_predicate(
@@ -531,5 +708,26 @@ fn retain_subtree(
                 pending.extend(document.block_operations(block).unwrap_or(&[]));
             }
         }
+    }
+}
+
+fn append_subtree(document: &Document, operation: OperationId, selected: &mut Vec<OperationId>) {
+    let mut pending = vec![operation];
+    while let Some(operation) = pending.pop() {
+        selected.push(operation);
+        let children = document
+            .operation_regions(operation)
+            .unwrap_or(&[])
+            .iter()
+            .flat_map(|&region| {
+                document
+                    .region(region)
+                    .and_then(|region| region.blocks(document))
+                    .unwrap_or(&[])
+            })
+            .flat_map(|&block| document.block_operations(block).unwrap_or(&[]))
+            .copied()
+            .collect::<Vec<_>>();
+        pending.extend(children.into_iter().rev());
     }
 }

@@ -20,7 +20,7 @@ It needs no benchmark dependency or external profiling tool. Output rows use
 
 - **Parsing:** construct and drop each query, independently of document size.
 - **Evaluation:** execute a pre-parsed query on a pre-lowered document. Cases
-  cover count, exact-name and boolean filters, users, union, root, one closure
+  cover count, exact-name and boolean filters, users, union, subtree, one closure
   step, a fixed point, and an intermediate emission.
 - **Direct filter:** scan operation names through the semantic API, without
   the query interpreter, as a reference for filtering overhead.

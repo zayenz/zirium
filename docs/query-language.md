@@ -1,7 +1,7 @@
 # Zirium query language
 
-A query transforms a selection of operations. It starts with every operation
-in the input document. A pipe passes the current selection to the next stage:
+A query transforms an ordered stream. It starts with every operation
+in the input document. A pipe passes the current stream to the next stage:
 
 ```zirium
 filter(op("arith.addi")) | users | filter(has_attr("analysis.tag"))
@@ -9,9 +9,10 @@ filter(op("arith.addi")) | users | filter(has_attr("analysis.tag"))
 
 This finds `arith.addi` operations, follows their direct users, and keeps those
 with an `analysis.tag` attribute.
-`filter` always tests the current selection. Navigation replaces that
-selection; edits preserve it. Selections contain each operation at most once
-and use source order, including after navigation and set operations.
+`filter` always tests the current operation stream. Navigation replaces that
+stream; edits preserve it. Navigation preserves order and duplicates. Set
+operators and `closure` produce source-ordered sets; `unique` explicitly
+removes duplicates from other streams.
 
 `input` and a final `emit` are implicit. These programs print the same document:
 
@@ -81,7 +82,8 @@ letters, digits, or underscores. `analysis.tag` and `_zirium.state_2` are valid.
 | `users` | Operations directly using results of the selected operations. |
 | `parent` | Each selected operation's immediate enclosing operation. |
 | `children` | Operations directly contained in the selected operations' regions and blocks. |
-| `root` | The outermost selected operations and all their descendants. |
+| `root(predicate)` | The nearest operation on each selected operation's ancestor chain that matches the predicate. |
+| `subtree` | Each selected operation and all its descendants. |
 | `closure` | The selection plus one step of supported dependency expansion. |
 
 `defs`, `users`, `parent`, and `children` move one step and replace the input
@@ -89,15 +91,24 @@ selection. They do not automatically keep it. `parent` drops operations with no
 enclosing operation. `defs` and `users` are not inverse relationships: a block
 argument belongs to an enclosing operation rather than an operation result.
 
-`root` expands the current fragment. It does not climb to a document root or
-add enclosing printer shells to the selection. Multiple outermost selected
-operations produce multiple subtrees; an empty selection stays empty.
+`root(predicate)` tests each selected operation, then walks toward the document
+root until it finds a match. It returns at most one match for each input item.
+Repeated matches remain repeated, so `unique` commonly follows `root`:
+
+```zirium
+filter(op("linalg.matmul"))
+| root(op("func.func"))
+| unique
+```
+
+`subtree` expands each selected operation independently. Overlapping subtrees
+therefore contain duplicates. An empty stream stays empty.
 
 For example, find the function containing a call, expand its body, and tag its returns:
 
 ```zirium
 filter(op("func.call")) | parent
-| root
+| subtree
 | filter(op("func.return"))
 | set_attr("analysis.tag", "review")
 ```
@@ -108,7 +119,7 @@ print the complete edited document.
 Selection and printing are distinct. Selecting a function counts as one
 operation, but printing it includes its body. Printing a nested operation also
 retains the enclosing syntax needed to represent it. Neither behavior adds
-those operations to the query selection. Use `root` when descendants must
+those operations to the query selection. Use `subtree` when descendants must
 participate in filtering, counting, or editing.
 
 Fragments may omit SSA definitions and users, so they are not guaranteed to
@@ -197,8 +208,28 @@ filter(op("arith.addi")) | fixpoint(defs)
 ```
 
 The same rule applies to `parent`: repeatedly moving beyond the document's
-roots eventually gives an empty selection. `root` is the operation for
-expanding a selected fragment, rather than repeatedly moving upward.
+roots eventually gives an empty selection. Use `root(predicate)` to find a
+matching ancestor and `subtree` to expand a selected fragment.
+
+## Projection and uniqueness
+
+`attr("name")` replaces each operation with its named attribute value and drops
+operations without that attribute. It decodes string and symbol attributes.
+For other attribute kinds, it returns the MLIR spelling. Operation-only stages,
+including navigation, filtering, and edits, reject value streams. `emit` and
+the implicit final emission print one projected value per line.
+
+`unique` keeps the first copy of each operation or value. It preserves stream
+order. For example, this prints the names of functions that contain a matrix
+multiplication:
+
+```zirium
+filter(op("linalg.matmul"))
+| root(op("func.func"))
+| unique
+| attr("sym_name")
+| json
+```
 
 ## Edits and emission
 
@@ -222,8 +253,14 @@ Nested queries do not implicitly reset to `input` or emit their results. A fixed
 body ending in `emit` emits each iteration; the enclosing program still emits
 its final result unless it ends with an explicit `emit`.
 
-`count` prints the selection's size followed by a newline. It is terminal;
+`count` prints the stream's size followed by a newline. It is terminal;
 no stage may follow it. To emit a fragment and then count it, use `emit | count`.
+
+`json` emits the current stream as a JSON array and passes the stream onward.
+For value streams, the array contains strings. For operation streams, each
+entry contains the operation name and an object of attribute spellings. This
+format favors inspection and interchange; Zirium cannot read it back as MLIR.
+Like `emit`, a final `json` suppresses the implicit final emission.
 
 Consecutive fragment outputs are separated by `// -----`. Counts are plain
 lines. The CLI buffers all emissions across all input files until processing
@@ -238,7 +275,9 @@ program    = [ query ]
 query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
 stage      = "input" | "filter" "(" predicate ")"
-           | "defs" | "users" | "parent" | "children" | "root" | "closure"
+           | "defs" | "users" | "parent" | "children" | "closure"
+           | "root" "(" predicate ")" | "subtree" | "unique"
+           | "attr" "(" string ")" | "json"
            | "fixpoint" "(" query ")" | "(" query ")"
            | "set_attr" "(" string "," string ")"
            | "remove_attr" "(" string ")" | "emit" | "count"

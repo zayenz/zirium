@@ -180,11 +180,11 @@ zirium 'filter(op("arith.addi")) | emit | users' examples/cli/arithmetic.mlir
 
 ## Work inside a function fragment
 
-`root` includes every descendant of the selected function. The following
+`subtree` includes every descendant of the selected function. The following
 filter therefore finds returns only inside `@caller`:
 
 ```sh
 zirium \
-  'filter(op("func.call")) | parent | root | filter(op("func.return"))' \
+  'filter(op("func.call")) | parent | subtree | filter(op("func.return"))' \
   examples/cli/calls.mlir
 ```

@@ -182,9 +182,12 @@ fn run() -> Result<(), String> {
         query
             .evaluate(&mut document, registry, |document, output| {
                 let mut answer = Vec::new();
-                let scalar = matches!(output, QueryOutput::Count(_));
+                let scalar = matches!(
+                    output,
+                    QueryOutput::Count(_) | QueryOutput::Values(_) | QueryOutput::Json(_)
+                );
                 match output {
-                    QueryOutput::Selection(selected) => document
+                    QueryOutput::Operations(selected) => document
                         .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
                         .map_err(|error| {
                             EvaluationError::new(format!("could not print {name}: {error}"))
@@ -194,6 +197,14 @@ fn run() -> Result<(), String> {
                         writeln!(answer, "{count}")
                             .map_err(|error| EvaluationError::new(error.to_string()))?;
                     }
+                    QueryOutput::Values(values) => {
+                        use std::io::Write;
+                        for value in values {
+                            writeln!(answer, "{value}")
+                                .map_err(|error| EvaluationError::new(error.to_string()))?;
+                        }
+                    }
+                    QueryOutput::Json(json) => answer.extend_from_slice(json.as_bytes()),
                 }
                 answers.push((answer, scalar));
                 Ok(())

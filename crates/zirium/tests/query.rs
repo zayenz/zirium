@@ -23,7 +23,8 @@ fn query_boundaries_and_edit_validation() {
         "emit | input",
         "count",
         "filter(true)",
-        "input | filter(false) | root | emit",
+        "input | filter(false) | subtree | emit",
+        "filter(op(\"x\")) | root(op(\"func.func\")) | unique | attr(\"sym_name\") | json",
         "fixpoint(closure)",
         "fixpoint(closure | emit)",
         "(defs | emit) union users",
@@ -142,7 +143,7 @@ fn parser_builds_ranged_remove_attr_stage() {
 
 #[test]
 fn parser_builds_ranged_relationship_stages() {
-    let source = r#"filter(op("x")) | defs | users | parent | children"#;
+    let source = r#"filter(op("x")) | defs | users | parent | children | subtree | unique"#;
     let parsed = parse(&lex(source));
     assert!(parsed.diagnostics().is_empty());
     assert!(matches!(
@@ -151,7 +152,9 @@ fn parser_builds_ranged_relationship_stages() {
             Stage::Defs { .. },
             Stage::Users { .. },
             Stage::Parent { .. },
-            Stage::Children { .. }
+            Stage::Children { .. },
+            Stage::Subtree { .. },
+            Stage::Unique { .. }
         ]
     ));
     assert_eq!(
@@ -160,6 +163,25 @@ fn parser_builds_ranged_relationship_stages() {
             .as_range(),
         18..22
     );
+}
+
+#[test]
+fn parser_builds_root_projection_and_json_stages() {
+    let source = r#"root(op("func.func")) | attr("sym_name") | json"#;
+    let parsed = parse(&lex(source));
+    assert!(parsed.diagnostics().is_empty());
+    assert!(matches!(
+        parsed.program().unwrap().expression().first.as_slice(),
+        [
+            Stage::Root {
+                predicate: Predicate::Op { name: operation, .. },
+                ..
+            },
+            Stage::Attr { name, .. },
+            Stage::Json { .. }
+        ] if operation == "func.func" && name == "sym_name"
+    ));
+    assert!(Query::parse("root").is_err());
 }
 
 #[test]

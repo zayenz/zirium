@@ -41,11 +41,11 @@ impl Expression {
             .chain(self.rest.iter().flat_map(|(_, stages)| stages))
             .all(Stage::is_selection_only)
     }
-    pub(crate) fn ends_with_emit(&self) -> bool {
+    pub(crate) fn ends_with_emission(&self) -> bool {
         self.rest.is_empty()
             && self.first.last().is_some_and(|stage| match stage {
-                Stage::Emit { .. } => true,
-                Stage::Group { expression, .. } => expression.ends_with_emit(),
+                Stage::Emit { .. } | Stage::Json { .. } => true,
+                Stage::Group { expression, .. } => expression.ends_with_emission(),
                 _ => false,
             })
     }
@@ -131,6 +131,17 @@ pub enum Stage {
         range: TextRange,
     },
     Root {
+        predicate: Predicate,
+        range: TextRange,
+    },
+    Subtree {
+        range: TextRange,
+    },
+    Unique {
+        range: TextRange,
+    },
+    Attr {
+        name: String,
         range: TextRange,
     },
     Group {
@@ -156,6 +167,9 @@ pub enum Stage {
     Emit {
         range: TextRange,
     },
+    Json {
+        range: TextRange,
+    },
 }
 
 impl Stage {
@@ -168,13 +182,17 @@ impl Stage {
             | Self::Users { range }
             | Self::Parent { range }
             | Self::Children { range }
-            | Self::Root { range }
+            | Self::Root { range, .. }
+            | Self::Subtree { range }
+            | Self::Unique { range }
+            | Self::Attr { range, .. }
             | Self::Group { range, .. }
             | Self::Fixpoint { range, .. }
             | Self::SetAttr { range, .. }
             | Self::RemoveAttr { range, .. }
             | Self::Count { range }
-            | Self::Emit { range } => *range,
+            | Self::Emit { range }
+            | Self::Json { range } => *range,
         }
     }
     fn is_selection_only(&self) -> bool {
@@ -350,14 +368,25 @@ impl Parser<'_> {
             "users" => Stage::Users { range },
             "parent" => Stage::Parent { range },
             "children" => Stage::Children { range },
-            "root" => Stage::Root { range },
+            "subtree" => Stage::Subtree { range },
+            "unique" => Stage::Unique { range },
             "count" => Stage::Count { range },
             "emit" => Stage::Emit { range },
+            "json" => Stage::Json { range },
             "filter" => {
                 self.expect(TokenKind::LParen, "expected `(` after filter")?;
                 let predicate = self.predicate(depth + 1)?;
                 self.expect(TokenKind::RParen, "expected `)` after filter predicate")?;
                 Stage::Filter {
+                    predicate,
+                    range: self.span(start),
+                }
+            }
+            "root" => {
+                self.expect(TokenKind::LParen, "expected `(` after root")?;
+                let predicate = self.predicate(depth + 1)?;
+                self.expect(TokenKind::RParen, "expected `)` after root predicate")?;
+                Stage::Root {
                     predicate,
                     range: self.span(start),
                 }
@@ -379,8 +408,9 @@ impl Parser<'_> {
             }
             "set_attr" => return self.set_attr(start, depth + 1),
             "remove_attr" => return self.remove_attr(start, depth + 1),
+            "attr" => return self.attr(start, depth + 1),
             _ => {
-                self.error_at_previous("unknown query stage; expected input, filter, navigation, fixpoint, an edit, count, or emit");
+                self.error_at_previous("unknown query stage; expected input, filter, navigation, projection, fixpoint, an edit, count, emit, or json");
                 return None;
             }
         })
@@ -619,6 +649,25 @@ impl Parser<'_> {
         )?;
         self.check_attribute_name(&name, name_range);
         Some(Stage::RemoveAttr {
+            name,
+            range: self.span(start),
+        })
+    }
+
+    fn attr(&mut self, start: u32, depth: usize) -> Option<Stage> {
+        if depth > self.nesting_limit {
+            self.error("query nesting limit exceeded");
+            return None;
+        }
+        self.expect(TokenKind::LParen, "expected `(` after attr")?;
+        let (name, name_range) = self.string("expected a quoted attribute name")?;
+        self.expect_recover(
+            TokenKind::RParen,
+            "expected `)` after attr argument",
+            &[TokenKind::RParen, TokenKind::Pipe, TokenKind::Eof],
+        )?;
+        self.check_attribute_name(&name, name_range);
+        Some(Stage::Attr {
             name,
             range: self.span(start),
         })

@@ -221,7 +221,7 @@ fn closure_adds_shared_ssa_definition_once_with_comments() {
 }
 
 #[test]
-fn direct_ssa_navigation_is_ordered_deduplicated_and_composable() {
+fn direct_ssa_navigation_preserves_multiplicity_and_unique_collapses_it() {
     let defs = run_stdin("filter(op(\"arith.addi\")) | defs", INPUT);
     assert!(
         defs.status.success(),
@@ -238,7 +238,14 @@ fn direct_ssa_navigation_is_ordered_deduplicated_and_composable() {
         "{}",
         String::from_utf8_lossy(&users.stderr)
     );
-    assert_eq!(String::from_utf8(users.stdout).unwrap(), "1\n");
+    assert_eq!(String::from_utf8(users.stdout).unwrap(), "2\n");
+
+    let unique = run_stdin(
+        "filter(op(\"arith.constant\")) | users | unique | count",
+        INPUT,
+    );
+    assert!(unique.status.success());
+    assert_eq!(String::from_utf8(unique.stdout).unwrap(), "1\n");
 
     let unused = run_stdin("filter(op(\"example.observe\")) | users | count", INPUT);
     assert!(unused.status.success());
@@ -1272,22 +1279,26 @@ fn implicit_input_and_emit_cover_empty_programs_and_explicit_taps() {
 }
 
 #[test]
-fn root_expands_the_selected_fragment_without_selecting_siblings() {
+fn subtree_expands_the_selected_fragment_without_selecting_siblings() {
     let input = include_str!("../../../examples/cli/calls.mlir");
     for (query, expected) in [
         (r#"filter(op("func.call")) | parent | count"#, "1\n"),
-        (r#"filter(op("func.call")) | parent | root | count"#, "3\n"),
         (
-            r#"filter(op("func.call")) | parent | root | filter(op("func.return")) | count"#,
+            r#"filter(op("func.call")) | parent | subtree | count"#,
+            "3\n",
+        ),
+        (
+            r#"filter(op("func.call")) | parent | subtree | filter(op("func.return")) | count"#,
             "1\n",
         ),
         (
-            r#"filter(op("func.call")) | parent | root | input | filter(op("func.return")) | count"#,
+            r#"filter(op("func.call")) | parent | subtree | input | filter(op("func.return")) | count"#,
             "3\n",
         ),
-        (r#"filter(op("func.call")) | root | count"#, "1\n"),
-        ("filter(false) | root | count", "0\n"),
-        ("root | count", "9\n"),
+        (r#"filter(op("func.call")) | subtree | count"#, "1\n"),
+        ("filter(false) | subtree | count", "0\n"),
+        ("subtree | count", "22\n"),
+        ("subtree | unique | count", "9\n"),
     ] {
         let output = run_stdin(query, input);
         assert!(
@@ -1302,7 +1313,7 @@ fn root_expands_the_selected_fragment_without_selecting_siblings() {
         );
     }
     let edited = run_stdin(
-        r#"filter(op("func.call")) | parent | root | filter(op("func.return")) | set_attr("tag", "chosen") | input"#,
+        r#"filter(op("func.call")) | parent | subtree | filter(op("func.return")) | set_attr("tag", "chosen") | input"#,
         input,
     );
     assert!(
@@ -1317,6 +1328,63 @@ fn root_expands_the_selected_fragment_without_selecting_siblings() {
             .count(),
         1
     );
+}
+
+#[test]
+fn root_unique_attr_and_json_list_functions_containing_matmuls() {
+    let input = r#"module {
+  func.func @two_matmuls() {
+    "linalg.matmul"() : () -> ()
+    "linalg.matmul"() : () -> ()
+    return
+  }
+  func.func @one_matmul() {
+    "linalg.matmul"() : () -> ()
+    return
+  }
+  func.func @none() {
+    return
+  }
+}
+"#;
+    let duplicates = run_stdin(
+        r#"filter(op("linalg.matmul")) | root(op("func.func")) | count"#,
+        input,
+    );
+    assert!(
+        duplicates.status.success(),
+        "{}",
+        String::from_utf8_lossy(&duplicates.stderr)
+    );
+    assert_eq!(duplicates.stdout, b"3\n");
+
+    let output = run_stdin(
+        r#"filter(op("linalg.matmul")) | root(op("func.func")) | unique | attr("sym_name") | json"#,
+        input,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "[\n  \"two_matmuls\",\n  \"one_matmul\"\n]\n"
+    );
+
+    let lines = run_stdin(
+        r#"filter(op("linalg.matmul")) | root(op("func.func")) | unique | attr("sym_name")"#,
+        input,
+    );
+    assert!(lines.status.success());
+    assert_eq!(lines.stdout, b"two_matmuls\none_matmul\n");
+
+    let operations = run_stdin(r#"filter(op("func.func")) | json"#, input);
+    assert!(operations.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&operations.stdout).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 3);
+    assert_eq!(json[0]["name"], "func.func");
+    assert_eq!(json[0]["attributes"]["sym_name"], "@two_matmuls");
 }
 
 #[test]
