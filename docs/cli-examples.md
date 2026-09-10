@@ -18,7 +18,7 @@ without opening another file.
 
 The binary uses the proving registry and accepts ordinary, named, and nested
 `module` shorthand. Use `--registry registry.json` to load caller-defined operation shapes; repeat
-the flag to combine files. See [custom formats across Rust, Python, and the CLI](custom-formats.md)
+the flag to combine files. See [custom formats](custom-formats.md)
 for the supported syntax and output boundaries.
 
 The commands below assume `target/debug` is on `PATH`:

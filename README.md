@@ -131,10 +131,15 @@ Canonical output intentionally does not preserve comments, whitespace, aliases, 
 
 Generic quoted operations are handled without a dialect registry. Unknown dialect types and attributes keep their balanced bodies as opaque values.
 
-Registered custom syntax is currently a proving surface rather than broad MLIR dialect coverage. The built-in proving registry covers a fixed subset of Builtin, Func, Arith, and CF operations. The 48 bundled presets cover the 47 LLVM 22.1 namespaces registered by `registerAllDialects` plus external StableHLO. They expose selected structurally exact custom forms for queries; this includes both UB operations, 7 of NVGPU's 24 operations, 20 of Shape's 40 operations, 10 of SparseTensor's 37 operations, 132 of SPIR-V's 306 operations, XeVM's two complete load forms, and WasmSSA's exact return form. Core-only presets and unsupported forms continue through whole-operation recovery, while generic quoted operations and opaque dialect types need no preset. Presets do not implement dialect verification or execution. Zirium does not load LLVM dialect definitions, interpret arbitrary ODS/TableGen files, or run Python callbacks while parsing.
+The proving registry covers a small set of Builtin, Func, Arith, and CF
+operations. Bundled presets expose selected custom forms from other dialects
+for structural queries. Unsupported forms use best-effort recovery; presets do
+not implement full dialect verification or execution.
 
-The [custom-format guide](docs/custom-formats.md) explains operation shapes,
-registry ownership, and the differences between Rust, Python, and the binary.
+The [custom-format guide](docs/custom-formats.md) explains registry configuration,
+operation shapes, and use from Rust, Python, and the CLI. The
+[preset reference](docs/registry-presets.md) groups the available dialects and
+links to their exact registry definitions.
 
 See [compatibility and local wheel checks](https://github.com/zayenz/zirium/blob/main/docs/compatibility.md) for the exact toolchain and CPython matrix. The [corpus notes](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/README.md) explain how syntax compatibility is tied to `llvmorg-22.1.0`.
 
