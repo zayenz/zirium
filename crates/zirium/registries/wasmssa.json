@@ -1,0 +1,13 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "wasmssa.return", "shape": "attr_first_optional_typed_operands"}
+  ],
+  "operation_formats": []
+}

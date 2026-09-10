@@ -50,6 +50,7 @@ It does not establish that the operation can be verified or rewritten.
 | Transform preset | Core plus 7 structurally exact forms among 38 core and PDL-extension operations. |
 | UB preset | Core plus both UB operations; the positional long poison form remains on recovery. |
 | Vector preset | Core plus 9 structurally exact forms among 39 Vector operations. |
+| WasmSSA preset | Core plus the exact `wasmssa.return` form among 73 operations. |
 | SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
 | SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
 | Declarative | A selected subset of the proving catalog. |
@@ -85,7 +86,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, and `vector` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, `vector`, and `wasmssa` presets were checked against
 LLVM 22.1.0.
 TOSA registers 91 of the 94 operations defined by its main, utility, and shape
 operation files. `tosa.variable`, `tosa.variable_read`, and
@@ -1289,6 +1290,43 @@ semantics. Positional attributes and indexed heterogeneous operands recur
 across the gaps, but supporting them honestly requires a generic role-aware
 format facility rather than a Vector-only shortcut; this preset adds no new
 format mechanism.
+
+WasmSSA defines 73 operations in LLVM 22.1: 21 structural, control-flow,
+symbol, local, and memory operations; 14 binary numerical operations; 14
+comparisons; five shifts or rotates; nine conversions; and 10 unary numerical
+operations. The preset registers only `wasmssa.return`. Its dictionary comes
+first, followed by zero or more operands and the same number of explicit
+types. It has no results, regions, successors, or symbol role, so the existing
+attr-first typed-terminator shape preserves the complete structural form.
+
+The other 72 operations remain on whole-operation recovery:
+
+- `wasmssa.block`, `wasmssa.loop`, and `wasmssa.if` own target regions and real
+  CFG successors; `wasmssa.branch_if` also owns an else successor. The current
+  reusable region shapes do not preserve their label-level and successor
+  relationships. `wasmssa.block_return` puts its dictionary after its optional
+  typed operands.
+- `wasmssa.func`, `wasmssa.global`, and the import, memory, and table forms
+  define symbols or use custom headers and initializers. `wasmssa.call` uses a
+  symbol reference and functional type, but its operand parentheses disappear
+  when the operand list is empty; the current call shape requires them.
+- `wasmssa.const`, the global/local access forms, and all 52 numerical,
+  comparison, shift, and conversion operations put the ordinary dictionary
+  after a typed or otherwise positional trailer. Numerical binary operands are
+  space-separated rather than comma-separated. Most same-type numerical and
+  unary forms explicitly print operand types while inferring their result;
+  comparisons, `eqz`, and most conversions explicitly print a distinct result
+  type. The two `extend_i32_*` forms instead infer the input type, and shifts
+  infer the shift-count type.
+
+The repeated trailing-dictionary placement suggests a generic future format
+feature: parameterize dictionary position independently of operand separator
+and type-trailer shape. Implementing only a WasmSSA variant would duplicate
+parsers and still fail to model inferred versus explicit types, so this preset
+does not add that overhead. `!wasmssa.funcref`, `!wasmssa.externref`, limit,
+local-reference, and table types remain balanced opaque dialect values, as do
+unknown `#wasmssa` attributes. The preset adds no WebAssembly validation,
+label-level analysis, type inference, symbol resolution, or execution semantics.
 
 SparseTensor defines 37 operations in LLVM 22.1, excluding the separate
 Transform dialect extension. The preset registers 10 exact forms. `new`,

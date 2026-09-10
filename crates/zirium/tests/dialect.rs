@@ -8973,3 +8973,176 @@ fn ub_preset_inventory_and_recovery_match_llvm_22_1() {
             .any(|(name, value)| name == "marker" && value == "#ub.poison")
     );
 }
+
+#[test]
+fn wasmssa_preset_exposes_exact_attr_first_return_structure() {
+    assert!(DialectRegistry::preset_names().contains(&"wasmssa"));
+    let registry = DialectRegistry::from_name("wasmssa").unwrap();
+    let source = br#"module {
+      func.func @return_value(%value: i32) {
+        wasmssa.return {tag = "terminator"} %value : i32
+      }
+      func.func @return_nothing() {
+        wasmssa.return {tag = "empty"}
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let returns = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("wasmssa.return"))
+        .collect::<Vec<_>>();
+    assert_eq!(returns.len(), 2);
+    assert_eq!(document.operands(returns[0]).unwrap().len(), 1);
+    assert_eq!(
+        document.type_spelling(document.function_type(returns[0]).unwrap()),
+        Some("(i32) -> ()")
+    );
+    assert!(document.operands(returns[1]).unwrap().is_empty());
+    assert_eq!(
+        document.type_spelling(document.function_type(returns[1]).unwrap()),
+        Some("() -> ()")
+    );
+    for (operation, tag) in returns.into_iter().zip(["\"terminator\"", "\"empty\""]) {
+        assert!(document.result_types(operation).unwrap().is_empty());
+        assert!(document.operation_regions(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(name, value)| name == "tag" && value == tag)
+        );
+    }
+}
+
+#[test]
+fn wasmssa_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("wasmssa").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/wasmssa.json")).unwrap();
+    assert_eq!(config.operation_shapes.len(), 1);
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(registry.operation_names().count(), 4);
+    assert_eq!(
+        registry.operation_shape("wasmssa.return"),
+        Some(OperationShape::AttrFirstOptionalTypedOperands)
+    );
+
+    let recovery = [
+        "block",
+        "loop",
+        "block_return",
+        "branch_if",
+        "const",
+        "func",
+        "call",
+        "import_func",
+        "global",
+        "import_global",
+        "global_get",
+        "if",
+        "local",
+        "local_get",
+        "local_set",
+        "local_tee",
+        "memory",
+        "import_mem",
+        "table",
+        "import_table",
+        "add",
+        "and",
+        "div",
+        "div_ui",
+        "div_si",
+        "mul",
+        "or",
+        "sub",
+        "rem_ui",
+        "rem_si",
+        "xor",
+        "min",
+        "max",
+        "copysign",
+        "eq",
+        "ne",
+        "lt_si",
+        "lt_ui",
+        "le_si",
+        "le_ui",
+        "gt_si",
+        "gt_ui",
+        "ge_si",
+        "ge_ui",
+        "lt",
+        "le",
+        "gt",
+        "ge",
+        "shl",
+        "shr_s",
+        "shr_u",
+        "rotl",
+        "rotr",
+        "convert_u",
+        "convert_s",
+        "demote",
+        "extend_i32_s",
+        "extend_i32_u",
+        "extend",
+        "promote",
+        "wrap",
+        "reinterpret",
+        "abs",
+        "ceil",
+        "floor",
+        "neg",
+        "sqrt",
+        "trunc",
+        "ctz",
+        "clz",
+        "eqz",
+        "popcnt",
+    ];
+    assert_eq!(config.operation_shapes.len() + recovery.len(), 73);
+    for mnemonic in recovery {
+        let name = format!("wasmssa.{mnemonic}");
+        assert_eq!(registry.operation_shape(&name), None, "{name}");
+        assert!(registry.operation(&name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%lhs: i32, %rhs: i32) {
+        %sum = wasmssa.add %lhs %rhs : i32 {tag = "numeric"}
+        %converted = wasmssa.convert_u %sum : i32 to f32 {tag = "conversion"}
+        %called = wasmssa.call @callee : () -> i32
+        wasmssa.block : {
+          wasmssa.block_return
+        } > ^exit
+      ^exit:
+        "test.after"() {type = !wasmssa<local ref to i32>} : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation)
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|operation| document.operation_name(operation) == Some("test.after"))
+    );
+}
