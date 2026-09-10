@@ -9146,3 +9146,167 @@ fn wasmssa_preset_inventory_and_recovery_match_llvm_22_1() {
             .any(|operation| document.operation_name(operation) == Some("test.after"))
     );
 }
+
+#[test]
+fn x86vector_preset_exposes_complete_unary_and_same_type_dot_forms() {
+    assert!(DialectRegistry::preset_names().contains(&"x86vector"));
+    let registry = DialectRegistry::from_name("x86vector").unwrap();
+    let source = br#"module {
+      func.func @forms(%vector: vector<8xf32>, %memory: memref<8xbf16>) {
+        %rsqrt = x86vector.avx.rsqrt %vector {tag = "rsqrt"} : vector<8xf32>
+        %dot = x86vector.avx.intr.dot %vector, %vector {tag = "dot"} : vector<8xf32>
+        %bf16 = x86vector.avx512.cvt.packed.f32_to_bf16 %vector {tag = "bf16"} : vector<8xf32> -> vector<8xbf16>
+        %broadcast = x86vector.avx.bcst_to_f32.packed %memory {tag = "broadcast"} : memref<8xbf16> -> vector<4xf32>
+        %even = x86vector.avx.cvt.packed.even.indexed_to_f32 %memory {tag = "even"} : memref<8xbf16> -> vector<4xf32>
+        %odd = x86vector.avx.cvt.packed.odd.indexed_to_f32 %memory {tag = "odd"} : memref<8xbf16> -> vector<4xf32>
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+
+    for (name, operands, signature, tag) in [
+        (
+            "x86vector.avx.rsqrt",
+            1,
+            "(vector<8xf32>) -> vector<8xf32>",
+            "\"rsqrt\"",
+        ),
+        (
+            "x86vector.avx.intr.dot",
+            2,
+            "(vector<8xf32>, vector<8xf32>) -> vector<8xf32>",
+            "\"dot\"",
+        ),
+        (
+            "x86vector.avx512.cvt.packed.f32_to_bf16",
+            1,
+            "(vector<8xf32>) -> vector<8xbf16>",
+            "\"bf16\"",
+        ),
+        (
+            "x86vector.avx.bcst_to_f32.packed",
+            1,
+            "(memref<8xbf16>) -> vector<4xf32>",
+            "\"broadcast\"",
+        ),
+        (
+            "x86vector.avx.cvt.packed.even.indexed_to_f32",
+            1,
+            "(memref<8xbf16>) -> vector<4xf32>",
+            "\"even\"",
+        ),
+        (
+            "x86vector.avx.cvt.packed.odd.indexed_to_f32",
+            1,
+            "(memref<8xbf16>) -> vector<4xf32>",
+            "\"odd\"",
+        ),
+    ] {
+        let operation = document
+            .operations()
+            .find(|operation| document.operation_name(*operation) == Some(name))
+            .unwrap();
+        assert_eq!(
+            document.operands(operation).unwrap().len(),
+            operands,
+            "{name}"
+        );
+        assert_eq!(document.result_types(operation).unwrap().len(), 1, "{name}");
+        assert_eq!(
+            document.type_spelling(document.function_type(operation).unwrap()),
+            Some(signature),
+            "{name}"
+        );
+        assert!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .any(|(name, value)| { name == "tag" && value == tag })
+        );
+        assert!(document.operation_regions(operation).unwrap().is_empty());
+        assert!(document.successors(operation).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn x86vector_preset_inventory_and_recovery_match_llvm_22_1() {
+    let registry = DialectRegistry::from_name("x86vector").unwrap();
+    let config = RegistryConfig::from_json(include_str!("../registries/x86vector.json")).unwrap();
+    let supported = [
+        (
+            "x86vector.avx512.cvt.packed.f32_to_bf16",
+            OperationShape::UnaryOperand,
+        ),
+        ("x86vector.avx.rsqrt", OperationShape::UnaryOperand),
+        ("x86vector.avx.intr.dot", OperationShape::BinaryOperands),
+        (
+            "x86vector.avx.bcst_to_f32.packed",
+            OperationShape::UnaryOperand,
+        ),
+        (
+            "x86vector.avx.cvt.packed.even.indexed_to_f32",
+            OperationShape::UnaryOperand,
+        ),
+        (
+            "x86vector.avx.cvt.packed.odd.indexed_to_f32",
+            OperationShape::UnaryOperand,
+        ),
+    ];
+    let recovery = [
+        "x86vector.avx512.mask.compress",
+        "x86vector.avx512.mask.rndscale",
+        "x86vector.avx512.mask.scalef",
+        "x86vector.avx512.vp2intersect",
+        "x86vector.avx512.dot",
+        "x86vector.avx.dot.i8",
+    ];
+    assert_eq!(config.operation_shapes.len(), supported.len());
+    assert!(config.operation_formats.is_empty());
+    assert_eq!(supported.len() + recovery.len(), 12);
+    for (name, shape) in supported {
+        assert_eq!(registry.operation_shape(name), Some(shape), "{name}");
+    }
+    for name in recovery {
+        assert_eq!(registry.operation_shape(name), None, "{name}");
+        assert!(registry.operation(name).is_none(), "{name}");
+    }
+
+    let source = br#"module {
+      func.func @gaps(%mask: vector<16xi1>, %wide: vector<16xf32>,
+          %small: vector<32xbf16>, %bytes: vector<32xi8>,
+          %ints: vector<16xi32>, %acc: vector<8xi32>, %i32: i32, %i16: i16) {
+        %compressed = x86vector.avx512.mask.compress %mask, %wide, %wide : vector<16xf32>, vector<16xf32>
+        %rounded = x86vector.avx512.mask.rndscale %wide, %i32, %wide, %i16, %i32 : vector<16xf32>
+        %scaled = x86vector.avx512.mask.scalef %wide, %wide, %wide, %i16, %i32 : vector<16xf32>
+        %left, %right = x86vector.avx512.vp2intersect %ints, %ints : vector<16xi32>
+        %dot = x86vector.avx512.dot %wide, %small, %small : vector<32xbf16> -> vector<16xf32>
+        %int = x86vector.avx.dot.i8 %acc, %bytes, %bytes : vector<32xi8> -> vector<8xi32>
+        "test.after"() : () -> ()
+        func.return
+      }
+    }"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed
+            .syntax()
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| { diagnostic.kind() == ParseDiagnosticKind::UnknownCustomOperation })
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &registry);
+    let document = lowered.document.unwrap();
+    assert!(!document.is_semantically_complete());
+    assert!(
+        document
+            .operations()
+            .any(|operation| { document.operation_name(operation) == Some("test.after") })
+    );
+}

@@ -51,6 +51,7 @@ It does not establish that the operation can be verified or rewritten.
 | UB preset | Core plus both UB operations; the positional long poison form remains on recovery. |
 | Vector preset | Core plus 9 structurally exact forms among 39 Vector operations. |
 | WasmSSA preset | Core plus the exact `wasmssa.return` form among 73 operations. |
+| X86Vector preset | Core plus 6 structurally exact forms among 12 X86Vector operations. |
 | SparseTensor preset | Core plus 10 structurally exact forms among 37 SparseTensor operations. |
 | SMT preset | Core plus 16 structurally exact forms among 54 SMT operations. |
 | Declarative | A selected subset of the proving catalog. |
@@ -86,7 +87,7 @@ preset name tracks Zirium releases; it does not claim support for the complete
 StableHLO 1.20.1 opset or its portable artifact format.
 
 The `tosa`, `scf`, `linalg`, `acc`, `affine`, `amdgpu`, `amx`, `arith`,
-`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, `vector`, and `wasmssa` presets were checked against
+`arm_neon`, `arm_sme`, `arm_sve`, `async`, `bufferization`, `cf`, `complex`, `dlti`, `emitc`, `func`, `gpu`, `index`, `irdl`, `llvm`, `math`, `memref`, `ml_program`, `mpi`, `nvgpu`, `nvvm`, `omp`, `pdl`, `pdl_interp`, `ptr`, `quant`, `rocdl`, `shard`, `shape`, `sparse_tensor`, `smt`, `spirv`, `tensor`, `transform`, `ub`, `vector`, `wasmssa`, and `x86vector` presets were checked against
 LLVM 22.1.0.
 TOSA registers 91 of the 94 operations defined by its main, utility, and shape
 operation files. `tosa.variable`, `tosa.variable_read`, and
@@ -1327,6 +1328,36 @@ does not add that overhead. `!wasmssa.funcref`, `!wasmssa.externref`, limit,
 local-reference, and table types remain balanced opaque dialect values, as do
 unknown `#wasmssa` attributes. The preset adds no WebAssembly validation,
 label-level analysis, type inference, symbol resolution, or execution semantics.
+
+X86Vector defines exactly 12 concrete `x86vector.*` operations in LLVM 22.1
+`X86Vector.td`. The four pattern-application operations in
+`X86VectorTransformOps.td` belong to the `transform.*` namespace and are not
+part of this inventory. The preset registers six structurally exact forms.
+`x86vector.avx.rsqrt` has one same-typed vector operand and result.
+`x86vector.avx.intr.dot` has two same-typed operands and a same-typed result;
+although its trailer spells only the result type, the pinned
+`SameOperandsAndResultType` trait makes that shared type relationship exact.
+The four conversions
+`x86vector.avx512.cvt.packed.f32_to_bf16`,
+`x86vector.avx.bcst_to_f32.packed`, and the even- and odd-indexed
+`x86vector.avx.cvt.packed.*.indexed_to_f32` operations spell both their input
+and result types. Ordinary attribute dictionaries remain queryable on all six
+forms.
+
+The other six operations remain on whole-operation recovery.
+`x86vector.avx512.mask.compress` has an optional source operand and optionally
+spells its separate type. `x86vector.avx512.mask.rndscale` and
+`x86vector.avx512.mask.scalef` mix heterogeneous vector, mask, immediate, and
+rounding operands while spelling only the result type.
+`x86vector.avx512.vp2intersect` infers two mask result types from one input
+type. The `x86vector.avx512.dot` and `x86vector.avx.dot.i8` trailers spell only
+the shared dot-input type and accumulator/result type, leaving the other
+operand type inferred. Existing broad shapes would assign those partial
+trailers to the wrong operands, so this small dialect does not justify a new
+format feature. No X86Vector operation owns a region or successor or has a
+symbol role. Builtin vector and memref types need no dialect descriptors. The
+preset adds no target-feature checks, intrinsic verification, type inference,
+memory semantics, or execution semantics.
 
 SparseTensor defines 37 operations in LLVM 22.1, excluding the separate
 Transform dialect extension. The preset registers 10 exact forms. `new`,

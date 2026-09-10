@@ -88,6 +88,7 @@ const PRESET_NAMES: &[&str] = &[
     "ub",
     "vector",
     "wasmssa",
+    "x86vector",
 ];
 
 fn preset_json(name: &str) -> Option<&'static str> {
@@ -137,6 +138,7 @@ fn preset_json(name: &str) -> Option<&'static str> {
         "ub" => Some(include_str!("../../registries/ub.json")),
         "vector" => Some(include_str!("../../registries/vector.json")),
         "wasmssa" => Some(include_str!("../../registries/wasmssa.json")),
+        "x86vector" => Some(include_str!("../../registries/x86vector.json")),
         _ => None,
     }
 }

@@ -1,0 +1,18 @@
+{
+  "presets": [],
+  "builtins": [
+    "builtin.module",
+    "func.func",
+    "func.call",
+    "func.return"
+  ],
+  "operation_shapes": [
+    {"name": "x86vector.avx512.cvt.packed.f32_to_bf16", "shape": "unary_operand"},
+    {"name": "x86vector.avx.rsqrt", "shape": "unary_operand"},
+    {"name": "x86vector.avx.intr.dot", "shape": "binary_operands"},
+    {"name": "x86vector.avx.bcst_to_f32.packed", "shape": "unary_operand"},
+    {"name": "x86vector.avx.cvt.packed.even.indexed_to_f32", "shape": "unary_operand"},
+    {"name": "x86vector.avx.cvt.packed.odd.indexed_to_f32", "shape": "unary_operand"}
+  ],
+  "operation_formats": []
+}
