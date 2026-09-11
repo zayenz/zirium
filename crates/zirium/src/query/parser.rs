@@ -43,17 +43,28 @@ impl Parsed {
 }
 
 pub fn parse(lexed: &Lexed<'_>) -> Parsed {
-    parse_with_nesting_limit(lexed, DEFAULT_NESTING_LIMIT)
+    parse_with_initial_bindings(lexed, DEFAULT_NESTING_LIMIT, &[])
 }
 
 pub fn parse_with_nesting_limit(lexed: &Lexed<'_>, nesting_limit: usize) -> Parsed {
+    parse_with_initial_bindings(lexed, nesting_limit, &[])
+}
+
+pub(crate) fn parse_with_initial_bindings(
+    lexed: &Lexed<'_>,
+    nesting_limit: usize,
+    initial_bindings: &[&str],
+) -> Parsed {
     let mut parser = Parser {
         source: lexed.source(),
         tokens: lexed.tokens(),
         cursor: 0,
         diagnostics: Vec::new(),
         nesting_limit,
-        bindings: HashSet::new(),
+        bindings: initial_bindings
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect(),
     };
     let program = parser.program();
     Parsed {

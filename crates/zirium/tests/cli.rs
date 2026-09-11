@@ -709,6 +709,82 @@ fn count_prints_one_scalar_line_per_input() {
 }
 
 #[test]
+fn ndjson_attributes_each_emission_to_its_input() {
+    let first = temporary_path("ndjson-é-first", "mlir");
+    let second = temporary_path("ndjson-quoted-\"second", "mlir");
+    fs::write(&first, "module {}").unwrap();
+    fs::write(&second, "module { func.return }").unwrap();
+    let labelled = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg(r#"print("{document}")"#)
+        .arg(&first)
+        .arg(&second)
+        .output()
+        .unwrap();
+    assert!(labelled.status.success());
+    assert_eq!(
+        String::from_utf8(labelled.stdout).unwrap(),
+        format!(
+            "{}\n{}\n",
+            first.to_string_lossy(),
+            second.to_string_lossy()
+        )
+    );
+    let query = "print(\"file: {document}\ncontinued\"); count; {\"label\": \"{document}\"} | json";
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--ndjson")
+        .arg(query)
+        .arg(&first)
+        .arg(&second)
+        .output()
+        .unwrap();
+    let _ = fs::remove_file(&first);
+    let _ = fs::remove_file(&second);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 6);
+    for (input_index, path) in [first, second].iter().enumerate() {
+        let name = path.to_string_lossy();
+        let records = &records[input_index * 3..input_index * 3 + 3];
+        assert!(
+            records
+                .iter()
+                .all(|record| record["document"] == name.as_ref())
+        );
+        assert_eq!(records[0]["result"], format!("file: {name}\ncontinued\n"));
+        assert!(records[1]["result"].is_number());
+        assert_eq!(records[2]["result"]["label"], name.as_ref());
+    }
+
+    let output = run_stdin_with_options(&["--ndjson"], r#"print("{document}")"#, "module {}");
+    assert!(output.status.success());
+    let record: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(record["document"], "stdin");
+    assert_eq!(record["result"], "stdin\n");
+
+    let ranked = run_stdin_with_options(
+        &["--ndjson"],
+        "filter(not op(\"builtin.module\")) | names | tally | sort_by(value) | reverse",
+        "module { \"vendor.z\"() : () -> () \"vendor.z\"() : () -> () \"vendor.a\"() : () -> () }",
+    );
+    assert!(ranked.status.success());
+    let line = String::from_utf8(ranked.stdout).unwrap();
+    assert_eq!(line.lines().count(), 1);
+    serde_json::from_str::<serde_json::Value>(line.trim_end()).unwrap();
+    assert!(
+        line.find("\"vendor.z\"").unwrap() < line.find("\"vendor.a\"").unwrap(),
+        "{line}"
+    );
+}
+
+#[test]
 fn set_attr_keeps_the_changed_selection_and_comments() {
     let output = run_stdin(
         "filter(op(\"arith.addi\")) | set_attr(\"analysis.tag\", \"hot\")",

@@ -34,6 +34,7 @@ Options:
   --registry FILE         Load a JSON registry (repeatable; combines with presets)
   -f, --program-file FILE Read the query from a file instead of an argument
   --strict                Reject incomplete parsing and unknown reachable references
+  --ndjson                Emit one attributable JSON record per result
   --max-work N            Evaluation work limit (default 10000000)
   --max-items N           Maximum items per stream (default 1000000)
 
@@ -63,6 +64,7 @@ fn run() -> Result<(), String> {
     let mut registry_paths = Vec::new();
     let mut presets = Vec::new();
     let mut strict = false;
+    let mut ndjson = false;
     let mut limits = EvaluationLimits::default();
     let mut program_path = None;
     let mut inline_query = None;
@@ -91,6 +93,7 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "preset name must be UTF-8")?,
             ),
             "--strict" => strict = true,
+            "--ndjson" => ndjson = true,
             "--max-work" | "--max-items" => {
                 let value = arguments
                     .next()
@@ -158,7 +161,7 @@ fn run() -> Result<(), String> {
     } else {
         inline_query.unwrap_or_default()
     };
-    let query = Query::parse(&query_text).map_err(|error| {
+    let query = Query::parse_with_document_context(&query_text).map_err(|error| {
         let prefix = &query_text[..error.position];
         let line_number = prefix.bytes().filter(|&byte| byte == b'\n').count() + 1;
         let line_start = prefix.rfind('\n').map_or(0, |offset| offset + 1);
@@ -311,14 +314,19 @@ fn run() -> Result<(), String> {
                 format!("could not lower {name}: {detail}")
             })?;
         query
-            .evaluate_with_options_and_limits(
+            .evaluate_with_context_options_and_limits(
                 &mut document,
                 registry,
+                Some(&name),
                 EvaluationOptions {
                     strict_unknown_references: strict,
                 },
                 limits,
                 |document, output| {
+                    if ndjson {
+                        answers.push(ndjson_record(document, &name, output, registry)?);
+                        return Ok(());
+                    }
                     let mut answer = Vec::new();
                     match output {
                         QueryOutput::Native(_) => {
@@ -384,6 +392,74 @@ fn run() -> Result<(), String> {
             .map_err(|error| format!("could not evaluate {name}: {error}"))?;
     }
     write_stdout(answers)
+}
+
+fn ndjson_record(
+    document: &zirium::semantic::Document,
+    name: &str,
+    output: QueryOutput,
+    registry: &DialectRegistry,
+) -> Result<Vec<u8>, EvaluationError> {
+    use serde::ser::{SerializeMap, Serializer};
+
+    let mut record = Vec::from(&b"{\"document\":"[..]);
+    serde_json::to_writer(&mut record, name)
+        .map_err(|error| EvaluationError::new(error.to_string()))?;
+    record.extend_from_slice(b",\"result\":");
+    match output {
+        QueryOutput::RankedMap(entries) => {
+            let mut serializer = serde_json::Serializer::new(&mut record);
+            let mut map = serializer
+                .serialize_map(Some(entries.len()))
+                .map_err(|error| EvaluationError::new(error.to_string()))?;
+            for (key, value) in entries {
+                map.serialize_entry(&key, &value)
+                    .map_err(|error| EvaluationError::new(error.to_string()))?;
+            }
+            map.end()
+                .map_err(|error| EvaluationError::new(error.to_string()))?;
+        }
+        output => {
+            let result = ndjson_value(document, output, registry)?;
+            serde_json::to_writer(&mut record, &result)
+                .map_err(|error| EvaluationError::new(error.to_string()))?;
+        }
+    }
+    record.extend_from_slice(b"}\n");
+    Ok(record)
+}
+
+fn ndjson_value(
+    document: &zirium::semantic::Document,
+    output: QueryOutput,
+    registry: &DialectRegistry,
+) -> Result<serde_json::Value, EvaluationError> {
+    Ok(match output {
+        QueryOutput::Native(_) => {
+            return Err(EvaluationError::new(
+                "native query results require a library consumer",
+            ));
+        }
+        QueryOutput::Operations(selected) => {
+            let mut bytes = Vec::new();
+            document
+                .write_selection(&mut bytes, &selected, PrintLayout::Pretty, registry)
+                .map_err(|error| EvaluationError::new(error.to_string()))?;
+            serde_json::Value::String(
+                String::from_utf8(bytes)
+                    .map_err(|error| EvaluationError::new(error.to_string()))?,
+            )
+        }
+        QueryOutput::Values(values) => serde_json::json!(values),
+        QueryOutput::Count(count) => serde_json::json!(count),
+        QueryOutput::Map(values) => serde_json::Value::Object(values),
+        QueryOutput::RankedMap(_) => unreachable!("ranked maps use ordered NDJSON serialization"),
+        QueryOutput::Array(values) => serde_json::Value::Array(values),
+        QueryOutput::Json(json) => serde_json::from_str(&json).map_err(|error| {
+            EvaluationError::new(format!("json emitter produced invalid JSON: {error}"))
+        })?,
+        QueryOutput::Text(text) => serde_json::Value::String(text),
+    })
 }
 
 fn write_stdout(chunks: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Result<(), String> {

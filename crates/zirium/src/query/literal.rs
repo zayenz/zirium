@@ -17,8 +17,13 @@ pub(super) fn evaluate(
         JsonLiteral::Scalar(value) => value.clone(),
         JsonLiteral::String(parts) => serde_json::Value::String(render::interpolate(parts, state)?),
         JsonLiteral::Binding(name) => {
-            state.charge(output_size(&state.bindings[name]))?;
-            let value = output_value(document, &state.bindings[name]);
+            let binding = state.bindings.get(name).cloned().ok_or_else(|| {
+                EvaluationError::new(format!(
+                    "binding `{name}` is unavailable in this evaluation context"
+                ))
+            })?;
+            state.charge(output_size(&binding))?;
+            let value = output_value(document, &binding);
             *items = items.saturating_add(json_size(&value).saturating_sub(1));
             state.check_items(*items)?;
             value

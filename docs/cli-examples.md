@@ -28,6 +28,22 @@ as a leaf and continues elsewhere. Add `--strict` to reject either case in
 scripts. Options can appear before or after the query argument. Use `--` before
 input paths beginning with a dash.
 
+Every CLI evaluation provides `{document}` as the supplied input path, or
+`stdin` for standard input. Use it in report text or JSON strings:
+
+```sh
+zirium 'print("# {document}"); names | tally | markdown' first.mlir second.mlir
+```
+
+For machine-readable multi-file output, `--ndjson` writes one compact record
+per emitted result with `document` and `result` fields. JSON results remain JSON
+values; text and selected MLIR are strings. Records keep input and statement
+order, and stdout remains empty if any input or emission fails:
+
+```sh
+zirium --ndjson 'names | tally | json' first.mlir second.mlir
+```
+
 The commands below assume `target/debug` is on `PATH`:
 
 ```sh

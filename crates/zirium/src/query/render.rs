@@ -11,7 +11,11 @@ pub(super) fn interpolate(
     for part in parts {
         let value = match part {
             PrintPart::Literal(value) => value.clone(),
-            PrintPart::Binding(name) => match &state.bindings[name] {
+            PrintPart::Binding(name) => match state.bindings.get(name).ok_or_else(|| {
+                EvaluationError::new(format!(
+                    "binding `{name}` is unavailable in this evaluation context"
+                ))
+            })? {
                 QueryOutput::Count(count) => count.to_string(),
                 QueryOutput::Values(values) if values.len() == 1 => values[0].clone(),
                 QueryOutput::Array(values) if values.len() == 1 && values[0].is_string() => {

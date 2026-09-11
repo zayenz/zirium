@@ -102,6 +102,16 @@ fn structured_and_textual_queries_agree_on_stream_and_set_semantics() {
 }
 
 #[test]
+fn document_context_reports_when_evaluation_does_not_supply_a_name() {
+    let query = Query::parse_with_document_context(r#"print("{document}")"#).unwrap();
+    let mut document = document();
+    let error = query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(error.to_string().contains("unavailable"));
+}
+
+#[test]
 fn nested_queries_distinguish_relative_input_from_the_document() {
     let document = document();
     let scopes = ops().filter(op("test.scope"));

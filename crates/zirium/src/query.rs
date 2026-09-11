@@ -153,8 +153,24 @@ impl EvaluationError {
 
 impl Query {
     pub fn parse(source: &str) -> Result<Self, QueryError> {
+        Self::parse_with_initial_bindings(source, &[])
+    }
+
+    /// Parses a query with the reserved per-document binding available.
+    pub fn parse_with_document_context(source: &str) -> Result<Self, QueryError> {
+        Self::parse_with_initial_bindings(source, &["document"])
+    }
+
+    fn parse_with_initial_bindings(
+        source: &str,
+        initial_bindings: &[&str],
+    ) -> Result<Self, QueryError> {
         let lexed = lexer::lex(source);
-        let parsed = parser::parse(&lexed);
+        let parsed = parser::parse_with_initial_bindings(
+            &lexed,
+            parser::DEFAULT_NESTING_LIMIT,
+            initial_bindings,
+        );
         let lexical = lexed.diagnostics().first().map(|diagnostic| {
             let message = match diagnostic.kind() {
                 lexer::DiagnosticKind::QueryTooLarge => "query exceeds the supported size",
@@ -230,12 +246,33 @@ impl Query {
         registry: &DialectRegistry,
         options: EvaluationOptions,
         limits: EvaluationLimits,
+        emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+    ) -> Result<(), EvaluationError> {
+        self.evaluate_with_context_options_and_limits(
+            document, registry, None, options, limits, emit,
+        )
+    }
+
+    pub fn evaluate_with_context_options_and_limits(
+        &self,
+        document: &mut Document,
+        registry: &DialectRegistry,
+        document_name: Option<&str>,
+        options: EvaluationOptions,
+        limits: EvaluationLimits,
         mut emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
         let mut access = DocumentAccess::Mutable(document);
         let document = &mut access;
         let mut budget = EvaluationState {
-            bindings: BTreeMap::new(),
+            bindings: document_name
+                .map(|name| {
+                    BTreeMap::from([(
+                        "document".to_owned(),
+                        QueryOutput::Values(vec![name.to_owned()]),
+                    )])
+                })
+                .unwrap_or_default(),
             remaining: limits.max_work,
             max_items: limits.max_items,
             options,
@@ -361,8 +398,13 @@ fn evaluate_pipeline(
                 };
             }
             model::Stage::Binding { name, .. } => {
-                budget.charge(output_size(&budget.bindings[name]).max(1))?;
-                current = budget.bindings[name].clone();
+                let binding = budget.bindings.get(name).cloned().ok_or_else(|| {
+                    EvaluationError::new(format!(
+                        "binding `{name}` is unavailable in this evaluation context"
+                    ))
+                })?;
+                budget.charge(output_size(&binding).max(1))?;
+                current = binding;
             }
             model::Stage::Tally { .. } => {
                 let QueryOutput::Values(values) = current else {

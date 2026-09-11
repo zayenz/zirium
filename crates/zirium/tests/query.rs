@@ -78,6 +78,15 @@ fn query_boundaries_and_edit_validation() {
 }
 
 #[test]
+fn document_context_is_explicit_and_reserved_when_available() {
+    assert!(Query::parse(r#"print("{document}")"#).is_err());
+    Query::parse_with_document_context(r#"print("{document}")"#).unwrap();
+    let error = Query::parse_with_document_context("document = count; document").unwrap_err();
+    assert!(error.message.contains("reserved"));
+    Query::parse_with_document_context("other = count; other").unwrap();
+}
+
+#[test]
 fn set_operand_diagnostic_points_to_the_first_disallowed_stage() {
     let source = "filter(true) | names union filter(true) | names | count";
     let error = Query::parse(source).unwrap_err();

@@ -60,6 +60,13 @@ Input files are independent documents. `input` never combines different files.
 Output is buffered until all inputs and statements succeed; a later error
 leaves stdout empty. Multiple results are concatenated, so multiple `json`
 outputs are separate JSON values rather than one combined JSON document.
+The CLI reserves the `document` binding for the current input path, or `stdin`
+for standard input. It can be used in `print("{document}")` and interpolated
+JSON strings and keys. Defining another binding named `document` is an error;
+other binding names are unaffected. Library callers opt into this context with
+`Query::parse_with_document_context` and
+`evaluate_with_context_options_and_limits`; ordinary `Query::parse` reports
+`{document}` as unavailable.
 Closing an output pipe early (for example with `head`) exits quietly.
 The selected-fragment printer may change formatting even when printing the
 whole input. Use the library's original-output API to reproduce input bytes.
@@ -675,6 +682,14 @@ across all input files until processing succeeds: a query, evaluation, or
 printing error produces no standard output. Input files are never overwritten.
 Rust callers use the `Query::evaluate` emission callback and can choose their
 own buffering policy.
+
+Pass `--ndjson` to emit one compact JSON object per result in input and
+statement order. Each record has `document` and `result` fields. A `json`
+emitter becomes the JSON value in `result`; it is not encoded as another
+string. Text and Markdown are JSON strings with newlines escaped, counts are
+numbers, and operation selections are MLIR strings. NDJSON uses the same
+all-input buffering rule as ordinary output, so any later failure leaves stdout
+empty.
 
 ## Grammar and diagnostics
 
