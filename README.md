@@ -6,7 +6,7 @@ LLVM. The parser preserves the original bytes, including comments, whitespace,
 malformed syntax, and invalid UTF-8. A separate semantic representation supports
 verification and structural edits.
 
-Version 0.0.13 is experimental. It targets MLIR 22.1 textual syntax and supports
+Version 0.1.0 is experimental. It targets MLIR 22.1 textual syntax and supports
 selected custom dialect forms. The API may change without a migration path;
 bytecode and ODS/TableGen loading are unsupported.
 
@@ -26,7 +26,7 @@ local source build and are unsupported.
 
 CLI archives are produced by the release workflow for Linux x86_64 (static
 musl) and macOS arm64 (macOS 11 or newer). They require neither Rust nor Python.
-Binary distribution starts with the next release after 0.0.13.
+Binary distribution starts with 0.1.0.
 
 Download the matching `zirium-VERSION-TARGET.tar.gz` archive and its `.sha256`
 file from [GitHub Releases](https://github.com/zayenz/zirium/releases):

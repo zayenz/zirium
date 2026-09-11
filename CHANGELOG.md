@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0
+
+Zirium 0.1.0 adds typed query builders for Rust and Python, ordered reports,
+JSON Lines CLI output, and standalone CLI binaries. The API remains experimental.
+
 - Add standalone CLI release archives for Linux x86_64 (static musl) and macOS
   arm64, with SHA-256 checksums and checks of the extracted executables.
 
