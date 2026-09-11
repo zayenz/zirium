@@ -113,6 +113,7 @@ fn evaluate(query: &Query, document: &mut Document) -> usize {
     query
         .evaluate(document, DialectRegistry::baseline(), |_, output| {
             checksum += match output {
+                QueryOutput::Native(_) => unreachable!("textual query produced a native result"),
                 QueryOutput::Count(count) => count,
                 QueryOutput::Operations(selected) => selected.len(),
                 QueryOutput::Values(values) => values.len(),

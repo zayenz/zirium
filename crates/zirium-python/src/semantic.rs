@@ -78,8 +78,8 @@ pub(super) struct SemanticUse {
 #[pyclass(frozen, module = "zirium._zirium")]
 #[derive(Clone)]
 pub(super) struct Document {
-    state: SharedDocument,
-    registry: RegistryKind,
+    pub(super) state: SharedDocument,
+    pub(super) registry: RegistryKind,
 }
 
 impl Document {
@@ -93,6 +93,16 @@ impl Document {
 
 #[pymethods]
 impl Document {
+    #[pyo3(signature = (expression, *, max_work=None, max_items=None))]
+    fn query(
+        &self,
+        py: Python<'_>,
+        expression: &Bound<'_, pyo3::types::PyAny>,
+        max_work: Option<usize>,
+        max_items: Option<usize>,
+    ) -> PyResult<Py<pyo3::types::PyAny>> {
+        super::query::evaluate(py, self, expression, max_work, max_items)
+    }
     #[getter]
     fn semantically_complete(&self) -> PyResult<bool> {
         Ok(read_document(&self.state)?.is_semantically_complete())
@@ -968,8 +978,8 @@ pub(super) struct SemanticAttribute {
     pub(super) state: SharedDocument,
     pub(super) id: Option<AttributeId>,
     pub(super) name: String,
-    owned: Option<AttributeValue>,
-    owned_spelling: Option<String>,
+    pub(super) owned: Option<AttributeValue>,
+    pub(super) owned_spelling: Option<String>,
 }
 
 impl SemanticAttribute {

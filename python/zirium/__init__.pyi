@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from os import PathLike
 from types import TracebackType
-from typing import Any, Literal, Self, TypeAlias
+from typing import Any, Literal, Self, TypeAlias, TypeVar
 
 from .config import OperationAlternativesConfig as OperationAlternativesConfig
 from .config import OperationFormatConfig as OperationFormatConfig
@@ -14,6 +14,9 @@ from .config import (
 from .config import (
     RegistryConfig as RegistryConfig,
 )
+from .query import QueryExpr
+
+_QueryResult = TypeVar("_QueryResult")
 
 __version__: str
 
@@ -296,6 +299,13 @@ class Document:
     def retention(self) -> Literal["semantic", "syntax", "hybrid"]: ...
     @property
     def diagnostics(self) -> list[SemanticDiagnostic]: ...
+    def query(
+        self,
+        expression: QueryExpr[_QueryResult],
+        *,
+        max_work: int | None = None,
+        max_items: int | None = None,
+    ) -> _QueryResult: ...
     def operation_table(self, name: str | None = None) -> OperationTable: ...
     def statistics(self) -> SemanticStatistics: ...
     def edit(self) -> SemanticEdit: ...

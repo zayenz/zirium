@@ -8,25 +8,28 @@ use std::{
 use crate::{
     dialect::DialectRegistry,
     semantic::{
-        AttributeSpec, AttributeValue, CfBrOp, CfCondBrOp, Document, OperationId, Successor,
-        UseSite, ValueId, ValueReference, decode_mlir_string,
+        AttributeId, AttributeSpec, AttributeValue, CfBrOp, CfCondBrOp, Document, OperationId,
+        Successor, TypeId, UseSite, ValueId, ValueReference, decode_mlir_string,
     },
 };
 
+mod builder;
 pub mod lexer;
+mod model;
+pub use builder::*;
 mod literal;
 pub mod parser;
 mod render;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
-    expression: parser::Expression,
-    statements: Vec<parser::Statement>,
+    expression: model::Expression,
+    statements: Vec<model::Statement>,
     emit_final_result: bool,
 }
 
 /// Bounds evaluation work and the number of items in any one stream.
-/// Work counts stage inputs and dependency, ancestor, and subtree visits,
+/// Work counts stage inputs, visited predicate nodes, and dependency, ancestor, and subtree visits,
 /// not wall-clock time.
 #[derive(Clone, Copy, Debug)]
 pub struct EvaluationLimits {
@@ -51,16 +54,18 @@ struct EvaluationState {
 
 impl EvaluationState {
     fn charge(&mut self, work: usize) -> Result<(), EvaluationError> {
-        self.remaining = self.remaining.checked_sub(work).ok_or_else(|| EvaluationError::new(
-            "query work limit exceeded; fixed points may need unique or a larger --max-work limit"
-        ))?;
+        self.remaining = self.remaining.checked_sub(work).ok_or_else(|| {
+            EvaluationError::new(
+                "query work limit exceeded; fixed points may need unique or a larger work limit",
+            )
+        })?;
         Ok(())
     }
 
     fn check_items(&self, count: usize) -> Result<(), EvaluationError> {
         if count > self.max_items {
             return Err(EvaluationError::new(
-                "query stream size limit exceeded; use unique or a larger --max-items limit",
+                "query stream size limit exceeded; use unique or a larger item limit",
             ));
         }
         Ok(())
@@ -75,6 +80,8 @@ impl EvaluationState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryOutput {
+    /// Native library results; textual programs do not construct these.
+    Native(NativeValue),
     Operations(Vec<OperationId>),
     Values(Vec<String>),
     Count(usize),
@@ -82,6 +89,15 @@ pub enum QueryOutput {
     Array(Vec<serde_json::Value>),
     Json(String),
     Text(String),
+}
+
+/// Structured query results that have no corresponding CLI stream kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeValue {
+    String(String),
+    Types(Vec<TypeId>),
+    Attributes(Vec<(String, AttributeId)>),
+    Map(BTreeMap<String, QueryOutput>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -183,6 +199,8 @@ impl Query {
         limits: EvaluationLimits,
         mut emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
+        let mut access = DocumentAccess::Mutable(document);
+        let document = &mut access;
         let mut budget = EvaluationState {
             bindings: BTreeMap::new(),
             remaining: limits.max_work,
@@ -191,9 +209,9 @@ impl Query {
         let input = QueryOutput::Operations(budget.collect(document.operations())?);
         for statement in &self.statements {
             let expression = match statement {
-                parser::Statement::Binding { expression, .. }
-                | parser::Statement::Do(expression)
-                | parser::Statement::Query(expression) => expression,
+                model::Statement::Binding { expression, .. }
+                | model::Statement::Do(expression)
+                | model::Statement::Query(expression) => expression,
             };
             let output = evaluate_expression(
                 expression,
@@ -204,14 +222,14 @@ impl Query {
                 &mut budget,
             )?;
             match statement {
-                parser::Statement::Binding { name, .. } => {
+                model::Statement::Binding { name, .. } => {
                     budget.bindings.insert(name.clone(), output);
                 }
-                parser::Statement::Do(_) => {}
-                parser::Statement::Query(_) if !expression.ends_with_emission() => {
+                model::Statement::Do(_) => {}
+                model::Statement::Query(_) if !expression.ends_with_emission() => {
                     emit(document, output)?
                 }
-                parser::Statement::Query(_) => {}
+                model::Statement::Query(_) => {}
             }
         }
         let output = evaluate_expression(
@@ -229,9 +247,34 @@ impl Query {
     }
 }
 
+// The program frontend may edit; structured queries only receive shared access.
+enum DocumentAccess<'a> {
+    Shared(&'a Document),
+    Mutable(&'a mut Document),
+}
+
+impl std::ops::Deref for DocumentAccess<'_> {
+    type Target = Document;
+    fn deref(&self) -> &Document {
+        match self {
+            Self::Shared(document) => document,
+            Self::Mutable(document) => document,
+        }
+    }
+}
+
+impl DocumentAccess<'_> {
+    fn editable(&mut self) -> Result<&mut Document, EvaluationError> {
+        match self {
+            Self::Mutable(document) => Ok(document),
+            Self::Shared(_) => Err(EvaluationError::new("cannot edit in a read-only query")),
+        }
+    }
+}
+
 fn evaluate_expression(
-    expression: &parser::Expression,
-    document: &mut Document,
+    expression: &model::Expression,
+    document: &mut DocumentAccess<'_>,
     registry: &DialectRegistry,
     input: QueryOutput,
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
@@ -258,8 +301,8 @@ fn evaluate_expression(
 }
 
 fn evaluate_pipeline(
-    stages: &[parser::Stage],
-    document: &mut Document,
+    stages: &[model::Stage],
+    document: &mut DocumentAccess<'_>,
     registry: &DialectRegistry,
     input: QueryOutput,
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
@@ -269,7 +312,10 @@ fn evaluate_pipeline(
     for stage in stages {
         budget.charge(output_size(&current).max(1))?;
         match stage {
-            parser::Stage::Literal { value, .. } => {
+            model::Stage::Structured { step, .. } => {
+                current = evaluate_structured(step, document, registry, current, emit, budget)?;
+            }
+            model::Stage::Literal { value, .. } => {
                 let value = literal::evaluate(value, document, budget, &mut 0)?;
                 if value_depth(&value) > parser::DEFAULT_NESTING_LIMIT {
                     return Err(EvaluationError::new("JSON nesting limit exceeded"));
@@ -280,11 +326,11 @@ fn evaluate_pipeline(
                     _ => unreachable!("literal stages start with an object or array"),
                 };
             }
-            parser::Stage::Binding { name, .. } => {
+            model::Stage::Binding { name, .. } => {
                 budget.charge(output_size(&budget.bindings[name]).max(1))?;
                 current = budget.bindings[name].clone();
             }
-            parser::Stage::Tally { .. } => {
+            model::Stage::Tally { .. } => {
                 let QueryOutput::Values(values) = current else {
                     return Err(EvaluationError::new(
                         "tally requires a value stream; use names or attr first",
@@ -301,7 +347,7 @@ fn evaluate_pipeline(
                         .collect(),
                 );
             }
-            parser::Stage::MapBy { key, value, .. } => {
+            model::Stage::MapBy { key, value, .. } => {
                 let selected = take_operations(current, "map_by")?;
                 let mut entries = serde_json::Map::new();
                 let mut items = 0usize;
@@ -337,7 +383,7 @@ fn evaluate_pipeline(
                 }
                 current = QueryOutput::Map(entries);
             }
-            parser::Stage::Reachable { .. } => {
+            model::Stage::Reachable { .. } => {
                 current = QueryOutput::Operations(evaluate_reachable(
                     document,
                     take_operations(current, "reachable")?,
@@ -345,47 +391,55 @@ fn evaluate_pipeline(
                     budget,
                 )?);
             }
-            parser::Stage::Input { .. } => {
+            model::Stage::Input { .. } => {
                 current = QueryOutput::Operations(budget.collect(document.operations())?)
             }
-            parser::Stage::Filter { predicate, .. } => {
+            model::Stage::Filter { predicate, .. } => {
                 let selected = operations_mut(&mut current, "filter")?;
-                selected.retain(|&operation| evaluate_predicate(predicate, document, operation));
+                let mut retained = 0;
+                for index in 0..selected.len() {
+                    let operation = selected[index];
+                    if evaluate_predicate(predicate, document, operation, budget)? {
+                        selected[retained] = operation;
+                        retained += 1;
+                    }
+                }
+                selected.truncate(retained);
             }
-            parser::Stage::Closure { .. } => {
+            model::Stage::Closure { .. } => {
                 let selected = take_operations(current, "closure")?;
                 current = QueryOutput::Operations(evaluate_closure(
                     document, selected, registry, false, budget,
                 )?);
             }
-            parser::Stage::Slice { .. } => {
+            model::Stage::Slice { .. } => {
                 let selected = take_operations(current, "slice")?;
                 current = QueryOutput::Operations(evaluate_slice(document, selected, budget)?);
             }
-            parser::Stage::Defs { index, .. } => {
+            model::Stage::Defs { index, .. } => {
                 let selected = take_operations(current, "defs")?;
                 current =
                     QueryOutput::Operations(evaluate_defs(document, &selected, *index, budget)?);
             }
-            parser::Stage::Users { index, .. } => {
+            model::Stage::Users { index, .. } => {
                 let selected = take_operations(current, "users")?;
                 current =
                     QueryOutput::Operations(evaluate_users(document, &selected, *index, budget)?);
             }
-            parser::Stage::Parent { .. } => {
+            model::Stage::Parent { .. } => {
                 let selected = take_operations(current, "parent")?;
                 current = QueryOutput::Operations(evaluate_parent(document, &selected, budget)?);
             }
-            parser::Stage::Children { .. } => {
+            model::Stage::Children { .. } => {
                 let selected = take_operations(current, "children")?;
                 current = QueryOutput::Operations(evaluate_children(document, &selected, budget)?);
             }
-            parser::Stage::Root { predicate, .. } => {
+            model::Stage::Root { predicate, .. } => {
                 let selected = take_operations(current, "root")?;
                 current =
                     QueryOutput::Operations(evaluate_root(document, &selected, predicate, budget)?);
             }
-            parser::Stage::Subtree { .. } => {
+            model::Stage::Subtree { .. } => {
                 let selected = take_operations(current, "subtree")?;
                 let mut expanded = Vec::new();
                 for operation in selected {
@@ -393,16 +447,18 @@ fn evaluate_pipeline(
                 }
                 current = QueryOutput::Operations(expanded);
             }
-            parser::Stage::Unique { .. } => match &mut current {
+            model::Stage::Unique { .. } => match &mut current {
                 QueryOutput::Operations(selected) => retain_unique(selected),
                 QueryOutput::Values(values) => retain_unique(values),
+                QueryOutput::Native(NativeValue::Types(values)) => retain_unique(values),
+                QueryOutput::Native(NativeValue::Attributes(values)) => retain_unique(values),
                 _ => {
                     return Err(EvaluationError::new(
                         "unique requires an operation or value stream",
                     ));
                 }
             },
-            parser::Stage::Sort { .. } => {
+            model::Stage::Sort { .. } => {
                 let QueryOutput::Values(values) = &mut current else {
                     return Err(EvaluationError::new(
                         "sort requires a value stream; use names or attr first",
@@ -410,36 +466,38 @@ fn evaluate_pipeline(
                 };
                 values.sort();
             }
-            parser::Stage::SortBy { selector, .. } => {
+            model::Stage::SortBy { selector, .. } => {
                 let selected = take_operations(current, "sort_by")?;
                 current = QueryOutput::Operations(sort_operations_by(
                     selected, selector, document, registry, emit, budget, false, None,
                 )?);
             }
-            parser::Stage::Reverse { .. } => match &mut current {
+            model::Stage::Reverse { .. } => match &mut current {
                 QueryOutput::Operations(values) => values.reverse(),
                 QueryOutput::Values(values) => values.reverse(),
+                QueryOutput::Native(NativeValue::Types(values)) => values.reverse(),
+                QueryOutput::Native(NativeValue::Attributes(values)) => values.reverse(),
                 _ => {
                     return Err(EvaluationError::new(
                         "reverse requires an operation or value stream",
                     ));
                 }
             },
-            parser::Stage::Head { count, .. } => truncate_stream(&mut current, *count, false)?,
-            parser::Stage::Tail { count, .. } => truncate_stream(&mut current, *count, true)?,
-            parser::Stage::Min { .. } => {
+            model::Stage::Head { count, .. } => truncate_stream(&mut current, *count, false)?,
+            model::Stage::Tail { count, .. } => truncate_stream(&mut current, *count, true)?,
+            model::Stage::Min { .. } => {
                 current = QueryOutput::Values(extreme_value(current, false, false)?);
             }
-            parser::Stage::Max { .. } => {
+            model::Stage::Max { .. } => {
                 current = QueryOutput::Values(extreme_value(current, true, false)?);
             }
-            parser::Stage::MinAll { .. } => {
+            model::Stage::MinAll { .. } => {
                 current = QueryOutput::Values(extreme_value(current, false, true)?);
             }
-            parser::Stage::MaxAll { .. } => {
+            model::Stage::MaxAll { .. } => {
                 current = QueryOutput::Values(extreme_value(current, true, true)?);
             }
-            parser::Stage::MinBy { selector, .. } => {
+            model::Stage::MinBy { selector, .. } => {
                 let selected = take_operations(current, "min_by")?;
                 current = QueryOutput::Operations(sort_operations_by(
                     selected,
@@ -452,7 +510,7 @@ fn evaluate_pipeline(
                     Some(false),
                 )?);
             }
-            parser::Stage::MaxBy { selector, .. } => {
+            model::Stage::MaxBy { selector, .. } => {
                 let selected = take_operations(current, "max_by")?;
                 current = QueryOutput::Operations(sort_operations_by(
                     selected,
@@ -465,7 +523,7 @@ fn evaluate_pipeline(
                     Some(false),
                 )?);
             }
-            parser::Stage::MinAllBy { selector, .. } => {
+            model::Stage::MinAllBy { selector, .. } => {
                 let selected = take_operations(current, "min_all_by")?;
                 current = QueryOutput::Operations(sort_operations_by(
                     selected,
@@ -478,7 +536,7 @@ fn evaluate_pipeline(
                     Some(true),
                 )?);
             }
-            parser::Stage::MaxAllBy { selector, .. } => {
+            model::Stage::MaxAllBy { selector, .. } => {
                 let selected = take_operations(current, "max_all_by")?;
                 current = QueryOutput::Operations(sort_operations_by(
                     selected,
@@ -491,11 +549,11 @@ fn evaluate_pipeline(
                     Some(true),
                 )?);
             }
-            parser::Stage::Attr { name, .. } => {
+            model::Stage::Attr { name, .. } => {
                 let selected = take_operations(current, "attr")?;
                 current = QueryOutput::Values(evaluate_attr(document, &selected, name)?);
             }
-            parser::Stage::Names { .. } => {
+            model::Stage::Names { .. } => {
                 let selected = take_operations(current, "names")?;
                 current = QueryOutput::Values(
                     selected
@@ -504,7 +562,7 @@ fn evaluate_pipeline(
                         .collect(),
                 );
             }
-            parser::Stage::ResultTypes { .. } => {
+            model::Stage::ResultTypes { .. } => {
                 let selected = take_operations(current, "result_types")?;
                 current = QueryOutput::Values(
                     budget.collect(
@@ -515,7 +573,7 @@ fn evaluate_pipeline(
                     )?,
                 );
             }
-            parser::Stage::OperandTypes { .. } => {
+            model::Stage::OperandTypes { .. } => {
                 let selected = take_operations(current, "operand_types")?;
                 current = QueryOutput::Values(
                     budget.collect(
@@ -526,11 +584,11 @@ fn evaluate_pipeline(
                     )?,
                 );
             }
-            parser::Stage::Group { expression, .. } => {
+            model::Stage::Group { expression, .. } => {
                 current =
                     evaluate_expression(expression, document, registry, current, emit, budget)?;
             }
-            parser::Stage::Fixpoint { expression, .. } => {
+            model::Stage::Fixpoint { expression, .. } => {
                 if expression.is_single_closure() {
                     current = QueryOutput::Operations(evaluate_closure(
                         document,
@@ -587,9 +645,9 @@ fn evaluate_pipeline(
                     }
                 }
             }
-            parser::Stage::SetAttr { name, value, .. } => {
+            model::Stage::SetAttr { name, value, .. } => {
                 let selected = operations(&current, "set_attr")?;
-                let mut editor = document.edit(registry).map_err(edit_error)?;
+                let mut editor = document.editable()?.edit(registry).map_err(edit_error)?;
                 let spelling = quote_mlir_string(value);
                 for operation in selected.iter().copied().collect::<HashSet<_>>() {
                     editor
@@ -605,7 +663,7 @@ fn evaluate_pipeline(
                 }
                 editor.commit().map_err(edit_error)?;
             }
-            parser::Stage::RemoveAttr { name, .. } => {
+            model::Stage::RemoveAttr { name, .. } => {
                 let selected = operations(&current, "remove_attr")?;
                 let targets = selected
                     .iter()
@@ -618,7 +676,7 @@ fn evaluate_pipeline(
                     })
                     .collect::<Vec<_>>();
                 if !targets.is_empty() {
-                    let mut editor = document.edit(registry).map_err(edit_error)?;
+                    let mut editor = document.editable()?.edit(registry).map_err(edit_error)?;
                     for operation in targets {
                         editor
                             .remove_attribute(operation, name)
@@ -627,22 +685,22 @@ fn evaluate_pipeline(
                     editor.commit().map_err(edit_error)?;
                 }
             }
-            parser::Stage::Count { .. } => {
+            model::Stage::Count { .. } => {
                 return Ok(QueryOutput::Count(countable_len(&current)?));
             }
-            parser::Stage::Emit { .. } => emit(document, current.clone())?,
-            parser::Stage::Markdown { .. } => {
+            model::Stage::Emit { .. } => emit(document, current.clone())?,
+            model::Stage::Markdown { .. } => {
                 emit(
                     document,
                     QueryOutput::Text(render::markdown(&current, budget)?),
                 )?;
             }
-            parser::Stage::Print { parts, .. } => {
+            model::Stage::Print { parts, .. } => {
                 let mut text = render::interpolate(parts, budget)?;
                 text.push('\n');
                 emit(document, QueryOutput::Text(text))?;
             }
-            parser::Stage::Json { .. } => emit(
+            model::Stage::Json { .. } => emit(
                 document,
                 QueryOutput::Json(output_json(document, &current)?),
             )?,
@@ -691,9 +749,15 @@ fn countable_len(output: &QueryOutput) -> Result<usize, EvaluationError> {
         QueryOutput::Values(values) => Ok(values.len()),
         QueryOutput::Map(values) => Ok(values.len()),
         QueryOutput::Array(values) => Ok(values.len()),
-        QueryOutput::Count(_) | QueryOutput::Json(_) | QueryOutput::Text(_) => Err(
-            EvaluationError::new("count requires a stream, map, or array"),
-        ),
+        QueryOutput::Native(NativeValue::Types(values)) => Ok(values.len()),
+        QueryOutput::Native(NativeValue::Attributes(values)) => Ok(values.len()),
+        QueryOutput::Native(NativeValue::Map(values)) => Ok(values.len()),
+        QueryOutput::Native(NativeValue::String(_))
+        | QueryOutput::Count(_)
+        | QueryOutput::Json(_)
+        | QueryOutput::Text(_) => Err(EvaluationError::new(
+            "count requires a stream, map, or array",
+        )),
     }
 }
 
@@ -703,7 +767,13 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Values(values) => values.len(),
         QueryOutput::Map(values) => values.len(),
         QueryOutput::Array(values) => values.len(),
-        QueryOutput::Count(_) | QueryOutput::Json(_) | QueryOutput::Text(_) => 1,
+        QueryOutput::Native(NativeValue::Types(values)) => values.len(),
+        QueryOutput::Native(NativeValue::Attributes(values)) => values.len(),
+        QueryOutput::Native(NativeValue::Map(values)) => values.len(),
+        QueryOutput::Native(NativeValue::String(_))
+        | QueryOutput::Count(_)
+        | QueryOutput::Json(_)
+        | QueryOutput::Text(_) => 1,
     }
 }
 
@@ -723,6 +793,8 @@ fn truncate_stream(
     match output {
         QueryOutput::Operations(values) => truncate(values, count, from_end),
         QueryOutput::Values(values) => truncate(values, count, from_end),
+        QueryOutput::Native(NativeValue::Types(values)) => truncate(values, count, from_end),
+        QueryOutput::Native(NativeValue::Attributes(values)) => truncate(values, count, from_end),
         _ => {
             return Err(EvaluationError::new(
                 "head and tail require an operation or value stream",
@@ -762,8 +834,8 @@ fn extreme_value(
 #[allow(clippy::too_many_arguments)]
 fn sort_operations_by(
     selected: Vec<OperationId>,
-    selector: &parser::Expression,
-    document: &mut Document,
+    selector: &model::Expression,
+    document: &mut DocumentAccess<'_>,
     registry: &DialectRegistry,
     emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     budget: &mut EvaluationState,
@@ -787,6 +859,7 @@ fn sort_operations_by(
         )?;
         let key = match output {
             QueryOutput::Count(value) => SortKey::Count(value),
+            QueryOutput::Native(NativeValue::String(value)) => SortKey::Text(value),
             QueryOutput::Values(mut values) if values.len() == 1 => {
                 SortKey::Text(values.pop().unwrap())
             }
@@ -839,6 +912,9 @@ fn json_size(value: &serde_json::Value) -> usize {
 
 fn output_size(output: &QueryOutput) -> usize {
     match output {
+        QueryOutput::Native(NativeValue::Map(entries)) => {
+            entries.values().map(|value| 1 + output_size(value)).sum()
+        }
         QueryOutput::Map(entries) => entries.values().map(|value| 1 + json_size(value)).sum(),
         QueryOutput::Array(values) => 1 + values.iter().map(json_size).sum::<usize>(),
         _ => output_len(output),
@@ -854,7 +930,7 @@ fn source_ordered(document: &Document, selected: HashSet<OperationId>) -> Vec<Op
 
 fn evaluate_set_operator(
     document: &Document,
-    operator: parser::SetOperator,
+    operator: model::SetOperator,
     left: QueryOutput,
     right: QueryOutput,
 ) -> Result<QueryOutput, EvaluationError> {
@@ -863,20 +939,18 @@ fn evaluate_set_operator(
             let mut left = left.into_iter().collect::<HashSet<_>>();
             let right = right.into_iter().collect::<HashSet<_>>();
             match operator {
-                parser::SetOperator::Union => left.extend(right),
-                parser::SetOperator::Intersect => {
-                    left.retain(|operation| right.contains(operation))
-                }
-                parser::SetOperator::Except => left.retain(|operation| !right.contains(operation)),
+                model::SetOperator::Union => left.extend(right),
+                model::SetOperator::Intersect => left.retain(|operation| right.contains(operation)),
+                model::SetOperator::Except => left.retain(|operation| !right.contains(operation)),
             }
             Ok(QueryOutput::Operations(source_ordered(document, left)))
         }
         (QueryOutput::Values(mut left), QueryOutput::Values(right)) => {
             let right_set = right.iter().cloned().collect::<HashSet<_>>();
             match operator {
-                parser::SetOperator::Union => left.extend(right),
-                parser::SetOperator::Intersect => left.retain(|value| right_set.contains(value)),
-                parser::SetOperator::Except => left.retain(|value| !right_set.contains(value)),
+                model::SetOperator::Union => left.extend(right),
+                model::SetOperator::Intersect => left.retain(|value| right_set.contains(value)),
+                model::SetOperator::Except => left.retain(|value| !right_set.contains(value)),
             }
             retain_unique(&mut left);
             Ok(QueryOutput::Values(left))
@@ -990,7 +1064,7 @@ fn evaluate_children(
 fn evaluate_root(
     document: &Document,
     selected: &[OperationId],
-    predicate: &parser::Predicate,
+    predicate: &model::Predicate,
     budget: &mut EvaluationState,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     let mut roots = Vec::new();
@@ -998,7 +1072,7 @@ fn evaluate_root(
         let mut candidate = Some(operation);
         while let Some(operation) = candidate {
             budget.charge(1)?;
-            if evaluate_predicate(predicate, document, operation) {
+            if evaluate_predicate(predicate, document, operation, budget)? {
                 roots.push(operation);
                 break;
             }
@@ -1041,6 +1115,27 @@ fn output_json(document: &Document, output: &QueryOutput) -> Result<String, Eval
 
 fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value {
     match output {
+        QueryOutput::Native(value) => match value {
+            NativeValue::String(value) => serde_json::json!(value),
+            NativeValue::Types(values) => serde_json::json!(
+                values
+                    .iter()
+                    .map(|&id| document.type_spelling(id))
+                    .collect::<Vec<_>>()
+            ),
+            NativeValue::Attributes(values) => serde_json::json!(
+                values
+                    .iter()
+                    .map(|(_, id)| document.attribute_spelling_value(*id))
+                    .collect::<Vec<_>>()
+            ),
+            NativeValue::Map(values) => serde_json::Value::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), output_value(document, value)))
+                    .collect(),
+            ),
+        },
         QueryOutput::Operations(selected) => serde_json::Value::Array(
             selected
                 .iter()
@@ -1078,30 +1173,46 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
 }
 
 fn evaluate_predicate(
-    predicate: &parser::Predicate,
+    predicate: &model::Predicate,
     document: &Document,
     operation: OperationId,
-) -> bool {
-    match predicate {
-        parser::Predicate::Bool { value, .. } => *value,
-        parser::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
-        parser::Predicate::Dialect { name, .. } => document.operation_name(operation)
+    budget: &mut EvaluationState,
+) -> Result<bool, EvaluationError> {
+    budget.charge(1)?;
+    Ok(match predicate {
+        model::Predicate::Bool { value, .. } => *value,
+        model::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
+        model::Predicate::Dialect { name, .. } => document.operation_name(operation)
             .and_then(|op| op.split_once('.')).is_some_and(|(dialect, _)| dialect == name),
-        parser::Predicate::ResultType { spelling, .. } => document.result_types(operation).unwrap_or(&[])
+        model::Predicate::ResultType { spelling, .. } => document.result_types(operation).unwrap_or(&[])
             .iter().any(|&ty| document.type_spelling(ty) == Some(spelling)),
-        parser::Predicate::HasAttr { name, .. } => document
+        model::Predicate::HasAttr { name, .. } => document
             .attribute_entries(operation)
             .is_some_and(|mut entries| entries.any(|(attribute, _)| attribute == name)),
-        parser::Predicate::Attr { name, value, .. } => document
+        model::Predicate::Attr { name, value, .. } => document
             .attribute_entries(operation)
             .and_then(|mut entries| entries.find(|(attribute, _)| attribute == name))
             .and_then(|(_, id)| document.attribute_value(id))
             .is_some_and(|attribute| matches!(attribute, AttributeValue::String(spelling) if decode_mlir_string(spelling).as_deref() == Some(value))),
-        parser::Predicate::Not { predicate, .. } => !evaluate_predicate(predicate, document, operation),
-        parser::Predicate::And { predicates, .. } => predicates.iter().all(|predicate| evaluate_predicate(predicate, document, operation)),
-        parser::Predicate::Or { predicates, .. } => predicates.iter().any(|predicate| evaluate_predicate(predicate, document, operation)),
-        parser::Predicate::Group { predicate, .. } => evaluate_predicate(predicate, document, operation),
-    }
+        model::Predicate::Not { predicate, .. } => !evaluate_predicate(predicate, document, operation, budget)?,
+        model::Predicate::And { predicates, .. } => {
+            for predicate in predicates {
+                if !evaluate_predicate(predicate, document, operation, budget)? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        model::Predicate::Or { predicates, .. } => {
+            for predicate in predicates {
+                if evaluate_predicate(predicate, document, operation, budget)? {
+                    return Ok(true);
+                }
+            }
+            false
+        }
+        model::Predicate::Group { predicate, .. } => evaluate_predicate(predicate, document, operation, budget)?,
+    })
 }
 
 fn quote_mlir_string(value: &str) -> String {

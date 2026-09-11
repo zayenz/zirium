@@ -314,6 +314,11 @@ fn run() -> Result<(), String> {
             .evaluate_with_limits(&mut document, registry, limits, |document, output| {
                 let mut answer = Vec::new();
                 match output {
+                    QueryOutput::Native(_) => {
+                        return Err(EvaluationError::new(
+                            "native query results require a library consumer",
+                        ));
+                    }
                     QueryOutput::Operations(selected) => document
                         .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
                         .map_err(|error| {

@@ -1,5 +1,8 @@
 # Zirium query language
 
+For Rust and Python method-based queries with native results, see the
+[structured query guide](query-dsl.md).
+
 A query transforms an ordered stream. It starts with every operation
 in the input document. A pipe passes the current stream to the next stage:
 

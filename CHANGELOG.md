@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add immutable, typed query builders in Rust and Python, sharing the CLI
+  evaluator. Queries return native selections, semantic types and attributes,
+  strings, counts, and nested maps; relative subqueries support relationship
+  filtering and per-operation analysis.
+
 - Split parser grammar and semantic-value lowering into private modules by
   responsibility, preserving public interfaces and behavior.
 - Avoid repeated whole-document scans when printing selected operations and

@@ -103,6 +103,22 @@ diagnostics. A `Document` owns resolved semantic data. Keeping them separate let
 you inspect malformed source without requiring a valid semantic model, and edit
 semantic structure without manipulating syntax nodes.
 
+## Structured queries
+
+Rust and Python can build reusable queries without query source strings:
+
+```python
+from zirium.query import ops, op
+
+consumers = ops().filter(op("example.make")).users().unique()
+selected = document.query(consumers)
+counts = document.query(consumers.names().tally())
+```
+
+Rust uses the same builders: `document.query(&consumers)?`. Queries return native
+operation handles, strings, counts, and maps. The [structured query guide](docs/query-dsl.md)
+covers predicates, nested queries, semantic projections, and evaluation limits.
+
 ## Output modes
 
 Zirium has three output paths, each with a different contract:
