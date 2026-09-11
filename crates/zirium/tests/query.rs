@@ -31,6 +31,7 @@ fn query_boundaries_and_edit_validation() {
         "(defs union users) | filter(true)",
         "fixpoint(filter(true) union users)",
         "names | sort | reverse | head(10) | tail(3) | min | min_all | max | max_all",
+        "names | tally | sort_by(value) | reverse | head(10)",
         "sort_by(attr(\"rank\")) | min_by(children | count) | min_all_by(names) | max_by(names) | max_all_by(names)",
         r#"do filter(op("x")) | set_attr("tag", "hot"); emit"#,
         r#"do filter(op("x")) | set_attr("tag", "hot");"#,

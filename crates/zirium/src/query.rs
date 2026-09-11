@@ -94,6 +94,8 @@ pub enum QueryOutput {
     Values(Vec<String>),
     Count(usize),
     Map(serde_json::Map<String, serde_json::Value>),
+    /// A textual report map whose entry order was chosen explicitly.
+    RankedMap(Vec<(String, serde_json::Value)>),
     Array(Vec<serde_json::Value>),
     Json(String),
     Text(String),
@@ -379,6 +381,11 @@ fn evaluate_pipeline(
                         .collect(),
                 );
             }
+            model::Stage::Value { .. } => {
+                return Err(EvaluationError::new(
+                    "value is only valid as the selector in sort_by(value) on a map",
+                ));
+            }
             model::Stage::MapBy { key, value, .. } => {
                 let selected = take_operations(current, "map_by")?;
                 let mut entries = serde_json::Map::new();
@@ -499,19 +506,29 @@ fn evaluate_pipeline(
                 values.sort();
             }
             model::Stage::SortBy { selector, .. } => {
-                let selected = take_operations(current, "sort_by")?;
-                current = QueryOutput::Operations(sort_operations_by(
-                    selected, selector, document, registry, emit, budget, false, None,
-                )?);
+                if selector.is_map_value() {
+                    current = sort_map_by_value(current)?;
+                } else {
+                    if matches!(current, QueryOutput::Map(_) | QueryOutput::RankedMap(_)) {
+                        return Err(EvaluationError::new(
+                            "sort_by on a map requires the scalar selector value",
+                        ));
+                    }
+                    let selected = take_operations(current, "sort_by")?;
+                    current = QueryOutput::Operations(sort_operations_by(
+                        selected, selector, document, registry, emit, budget, false, None,
+                    )?);
+                }
             }
             model::Stage::Reverse { .. } => match &mut current {
                 QueryOutput::Operations(values) => values.reverse(),
                 QueryOutput::Values(values) => values.reverse(),
                 QueryOutput::Native(NativeValue::Types(values)) => values.reverse(),
                 QueryOutput::Native(NativeValue::Attributes(values)) => values.reverse(),
+                QueryOutput::RankedMap(entries) => entries.reverse(),
                 _ => {
                     return Err(EvaluationError::new(
-                        "reverse requires an operation or value stream",
+                        "reverse requires an operation stream, value stream, or ranked map",
                     ));
                 }
             },
@@ -651,6 +668,7 @@ fn evaluate_pipeline(
                             | QueryOutput::Json(_)
                             | QueryOutput::Text(_)
                             | QueryOutput::Map(_)
+                            | QueryOutput::RankedMap(_)
                             | QueryOutput::Array(_)
                     ) {
                         return Err(EvaluationError::new(
@@ -780,6 +798,7 @@ fn countable_len(output: &QueryOutput) -> Result<usize, EvaluationError> {
         QueryOutput::Operations(selected) => Ok(selected.len()),
         QueryOutput::Values(values) => Ok(values.len()),
         QueryOutput::Map(values) => Ok(values.len()),
+        QueryOutput::RankedMap(values) => Ok(values.len()),
         QueryOutput::Array(values) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Types(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Attributes(values)) => Ok(values.len()),
@@ -798,6 +817,7 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Operations(values) => values.len(),
         QueryOutput::Values(values) => values.len(),
         QueryOutput::Map(values) => values.len(),
+        QueryOutput::RankedMap(values) => values.len(),
         QueryOutput::Array(values) => values.len(),
         QueryOutput::Native(NativeValue::Types(values)) => values.len(),
         QueryOutput::Native(NativeValue::Attributes(values)) => values.len(),
@@ -827,9 +847,10 @@ fn truncate_stream(
         QueryOutput::Values(values) => truncate(values, count, from_end),
         QueryOutput::Native(NativeValue::Types(values)) => truncate(values, count, from_end),
         QueryOutput::Native(NativeValue::Attributes(values)) => truncate(values, count, from_end),
+        QueryOutput::RankedMap(values) => truncate(values, count, from_end),
         _ => {
             return Err(EvaluationError::new(
-                "head and tail require an operation or value stream",
+                "head and tail require an operation stream, value stream, or ranked map",
             ));
         }
     }
@@ -860,6 +881,67 @@ fn extreme_value(
             .collect())
     } else {
         Ok(vec![value])
+    }
+}
+
+fn sort_map_by_value(output: QueryOutput) -> Result<QueryOutput, EvaluationError> {
+    let mut entries: Vec<_> = match output {
+        QueryOutput::Map(entries) => entries.into_iter().collect(),
+        QueryOutput::RankedMap(entries) => entries,
+        _ => {
+            return Err(EvaluationError::new("sort_by(value) requires a map"));
+        }
+    };
+    let kind = entries
+        .first()
+        .map(|(_, value)| scalar_sort_kind(value))
+        .transpose()?;
+    for (_, value) in &entries {
+        if Some(scalar_sort_kind(value)?) != kind {
+            return Err(EvaluationError::new(
+                "sort_by(value) requires comparable scalar map values of one type",
+            ));
+        }
+    }
+    entries.sort_by(|(left_key, left), (right_key, right)| {
+        compare_scalar_values(left, right).then_with(|| left_key.cmp(right_key))
+    });
+    Ok(QueryOutput::RankedMap(entries))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScalarSortKind {
+    Null,
+    Bool,
+    Number,
+    String,
+}
+
+fn scalar_sort_kind(value: &serde_json::Value) -> Result<ScalarSortKind, EvaluationError> {
+    match value {
+        serde_json::Value::Null => Ok(ScalarSortKind::Null),
+        serde_json::Value::Bool(_) => Ok(ScalarSortKind::Bool),
+        serde_json::Value::Number(_) => Ok(ScalarSortKind::Number),
+        serde_json::Value::String(_) => Ok(ScalarSortKind::String),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => Err(EvaluationError::new(
+            "sort_by(value) requires scalar map values; project a scalar from nested maps first",
+        )),
+    }
+}
+
+fn compare_scalar_values(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> std::cmp::Ordering {
+    match (left, right) {
+        (serde_json::Value::Null, serde_json::Value::Null) => std::cmp::Ordering::Equal,
+        (serde_json::Value::Bool(left), serde_json::Value::Bool(right)) => left.cmp(right),
+        (serde_json::Value::Number(left), serde_json::Value::Number(right)) => left
+            .as_f64()
+            .partial_cmp(&right.as_f64())
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (serde_json::Value::String(left), serde_json::Value::String(right)) => left.cmp(right),
+        _ => unreachable!("map values are validated before sorting"),
     }
 }
 
@@ -948,6 +1030,9 @@ fn output_size(output: &QueryOutput) -> usize {
             entries.values().map(|value| 1 + output_size(value)).sum()
         }
         QueryOutput::Map(entries) => entries.values().map(|value| 1 + json_size(value)).sum(),
+        QueryOutput::RankedMap(entries) => {
+            entries.iter().map(|(_, value)| 1 + json_size(value)).sum()
+        }
         QueryOutput::Array(values) => 1 + values.iter().map(json_size).sum::<usize>(),
         _ => output_len(output),
     }
@@ -1140,6 +1225,24 @@ fn evaluate_attr(
 }
 
 fn output_json(document: &Document, output: &QueryOutput) -> Result<String, EvaluationError> {
+    if let QueryOutput::RankedMap(entries) = output {
+        use serde::ser::{SerializeMap, Serializer};
+        let mut bytes = Vec::new();
+        let mut serializer = serde_json::Serializer::pretty(&mut bytes);
+        let mut map = serializer
+            .serialize_map(Some(entries.len()))
+            .map_err(|error| EvaluationError::new(format!("could not encode JSON: {error}")))?;
+        for (key, value) in entries {
+            map.serialize_entry(key, value)
+                .map_err(|error| EvaluationError::new(format!("could not encode JSON: {error}")))?;
+        }
+        map.end()
+            .map_err(|error| EvaluationError::new(format!("could not encode JSON: {error}")))?;
+        let mut json =
+            String::from_utf8(bytes).expect("serde_json emits UTF-8 when serializing a report map");
+        json.push('\n');
+        return Ok(json);
+    }
     serde_json::to_string_pretty(&output_value(document, output))
         .map(|json| format!("{json}\n"))
         .map_err(|error| EvaluationError::new(format!("could not encode JSON: {error}")))
@@ -1196,6 +1299,9 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
         ),
         QueryOutput::Values(values) => serde_json::json!(values),
         QueryOutput::Map(values) => serde_json::Value::Object(values.clone()),
+        QueryOutput::RankedMap(values) => {
+            serde_json::Value::Object(values.iter().cloned().collect())
+        }
         QueryOutput::Array(values) => serde_json::Value::Array(values.clone()),
         QueryOutput::Count(count) => serde_json::json!(count),
         QueryOutput::Json(value) | QueryOutput::Text(value) => {

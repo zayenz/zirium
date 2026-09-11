@@ -71,6 +71,15 @@ impl Expression {
             }
     }
 
+    pub(crate) fn is_map_value(&self) -> bool {
+        self.rest.is_empty()
+            && match self.first.as_slice() {
+                [Stage::Value { .. }] => true,
+                [Stage::Group { expression, .. }] => expression.is_map_value(),
+                _ => false,
+            }
+    }
+
     pub fn is_selection_only(&self) -> bool {
         self.first_non_selection_stage().is_none()
     }
@@ -206,6 +215,9 @@ pub enum Stage {
         range: TextRange,
     },
     Tally {
+        range: TextRange,
+    },
+    Value {
         range: TextRange,
     },
     MapBy {
@@ -349,6 +361,7 @@ impl Stage {
             | Self::Print { range, .. }
             | Self::Binding { range, .. }
             | Self::Tally { range }
+            | Self::Value { range }
             | Self::MapBy { range, .. }
             | Self::Reachable { range }
             | Self::Input { range }
@@ -394,6 +407,7 @@ impl Stage {
             | Self::RemoveAttr { .. }
             | Self::Count { .. }
             | Self::Tally { .. }
+            | Self::Value { .. }
             | Self::MapBy { .. }
             | Self::Literal { .. } => false,
             Self::Group { expression, .. } | Self::Fixpoint { expression, .. } => {

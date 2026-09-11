@@ -226,6 +226,7 @@ impl Parser<'_> {
         Some(match name.as_str() {
             "reachable" => Stage::Reachable { range },
             "tally" => Stage::Tally { range },
+            "value" => Stage::Value { range },
             "map_by" => {
                 self.expect(TokenKind::LParen, "expected `(` after map_by")?;
                 let key = Box::new(self.expression(depth + 1)?);
@@ -952,6 +953,7 @@ fn is_reserved(name: &str) -> bool {
             | "markdown"
             | "print"
             | "tally"
+            | "value"
             | "map_by"
             | "union"
             | "intersect"

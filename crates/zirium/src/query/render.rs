@@ -34,6 +34,9 @@ pub(super) fn markdown(
     output: &QueryOutput,
     state: &mut EvaluationState,
 ) -> Result<String, EvaluationError> {
+    if let Some(entries) = map_entries(output) {
+        return markdown_map(&entries, state);
+    }
     match output {
         QueryOutput::Array(values) => {
             let values = values.iter().map(scalar).collect::<Result<Vec<_>, _>>()
@@ -49,58 +52,74 @@ pub(super) fn markdown(
             }
             Ok(finish(text, values.is_empty()))
         }
-        QueryOutput::Map(entries) if entries.is_empty() => Ok(finish(String::new(), true)),
-        QueryOutput::Map(entries) if entries.values().all(serde_json::Value::is_object) => {
-            let mut columns = BTreeSet::new();
-            for (key, value) in entries {
-                for (column, value) in value.as_object().unwrap() {
-                    if value.is_array() || value.is_object() {
-                        return Err(EvaluationError::new(format!(
-                            "markdown cell at row `{key}`, column `{column}` is nested; expected a scalar, use json for deeper data"
-                        )));
-                    }
-                    if columns.insert(column.as_str()) {
-                        // Bound the union before expanding sparse rows into a rectangle.
-                        table_budget(entries.len(), columns.len() + 1, state)?;
-                    }
-                }
-            }
-            let columns: Vec<_> = columns.into_iter().collect();
-            let mut headers = vec!["Key"];
-            headers.extend(&columns);
-            table_budget(entries.len(), headers.len(), state)?;
-            let mut text = header(&headers, state)?;
-            for (key, value) in entries {
-                let values = value.as_object().unwrap();
-                let mut cells = vec![key.clone()];
-                for column in &columns {
-                    cells.push(
-                        values
-                            .get(*column)
-                            .map(scalar)
-                            .transpose()?
-                            .unwrap_or_default(),
-                    );
-                }
-                row(&mut text, cells.iter().map(String::as_str), state)?;
-            }
-            Ok(finish(text, false))
-        }
-        QueryOutput::Map(entries) => {
-            table_budget(entries.len(), 2, state)?;
-            let mut text = header(&["Key", "Value"], state)?;
-            for (key, value) in entries {
-                let value = scalar(value).map_err(|_| EvaluationError::new(format!(
-                    "markdown entry `{key}` has an incompatible shape; expected all scalar values or all maps of scalars, use json for mixed or deeper data"
-                )))?;
-                row(&mut text, [key.as_str(), value.as_str()], state)?;
-            }
-            Ok(finish(text, false))
-        }
         _ => Err(EvaluationError::new(
             "markdown requires values, a count, or a map of scalars or maps of scalars; use names, tally, or map_by to shape operations first",
         )),
     }
+}
+
+fn map_entries(output: &QueryOutput) -> Option<Vec<(&String, &serde_json::Value)>> {
+    match output {
+        QueryOutput::Map(entries) => Some(entries.iter().collect()),
+        QueryOutput::RankedMap(entries) => {
+            Some(entries.iter().map(|(key, value)| (key, value)).collect())
+        }
+        _ => None,
+    }
+}
+
+fn markdown_map(
+    entries: &[(&String, &serde_json::Value)],
+    state: &mut EvaluationState,
+) -> Result<String, EvaluationError> {
+    if entries.is_empty() {
+        return Ok(finish(String::new(), true));
+    }
+    if entries.iter().all(|(_, value)| value.is_object()) {
+        let mut columns = BTreeSet::new();
+        for &(key, value) in entries {
+            for (column, value) in value.as_object().unwrap() {
+                if value.is_array() || value.is_object() {
+                    return Err(EvaluationError::new(format!(
+                        "markdown cell at row `{key}`, column `{column}` is nested; expected a scalar, use json for deeper data"
+                    )));
+                }
+                if columns.insert(column.as_str()) {
+                    // Bound the union before expanding sparse rows into a rectangle.
+                    table_budget(entries.len(), columns.len() + 1, state)?;
+                }
+            }
+        }
+        let columns: Vec<_> = columns.into_iter().collect();
+        let mut headers = vec!["Key"];
+        headers.extend(&columns);
+        table_budget(entries.len(), headers.len(), state)?;
+        let mut text = header(&headers, state)?;
+        for &(key, value) in entries {
+            let values = value.as_object().unwrap();
+            let mut cells = vec![key.clone()];
+            for column in &columns {
+                cells.push(
+                    values
+                        .get(*column)
+                        .map(scalar)
+                        .transpose()?
+                        .unwrap_or_default(),
+                );
+            }
+            row(&mut text, cells.iter().map(String::as_str), state)?;
+        }
+        return Ok(finish(text, false));
+    }
+    table_budget(entries.len(), 2, state)?;
+    let mut text = header(&["Key", "Value"], state)?;
+    for &(key, value) in entries {
+        let value = scalar(value).map_err(|_| EvaluationError::new(format!(
+                    "markdown entry `{key}` has an incompatible shape; expected all scalar values or all maps of scalars, use json for mixed or deeper data"
+                )))?;
+        row(&mut text, [key.as_str(), value.as_str()], state)?;
+    }
+    Ok(finish(text, false))
 }
 
 fn scalar(value: &serde_json::Value) -> Result<String, EvaluationError> {

@@ -2327,6 +2327,75 @@ fn markdown_escapes_cells_and_rejects_unsuitable_shapes_atomically() {
 }
 
 #[test]
+fn ranked_histograms_keep_order_through_bounds_bindings_and_markdown() {
+    let counts = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 3, 1];
+    let mut source = String::from("module {");
+    for (index, count) in counts.into_iter().enumerate() {
+        let key = char::from(b'a' + u8::try_from(index).unwrap());
+        for _ in 0..count {
+            source.push_str(&format!(r#""vendor.{key}"() : () -> ()"#));
+        }
+    }
+    source.push('}');
+
+    let query = "ranked = filter(not op(\"builtin.module\")) | names | tally | sort_by(value) | reverse | head(10); ranked | markdown";
+    let output = run_stdin(query, &source);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "\n| Key | Value |\n| --- | --- |\n| vendor.a | 12 |\n| vendor.b | 11 |\n| vendor.c | 10 |\n| vendor.d | 9 |\n| vendor.e | 8 |\n| vendor.f | 7 |\n| vendor.g | 6 |\n| vendor.h | 5 |\n| vendor.i | 4 |\n| vendor.k | 3 |\n\n"
+    );
+
+    for ending in ["ranked", "ranked | json"] {
+        let output = run_stdin(
+            &format!(
+                "ranked = filter(not op(\"builtin.module\")) | names | tally | sort_by(value) | reverse | head(3); {ending}"
+            ),
+            &source,
+        );
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "{\n  \"vendor.a\": 12,\n  \"vendor.b\": 11,\n  \"vendor.c\": 10\n}\n"
+        );
+    }
+
+    let output = run_stdin(
+        "filter(not op(\"builtin.module\")) | names | tally | sort_by(value) | tail(3) | count",
+        &source,
+    );
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"3\n");
+
+    let output = run_stdin(r#"{"z": 1, "a": 2} | markdown"#, "module {}");
+    assert!(output.status.success());
+    assert_eq!(
+        output.stdout,
+        b"\n| Key | Value |\n| --- | --- |\n| a | 2 |\n| z | 1 |\n\n"
+    );
+
+    for query in [
+        "names | tally | sort_by(value) | head(0) | markdown",
+        "filter(false) | names | tally | sort_by(value) | markdown",
+    ] {
+        let output = run_stdin(query, "module {}");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"\n_No entries._\n\n");
+    }
+
+    let output = run_stdin(
+        "filter(op(\"builtin.module\")) | map_by(names, children | names | tally) | sort_by(value)",
+        &source,
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("scalar map values"));
+}
+
+#[test]
 fn markdown_bounds_the_dense_table_from_sparse_histograms() {
     let mut source = String::from("module {");
     for i in 0..20 {

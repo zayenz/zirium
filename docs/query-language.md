@@ -145,9 +145,9 @@ become queries relative to the current function.
 
 ## Ordering, bounds, and extrema
 
-`sort` orders a value stream lexically. `reverse` reverses an operation or
-value stream. `head(n)` keeps the first `n` items, while `tail(n)` keeps the
-last `n`; both preserve the retained items' order.
+`sort` orders a value stream lexically. `reverse` reverses an operation stream,
+value stream, or explicitly ranked map. `head(n)` keeps the first `n` items,
+while `tail(n)` keeps the last `n`; both preserve the retained items' order.
 These stages truncate an already computed stream. They do not avoid parsing the
 whole file or evaluating earlier stages.
 
@@ -166,8 +166,13 @@ selector rules as `sort_by`; the first operation wins a tie. The corresponding
 every tied extreme in its previous order. All extrema stages report an error on
 an empty stream. Use `reverse` after `sort` or `sort_by` for descending order.
 
-Maps remain sorted lexically by key. Ordering stages do not rank `tally` or
-`map_by` maps.
+Unranked maps remain sorted lexically by key. Use `sort_by(value)` on a `tally`
+or `map_by` map whose values are comparable scalars of one type. The result is
+an explicitly ranked map, and `reverse`, `head`, and `tail` preserve that order
+through bindings, JSON, and Markdown output. Equal values use lexical key order;
+`reverse` reverses the whole order, including ties. Nested map values are not
+implicitly ranked: project a scalar first.
+Here `value` is a map-entry selector, not a general pipeline stage.
 
 ## Building JSON structures
 
@@ -683,7 +688,7 @@ query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
 stage      = object | array | identifier | "markdown" | "print" "(" string ")"
            | "tally" | "map_by" "(" query "," query ")"
-           | "sort" | "sort_by" "(" query ")" | "reverse"
+           | "sort" | "sort_by" "(" query ")" | "value" | "reverse"
            | ("head" | "tail") "(" integer ")"
            | "min" | "min_all" | ("min_by" | "min_all_by") "(" query ")"
            | "max" | "max_all" | ("max_by" | "max_all_by") "(" query ")"

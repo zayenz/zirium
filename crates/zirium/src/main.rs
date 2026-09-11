@@ -359,6 +359,20 @@ fn run() -> Result<(), String> {
                             );
                             answer.push(b'\n');
                         }
+                        QueryOutput::RankedMap(entries) => {
+                            use serde::ser::{SerializeMap, Serializer};
+                            let mut serializer = serde_json::Serializer::pretty(&mut answer);
+                            let mut map = serializer
+                                .serialize_map(Some(entries.len()))
+                                .map_err(|error| EvaluationError::new(error.to_string()))?;
+                            for (key, value) in entries {
+                                map.serialize_entry(&key, &value)
+                                    .map_err(|error| EvaluationError::new(error.to_string()))?;
+                            }
+                            map.end()
+                                .map_err(|error| EvaluationError::new(error.to_string()))?;
+                            answer.push(b'\n');
+                        }
                         QueryOutput::Json(json) | QueryOutput::Text(json) => {
                             answer.extend_from_slice(json.as_bytes())
                         }

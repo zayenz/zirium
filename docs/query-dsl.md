@@ -97,6 +97,10 @@ unchanged. It preserves duplicate semantics, detects cycles, and obeys work and
 item limits. For accumulating transitive users, use
 `arithmetic.fixpoint(input().union(input().users()))`.
 
+Map ranking is currently a textual-query result. Typed `MapQuery` results keep
+their existing `BTreeMap`/Python `dict` contract and do not expose
+`sort_by(value)` until the native API has an ordered map result type.
+
 `reachable()` treats an unregistered operation as a retained leaf by default;
 it does not follow that operation's regions, operands, successors, or symbol
 references. Other queued operations are still processed. Pass `strict=True` to
