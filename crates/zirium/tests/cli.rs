@@ -2173,10 +2173,6 @@ fn reachable_counts_shared_and_recursive_callee_bodies_once() {
             "module { func.func @main() { func.call @missing() : () -> () func.return } }",
             "could not resolve",
         ),
-        (
-            "module { \"vendor.lambda\"() : () -> () }",
-            "cannot determine reference semantics",
-        ),
     ] {
         let output = run_stdin("reachable | count", source);
         assert!(!output.status.success());
@@ -2187,6 +2183,17 @@ fn reachable_counts_shared_and_recursive_callee_bodies_once() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    let unknown = "module { \"vendor.lambda\"() : () -> () }";
+    let output = run_stdin("reachable | names", unknown);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "builtin.module\nvendor.lambda\n"
+    );
+    let output = run_stdin_with_options(&["--strict"], "reachable | count", unknown);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("`vendor.lambda`"));
 }
 
 #[test]

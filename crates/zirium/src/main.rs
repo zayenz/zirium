@@ -8,7 +8,7 @@ use zirium::{
     parser::ParseDiagnosticKind,
     parser::ParsedFile,
     printer::PrintLayout,
-    query::{EvaluationError, EvaluationLimits, Query, QueryOutput},
+    query::{EvaluationError, EvaluationLimits, EvaluationOptions, Query, QueryOutput},
     semantic::{LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention},
 };
 
@@ -33,7 +33,7 @@ Options:
   --list-presets          List bundled presets
   --registry FILE         Load a JSON registry (repeatable; combines with presets)
   -f, --program-file FILE Read the query from a file instead of an argument
-  --strict                Reject incomplete parsing instead of warning
+  --strict                Reject incomplete parsing and unknown reachable references
   --max-work N            Evaluation work limit (default 10000000)
   --max-items N           Maximum items per stream (default 1000000)
 
@@ -311,54 +311,62 @@ fn run() -> Result<(), String> {
                 format!("could not lower {name}: {detail}")
             })?;
         query
-            .evaluate_with_limits(&mut document, registry, limits, |document, output| {
-                let mut answer = Vec::new();
-                match output {
-                    QueryOutput::Native(_) => {
-                        return Err(EvaluationError::new(
-                            "native query results require a library consumer",
-                        ));
-                    }
-                    QueryOutput::Operations(selected) => document
-                        .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
-                        .map_err(|error| {
-                            EvaluationError::new(format!("could not print {name}: {error}"))
-                        })?,
-                    QueryOutput::Count(count) => {
-                        use std::io::Write;
-                        writeln!(answer, "{count}")
-                            .map_err(|error| EvaluationError::new(error.to_string()))?;
-                    }
-                    QueryOutput::Values(values) => {
-                        use std::io::Write;
-                        for value in values {
-                            writeln!(answer, "{value}")
+            .evaluate_with_options_and_limits(
+                &mut document,
+                registry,
+                EvaluationOptions {
+                    strict_unknown_references: strict,
+                },
+                limits,
+                |document, output| {
+                    let mut answer = Vec::new();
+                    match output {
+                        QueryOutput::Native(_) => {
+                            return Err(EvaluationError::new(
+                                "native query results require a library consumer",
+                            ));
+                        }
+                        QueryOutput::Operations(selected) => document
+                            .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
+                            .map_err(|error| {
+                                EvaluationError::new(format!("could not print {name}: {error}"))
+                            })?,
+                        QueryOutput::Count(count) => {
+                            use std::io::Write;
+                            writeln!(answer, "{count}")
                                 .map_err(|error| EvaluationError::new(error.to_string()))?;
                         }
+                        QueryOutput::Values(values) => {
+                            use std::io::Write;
+                            for value in values {
+                                writeln!(answer, "{value}")
+                                    .map_err(|error| EvaluationError::new(error.to_string()))?;
+                            }
+                        }
+                        QueryOutput::Array(values) => {
+                            answer.extend_from_slice(
+                                serde_json::to_string_pretty(&values)
+                                    .map_err(|error| EvaluationError::new(error.to_string()))?
+                                    .as_bytes(),
+                            );
+                            answer.push(b'\n');
+                        }
+                        QueryOutput::Map(values) => {
+                            answer.extend_from_slice(
+                                serde_json::to_string_pretty(&values)
+                                    .map_err(|error| EvaluationError::new(error.to_string()))?
+                                    .as_bytes(),
+                            );
+                            answer.push(b'\n');
+                        }
+                        QueryOutput::Json(json) | QueryOutput::Text(json) => {
+                            answer.extend_from_slice(json.as_bytes())
+                        }
                     }
-                    QueryOutput::Array(values) => {
-                        answer.extend_from_slice(
-                            serde_json::to_string_pretty(&values)
-                                .map_err(|error| EvaluationError::new(error.to_string()))?
-                                .as_bytes(),
-                        );
-                        answer.push(b'\n');
-                    }
-                    QueryOutput::Map(values) => {
-                        answer.extend_from_slice(
-                            serde_json::to_string_pretty(&values)
-                                .map_err(|error| EvaluationError::new(error.to_string()))?
-                                .as_bytes(),
-                        );
-                        answer.push(b'\n');
-                    }
-                    QueryOutput::Json(json) | QueryOutput::Text(json) => {
-                        answer.extend_from_slice(json.as_bytes())
-                    }
-                }
-                answers.push(answer);
-                Ok(())
-            })
+                    answers.push(answer);
+                    Ok(())
+                },
+            )
             .map_err(|error| format!("could not evaluate {name}: {error}"))?;
     }
     write_stdout(answers)

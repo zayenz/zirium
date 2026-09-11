@@ -46,10 +46,18 @@ impl Default for EvaluationLimits {
     }
 }
 
+/// Controls query evaluation policies independently of resource limits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EvaluationOptions {
+    /// Reject operations whose reference semantics are not registered during `reachable`.
+    pub strict_unknown_references: bool,
+}
+
 struct EvaluationState {
     bindings: BTreeMap<String, QueryOutput>,
     remaining: usize,
     max_items: usize,
+    options: EvaluationOptions,
 }
 
 impl EvaluationState {
@@ -189,13 +197,36 @@ impl Query {
         registry: &DialectRegistry,
         emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
-        self.evaluate_with_limits(document, registry, EvaluationLimits::default(), emit)
+        self.evaluate_with_options_and_limits(
+            document,
+            registry,
+            EvaluationOptions::default(),
+            EvaluationLimits::default(),
+            emit,
+        )
     }
 
     pub fn evaluate_with_limits(
         &self,
         document: &mut Document,
         registry: &DialectRegistry,
+        limits: EvaluationLimits,
+        emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+    ) -> Result<(), EvaluationError> {
+        self.evaluate_with_options_and_limits(
+            document,
+            registry,
+            EvaluationOptions::default(),
+            limits,
+            emit,
+        )
+    }
+
+    pub fn evaluate_with_options_and_limits(
+        &self,
+        document: &mut Document,
+        registry: &DialectRegistry,
+        options: EvaluationOptions,
         limits: EvaluationLimits,
         mut emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
@@ -205,6 +236,7 @@ impl Query {
             bindings: BTreeMap::new(),
             remaining: limits.max_work,
             max_items: limits.max_items,
+            options,
         };
         let input = QueryOutput::Operations(budget.collect(document.operations())?);
         for statement in &self.statements {
@@ -1306,9 +1338,12 @@ fn evaluate_reachable(
                 && registry.operation_format(name).is_none()
                 && registry.operation_grammars(name).is_none())
         {
-            return Err(EvaluationError::new(format!(
-                "reachable cannot determine reference semantics for `{name}`; load the appropriate registry"
-            )));
+            if budget.options.strict_unknown_references {
+                return Err(EvaluationError::new(format!(
+                    "reachable cannot determine reference semantics for `{name}`; load the appropriate registry"
+                )));
+            }
+            continue;
         }
         // Region-bearing operations include their explicitly represented bodies.
         retain_subtree(document, operation, &mut selection, budget)?;

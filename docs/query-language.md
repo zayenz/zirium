@@ -347,15 +347,20 @@ the selection to the enclosing function. The result is a source-ordered set.
 A lambda represented by a named function and a direct call works with these
 rules. Indirect calls through function values, captures with dialect-specific
 semantics, and other unsupported reference kinds require additional dialect
-support. Unknown operations, unresolved callees, external callees without
-bodies, and declared unsupported references cause errors. Load the appropriate
-registry; a shape or format registration describes the supported structure,
-not arbitrary dialect behavior.
+support. By default, an unknown operation is retained once and treated as a
+leaf: its nested regions, SSA operands, successors, and symbol references are
+not followed. Operations already selected inside one of its regions remain
+selected. `--strict` instead reports the unknown operation by name. This result
+is invariant under registration for edge-free generic operations; registering
+an operation with edges can intentionally make more code reachable. Unresolved
+callees, external callees without bodies, malformed known calls, and declared
+unsupported references remain errors in either mode.
 
 As with body counts, compact assembly can omit implicit operations from the
 represented structure. `reachable` does not synthesize those operations.
 Use `closure` when retaining enclosing scopes for a printable fragment;
-`reachable` deliberately stops at block arguments for analysis.
+`reachable` deliberately stops at block arguments for analysis. `closure`,
+including inside `fixpoint`, remains strict about unknown reference semantics.
 
 ## Predicates and filtering
 

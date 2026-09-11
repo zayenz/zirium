@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use zirium::{
     dialect::DialectRegistry,
     parser::ParsedFile,
-    query::{EvaluationLimits, Query, QueryOutput, always, has_attr, input, op, ops},
+    query::{
+        EvaluationLimits, EvaluationOptions, Query, QueryOutput, always, has_attr, input, op, ops,
+    },
     semantic::{Document, LoweringMode, lower_with_dialect_registry},
 };
 
@@ -24,6 +26,40 @@ fn document() -> Document {
         lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     lowered.document.unwrap()
+}
+
+#[test]
+fn reachable_treats_unknown_operations_as_leaves_unless_strict() {
+    let source = r#"%seed = arith.constant 1 : i32
+%value = "vendor.unknown"(%seed) : (i32) -> i32"#;
+    let parsed =
+        ParsedFile::parse_with_registry(source.as_bytes(), DialectRegistry::baseline()).unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let query = ops().filter(op("vendor.unknown")).reachable().names();
+    assert_eq!(
+        query
+            .evaluate(
+                &document,
+                DialectRegistry::baseline(),
+                EvaluationLimits::default()
+            )
+            .unwrap(),
+        vec!["vendor.unknown"]
+    );
+    let error = query
+        .evaluate_with_options(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationOptions {
+                strict_unknown_references: true,
+            },
+            EvaluationLimits::default(),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("`vendor.unknown`"));
 }
 
 #[test]

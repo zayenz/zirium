@@ -22,9 +22,11 @@ or caller-defined operations; repeat the flag to combine files. See
 [custom formats](custom-formats.md) for configuration and output behavior.
 
 `zirium --help` lists options, and `zirium --list-presets` lists available
-dialects. Recovery warnings on stderr mean semantic queries may be incomplete;
-add `--strict` to reject such input in scripts. Options can appear before or
-after the query argument. Use `--` before input paths beginning with a dash.
+dialects. Recovery warnings on stderr mean semantic queries may be incomplete.
+By default, `reachable` retains an operation with unknown reference semantics
+as a leaf and continues elsewhere. Add `--strict` to reject either case in
+scripts. Options can appear before or after the query argument. Use `--` before
+input paths beginning with a dash.
 
 The commands below assume `target/debug` is on `PATH`:
 

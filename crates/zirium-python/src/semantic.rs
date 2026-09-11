@@ -93,15 +93,16 @@ impl Document {
 
 #[pymethods]
 impl Document {
-    #[pyo3(signature = (expression, *, max_work=None, max_items=None))]
+    #[pyo3(signature = (expression, *, max_work=None, max_items=None, strict=false))]
     fn query(
         &self,
         py: Python<'_>,
         expression: &Bound<'_, pyo3::types::PyAny>,
         max_work: Option<usize>,
         max_items: Option<usize>,
+        strict: bool,
     ) -> PyResult<Py<pyo3::types::PyAny>> {
-        super::query::evaluate(py, self, expression, max_work, max_items)
+        super::query::evaluate(py, self, expression, max_work, max_items, strict)
     }
     #[getter]
     fn semantically_complete(&self) -> PyResult<bool> {

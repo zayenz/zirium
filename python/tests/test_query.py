@@ -131,6 +131,17 @@ def test_errors_are_explicit_and_limits_apply_without_a_parser():
         doc.query(nested)
 
 
+def test_reachable_treats_unknown_operations_as_leaves_unless_strict():
+    result = zirium.parse_text(
+        '%seed = "test.seed"() : () -> i32\n%value = "vendor.unknown"(%seed) : (i32) -> i32'
+    ).lower_strict()
+    assert result.document is not None
+    query = ops().filter(op("vendor.unknown")).reachable().names()
+    assert result.document.query(query) == ["vendor.unknown"]
+    with pytest.raises(ValueError, match="vendor.unknown"):
+        result.document.query(query, strict=True)
+
+
 def test_projection_errors_and_nested_native_results():
     lowered = zirium.parse_text(
         '%v = "test.op"() {key = "x", number = 1 : i32, bytes = "\\FF"} : () -> i32'

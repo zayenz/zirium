@@ -97,6 +97,14 @@ unchanged. It preserves duplicate semantics, detects cycles, and obeys work and
 item limits. For accumulating transitive users, use
 `arithmetic.fixpoint(input().union(input().users()))`.
 
+`reachable()` treats an unregistered operation as a retained leaf by default;
+it does not follow that operation's regions, operands, successors, or symbol
+references. Other queued operations are still processed. Pass `strict=True` to
+`Document.query` to reject such an operation by name. Known malformed calls,
+missing or external callees, and unsupported registered references remain
+errors. `closure()` and `fixpoint(input().closure())` always use strict
+reference semantics.
+
 ## Nested queries and native maps
 
 `ops()` always starts from every operation in the document. `input()` starts from
@@ -209,17 +217,20 @@ with document.edit() as edit:
 Python accepts per-evaluation limits:
 
 ```python
-selected = document.query(consumers, max_work=1_000_000, max_items=100_000)
+selected = document.query(
+    consumers, max_work=1_000_000, max_items=100_000, strict=True
+)
 ```
 
 Rust accepts them on the expression:
 
 ```rust
-use zirium::query::EvaluationLimits;
+use zirium::query::{EvaluationLimits, EvaluationOptions};
 
-let selected = consumers.evaluate(
+let selected = consumers.evaluate_with_options(
     &document,
     &registry,
+    EvaluationOptions { strict_unknown_references: true },
     EvaluationLimits { max_work: 1_000_000, max_items: 100_000 },
 )?;
 ```

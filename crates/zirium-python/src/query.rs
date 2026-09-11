@@ -584,6 +584,7 @@ pub(super) fn evaluate(
     expression: &Bound<'_, PyAny>,
     max_work: Option<usize>,
     max_items: Option<usize>,
+    strict: bool,
 ) -> PyResult<Py<PyAny>> {
     let query = extract(expression)?;
     let state = document.state.clone();
@@ -596,7 +597,14 @@ pub(super) fn evaluate(
     let output = py.detach(move || {
         let document = read_document(&state)?;
         query
-            .evaluate_output(&document, registry.registry(), limits)
+            .evaluate_output_with_options(
+                &document,
+                registry.registry(),
+                core::EvaluationOptions {
+                    strict_unknown_references: strict,
+                },
+                limits,
+            )
             .map_err(py_error)
     })?;
     native(py, &document.state, output)

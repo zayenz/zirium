@@ -132,11 +132,34 @@ impl<T> QueryExpr<T> {
     {
         T::from_query_output(self.evaluate_output(document, registry, limits)?)
     }
+    pub fn evaluate_with_options(
+        &self,
+        document: &Document,
+        registry: &DialectRegistry,
+        options: EvaluationOptions,
+        limits: EvaluationLimits,
+    ) -> Result<T, EvaluationError>
+    where
+        T: QueryResult,
+    {
+        T::from_query_output(
+            self.evaluate_output_with_options(document, registry, options, limits)?,
+        )
+    }
     /// Execute to the shared result representation, primarily for language bindings.
     pub fn evaluate_output(
         &self,
         document: &Document,
         registry: &DialectRegistry,
+        limits: EvaluationLimits,
+    ) -> Result<QueryOutput, EvaluationError> {
+        self.evaluate_output_with_options(document, registry, EvaluationOptions::default(), limits)
+    }
+    pub fn evaluate_output_with_options(
+        &self,
+        document: &Document,
+        registry: &DialectRegistry,
+        options: EvaluationOptions,
         limits: EvaluationLimits,
     ) -> Result<QueryOutput, EvaluationError> {
         if let Some(message) = self.invalid {
@@ -146,6 +169,7 @@ impl<T> QueryExpr<T> {
             bindings: BTreeMap::new(),
             remaining: limits.max_work,
             max_items: limits.max_items,
+            options,
         };
         budget.charge(self.nodes)?;
         let selected = QueryOutput::Operations(budget.collect(document.operations())?);
