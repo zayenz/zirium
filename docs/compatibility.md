@@ -1,11 +1,9 @@
 # Compatibility and local wheel checks
 
-Zirium 0.0.13 requires Rust 1.88 or newer and supports version-specific CPython
-extensions for conventional CPython 3.11 through 3.14. Published wheels support
-Linux x86_64 and macOS arm64, and the CI quality workflow checks both platforms.
-Source builds may work elsewhere, but other platforms are unsupported. This
-release does not use `abi3` or `abi3t`. CPython 3.14 free-threaded builds remain
-experimental and unsupported.
+Zirium 0.0.13 requires Rust 1.88 or newer. Wheels support conventional CPython
+3.11 through 3.14 on Linux x86_64 and macOS arm64; CI checks both platforms.
+Wheels use version-specific ABIs, without `abi3` or `abi3t`. Other platforms and
+free-threaded CPython 3.14 are unsupported, though source builds may work.
 
 ## Rust checks
 
@@ -58,11 +56,9 @@ same test suite with both conventional and free-threaded interpreters.
 
 ## Build and import a local wheel
 
-Build a wheel for one selected interpreter, then install that exact wheel into
-a clean environment. The resulting filename contains a version-specific tag
-such as `cp314-cp314`; it must not contain `abi3` or `abi3t`. The CI quality
-workflow repeats this check for CPython 3.11, 3.12, 3.13, and 3.14 on Linux
-x86_64 and macOS arm64.
+Build a wheel, then install it in a clean environment. Its filename must have
+a version-specific tag such as `cp314-cp314`, without `abi3` or `abi3t`. CI
+repeats this check across the supported interpreter and platform matrix.
 
 Wheel builds call maturin directly because its PEP 517 path does not run the
 Linux wheel audit. Linux CI builds inside a manylinux2014 container and rejects

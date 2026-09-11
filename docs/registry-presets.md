@@ -26,9 +26,8 @@ for configuration and API details.
 
 ## Available presets
 
-Names below are the exact strings accepted by the configuration. Each links to
-its registry definition, where you can check whether a particular operation is
-registered and which grammar it uses.
+Use these exact names in configuration. Each links to the registered operations
+and their grammars.
 
 | Area | Presets |
 | --- | --- |
@@ -51,11 +50,10 @@ registered function forms.
 
 ## What coverage means
 
-An operation can have several custom spellings. Registration covers the forms
-that match its grammar; optional clauses or other variants may still require
-recovery. Generic quoted operations
-need no preset, and dialect types and attributes generally retain their balanced
-payloads as opaque values.
+Registration covers the spellings matched by an operation's grammar; optional
+clauses or other variants may require recovery. Generic quoted operations need
+no preset. Dialect types and attributes generally retain balanced payloads as
+opaque values.
 
 Some presets cover broad groups of operations: StableHLO includes elementwise
 operations, typed signatures, and region-bearing forms such as `reduce`, `sort`,

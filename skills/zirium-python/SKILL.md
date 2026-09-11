@@ -7,12 +7,11 @@ description: Use Zirium's typed Python library to parse, inspect, verify, edit, 
 
 ## Goal
 
-Use the installed Zirium Python API without losing source bytes or confusing
-syntax inspection with semantic processing. Follow the dependency version
-selected by the project and make registry, lowering, retention, and output
-choices explicit when they matter.
+Use the project's Zirium version. Choose syntax inspection or semantic
+processing according to the task, and state registry, retention, and output
+choices when they affect the result.
 
-Zirium evolves quickly. Inspect `pyproject.toml`, the lockfile, or
+Check `pyproject.toml`, the lockfile, or
 `importlib.metadata.version("zirium")`, then consult matching documentation. In
 a Zirium source checkout, `python/zirium/__init__.pyi` is the compact typed API
 reference and `docs/getting-started.md` explains the main contracts. Do not
@@ -73,8 +72,6 @@ the `zirium-cli` companion skill when installed.
 
 ## Verify proportionately
 
-Run the project's existing focused Python test or example. In a Zirium source
-checkout, use the locked environment and a narrow `uv run --locked --no-sync
-pytest ...` invocation. Avoid inventing broad tests for a small integration.
-Report diagnostics and note the registry, retention mode, and output contract
-when they affect the result.
+Run an existing focused test or example. In a Zirium checkout, use
+`uv run --locked --no-sync pytest ...`. Keep validation proportionate to the
+change and report diagnostics.

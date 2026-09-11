@@ -1,25 +1,28 @@
 # Querying and editing MLIR from the command line
 
-The `zirium` binary accepts a query as its first argument. It reads MLIR from
-standard input when no input path follows the query, or reads each supplied
-path as an independent document. From a source checkout, build it with:
+Pass a query followed by input paths. Each file is an independent MLIR document;
+omitting paths reads stdin. From a source checkout, build the CLI with:
 
 ```sh
 cargo build --bin zirium
 ```
 
+The commands below assume `target/debug` is on `PATH`:
+
+```sh
+export PATH="$PWD/target/debug:$PATH"
+```
+
 The [query language reference](query-language.md) lists every predicate,
 pipeline stage, and output rule.
 
-The input files and reusable `.zirium` programs used below are checked in under
-[`examples/cli`](../examples/cli/). Each section links to its corresponding
-files. Short queries are shown inline so you can read and change them directly.
+Inputs and reusable `.zirium` programs are in
+[`examples/cli`](../examples/cli/). Short queries are shown inline.
 
-The binary defaults to the baseline registry, which accepts ordinary, named,
-and nested `module` shorthand. Use `--preset stablehlo` for a bundled dialect or
-`--registry registry.json` to load presets
-or caller-defined operations; repeat the flag to combine files. See
-[custom formats](custom-formats.md) for configuration and output behavior.
+The default baseline registry accepts ordinary, named, and nested `module`
+shorthand. Use `--preset stablehlo` for a bundled dialect or `--registry FILE`
+for a custom configuration. Both flags are repeatable. See
+[custom formats](custom-formats.md) for details.
 
 `zirium --help` lists options, and `zirium --list-presets` lists available
 dialects. Recovery warnings on stderr mean semantic queries may be incomplete.
@@ -45,12 +48,6 @@ alias for `--jsonl`:
 zirium --jsonl 'names | tally | json' first.mlir second.mlir
 ```
 
-The commands below assume `target/debug` is on `PATH`:
-
-```sh
-export PATH="$PWD/target/debug:$PATH"
-```
-
 ## Find untagged arithmetic
 
 Boolean predicates can combine operation names and attributes. This command
@@ -70,8 +67,7 @@ The same query is available as
 
 ## Find direct consumers
 
-`users` follows one step of SSA use relationships. The add in this sample has
-one direct consumer, the multiply. Here is the complete interaction:
+`users` follows direct SSA uses. This sample's add has one consumer, the multiply:
 
 ```console
 $ cat examples/cli/arithmetic.mlir
@@ -87,7 +83,6 @@ builtin.module {
 }
 ```
 
-The output contains the multiply. `users` stops after this one step.
 The same query is available as
 [`direct-consumers.zirium`](../examples/cli/direct-consumers.zirium).
 
@@ -116,9 +111,8 @@ unrelated sibling functions out.
 zirium 'filter(op("func.call")) | fixpoint(closure)' examples/cli/calls.mlir
 ```
 
-The output contains `@caller` and `@answer`, and omits `@unrelated`. Closure
-expands supported dependencies. The resulting slice may still need other parts
-of the input to be valid MLIR.
+The output contains `@caller` and `@answer`, and omits `@unrelated`. The slice
+may still need other parts of the input to be valid MLIR.
 The same query is available as
 [`call-closure.zirium`](../examples/cli/call-closure.zirium).
 
@@ -212,9 +206,8 @@ zirium --preset stablehlo --strict \
   examples/cli/stablelm-decode.mlir
 ```
 
-This finds ten matmuls in the decoder and retains the matmul selection. No
-separate relationship-predicate syntax is needed for this case. Use `users(0)` to follow only the first result of a
-multi-result operation.
+This retains ten matmuls in the decoder. Use `users(0)` to follow only the first
+result of a multi-result operation.
 
 ## Tag selected operations
 
@@ -264,9 +257,9 @@ Use `print("text")` when a report needs an explicit heading or delimiter.
 Selection output includes enclosing operation shells. Use
 `--fragment-scope minimal` when large incidental attributes on those ancestors
 would dominate a small fragment. The selected operations and selected bodies
-keep their attributes, while shell-only ancestors retain structural
-identity/signature metadata. Fragments may still omit SSA producers, callees,
-or terminators and are not guaranteed to be standalone semantically valid.
+keep their attributes; enclosing shells retain structural identity and
+signature metadata. Fragments may still lack SSA definitions, callees, or
+terminators needed for valid standalone MLIR.
 
 ## Work inside a function fragment
 

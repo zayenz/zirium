@@ -1,8 +1,5 @@
 # Zirium query language
 
-For Rust and Python method-based queries with native results, see the
-[structured query guide](query-dsl.md).
-
 A query transforms an ordered stream. It starts with every operation
 in the input document. A pipe passes the current stream to the next stage:
 
@@ -10,12 +7,14 @@ in the input document. A pipe passes the current stream to the next stage:
 filter(op("arith.addi")) | users | filter(has_attr("analysis.tag"))
 ```
 
-This finds `arith.addi` operations, follows their direct users, and keeps those
-with an `analysis.tag` attribute.
-`filter` always tests the current operation stream. Navigation replaces that
-stream; edits preserve it. Navigation preserves order and duplicates. Set
-operators on operations, `closure`, `slice`, and `reachable` produce source-ordered sets; `unique` explicitly
-removes duplicates from other streams.
+This finds `arith.addi` operations, follows their direct users, and keeps users
+with an `analysis.tag` attribute. Navigation replaces the stream and preserves
+duplicates; edits keep the selection. Operation set operators, `closure`,
+`slice`, and `reachable` produce source-ordered sets. Use `unique` to remove
+duplicates from other streams.
+
+For Rust and Python builders with native results, see the
+[structured query guide](query-dsl.md).
 
 `input` and a final `emit` are implicit. These programs print the same document:
 
@@ -34,8 +33,7 @@ input | emit
 The CLI accepts a query argument or a program file (`-f` / `--program-file`).
 With no arguments, it runs the empty program on standard input. An input path
 of `-` also reads standard input, so `zirium 'count' -` works in a pipeline.
-Use an empty
-quoted argument to run the empty program on files:
+Use an empty quoted argument to run the empty program on files:
 
 ```sh
 zirium '' input.mlir
@@ -60,10 +58,9 @@ Input files are independent documents. `input` never combines different files.
 Output is buffered until all inputs and statements succeed; a later error
 leaves stdout empty. Multiple results are concatenated, so multiple `json`
 outputs are separate JSON values rather than one combined JSON document.
-The CLI reserves the `document` binding for the current input path, or `stdin`
-for standard input. It can be used in `print("{document}")` and interpolated
-JSON strings and keys. Defining another binding named `document` is an error;
-other binding names are unaffected. Library callers opt into this context with
+The reserved `document` binding holds the input path, or `stdin`. Use it in
+`print("{document}")` and interpolated JSON strings and keys. Redefining it is
+an error. Library callers opt into this context with
 `Query::parse_with_document_context` and
 `evaluate_with_context_options_and_limits`; ordinary `Query::parse` reports
 `{document}` as unavailable.
@@ -83,10 +80,10 @@ matmuls = filter(op("stablehlo.dot_general"));
 (adds union matmuls) | names | tally | json
 ```
 
-A binding saves its result. It is not a query macro: using `adds` later restores
-the saved stream, regardless of the current selection. Each right-hand side
-starts with all operations in the document and may refer to earlier bindings.
-The final expression also starts with all operations.
+A binding saves a result. Using `adds` later restores that stream regardless
+of the current selection. Each right-hand side starts from the whole document
+and may use earlier bindings. The final expression also starts from the whole
+document.
 
 Names use ASCII letters, digits, and underscores, starting with a letter or
 underscore. Stage names, predicate names, and language keywords are reserved.
@@ -138,10 +135,9 @@ the function's name, and the value is a histogram of its body. `children |
 subtree` includes explicitly represented nested regions and excludes the
 function operation itself. An empty body produces an empty histogram.
 
-The key must produce exactly one string. Missing keys and duplicate keys are
-errors. If different symbol scopes contain the same function name, select a
-scope before building the map, or use an attribute with a unique identifier.
-By contrast, `tally` intentionally combines equal strings across scopes.
+The key must produce exactly one string; missing or duplicate keys are errors.
+If function names repeat across scopes, select one scope or use a unique
+attribute as the key. `tally` combines equal strings across scopes.
 
 The value may be a count, a map, or a stream. Streams become JSON arrays, using
 the same representation as `json`. For example, replace `names | tally` with
@@ -265,8 +261,7 @@ The final query statement may omit its semicolon. A program containing bindings
 still needs a query statement after its last binding.
 
 Prefix a query with `do` to evaluate it while suppressing its implicit result.
-This makes edit-only statements explicit and lets a later statement choose what
-to print:
+Use it for an edit followed by whole-document output:
 
 ```zirium
 do filter(op("arith.addi"))
@@ -309,10 +304,10 @@ For example, `{"a": {"add": 2}, "b": {"add": 1, "mul": 3}}` renders as:
 | a | 2 | |
 | b | 1 | 3 |
 
-Map rows and columns are sorted lexically. Missing cells are blank, not inferred
-to be zero. Scalars are strings, numbers, booleans, or null; null also produces
-a blank cell. An inner map with no keys contributes a row with blank cells.
-If all inner maps are empty, the table has only its `Key` column.
+Map rows and columns are sorted lexically, except that ranked maps retain their
+row order. Missing cells and null values are blank. Other scalars are strings,
+numbers, or booleans. Empty inner maps contribute blank rows; if every inner
+map is empty, only the `Key` column remains.
 
 Operation streams, mixed scalar/map rows, arrays inside maps, and deeper maps
 produce a shape diagnostic. Use `names`, `tally`, or `map_by` to form a
@@ -341,12 +336,10 @@ functions
 | json
 ```
 
-Suppose `main` calls `helper` twice, and `helper` contains one add and one
-return. The body histogram for `main` includes its two calls and its own
-return. The reachable histogram also includes one add and the helper's return.
-The helper's body is counted once, even though two calls reach it. If the helper
-calls itself, traversal still terminates and counts each static operation once.
-These counts describe the represented code, not execution frequency.
+If `main` calls `helper` twice, its body histogram counts both calls. The
+reachable histogram also counts the helper's body once. Recursive calls still
+terminate because each static operation is counted once. These counts describe
+the represented code, not execution frequency.
 
 `reachable` includes seeds, their explicit nested bodies, and transitive SSA
 definitions. Block arguments are boundaries. Direct `func.call` and registered
@@ -356,17 +349,15 @@ Registered `func_like` operations participate in symbol lookup. Supported
 `cf.br` and `cf.cond_br` edges include their target blocks without widening
 the selection to the enclosing function. The result is a source-ordered set.
 
-A lambda represented by a named function and a direct call works with these
-rules. Indirect calls through function values, captures with dialect-specific
-semantics, and other unsupported reference kinds require additional dialect
-support. By default, an unknown operation is retained once and treated as a
-leaf: its nested regions, SSA operands, successors, and symbol references are
-not followed. Operations already selected inside one of its regions remain
-selected. `--strict` instead reports the unknown operation by name. This result
-is invariant under registration for edge-free generic operations; registering
-an operation with edges can intentionally make more code reachable. Unresolved
-callees, external callees without bodies, malformed known calls, and declared
-unsupported references remain errors in either mode.
+Named functions and direct calls can represent lambdas under these rules.
+Indirect calls and dialect-specific captures need additional reference support.
+An operation with unknown reference semantics is retained as a leaf: traversal
+skips its regions, operands, successors, and symbols. Already-selected operations
+inside its regions remain selected. Registering its edges may expand the result.
+
+`--strict` rejects unknown reference semantics by operation name. Unresolved or
+external callees, malformed known calls, and declared unsupported references
+are errors in either mode.
 
 As with body counts, compact assembly can omit implicit operations from the
 represented structure. `reachable` does not synthesize those operations.
@@ -467,8 +458,8 @@ retains the enclosing syntax needed to represent it. Neither behavior adds
 those operations to the query selection. Use `subtree` when descendants must
 participate in filtering, counting, or editing.
 
-Fragments may omit SSA definitions and users, so they are not guaranteed to
-be standalone valid MLIR. Select the needed dependencies explicitly.
+Fragments may omit required SSA definitions. Select dependencies explicitly;
+printing a fragment does not verify that it is valid standalone MLIR.
 
 Use `slice` to inspect a computation without expanding the whole function when
 an operand is a function input:
@@ -561,9 +552,8 @@ Use `fixpoint(closure)` for the complete supported dependency slice:
 filter(op("func.call")) | fixpoint(closure)
 ```
 
-Closure requires registered operations with supported reference semantics.
-It fails on an unregistered operation or an unsupported symbol or successor
-reference. It does not infer how unknown operations use references.
+Closure requires registered reference semantics. Unregistered operations and
+unsupported symbol or successor references produce errors.
 
 `fixpoint(query)` repeatedly replaces the selection with the query's result
 until the selection is unchanged. Its body can contain navigation, filters,
@@ -593,8 +583,8 @@ repeating selections; evaluation limits also stop streams that keep growing.
 
 By default, each evaluation permits 10,000,000 work units and 1,000,000 items per
 stream. Work counts stage input items (at least one per stage), fixed-point
-iterations, and dependency, ancestor, and subtree visits. These are deterministic safeguards,
-not a time or byte-memory limit. CLI callers can set `--max-work N` and
+iterations, and dependency, ancestor, and subtree visits. These limits do not
+bound time or memory bytes. CLI callers can set `--max-work N` and
 `--max-items N`; Rust callers can use `Query::evaluate_with_limits` and
 `EvaluationLimits`. A limit error follows the usual no-stdout CLI contract.
 The initial stream contains every operation, so it must fit `max_items` even
@@ -656,13 +646,14 @@ whole document without first printing the edited selection.
 filter(op("arith.addi")) | emit | users
 ```
 
-This prints the adds, then their users. Each explicit emission captures the
-document at that point, before later edits. An implicit final emission prints
-the result unless the query statement ends with an explicit emitter, including inside
-a final group. `emit | emit` therefore prints twice, while `emit` prints once.
-Nested queries do not implicitly reset to `input` or emit their results. A fixed-point
-body ending in `emit` emits each iteration; the enclosing program still emits
-its final result unless the statement ends with an explicit emitter.
+This prints the adds, then their users. Each emission captures the document
+before later edits. A statement emits its final result implicitly unless it
+ends in an explicit emitter, including inside a final group. Thus `emit | emit`
+prints twice and `emit` prints once.
+
+Nested queries neither reset to `input` nor emit implicitly. A fixed-point body
+ending in `emit` prints each iteration; the enclosing statement still follows
+the final-emission rule above.
 
 `count` prints the stream's size followed by a newline. It is terminal;
 no stage may follow it. To emit a fragment and then count it, use `emit | count`.
@@ -671,22 +662,17 @@ Selected fragments normally retain every attribute on the ancestor operations
 needed as enclosing shells. CLI `--fragment-scope minimal` instead prints those
 shell-only ancestors in generic syntax, retaining properties and structural
 identity/signature attributes while omitting incidental attributes and
-locations. Selected operations and every operation in a selected body keep all
-their metadata. Selecting the ancestor itself therefore keeps its attributes.
-This option affects selection output only; whole-document canonical output,
-editing, and source-preserving output are unchanged.
+locations. Selected operations and their bodies keep all metadata. The option
+affects selection output only.
 
-A selected fragment can still be semantically incomplete: omitted siblings may
-define SSA operands, callees may be outside the selection, and required
-terminators may be absent. Minimal scope makes no standalone-validity promise;
-it only reduces metadata carried by enclosing shells.
+Minimal scope does not supply missing SSA definitions, callees, or terminators.
+The fragment may still be incomplete.
 
-`json` emits streams as JSON arrays and maps as JSON objects, then passes the result onward.
+`json` emits streams as arrays and maps as objects, then passes the result onward.
 For value streams, the array contains strings. For operation streams, each
 entry contains the operation name, an object of attribute spellings, and
-`operand_types` and `result_types` arrays. Unknown type
-information can appear as a placeholder or JSON null on incompletely understood
-input. This format favors inspection and interchange; Zirium cannot read it back as MLIR.
+`operand_types` and `result_types` arrays. Incomplete type information may appear
+as a placeholder or null. Zirium cannot read this inspection format back as MLIR.
 Like `emit`, a final `json` suppresses the implicit final emission.
 
 Statement outputs and results from multiple input files are concatenated
@@ -699,11 +685,10 @@ own buffering policy.
 
 Pass `--jsonl` to emit one compact JSON object per result in input and
 statement order. Each record has `document` and `result` fields. A `json`
-emitter becomes the JSON value in `result`; it is not encoded as another
-string. Text and Markdown are JSON strings with newlines escaped, counts are
-numbers, and operation selections are MLIR strings. NDJSON uses the same
-all-input buffering rule as ordinary output, so any later failure leaves stdout
-empty. `--ndjson` is accepted as an alias.
+emitter supplies the JSON value in `result`. Text and Markdown are strings with
+escaped newlines, counts are numbers, and operation selections are MLIR strings.
+The same buffering rule applies: any later failure leaves stdout empty.
+`--ndjson` is an alias.
 
 ## Grammar and diagnostics
 
@@ -750,11 +735,11 @@ double quotes and support JSON escapes: `\"`, `\\`, `\/`, `\b`, `\f`, `\n`,
 `\r`, `\t`, and `\uXXXX` (including valid surrogate pairs). Actual newlines
 and tabs are also allowed in query strings. Other escapes are errors.
 
-Query and predicate nesting share a 64-level limit. Materialized objects and arrays also have
-a 64-level nesting limit, including structures built through successive bindings.
+Query and predicate nesting share a 64-level limit. Materialized objects and
+arrays have a separate 64-level limit, including structures built through bindings.
 Nested contents count toward `--max-items`, and copying saved results counts
-toward `--max-work`. Long flat boolean chains,
-pipelines, and set chains do not require corresponding recursive nesting.
+toward `--max-work`. Flat boolean chains, pipelines, and set chains do not
+consume a nesting level per term.
 The CLI reports query errors with a byte offset, line, column, and source
 caret. Program-file positions include leading whitespace and comments.
 

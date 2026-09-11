@@ -50,10 +50,10 @@ Functions containing a matrix multiplication:
 filter(op("linalg.matmul")) | root(op("func.func")) | unique
 ```
 
-`slice` is narrow SSA analysis. `reachable` includes explicit bodies, SSA
-definitions, and supported referenced bodies once. `fixpoint(closure)` is the
-better choice when a printable dependency fragment needs scopes and supported
-callees. None guarantees a generally standalone module.
+Use `slice` for SSA analysis, `reachable` to count explicit and referenced bodies
+once, and `fixpoint(closure)` to retain enclosing scopes and supported callees.
+Unknown reference semantics stop `reachable` at a leaf unless `--strict` is set.
+None of these queries guarantees a valid standalone module.
 
 ## Count and report
 
@@ -145,10 +145,8 @@ Expect `0`. `do` suppresses only its query's implicit result; any explicit
 emitter inside it still runs. The following `emit` starts from the complete,
 edited document.
 
-Also diff the new file against the input, but treat that as a review of all
-textual changes. Complete output may normalize formatting, operation spelling,
-or SSA names around edited syntax, so a semantically correct edit is not
-guaranteed to produce a minimal textual diff.
+Review the full diff. Printing may normalize formatting, operation spelling,
+or SSA names beyond the requested edit.
 
 ## Diagnose failures
 

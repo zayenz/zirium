@@ -1,9 +1,9 @@
 # Structured queries in Rust and Python
 
 Build queries with methods and predicates, then evaluate them against a semantic
-document. Both APIs construct a shared Rust expression tree. Evaluation returns
-native values and does not parse query source, print output, or edit the document.
-The [textual query language](query-language.md) remains available for the CLI.
+document. Rust and Python use the same expression tree and return native values.
+Queries are read-only; use the [textual language](query-language.md) for CLI
+edits and reports.
 
 ## Start a query
 
@@ -38,9 +38,8 @@ let selected = document.query(&consumers)?;        // Vec<OperationId>
 let count = document.query(&consumers.count())?;   // usize
 ```
 
-Expressions are immutable. Assigning an expression to a variable saves the query,
-not its result. Each call to `document.query()` evaluates against the current
-document. The same expression can run against other documents.
+Expressions are immutable and reusable. Each `document.query()` call evaluates
+the expression against that document's current state.
 
 Rust `Document::query()` uses the baseline registry. For other dialect semantics,
 use `document.query_with_registry(&expression, &registry)`, passing the registry
@@ -97,9 +96,8 @@ unchanged. It preserves duplicate semantics, detects cycles, and obeys work and
 item limits. For accumulating transitive users, use
 `arithmetic.fixpoint(input().union(input().users()))`.
 
-Map ranking is currently a textual-query result. Typed `MapQuery` results keep
-their existing `BTreeMap`/Python `dict` contract and do not expose
-`sort_by(value)` until the native API has an ordered map result type.
+Map ranking is available in textual queries. Typed `MapQuery` returns a
+`BTreeMap` or Python `dict` with lexical key order and has no `sort_by(value)`.
 
 `reachable()` treats an unregistered operation as a retained leaf by default;
 it does not follow that operation's regions, operands, successors, or symbol
@@ -202,10 +200,9 @@ Rust exposes methods according to the result type: a string query has no `users`
 method. Python exposes corresponding classes and type declarations, including
 `QueryExpr[T]` for annotating reusable expressions.
 
-Materialized selections keep their membership; handles refer to live document
-objects. Later operation edits are visible through operation handles. Deleted or
-invalidated objects raise the existing stale-handle errors when accessed. Scalar
-and string results retain their evaluated values.
+Evaluated selections keep their membership, while their handles refer to live
+objects and reflect later edits. Accessing deleted or invalidated objects raises
+a stale-handle error. Scalars and strings keep their evaluated values.
 
 Select first, then use the existing edit transaction:
 

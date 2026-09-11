@@ -7,22 +7,18 @@ description: Research MLIR dialects in the user's repository and create or refin
 
 ## Goal
 
-In the repository or input set the user identifies, produce a small, working
-Zirium registry configuration based on real dialect definitions and emitted
-MLIR. Distinguish MLIR's custom assembly format from Zirium's
-`operation_formats` and reusable operation shapes.
+Build a small registry in the user's target repository from dialect definitions
+and emitted MLIR. MLIR's custom assembly format and Zirium's
+`operation_formats` are different languages.
 
 Do not require a Zirium source checkout or executable, install or upgrade
 Zirium, change Zirium itself, or copy files into a Zirium checkout unless the
 user explicitly makes that part of the task.
 
-Zirium's format support evolves quickly. Determine the Zirium version selected
-by the target project when possible, then consult the matching documentation or
-source. For the current format model, start with the [custom-format guide on
-GitHub](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md) and
-follow its links to registry examples, APIs, and focused tests. If the project
-uses an older release, verify that any current feature you rely on exists in
-that release.
+Find the project's Zirium version and consult matching documentation or source.
+Start with the [custom-format guide](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md)
+and its linked examples, APIs, and tests. Check version support before using a
+feature described on `main`.
 
 ## Start with the user
 
@@ -35,7 +31,7 @@ Scan enough of the repository to ask concrete questions, then ask the user befor
 
 - Which dialects or operations matter first, and is the goal a representative subset or broad coverage?
 - Where are representative `.mlir` files or commands that emit them, including important syntax variants?
-- How will the project use Zirium: Rust, Python, or CLI? What must work—parsing, semantic inspection, queries, editing, custom output, or round trips—and where should the registry live?
+- Will the project use Rust, Python, or the CLI? Which tasks must work (parsing, inspection, queries, editing, custom output, or round trips), and where should the registry live?
 
 Ask follow-up questions when the source and examples disagree or an optional
 form changes the appropriate registration. Do not silently choose a narrower
@@ -64,12 +60,9 @@ rg -n --glob '*.mlir' --glob '*.td' 'DIALECT_PREFIX|OP_CLASS' PATH
 
 ## Choose a Zirium format
 
-Use documentation that matches the project's Zirium version to map the dialect
-syntax to Zirium. If a capability remains unclear, inspect focused registry
-examples, source, or tests for that version. A local Zirium checkout may be used
-when it is already the project's dependency or the user points to it; do not
-assume one exists. Zirium does not necessarily accept the full MLIR ODS
-`assemblyFormat` language.
+Use version-matched registry examples, source, or tests to resolve unclear
+capabilities. Use a local Zirium checkout only when it is already a dependency
+or the user points to it. Do not assume Zirium accepts ODS `assemblyFormat`.
 
 For each operation, choose the smallest current mechanism that matches the required examples:
 
@@ -78,11 +71,10 @@ For each operation, choose the smallest current mechanism that matches the requi
 3. A supported declarative `operation_formats` description.
 4. A clearly reported compatibility gap that may require unknown-operation recovery, generic quoted MLIR, or a future Zirium version.
 
-Do not force richer syntax into a similar-looking shape. Conversely, do not
-declare a form unsupported merely because documentation omits it: inspect
-current GitHub source or tests, or describe the uncertainty. Keep partial
-coverage explicit, especially for regions, successors, optional groups, custom
-directives, properties, and contextual type inference.
+A similar-looking shape may have different semantics. Check source or tests
+before declaring an undocumented form unsupported, and report uncertainty when
+evidence is missing. State partial coverage for regions, successors, optional
+groups, custom directives, properties, and contextual type inference.
 
 ## Implement and check
 
@@ -105,10 +97,9 @@ exists, check the JSON syntax and review it against the appropriate
 documentation, then give the user a focused Rust, Python, or CLI example to run
 later.
 
-Use a few high-value examples rather than manufacturing a large test suite. When
-a form fails, reduce it to the smallest informative snippet, compare it with the
-dialect definition and current GitHub documentation, and decide whether the
-registry is wrong or Zirium currently has a compatibility gap.
+Use a few representative examples. Reduce failures to small snippets and compare
+them with the dialect definition and version-matched Zirium documentation to
+distinguish a registry error from a compatibility gap.
 
 ## Report the result
 

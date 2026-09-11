@@ -6,8 +6,8 @@ or grammar family. Each entry identifies the upstream implementation and rule,
 positive fixtures and their sources, intentional Zirium differences, and
 applicable license notices. A sampled fixture alone does not define the grammar.
 
-`generic-baseline/` contains project-authored generic MLIR and focused malformed
-variants for testing recovery. These fixtures contain no copied LLVM source.
+Project-authored generic MLIR fixtures include malformed variants for recovery
+checks. Their source and license details are recorded in the manifest.
 
 `lexer.mlir` is a compact, project-authored fixture covering lexical forms. The
 manifest links each family to the tagged upstream implementation. Zirium

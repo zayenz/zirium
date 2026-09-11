@@ -1,9 +1,9 @@
 # Custom formats
 
 A dialect registry tells Zirium how to parse and lower custom operation syntax.
-Generic quoted operations need no registry. Unknown custom operations use
-best-effort recovery, which preserves their name, source text, and nested regions
-so you can inspect them even when semantic verification or rewriting is unavailable.
+Generic quoted operations need no registry. Recovery preserves unknown custom
+operations' names, source text, and nested regions for inspection. Verification
+and rewriting may remain unavailable.
 
 Use a bundled preset for an existing dialect, or configure operation shapes and
 format descriptions for your own syntax. The [preset reference](registry-presets.md)
@@ -76,11 +76,9 @@ assert registry.operation_shape("missing.operation") is None
 assert registry.call_target_attribute("func.call") == "callee"
 ```
 
-`operation_names()` returns a sorted tuple containing built-ins, preset entries,
-caller-supplied shapes, configured formats, and alternatives. `operation_shape()` returns the
-configuration spelling for shape-backed operations. It returns `None` both for
-format-backed and unregistered names; use membership in `operation_names()` to
-distinguish those cases.
+`operation_names()` returns all registered names as a sorted tuple.
+`operation_shape()` returns a shape's configuration spelling, or `None` for
+formats and unregistered names. Check `operation_names()` to distinguish them.
 
 `operation_alternatives(name)` returns the locally ordered alternatives as
 `("shape", value)` or `("format", value)` pairs, and returns `None` for a
@@ -168,8 +166,7 @@ attribute dictionary, and type assignments. The supported elements are:
 | `type(...)` | One type assigned to one or more listed targets. Aggregate operand and result targets also accept parenthesized type lists. |
 | `types($operands)` | A bare comma-separated list containing exactly one type per operand. |
 
-These common recipes are examples of the compositional rules above, rather than
-a closed list of supported formats:
+Combine these elements to describe an operation's syntax. Common recipes are:
 
 | Recipe | Format | Type bindings |
 | --- | --- | --- |
@@ -180,15 +177,15 @@ a closed list of supported formats:
 | Typed literal result | <code>$value `:` type($value) attr-dict `:` type($result)</code> | The first type belongs to the literal attribute; the second binds the single result. |
 | Direct call | <code>$callee `(` $operands `)` attr-dict `:` type($operands) `->` type($results)</code> | The callee is stored as a symbol reference; operand and result types follow the aggregate rules. |
 
-The original conversion and typed-literal descriptions remain valid:
+Conversion and typed-literal forms can also be written as:
 
 ```
 $operands attr-dict `:` type($operands) `to` type($results)
 $value `:` type($value) attr-dict `:` type($result)
 ```
 
-`type($operands)` preserves its original broadcast rule: one type applies to
-every operand. It also accepts a parenthesized list. `type($results)` accepts one
+`type($operands)` applies one type to every operand, or accepts a parenthesized
+list. `type($results)` accepts one
 result type or a parenthesized list. Use several targets when one printed type
 has several roles:
 
@@ -203,17 +200,14 @@ example assigns the second printed type to both branch values:
 $operands[0] `,` $operands[1] `,` $operands[2] attr-dict `:` type($operands[0]) `,` type($operands[1], $operands[2]) `->` type($results)
 ```
 
-Every SSA operand and result needs a type assignment for semantic lowering.
-The registry validates directive structure when constructed and validates list
-sizes against the operation when lowering. A malformed description violates
-these rules, for example by mixing `$operands` with indexed operands, assigning
-one target twice, or naming a type target that was not captured. Registry
-construction rejects it with the operation name and failing rule. Syntax that
-needs optional groups, repetition, regions, ODS/TableGen constructs, or other
-unsupported directives cannot be expressed by a format description; use a
-reusable shape or built-in implementation when one matches. Writing an
-unsupported directive in a description reports it as unknown during registry
-construction.
+Every SSA operand and result needs a type assignment. Registry construction
+checks directive structure; lowering checks list sizes against each operation.
+Mixing aggregate and indexed operands, assigning a target twice, or referring
+to an uncaptured target produces an error naming the operation and rule.
+
+Format descriptions do not support optional groups, repetition, regions, or
+ODS/TableGen constructs. Use a matching shape or built-in implementation for
+those forms. Unknown directives are rejected during registry construction.
 
 ### Operation alternatives
 
@@ -280,15 +274,14 @@ zirium --registry examples/cli/registry.json \
 zirium --registry common.json --registry vendor.json -f inspect.zirium input.mlir
 ```
 
-Without `--registry`, the CLI uses the baseline registry. With one or more flags,
-it uses their combined configuration. Files are read as UTF-8 JSON before MLIR
-input; relative paths resolve against the working directory. Stdin remains
-reserved for MLIR, and registry failures produce no query output.
+Without registry or preset flags, the CLI uses baseline. Otherwise it combines
+the requested configurations. Registry files are UTF-8 JSON, read before MLIR;
+relative paths use the working directory. Stdin is reserved for MLIR. Registry
+errors produce no query output.
 
-Options may appear before or after an inline query or program-file pair. The
-first non-option argument is the inline query; later non-option arguments are
-input paths. Option parsing continues between input paths until `--`, which is
-required before a path beginning with a dash.
+Options may precede or follow the query. Without `-f`, the first non-option
+argument is the query; later arguments are input paths. Use `--` before a path
+beginning with a dash.
 
 The CLI can select or count recovered unknown custom operations. It rejects
 other syntax errors and semantic lowering diagnostics. Semantic mutations
@@ -334,9 +327,9 @@ Shapes and format descriptions supply parsing and lowering conventions. They
 do not define a vendor operation's verifier, symbol-table rules, or custom
 printer. A `func_like` shape defines its `sym_name` in the enclosing symbol
 table, and a `call_like` shape declares a symbol use through `callee` or its
-configured `callee_attribute`. These conventions support direct reference
-traversal without making the operation equivalent to `func.func` for every semantic analysis. Bundled dialect presets
-likewise provide selected structural support, not full dialect implementations.
+configured `callee_attribute`. These conventions support direct-call traversal;
+other analyses may need additional semantics. Bundled presets also cover
+selected structural forms rather than complete dialect implementations.
 
 `lower_strict()` rejects lowering errors; it does not replace
 `document.verify_semantics()`. Best-effort lowering can return an incomplete

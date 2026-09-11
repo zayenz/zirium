@@ -7,14 +7,12 @@ description: Use Zirium's CLI to inspect, query, report on, slice, and edit text
 
 ## Goal
 
-Use the installed `zirium` binary to answer questions about textual MLIR or to
-make requested structural edits. Prefer a short, inspectable query and report
-the exact command plus any assumptions about dialect support.
+Use the installed `zirium` binary to inspect textual MLIR or make requested
+structural edits. Keep queries short and report the command and dialect assumptions.
 
-Zirium evolves quickly. Start with `zirium --help` and `zirium --version` so
-the command matches the installed release. Use the linked reference from
-`--help` when syntax or behavior is unclear. Do not install or upgrade Zirium,
-or modify the user's inputs, unless they explicitly ask.
+Check `zirium --help` and `zirium --version` against the installed release.
+Follow the help's reference link when syntax or behavior is unclear. Do not
+install, upgrade, or modify inputs unless the user asks.
 
 ## Start safely
 
@@ -37,9 +35,9 @@ about recovered custom operations, semantic data may be incomplete.
 
 - Add repeatable `--preset NAME` flags for bundled dialects.
 - Add repeatable `--registry FILE` flags for project-specific JSON registries.
-- Use `--strict` in automation and whenever incomplete semantics would make the
-  answer misleading. Strict mode rejects recovery; it does not add dialect
-  support or perform full dialect verification.
+- Use `--strict` in automation or when incomplete semantics would mislead.
+  It rejects recovery and unknown reference semantics in `reachable`, without
+  adding dialect support or full dialect verification.
 - If the project needs a new registry format, consult the
   [custom-format guide](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md)
   for its Zirium version. The optional `zirium-custom-format` companion skill
@@ -87,11 +85,9 @@ and need not be valid standalone MLIR. Do not present a fragment as a complete
 rewritten module unless a later statement starts from the full document, such
 as the `emit` after `do` above, or the pipeline returns to `input`.
 
-Complete output is not necessarily a minimal textual patch. Printing can
-normalize formatting, generic/custom operation spelling, or SSA names in edited
-or enclosing syntax. Verify the requested semantic change with a strict query;
-use a diff to review all textual changes, not to assume only the requested
-attribute changed.
+Printing may normalize formatting, operation spelling, or SSA names beyond the
+requested edit. Verify the semantic change with a strict query and review the
+full diff.
 
 ## Use program files for nontrivial work
 

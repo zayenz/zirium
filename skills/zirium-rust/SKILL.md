@@ -7,12 +7,11 @@ description: Use Zirium's Rust crate to parse, inspect, verify, edit, and write 
 
 ## Goal
 
-Use the Zirium crate through the API version selected by the repository. Keep
-syntax work separate from semantic work, choose dialect support deliberately,
-and use the least expensive retention profile that preserves the data needed by
-the task.
+Use the repository's Zirium version and the least expensive retention profile
+that keeps the needed data. Choose syntax or semantic APIs and dialect support
+according to the task.
 
-Zirium evolves quickly. Inspect the repository's `Cargo.toml` and lockfile, then
+Check `Cargo.toml` and the lockfile, then
 use documentation matching that version. In a Zirium source checkout, prefer
 the public rustdoc in `crates/zirium/src/lib.rs` and focused module docs. For a
 published release, use its versioned [docs.rs documentation](https://docs.rs/zirium/).
@@ -70,8 +69,7 @@ the `zirium-cli` companion skill when installed.
 
 ## Verify proportionately
 
-Run the repository's existing focused test or example first. In a Zirium source
-checkout, `cargo test -p zirium` and `cargo doc -p zirium` are the broad checks;
-do not add a large test suite for a small integration. Report the selected
-registry, lowering mode, retention profile, diagnostics, and output contract
-when they affect the result.
+Run an existing focused test or example first. In a Zirium checkout,
+`cargo test -p zirium` and `cargo doc -p zirium` are the broad checks. Keep
+validation proportionate and report diagnostics and API choices that affect
+the result.

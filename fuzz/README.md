@@ -1,7 +1,7 @@
 # Fuzzing
 
-The fuzz package runs separately from the workspace checks. Each command below
-runs a target for five seconds.
+Run fuzz targets separately from workspace checks. These commands give each
+target a five-second budget.
 
 ## Lexer
 

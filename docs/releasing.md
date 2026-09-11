@@ -4,10 +4,9 @@ Zirium publishes one Rust crate and one Python package. The internal
 `zirium-python` crate is only a build component and must remain marked with
 `publish = false`.
 
-Pushing a version tag starts the Release workflow. The workflow resolves the
-tag to one commit, runs the full Quality workflow against that commit, and
-publishes only the checked artifacts. After the checks pass, approve the
-`crates-io` and `pypi` deployments to publish both packages.
+Pushing a version tag starts Release, which runs Quality on the tagged commit.
+After the checks pass, approve the `crates-io` and `pypi` deployments to publish
+the packages. PyPI receives the checked artifacts.
 
 ## Trusted publishing setup
 
@@ -53,11 +52,9 @@ cargo publish -p zirium --dry-run --locked
 cargo package -p zirium --list
 ```
 
-Review the generated crate under `target/package/`, the source-distribution
-archive, and a locally built version-specific wheel. Commit the final release
-changes, then wait for the Quality workflow to pass on the committed candidate
-before tagging it. The release maintainer creates and pushes the tag and
-approves publication.
+Inspect the crate under `target/package/`, the source distribution, and a local
+version-specific wheel. Commit the release changes and wait for Quality to pass
+on that commit. The release maintainer then tags it and approves publication.
 
 ## Publish a version
 
@@ -72,14 +69,11 @@ git push origin v0.1.0
 Do not use `git push --tags`. This repository may contain local tags that are
 not part of the public release history.
 
-The Release workflow checks that the tag resolves to a commit on `main` and
-that the tag matches all package versions. It calls the full Quality workflow
-with that exact commit. Quality checks the Rust package, builds and installs
-one source distribution, and builds separate manylinux wheels for CPython 3.11
-through 3.14. It also builds separate macOS arm64 wheels for the same four
-conventional CPython versions. The PyPI publication job uses those artifacts
-directly. All wheels keep version-specific ABI tags; the release does not
-publish stable-ABI wheels.
+Release verifies that the tag names a commit on `main` and matches all package
+versions. Quality checks the Rust package, builds and installs a source
+distribution, and builds version-specific wheels for conventional CPython
+3.11 through 3.14 on Linux x86_64 (manylinux) and macOS arm64. PyPI publishes
+those artifacts directly; no stable-ABI wheels are produced.
 
 When these checks pass, open the workflow run, select **Review deployments**,
 select both environments, and approve. Each publishing job uploads its package
