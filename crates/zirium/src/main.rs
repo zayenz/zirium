@@ -435,6 +435,27 @@ fn ndjson_record(
         .map_err(|error| EvaluationError::new(error.to_string()))?;
     record.extend_from_slice(b",\"result\":");
     match output {
+        QueryOutput::Json(json) => {
+            // The emitter already produced valid JSON. Remove formatting outside
+            // strings without reparsing objects into lexically ordered maps.
+            let mut in_string = false;
+            let mut escaped = false;
+            for byte in json.bytes() {
+                if in_string {
+                    record.push(byte);
+                    if escaped {
+                        escaped = false;
+                    } else if byte == b'\\' {
+                        escaped = true;
+                    } else if byte == b'"' {
+                        in_string = false;
+                    }
+                } else if !byte.is_ascii_whitespace() {
+                    record.push(byte);
+                    in_string = byte == b'"';
+                }
+            }
+        }
         QueryOutput::RankedMap(entries) => {
             let mut serializer = serde_json::Serializer::new(&mut record);
             let mut map = serializer
@@ -490,9 +511,7 @@ fn ndjson_value(
         QueryOutput::Map(values) => serde_json::Value::Object(values),
         QueryOutput::RankedMap(_) => unreachable!("ranked maps use ordered NDJSON serialization"),
         QueryOutput::Array(values) => serde_json::Value::Array(values),
-        QueryOutput::Json(json) => serde_json::from_str(&json).map_err(|error| {
-            EvaluationError::new(format!("json emitter produced invalid JSON: {error}"))
-        })?,
+        QueryOutput::Json(_) => unreachable!("JSON emissions retain their serialized order"),
         QueryOutput::Text(text) => serde_json::Value::String(text),
     })
 }

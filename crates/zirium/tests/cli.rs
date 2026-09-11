@@ -787,19 +787,38 @@ fn jsonl_attributes_each_emission_to_its_input() {
     assert_eq!(record["document"], "stdin");
     assert_eq!(record["result"], "stdin\n");
 
-    let ranked = run_stdin_with_options(
+    for ending in ["", " | json"] {
+        let ranked = run_stdin_with_options(
+            &["--jsonl"],
+            &format!(
+                "filter(not op(\"builtin.module\")) | names | tally | sort_by(value) | reverse{ending}"
+            ),
+            "module { \"vendor.z\"() : () -> () \"vendor.z\"() : () -> () \"vendor.a\"() : () -> () }",
+        );
+        assert!(ranked.status.success());
+        let line = String::from_utf8(ranked.stdout).unwrap();
+        assert_eq!(line.lines().count(), 1);
+        serde_json::from_str::<serde_json::Value>(line.trim_end()).unwrap();
+        assert!(
+            line.find("\"vendor.z\"").unwrap() < line.find("\"vendor.a\"").unwrap(),
+            "{line}"
+        );
+    }
+
+    let output = run_stdin_with_options(
         &["--jsonl"],
-        "filter(not op(\"builtin.module\")) | names | tally | sort_by(value) | reverse",
-        "module { \"vendor.z\"() : () -> () \"vendor.z\"() : () -> () \"vendor.a\"() : () -> () }",
+        r#"{"text": "spaces é \"quoted\" \\ slash\nnext", "nested": [true, null]} | json"#,
+        "module {}",
     );
-    assert!(ranked.status.success());
-    let line = String::from_utf8(ranked.stdout).unwrap();
+    assert!(output.status.success());
+    let line = String::from_utf8(output.stdout).unwrap();
     assert_eq!(line.lines().count(), 1);
-    serde_json::from_str::<serde_json::Value>(line.trim_end()).unwrap();
-    assert!(
-        line.find("\"vendor.z\"").unwrap() < line.find("\"vendor.a\"").unwrap(),
-        "{line}"
+    let record: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        record["result"]["text"],
+        "spaces é \"quoted\" \\ slash\nnext"
     );
+    assert_eq!(record["result"]["nested"], serde_json::json!([true, null]));
 
     let alias = run_stdin_with_options(&["--ndjson"], "count", "module {}");
     assert!(alias.status.success());
@@ -2494,6 +2513,27 @@ fn ranked_histograms_keep_order_through_bounds_bindings_and_markdown() {
     );
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("scalar map values"));
+}
+
+#[test]
+fn ranked_maps_compare_large_and_mixed_numbers_exactly() {
+    for values in [
+        r#"{"a":9007199254740993,"z":9007199254740992}"#,
+        r#"{"a":-9007199254740992,"z":-9007199254740993}"#,
+        r#"{"a":18446744073709551615,"z":9223372036854775807}"#,
+        r#"{"a":9007199254740993,"z":9007199254740992.0}"#,
+        r#"{"a":18446744073709551616.0,"z":18446744073709551615}"#,
+        r#"{"a":0,"z":-0.5}"#,
+        r#"{"a":0.5,"z":0}"#,
+        r#"{"a":1e100,"z":18446744073709551615}"#,
+        r#"{"a":-9223372036854775808,"z":-1e100}"#,
+    ] {
+        let output = run_stdin(&format!("{values} | sort_by(value) | head(1)"), "module {}");
+        assert!(output.status.success(), "{values}: {:?}", output.stderr);
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(result.get("z").is_some(), "{values}: {result}");
+        assert!(result.get("a").is_none(), "{values}: {result}");
+    }
 }
 
 #[test]

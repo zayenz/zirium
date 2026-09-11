@@ -978,13 +978,33 @@ fn compare_scalar_values(
     match (left, right) {
         (serde_json::Value::Null, serde_json::Value::Null) => std::cmp::Ordering::Equal,
         (serde_json::Value::Bool(left), serde_json::Value::Bool(right)) => left.cmp(right),
-        (serde_json::Value::Number(left), serde_json::Value::Number(right)) => left
-            .as_f64()
-            .partial_cmp(&right.as_f64())
-            .unwrap_or(std::cmp::Ordering::Equal),
+        (serde_json::Value::Number(left), serde_json::Value::Number(right)) => {
+            let integer = |number: &serde_json::Number| {
+                number
+                    .as_i64()
+                    .map(i128::from)
+                    .or_else(|| number.as_u64().map(i128::from))
+            };
+            match (integer(left), integer(right)) {
+                (Some(left), Some(right)) => left.cmp(&right),
+                (Some(left), None) => compare_integer_float(left, right.as_f64().unwrap()),
+                (None, Some(right)) => {
+                    compare_integer_float(right, left.as_f64().unwrap()).reverse()
+                }
+                (None, None) => left.as_f64().partial_cmp(&right.as_f64()).unwrap(),
+            }
+        }
         (serde_json::Value::String(left), serde_json::Value::String(right)) => left.cmp(right),
         _ => unreachable!("map values are validated before sorting"),
     }
+}
+
+fn compare_integer_float(integer: i128, float: f64) -> std::cmp::Ordering {
+    // JSON integers fit in i64/u64. Saturation of this wider cast still orders
+    // out-of-range floats correctly; compare fractional parts only on a tie.
+    integer
+        .cmp(&(float as i128))
+        .then_with(|| 0.0f64.partial_cmp(&float.fract()).unwrap())
 }
 
 #[allow(clippy::too_many_arguments)]
