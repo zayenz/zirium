@@ -168,6 +168,18 @@ attribute dictionary, and type assignments. The supported elements are:
 | `type(...)` | One type assigned to one or more listed targets. Aggregate operand and result targets also accept parenthesized type lists. |
 | `types($operands)` | A bare comma-separated list containing exactly one type per operand. |
 
+These common recipes are examples of the compositional rules above, rather than
+a closed list of supported formats:
+
+| Recipe | Format | Type bindings |
+| --- | --- | --- |
+| Variadic operands with a shared type | <code>$operands attr-dict `:` type($operands) `->` type($results)</code> | The input type is broadcast to every operand; the result binding accepts one type or a parenthesized list. |
+| Variadic operands with individual types | <code>$operands attr-dict `:` types($operands) `->` type($results)</code> | The bare input list must contain one type per operand; results accept one type or a parenthesized list. |
+| Fixed operands with different sharing groups | <code>$operands[0] `,` $operands[1] `,` $operands[2] `:` type($operands[0]) `,` type($operands[1], $operands[2]) `->` type($results)</code> | Indexed operands are captured once in order; each printed type binds to its listed operands or results. |
+| One type shared by operands and results | <code>$operands attr-dict `:` type($operands, $results)</code> | The printed type binds to every operand and every result. |
+| Typed literal result | <code>$value `:` type($value) attr-dict `:` type($result)</code> | The first type belongs to the literal attribute; the second binds the single result. |
+| Direct call | <code>$callee `(` $operands `)` attr-dict `:` type($operands) `->` type($results)</code> | The callee is stored as a symbol reference; operand and result types follow the aggregate rules. |
+
 The original conversion and typed-literal descriptions remain valid:
 
 ```
@@ -193,9 +205,15 @@ $operands[0] `,` $operands[1] `,` $operands[2] attr-dict `:` type($operands[0]) 
 
 Every SSA operand and result needs a type assignment for semantic lowering.
 The registry validates directive structure when constructed and validates list
-sizes against the operation when lowering. Invalid descriptions report the
-operation name and the failing rule. Zirium does not interpret arbitrary MLIR
-assembly-format strings, optional groups, repetition, regions, or ODS/TableGen.
+sizes against the operation when lowering. A malformed description violates
+these rules, for example by mixing `$operands` with indexed operands, assigning
+one target twice, or naming a type target that was not captured. Registry
+construction rejects it with the operation name and failing rule. Syntax that
+needs optional groups, repetition, regions, ODS/TableGen constructs, or other
+unsupported directives cannot be expressed by a format description; use a
+reusable shape or built-in implementation when one matches. Writing an
+unsupported directive in a description reports it as unknown during registry
+construction.
 
 ### Operation alternatives
 
@@ -290,12 +308,14 @@ registries. `DialectRegistry::from_name("stablehlo")` builds a bundled preset;
 `RegistryConfig::from_json` followed by `build` constructs a registry from JSON text,
 and `DialectRegistry::declarative(...)` selects built-ins by name.
 
+Caller-owned operation names must be registered through configured formats or
+shapes, such as `RegistryConfig` or `extend_operation_shapes(...)`.
+
 `operation_names()` enumerates static, shape-backed, and format-backed
 registrations. `operation_shape(name)` returns the `OperationShape` assigned to
 a shape-backed name. `call_target_attribute(name)` returns the target attribute
-for a registered direct call, if any. `declarative(...)` deliberately selects only built-in
-implementations; use configuration or `extend_operation_shapes(...)` for a
-caller-owned mnemonic whose grammar Zirium cannot infer from its name.
+for a registered direct call, if any. `declarative(...)` deliberately selects
+only built-in implementations.
 
 Use the same registry for parsing, lowering, verification, editing, and
 `print_with_registry`. Unlike Python's parsed file, Rust's `ParsedFile` does not

@@ -6,6 +6,17 @@
   evaluator. Queries return native selections, semantic types and attributes,
   strings, counts, and nested maps; relative subqueries support relationship
   filtering and per-operation analysis.
+- Add `do query;` statements for edits whose result should not be emitted.
+  Later statements see the edits, while explicit emitters inside `do` still run.
+- Add stable value and operation ordering with `sort`, `sort_by`, `reverse`,
+  `head`, and `tail`. Add `min`, `min_by`, `max`, and `max_by` reductions.
+- Add `min_all`, `min_all_by`, `max_all`, and `max_all_by` for retaining every
+  value or operation tied at an extreme.
+- Reject `count` applied to an existing scalar count or rendered output.
+- Concatenate statement and multi-input outputs exactly as emitted instead of
+  inserting automatic `// -----` separators; reports can add explicit text.
+- Let `call_like` registry entries name a nonstandard call-target attribute, and
+  use the same direct-call metadata in `reachable` and `closure`.
 
 - Split parser grammar and semantic-value lowering into private modules by
   responsibility, preserving public interfaces and behavior.
@@ -40,15 +51,6 @@ formats, and adds composable report generation.
 - Add `print("text {binding}")` for report text with count or single-string
   interpolation. Allow semicolon-separated query statements interleaved with
   immutable bindings; each query statement starts from the document.
-- Add `do query;` statements for edits whose result should not be emitted.
-  Later statements see the edits, while explicit emitters inside `do` still run.
-- Add stable value and operation ordering with `sort`, `sort_by`, `reverse`,
-  `head`, and `tail`. Add `min`, `min_by`, `max`, and `max_by` reductions.
-- Add `min_all`, `min_all_by`, `max_all`, and `max_all_by` for retaining every
-  value or operation tied at an extreme.
-- Reject `count` applied to an existing scalar count or rendered output.
-- Concatenate statement and multi-input outputs exactly as emitted instead of
-  inserting automatic `// -----` separators; reports can add explicit text.
 
 - Add immutable query bindings, value histograms with `tally`, and per-operation
   maps with `map_by(key, value)`. Maps support nested JSON output and bounded
@@ -57,8 +59,6 @@ formats, and adds composable report generation.
   SSA definitions, direct calls, and supported branches. Register function-like
   definitions and call-like symbol uses for lookup. Unsupported references and
   callees without bodies produce errors.
-- Let `call_like` registry entries name a nonstandard call-target attribute, and
-  use the same direct-call metadata in `reachable` and `closure`.
 
 - Preserve both sides of StableHLO dot dimension clauses and accept `return`
   shorthand plus unparenthesized multi-operand return type lists.

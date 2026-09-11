@@ -175,6 +175,17 @@ Type and attribute queries expose `spellings()` for retained MLIR text.
 reports an error for a present non-string attribute or undecodable UTF-8.
 Use `attributes(name).spellings()` to inspect those retained spellings.
 
+For example, a configured call target is a symbol-reference attribute, so read
+its retained MLIR spelling rather than treating it as a string attribute:
+
+```python
+calls = ops().filter(op("vendor.invoke"))
+targets = document.query(calls.attributes("target").spellings())
+```
+
+`calls.string_attr("target")` is appropriate only when `target` is an MLIR
+string attribute; it reports an error for a symbol reference such as `@callee`.
+
 Rust exposes methods according to the result type: a string query has no `users`
 method. Python exposes corresponding classes and type declarations, including
 `QueryExpr[T]` for annotating reusable expressions.
