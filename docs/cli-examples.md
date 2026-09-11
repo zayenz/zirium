@@ -35,13 +35,14 @@ Every CLI evaluation provides `{document}` as the supplied input path, or
 zirium 'print("# {document}"); names | tally | markdown' first.mlir second.mlir
 ```
 
-For machine-readable multi-file output, `--ndjson` writes one compact record
+For machine-readable multi-file output, `--jsonl` writes one compact record
 per emitted result with `document` and `result` fields. JSON results remain JSON
 values; text and selected MLIR are strings. Records keep input and statement
-order, and stdout remains empty if any input or emission fails:
+order, and stdout remains empty if any input or emission fails. `--ndjson` is an
+alias for `--jsonl`:
 
 ```sh
-zirium --ndjson 'names | tally | json' first.mlir second.mlir
+zirium --jsonl 'names | tally | json' first.mlir second.mlir
 ```
 
 The commands below assume `target/debug` is on `PATH`:

@@ -34,7 +34,8 @@ Options:
   --registry FILE         Load a JSON registry (repeatable; combines with presets)
   -f, --program-file FILE Read the query from a file instead of an argument
   --strict                Reject incomplete parsing and unknown reachable references
-  --ndjson                Emit one attributable JSON record per result
+  --jsonl                 Emit one attributable JSON record per line
+  --ndjson                Alias for --jsonl
   --fragment-scope MODE   Selection shells: full (default) or minimal
   --max-work N            Evaluation work limit (default 10000000)
   --max-items N           Maximum items per stream (default 1000000)
@@ -95,7 +96,7 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "preset name must be UTF-8")?,
             ),
             "--strict" => strict = true,
-            "--ndjson" => ndjson = true,
+            "--jsonl" | "--ndjson" => ndjson = true,
             "--fragment-scope" => {
                 fragment_scope = match arguments
                     .next()

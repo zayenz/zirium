@@ -727,7 +727,7 @@ fn count_prints_one_scalar_line_per_input() {
 }
 
 #[test]
-fn ndjson_attributes_each_emission_to_its_input() {
+fn jsonl_attributes_each_emission_to_its_input() {
     let first = temporary_path("ndjson-é-first", "mlir");
     let second = temporary_path("ndjson-quoted-\"second", "mlir");
     fs::write(&first, "module {}").unwrap();
@@ -749,7 +749,7 @@ fn ndjson_attributes_each_emission_to_its_input() {
     );
     let query = "print(\"file: {document}\ncontinued\"); count; {\"label\": \"{document}\"} | json";
     let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
-        .arg("--ndjson")
+        .arg("--jsonl")
         .arg(query)
         .arg(&first)
         .arg(&second)
@@ -781,14 +781,14 @@ fn ndjson_attributes_each_emission_to_its_input() {
         assert_eq!(records[2]["result"]["label"], name.as_ref());
     }
 
-    let output = run_stdin_with_options(&["--ndjson"], r#"print("{document}")"#, "module {}");
+    let output = run_stdin_with_options(&["--jsonl"], r#"print("{document}")"#, "module {}");
     assert!(output.status.success());
     let record: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(record["document"], "stdin");
     assert_eq!(record["result"], "stdin\n");
 
     let ranked = run_stdin_with_options(
-        &["--ndjson"],
+        &["--jsonl"],
         "filter(not op(\"builtin.module\")) | names | tally | sort_by(value) | reverse",
         "module { \"vendor.z\"() : () -> () \"vendor.z\"() : () -> () \"vendor.a\"() : () -> () }",
     );
@@ -799,6 +799,13 @@ fn ndjson_attributes_each_emission_to_its_input() {
     assert!(
         line.find("\"vendor.z\"").unwrap() < line.find("\"vendor.a\"").unwrap(),
         "{line}"
+    );
+
+    let alias = run_stdin_with_options(&["--ndjson"], "count", "module {}");
+    assert!(alias.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&alias.stdout).unwrap()["result"],
+        1
     );
 }
 

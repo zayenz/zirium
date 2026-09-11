@@ -697,13 +697,13 @@ printing error produces no standard output. Input files are never overwritten.
 Rust callers use the `Query::evaluate` emission callback and can choose their
 own buffering policy.
 
-Pass `--ndjson` to emit one compact JSON object per result in input and
+Pass `--jsonl` to emit one compact JSON object per result in input and
 statement order. Each record has `document` and `result` fields. A `json`
 emitter becomes the JSON value in `result`; it is not encoded as another
 string. Text and Markdown are JSON strings with newlines escaped, counts are
 numbers, and operation selections are MLIR strings. NDJSON uses the same
 all-input buffering rule as ordinary output, so any later failure leaves stdout
-empty.
+empty. `--ndjson` is accepted as an alias.
 
 ## Grammar and diagnostics
 
