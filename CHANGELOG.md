@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add standalone CLI release archives for Linux x86_64 (static musl) and macOS
+  arm64, with SHA-256 checksums and checks of the extracted executables.
+
 - Let `reachable` retain operations with unregistered reference semantics as
   leaves instead of failing. This can produce partial traversal results where
   earlier releases reported an error. Use CLI `--strict`, Python query

@@ -5,6 +5,19 @@ Zirium 0.0.13 requires Rust 1.88 or newer. Wheels support conventional CPython
 Wheels use version-specific ABIs, without `abi3` or `abi3t`. Other platforms and
 free-threaded CPython 3.14 are unsupported, though source builds may work.
 
+## CLI binaries
+
+Starting with the next release after 0.0.13, standalone archives target Linux
+x86_64 with static musl (kernel 3.2 or newer) and macOS arm64 (macOS 11 or
+newer). They do not require Python, Rust, or LLVM. Binary release jobs use
+Rust 1.88.0, check the extracted CLI on Ubuntu 22.04 and macOS 15, and verify
+that a strict StableHLO query works outside the checkout. Minimum OS versions
+are build baselines, not additional CI runners. Other CLI platforms currently
+require a source build.
+
+See [installation](../README.md#cli-binaries) for downloads and
+[releasing](releasing.md#cli-archives) for packaging details.
+
 ## Rust checks
 
 Run these commands from the repository root. They match the CI jobs:

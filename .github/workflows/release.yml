@@ -11,12 +11,14 @@ on:
         required: true
         type: string
       registry:
-        description: Registry to publish to
+        description: Distribution to publish (both means crates.io and PyPI)
         required: true
-        default: both
+        default: all
         type: choice
         options:
+          - all
           - both
+          - binaries
           - crates-io
           - pypi
 
@@ -102,7 +104,7 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    if: github.repository == 'zayenz/zirium' && inputs.registry != 'pypi'
+    if: github.repository == 'zayenz/zirium' && (github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'both' || inputs.registry == 'crates-io')
     needs: [validate, quality]
     runs-on: ubuntu-latest
     environment:
@@ -124,7 +126,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    if: github.repository == 'zayenz/zirium' && inputs.registry != 'crates-io'
+    if: github.repository == 'zayenz/zirium' && (github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'both' || inputs.registry == 'pypi')
     needs: [validate, quality]
     runs-on: ubuntu-latest
     environment:
@@ -141,3 +143,110 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: dist
+
+  build-binaries:
+    name: CLI ${{ matrix.target }}
+    if: github.repository == 'zayenz/zirium' && (github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'binaries')
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - os: macos-15
+            target: aarch64-apple-darwin
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      TARGET: ${{ matrix.target }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.88.0
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build CLI
+        run: cargo build --release --locked -p zirium --bin zirium --target "$TARGET"
+      - name: Check Linux static linkage
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/$TARGET/release/zirium"
+          readelf -l "$binary" > program-headers.txt
+          readelf -d "$binary" > dynamic-section.txt
+          if grep -q INTERP program-headers.txt || grep -q NEEDED dynamic-section.txt; then
+            echo "expected a static Linux binary" >&2
+            exit 1
+          fi
+      - name: Package and check extracted CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="zirium-${RELEASE_TAG#v}-$TARGET"
+          mkdir -p "dist/$package"
+          cp "target/$TARGET/release/zirium" "dist/$package/"
+          cp LICENSE-MIT LICENSE-APACHE "dist/$package/"
+          tar -czf "dist/$package.tar.gz" -C dist "$package"
+          cd dist
+          shasum -a 256 "$package.tar.gz" > "$package.tar.gz.sha256"
+          shasum -a 256 -c "$package.tar.gz.sha256"
+          archive="$PWD/$package.tar.gz"
+          check_dir=$(mktemp -d)
+          trap 'rm -rf "$check_dir"' EXIT
+          cd "$check_dir"
+          tar -xzf "$archive"
+          test -s "$package/LICENSE-MIT"
+          test -s "$package/LICENSE-APACHE"
+          test "$("./$package/zirium" --version)" = "zirium ${RELEASE_TAG#v}"
+          printf '%s\n' 'module { %c = stablehlo.constant dense<1.0> : tensor<2xf32> %a = stablehlo.add %c, %c : tensor<2xf32> }' > input.mlir
+          test "$("./$package/zirium" --preset stablehlo --strict 'filter(op("stablehlo.add")) | count' input.mlir)" = 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-binaries:
+    name: Publish CLI archives
+    needs: [validate, quality, build-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+      - name: Publish checked archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c ./*.sha256
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
+            if ! jq -e '.isDraft == true' release.json; then
+              echo "release is already published; refusing to replace its assets" >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "Zirium $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" ./*.tar.gz ./*.sha256 --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

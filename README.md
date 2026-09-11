@@ -22,11 +22,49 @@ Published wheels cover CPython 3.11 through 3.14 on Linux x86_64 and macOS
 arm64. Wheels are specific to each CPython version. Other platforms require a
 local source build and are unsupported.
 
-Rust builds require Rust 1.88 or newer. From a source checkout, install the CLI
-with:
+### CLI binaries
+
+CLI archives are produced by the release workflow for Linux x86_64 (static
+musl) and macOS arm64 (macOS 11 or newer). They require neither Rust nor Python.
+Binary distribution starts with the next release after 0.0.13.
+
+Download the matching `zirium-VERSION-TARGET.tar.gz` archive and its `.sha256`
+file from [GitHub Releases](https://github.com/zayenz/zirium/releases):
+
+| Platform | Target |
+| --- | --- |
+| Linux x86_64, kernel 3.2 or newer | `x86_64-unknown-linux-musl` |
+| macOS arm64, macOS 11 or newer | `aarch64-apple-darwin` |
+
+In the download directory, substitute the version and target in these commands:
 
 ```sh
-cargo install --path crates/zirium
+archive=zirium-VERSION-TARGET.tar.gz
+shasum -a 256 -c "$archive.sha256"
+tar -xzf "$archive"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "${archive%.tar.gz}/zirium" "$HOME/.local/bin/zirium"
+"$HOME/.local/bin/zirium" --version
+```
+
+Add `$HOME/.local/bin` to your `PATH` if it is not already there. On Linux,
+`sha256sum -c "$archive.sha256"` can also verify the checksum.
+The archive naming follows `cargo-binstall` conventions, so users with
+[cargo-binstall](https://github.com/cargo-bins/cargo-binstall) can install a
+release that provides binaries with `cargo binstall zirium`.
+
+### CLI from source
+
+Rust builds require Rust 1.88 or newer. Install the published CLI with:
+
+```sh
+cargo install zirium --locked
+```
+
+From a source checkout, use:
+
+```sh
+cargo install --path crates/zirium --locked
 ```
 
 The Python wheel does not include the CLI. The
