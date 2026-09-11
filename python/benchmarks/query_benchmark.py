@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""CLI review probes and generated StableHLO DAG checks (standard library only).
+"""CLI query probes and generated StableHLO DAG checks (standard library only).
 
 Build first: cargo build --release -p zirium --bin zirium
-Run: python3 python/benchmarks/query_language_review.py > target/query-review/results.json
+Run: python3 python/benchmarks/query_benchmark.py > target/query-benchmark/results.json
 Timings include process startup, parsing, lowering, evaluation, and output.
-Known limitations are recorded as observations; corrected failures have explicit checks.
+The harness checks expected results and records unsupported cases as observations.
 """
 
 import json
@@ -35,7 +35,7 @@ def run(
     if registry:
         args += ["--registry", str(REGISTRY)]
     # A file also permits long queries beyond the OS per-argument limit.
-    with tempfile.TemporaryDirectory(prefix="zirium-query-review-") as directory:
+    with tempfile.TemporaryDirectory(prefix="zirium-query-benchmark-") as directory:
         program = Path(directory) / "query.zirium"
         program.write_text(query)
         start = time.perf_counter()

@@ -98,10 +98,9 @@ print([table.operation(index).name for index in range(table.count)])
 print(document.canonical_bytes().decode(), end="")
 ```
 
-A `File` owns the original bytes, tokens, concrete syntax tree (CST), and syntax
-diagnostics. A `Document` owns resolved semantic data. Keeping them separate lets
-you inspect malformed source without requiring a valid semantic model, and edit
-semantic structure without manipulating syntax nodes.
+A `File` owns the original bytes, tokens, concrete syntax tree (CST), and
+diagnostics. A `Document` owns resolved semantic data. Use the file to inspect
+malformed source; use the document for semantic queries and structural edits.
 
 ## Structured queries
 
@@ -116,7 +115,7 @@ counts = document.query(consumers.names().tally())
 ```
 
 Rust uses the same builders: `document.query(&consumers)?`. Queries return native
-operation handles, strings, counts, and maps. The [structured query guide](docs/query-dsl.md)
+operation handles, strings, counts, and maps. The [structured query guide](https://github.com/zayenz/zirium/blob/main/docs/query-dsl.md)
 covers predicates, nested queries, semantic projections, and evaluation limits.
 
 ## Output modes
@@ -138,10 +137,10 @@ retention when edits should preserve unrelated source text.
 Generic quoted operations are handled without a dialect registry. Unknown
 dialect types and attributes keep their balanced bodies as opaque values.
 
-The baseline registry covers a small set of Builtin, Func, Arith, and CF
-operations. Bundled presets expose selected custom forms from other dialects
-for structural queries. Unsupported forms use best-effort recovery; presets do
-not implement full dialect verification or execution.
+The baseline registry covers selected Builtin, Func, Arith, and CF operations.
+Bundled presets add custom forms from other dialects. Unsupported forms use
+best-effort recovery. Presets support structural queries, without full dialect
+verification or execution.
 
 The [custom-format guide](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md) explains registry configuration,
 operation shapes, and use from Rust, Python, and the CLI. The
@@ -160,9 +159,8 @@ The repository includes optional skills for agents working with Zirium:
 - [Rust](https://github.com/zayenz/zirium/blob/main/skills/zirium-rust/SKILL.md): library integration and document ownership.
 - [Custom formats](https://github.com/zayenz/zirium/blob/main/skills/zirium-custom-format/SKILL.md): research a project's dialect and build a registry; explicitly invoked as `$zirium-custom-format`.
 
-Each skill folder is self-contained and can be installed independently through
-your agent's skill mechanism. These files are distributed in the repository,
-separately from the Python wheel and Rust crate.
+Install each skill folder independently through your agent's skill mechanism.
+Skills are distributed in the repository, outside the Python wheel and Rust crate.
 
 ## Repository layout
 
@@ -177,7 +175,7 @@ skills/                 Agent guidance for CLI, libraries, and custom formats
 fuzz/                   Lexer and parser fuzz targets
 ```
 
-The architecture notes include the [syntax representation baseline](https://github.com/zayenz/zirium/blob/main/docs/architecture/representation-baseline.md)
+The architecture notes describe the [syntax representation](https://github.com/zayenz/zirium/blob/main/docs/architecture/syntax-representation.md)
 and [processing benchmarks](https://github.com/zayenz/zirium/blob/main/docs/architecture/processing-benchmarks.md).
 
 ## Development
@@ -202,5 +200,5 @@ Zirium's original code is available under the
 MLIR-derived or adapted test material carries the source attribution and license
 notices recorded in the [corpus manifest](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/manifest.toml).
 
-Release notes are recorded in the
+Release history is recorded in the
 [changelog](https://github.com/zayenz/zirium/blob/main/CHANGELOG.md).

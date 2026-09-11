@@ -255,7 +255,7 @@ def main() -> None:
         "zirium": zirium.__version__,
         "geometry": inspect(output),
         "measurements": [
-            measure(output, name, args.runs) for name in ("legacy", "full")
+            measure(output, name, args.runs) for name in ("lambda-only", "full")
         ],
     }
     print(json.dumps(report, indent=2, sort_keys=True))

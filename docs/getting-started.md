@@ -1,7 +1,8 @@
 # Getting started with Zirium
 
-Build Zirium from a source checkout to use the Rust crate or develop the Python
-extension. Both APIs follow the same sequence:
+This guide covers source setup and the Rust and Python APIs. For the published
+Python package, see [installation](../README.md#installation). Both APIs follow
+the same sequence:
 
 ```text
 source bytes -> parsed file -> semantic document -> verification/editing -> output
@@ -13,16 +14,9 @@ edits.
 
 ## Prerequisites
 
-The Rust workspace requires:
-
-- Rust 1.88 or newer;
-- Cargo.
-
-Python development also requires:
-
-- CPython 3.11, 3.12, 3.13, or 3.14;
-- [`uv`](https://docs.astral.sh/uv/), used below to create the environment;
-- a working Rust toolchain so maturin can compile the extension.
+Install Rust 1.88 or newer with Cargo. Python development also needs CPython
+3.11 through 3.14 and [`uv`](https://docs.astral.sh/uv/). Maturin uses the Rust
+toolchain to compile the extension.
 
 CPython 3.14 free-threaded builds are experimental and unsupported. Zirium
 builds version-specific extensions and does not use `abi3`.
@@ -53,9 +47,8 @@ For a local consumer next to the Zirium checkout, point Cargo at the core crate:
 zirium = { path = "../zirium/crates/zirium" }
 ```
 
-The following program parses generic MLIR, checks for syntax diagnostics, lowers
-it strictly, validates the semantic structure, and prints canonical generic
-MLIR:
+This program reports diagnostics, lowers generic MLIR strictly, validates the
+document, and prints canonical output:
 
 ```rust
 use zirium::{
@@ -124,9 +117,8 @@ Create the locked development environment and install the local extension:
 uv sync --locked --python 3.13
 ```
 
-`uv.lock` fixes the versions of maturin, pytest, Ruff, Twine, and ty. Replace
-`3.13` with another supported CPython version when needed. Confirm that the
-extension imports:
+`uv.lock` pins the development tools. Replace `3.13` with another supported
+CPython version if needed. Check the import:
 
 ```sh
 .venv/bin/python -c 'import zirium; print("zirium imported")'
@@ -163,9 +155,8 @@ uv run --locked --no-sync pytest
 
 ## Parse syntax without lowering
 
-Syntax parsing is lossless even when the input is malformed. Diagnostics
-describe the problem, while the returned `File` still owns the original bytes
-and recoverable CST:
+Parsing malformed input still returns a `File` with the original bytes, a
+recovered CST, and diagnostics:
 
 ```python
 import zirium
@@ -248,7 +239,7 @@ for index in range(table.count):
     print(operation.name, operation.source_range)
 ```
 
-`OperationTable` is a frozen, self-contained snapshot. Its `name_code`,
+`OperationTable` is a frozen snapshot. Its `name_code`,
 `source_start`, and `source_end` columns are native-endian u32 bytes;
 `root_flags` is one byte per row (bit 0 denotes a document root); and
 `name_offsets` is a native-endian u32 offset table into `name_bytes`.
@@ -352,12 +343,10 @@ else:
     raise AssertionError("an erased operation handle remains usable")
 ```
 
-An edit context buffers commands and commits them atomically when the context
-exits normally. If validation fails or the body raises an exception, the
-original document remains unchanged. Handles for surviving operations keep
-their identity across commits. Erased operation handles raise
-`StaleHandleError` when used. A handle from another document raises
-`ForeignHandleError`.
+An edit context buffers commands and commits on normal exit. Validation failure
+or an exception leaves the document unchanged. Surviving operation handles keep
+their identity; erased handles raise `StaleHandleError`. Handles from another
+document raise `ForeignHandleError`.
 
 Python edit specifications copy existing semantic values: `AttributeSpecHandle`
 wraps an existing attribute, and `OperationSpec` takes existing types and values
@@ -366,11 +355,10 @@ Insertion supports regionless operations and returns no provisional handle;
 look up the inserted operation after the context commits. Use the Rust API when
 the task needs richer construction through `TypeSpec` and `AttributeSpec`.
 
-Source-preserving output remains available after edits that can map back to an
-existing operation or block, such as the attribute replacement above. It copies
-unedited ranges directly and regenerates dirty ranges. Inserting or erasing an
-operation invalidates the source mappings, so the
-document becomes semantic-only and preserving output is no longer available.
+Preserving output copies unchanged source and regenerates edited operations or
+blocks, as in the attribute replacement above. Inserting or erasing an operation
+invalidates source mappings and makes the document semantic-only, so preserving
+output is no longer available.
 
 ## Resource limits
 
@@ -393,14 +381,14 @@ Exceeding `max_file_bytes` raises `ResourceLimitError` before lexing. Other
 syntax limits return a lossless parsed file with diagnostics where recovery is
 possible. Rust callers configure the same boundaries with `ParseLimits` and
 `ParsedFile::parse_with_limits`. Alias expansion uses a shared budget across
-type, attribute, affine, memref, and location aliases. When an alias chain
-reaches `max_alias_expansion_depth`, lowering reports `alias expansion depth
-exceeds limit of 64`, with the selected limit in place of 64. The default is 64.
+type, attribute, affine, memref, and location aliases. Exceeding the default
+depth of 64 reports `alias expansion depth exceeds limit of 64`; a custom limit
+appears in the message instead.
 
 ## Further reading
 
 - [Compatibility and local wheel checks](compatibility.md) contains the full Rust checks and CPython test matrix.
-- [Syntax representation baseline](architecture/representation-baseline.md) explains the flat immutable CST.
-- [Processing benchmarks](architecture/processing-benchmarks.md) documents the large-file measurement protocol and results.
+- [Syntax representation](architecture/syntax-representation.md) explains the flat immutable CST.
+- [Processing benchmarks](architecture/processing-benchmarks.md) describes how to measure parsing, semantic processing, and Python access.
 - [`python/zirium/__init__.pyi`](../python/zirium/__init__.pyi) is the compact reference for the typed Python API.
 - [`crates/zirium/src/lib.rs`](../crates/zirium/src/lib.rs) links the public Rust modules and contains a minimal doctest.
