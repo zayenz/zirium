@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Let `reachable` retain operations with unregistered reference semantics as
+  leaves instead of failing. This can produce partial traversal results where
+  earlier releases reported an error. Use CLI `--strict`, Python query
+  `strict=True`, or Rust `strict_unknown_references` to reject them. CLI
+  `--strict` continues to reject recovered custom syntax; `closure` remains
+  strict about reference semantics.
+- Add ranked report maps with `sort_by(value)`, retaining their order through
+  bounds, bindings, JSON, and Markdown. Compare integer values exactly,
+  including large integers and mixed integer/floating-point comparisons.
+- Add `--jsonl` (`--ndjson` is an alias) for one JSON record per emission with
+  `document` and `result` fields. Explicit JSON emitters preserve ranked key
+  order. Reserve the CLI binding `document` for the input path or `stdin`,
+  available in report interpolation.
+- Add `--fragment-scope minimal` to omit incidental attributes and locations
+  from enclosing fragment shells while retaining selected operations' metadata.
 - Add immutable, typed query builders in Rust and Python, sharing the CLI
   evaluator. Queries return native selections, semantic types and attributes,
   strings, counts, and nested maps; relative subqueries support relationship
