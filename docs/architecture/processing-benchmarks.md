@@ -57,6 +57,78 @@ PYTHONPATH=python python3 python/benchmarks/processing_benchmark.py --smoke
 PYTHONPATH=python python3 python/benchmarks/processing_benchmark.py --size-mib 10 --runs 3
 ```
 
+## Fresh-process Python RSS
+
+The Python benchmark can measure process RSS around an existing MLIR file. It
+starts a separate child for source loading, parsing, and hybrid best-effort
+lowering, so an earlier stage's high-water mark does not carry into a later
+measurement. The child reads the requested path; it does not construct a large
+measured string. On macOS the benchmark reads current RSS with
+`PROC_PIDTASKINFO` and treats `ru_maxrss` as bytes. On Linux it reads current
+RSS from `/proc/self/statm` and converts `ru_maxrss` from KiB to bytes.
+
+Build the extension in release mode, prepare synthetic files outside the
+measured children if needed, and then pass the same pre-existing path to the
+RSS mode:
+
+```sh
+uv run --locked maturin develop --release
+.venv/bin/python python/benchmarks/processing_benchmark.py --size-mib 10 --shape primary --write-fixture /tmp/zirium-primary-10.mlir
+.venv/bin/python python/benchmarks/processing_benchmark.py --size-mib 10 --shape block-rich --write-fixture /tmp/zirium-block-rich-10.mlir
+.venv/bin/python python/benchmarks/processing_benchmark.py --size-mib 10 --shape nested --depth 256 --write-fixture /tmp/zirium-nested-10.mlir
+
+.venv/bin/python python/benchmarks/processing_benchmark.py --rss-input /tmp/zirium-primary-10.mlir
+.venv/bin/python python/benchmarks/processing_benchmark.py --rss-input /tmp/zirium-block-rich-10.mlir
+.venv/bin/python python/benchmarks/processing_benchmark.py --rss-input /tmp/zirium-nested-10.mlir --rss-max-delimiter-depth 512
+```
+
+Each row reports the input byte count, current RSS before loading the source,
+current RSS with the source resident, and process high-water RSS after the
+selected stage. The proposed consumer gate is
+
+`(parse peak RSS - imported-process RSS before source loading) / input bytes <= 6`.
+
+The secondary source-resident ratio is
+
+`(parse peak RSS - source-resident RSS) / input bytes`.
+
+Keep both formulas with every result. Source loading and allocator retention
+affect the two baselines differently, so ratios from different harnesses are
+not interchangeable. `tracemalloc` cannot replace this measurement because it
+does not account for the Rust heap.
+
+The following run measured revision `88e576a` on an Apple M1 Max running
+Darwin 25.6.0, using CPython 3.14.5, rustc 1.98.1, and the same source path for
+every fresh child:
+
+| fixture | input MiB | parse peak MiB | additional/imported | additional/source-resident |
+| --- | ---: | ---: | ---: | ---: |
+| primary | 1 | 40.19 | 3.656x | 1.594x |
+| primary | 10 | 77.91 | 4.091x | 2.081x |
+| primary | 25 | 139.11 | 4.099x | 2.095x |
+| block-rich | 10 | 172.08 | 13.509x | 11.502x |
+| nested, depth 256 | 10 | 66.95 | 3.048x | 1.041x |
+
+The primary and nested synthetic fixtures pass the proposed imported-process
+gate. The token-dense block-rich CST retains 77,068,876 bytes by itself and
+cannot meet a six-times total-input gate through transient allocation work
+alone. The consumer's 49.38 MB real input was not available for this run, so
+external acceptance remains pending and these synthetic results do not close
+D20.
+
+An investigated candidate counted start events before compaction and allocated
+the final node vector at its exact size. The crate allocator measured whole-parse
+peak reductions from 11,636,828 to 11,024,492 bytes on primary 10 MiB and from
+114,344,924 to 110,623,612 bytes on block-rich 10 MiB. Fresh-process parse RSS
+did not improve: primary stayed at 4.091x/2.081x, while block-rich moved from
+13.509x/11.502x to 13.534x/11.525x. The candidate added a complete event scan
+without moving the process-level metric, so it was not retained. Integrated
+parse time moved from 13.004 to 13.419 ms on primary and from 113.888 to
+111.370 ms on block-rich; the mixed single-machine result does not establish a
+timing change. A larger memory reduction points toward changing when events and
+nodes coexist or adding a direct-to-semantic API; either choice needs a separate
+design decision because the current `File` API promises lossless syntax.
+
 ## Parser construction and string storage
 
 The ignored crate-internal test separates lexing, grammar event production, CST

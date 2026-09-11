@@ -5,8 +5,13 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
+import os
 import platform
+import resource
 import statistics
+import subprocess
+import sys
 import tempfile
 import time
 import tracemalloc
@@ -16,6 +21,110 @@ import zirium
 
 MIB = 1024 * 1024
 SEED = 0x5A495249554D0028
+
+
+def peak_rss_bytes() -> int:
+    """Return ru_maxrss in bytes on the benchmark's supported host platforms."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == "darwin":
+        return int(peak)
+    if sys.platform.startswith("linux"):
+        return int(peak) * 1024
+    raise RuntimeError(f"RSS benchmark does not normalize ru_maxrss on {sys.platform}")
+
+
+def current_rss_bytes() -> int:
+    """Return current resident bytes for baselines around source loading."""
+    if sys.platform == "darwin":
+        import ctypes
+
+        process_info = (ctypes.c_uint64 * 12)()
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+        returned = libproc.proc_pidinfo(
+            os.getpid(), 4, 0, ctypes.byref(process_info), ctypes.sizeof(process_info)
+        )
+        if returned != ctypes.sizeof(process_info):
+            raise RuntimeError("proc_pidinfo did not return PROC_PIDTASKINFO")
+        return int(process_info[1])
+    if sys.platform.startswith("linux"):
+        resident_pages = int(Path("/proc/self/statm").read_text().split()[1])
+        return resident_pages * os.sysconf("SC_PAGE_SIZE")
+    raise RuntimeError(f"RSS benchmark does not read current RSS on {sys.platform}")
+
+
+def rss_child(stage: str, source_path: Path, max_delimiter_depth: int | None) -> None:
+    imported_baseline = current_rss_bytes()
+    input_bytes = source_path.stat().st_size
+    source = source_path.read_text(encoding="utf-8")
+    source_resident = current_rss_bytes()
+    parsed = None
+    if stage in {"parse", "lower"}:
+        parsed = zirium.parse_text(
+            source,
+            registry=zirium.DialectRegistry.baseline(),
+            max_delimiter_depth=max_delimiter_depth,
+        )
+    parse_peak = peak_rss_bytes()
+    if stage == "lower":
+        assert parsed is not None
+        lowered = parsed.lower_best_effort("hybrid")
+        assert lowered.document is not None
+    stage_peak = peak_rss_bytes()
+    print(
+        json.dumps(
+            {
+                "stage": stage,
+                "input_bytes": input_bytes,
+                "imported_process_baseline_bytes": imported_baseline,
+                "source_resident_baseline_bytes": source_resident,
+                "parse_peak_bytes": parse_peak,
+                "stage_peak_bytes": stage_peak,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def rss_measurements(source_path: Path, max_delimiter_depth: int | None) -> None:
+    if not source_path.is_file():
+        raise ValueError(f"RSS input is not a file: {source_path}")
+    if source_path.stat().st_size == 0:
+        raise ValueError("RSS input must not be empty")
+    print(
+        "benchmark=python-processing-rss "
+        f"python={platform.python_version()} platform={platform.platform()} "
+        f"source_path={source_path.resolve()} gate=additional_peak_from_imported_per_input<=6"
+    )
+    for stage in ("source", "parse", "lower"):
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--rss-input",
+            str(source_path.resolve()),
+            "--rss-child-stage",
+            stage,
+        ]
+        if max_delimiter_depth is not None:
+            command.extend(["--rss-max-delimiter-depth", str(max_delimiter_depth)])
+        result = json.loads(subprocess.check_output(command, text=True))
+        size = result["input_bytes"]
+        imported_delta = (
+            result["stage_peak_bytes"] - result["imported_process_baseline_bytes"]
+        )
+        source_delta = (
+            result["stage_peak_bytes"] - result["source_resident_baseline_bytes"]
+        )
+        print(
+            f"rss_measurement stage={stage} input_bytes={size} "
+            f"imported_process_baseline_bytes={result['imported_process_baseline_bytes']} "
+            f"source_resident_baseline_bytes={result['source_resident_baseline_bytes']} "
+            f"parse_peak_bytes={result['parse_peak_bytes']} "
+            f"stage_peak_bytes={result['stage_peak_bytes']} "
+            f"additional_peak_from_imported_bytes={imported_delta} "
+            f"additional_peak_from_source_resident_bytes={source_delta} "
+            f"additional_peak_from_imported_per_input={imported_delta / size:.3f} "
+            f"additional_peak_from_source_resident_per_input={source_delta / size:.3f}"
+        )
 
 
 def fixture(size: int) -> bytes:
@@ -49,6 +158,22 @@ def block_rich_fixture(size: int) -> bytes:
     return bytes(result)
 
 
+def nested_fixture(size: int, depth: int) -> bytes:
+    opening = b'"bench.region"() ({\n'
+    closing = b"}) : () -> ()\n"
+    result = bytearray()
+    for _ in range(depth):
+        result += opening
+    result += b'"bench.op"() : () -> ()\n'
+    closing_bytes = len(closing) * depth
+    if len(result) + closing_bytes > size:
+        raise ValueError("requested depth does not fit fixture size")
+    result += b" " * (size - len(result) - closing_bytes)
+    for _ in range(depth):
+        result += closing
+    return bytes(result)
+
+
 def timed(runs: int, action):
     samples = []
     result = None
@@ -64,12 +189,67 @@ def main() -> None:
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--size-mib", type=int, default=10)
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--shape", choices=("primary", "block-rich"), default="primary")
+    parser.add_argument(
+        "--shape", choices=("primary", "block-rich", "nested"), default="primary"
+    )
+    parser.add_argument("--depth", type=int)
+    parser.add_argument(
+        "--write-fixture",
+        type=Path,
+        help="write a deterministic fixture for a later RSS run",
+    )
+    parser.add_argument(
+        "--rss-input",
+        type=Path,
+        help="measure fresh-process RSS for an existing MLIR file",
+    )
+    parser.add_argument(
+        "--rss-child-stage",
+        choices=("source", "parse", "lower"),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--rss-max-delimiter-depth",
+        type=int,
+        help="override the parse delimiter limit for an RSS input",
+    )
     args = parser.parse_args()
+    if args.rss_child_stage:
+        if args.rss_input is None:
+            parser.error("--rss-child-stage requires --rss-input")
+        rss_child(args.rss_child_stage, args.rss_input, args.rss_max_delimiter_depth)
+        return
+    if args.rss_input is not None:
+        rss_measurements(args.rss_input, args.rss_max_delimiter_depth)
+        return
+    if args.rss_max_delimiter_depth is not None:
+        parser.error("--rss-max-delimiter-depth requires --rss-input")
     size = 64 * 1024 if args.smoke else args.size_mib * MIB
     runs = 1 if args.smoke else args.runs
     if size == 500 * MIB:
         parser.error("500 MiB is projection-only")
+    if args.shape == "nested" and args.depth is None:
+        parser.error("--shape nested requires --depth")
+    if args.depth is not None and args.depth <= 0:
+        parser.error("--depth must be positive")
+    if args.shape != "nested" and args.depth is not None:
+        parser.error("--depth requires --shape nested")
+    if args.write_fixture is not None:
+        contents = (
+            nested_fixture(size, args.depth)
+            if args.shape == "nested"
+            else block_rich_fixture(size)
+            if args.shape == "block-rich"
+            else fixture(size)
+        )
+        args.write_fixture.write_bytes(contents)
+        print(
+            f"fixture_path={args.write_fixture.resolve()} shape={args.shape} "
+            f"depth={args.depth} input_bytes={len(contents)} seed=0x{SEED:016x}"
+        )
+        return
+    if args.shape == "nested":
+        parser.error("--shape nested is available only with --write-fixture")
     print(
         f"benchmark=python-processing python={platform.python_version()} platform={platform.platform()} seed=0x{SEED:016x} input_bytes={size} warmups=1 measured_runs={runs}"
     )
