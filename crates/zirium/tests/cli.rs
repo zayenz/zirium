@@ -1985,6 +1985,32 @@ fn query_diagnostics_keep_program_file_lines_and_unicode_columns() {
 }
 
 #[test]
+fn set_operand_diagnostic_points_to_the_stage_after_leading_comments() {
+    let program = temporary_path("set-operand-diagnostic", "zirium");
+    let source =
+        "# first line\n# second line\nfilter(true) | names union filter(true) | names | count\n";
+    fs::write(&program, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["-f", program.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let _ = fs::remove_file(program);
+    assert!(!output.status.success());
+    let error = String::from_utf8(output.stderr).unwrap();
+    let prefix = &source[source[..source.find("count").unwrap()].rfind('\n').unwrap() + 1
+        ..source.find("count").unwrap()];
+    let column = prefix.chars().count() + 1;
+    assert!(
+        error.contains(&format!("line 3, column {column}")),
+        "{error}"
+    );
+    assert!(
+        error.contains(&format!("\n{}^", " ".repeat(column - 1))),
+        "{error}"
+    );
+}
+
+#[test]
 fn named_queries_build_function_histograms_and_keep_live_selections() {
     let decoder = include_str!("../../../examples/cli/stablelm-decode.mlir");
     let output = run_stdin_with_registry(

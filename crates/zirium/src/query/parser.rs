@@ -171,10 +171,12 @@ impl Parser<'_> {
             rest,
             range: self.span(start),
         };
-        if !expression.rest.is_empty() && !expression.is_selection_only() {
+        if !expression.rest.is_empty()
+            && let Some(stage) = expression.first_non_selection_stage()
+        {
             self.diagnostics.push(Diagnostic {
                 message: "set operands must be selection queries; put edits and count after the grouped set expression",
-                range: expression.range,
+                range: stage.range(),
             });
         }
         Some(expression)
@@ -363,10 +365,10 @@ impl Parser<'_> {
                 self.expect(TokenKind::LParen, "expected `(` after fixpoint")?;
                 let expression = Box::new(self.expression(depth + 1)?);
                 self.expect(TokenKind::RParen, "expected `)` after fixpoint query")?;
-                if !expression.is_selection_only() {
+                if let Some(stage) = expression.first_non_selection_stage() {
                     self.diagnostics.push(Diagnostic {
                         message: "fixpoint requires a selection query without edits or count",
-                        range: expression.range,
+                        range: stage.range(),
                     });
                 }
                 Stage::Fixpoint {

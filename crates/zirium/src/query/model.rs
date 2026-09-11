@@ -72,10 +72,14 @@ impl Expression {
     }
 
     pub fn is_selection_only(&self) -> bool {
+        self.first_non_selection_stage().is_none()
+    }
+
+    pub(crate) fn first_non_selection_stage(&self) -> Option<&Stage> {
         self.first
             .iter()
             .chain(self.rest.iter().flat_map(|(_, stages)| stages))
-            .all(Stage::is_selection_only)
+            .find_map(Stage::first_non_selection_stage)
     }
     pub(crate) fn is_read_only(&self) -> bool {
         self.first
@@ -396,6 +400,15 @@ impl Stage {
                 expression.is_selection_only()
             }
             _ => true,
+        }
+    }
+    fn first_non_selection_stage(&self) -> Option<&Stage> {
+        match self {
+            Self::Group { expression, .. } | Self::Fixpoint { expression, .. } => {
+                expression.first_non_selection_stage()
+            }
+            _ if !self.is_selection_only() => Some(self),
+            _ => None,
         }
     }
     pub(crate) fn is_terminal(&self) -> bool {

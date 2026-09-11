@@ -77,6 +77,17 @@ fn query_boundaries_and_edit_validation() {
 }
 
 #[test]
+fn set_operand_diagnostic_points_to_the_first_disallowed_stage() {
+    let source = "filter(true) | names union filter(true) | names | count";
+    let error = Query::parse(source).unwrap_err();
+    assert_eq!(error.position, source.find("count").unwrap());
+
+    let grouped = "filter(true) union (filter(true) | count)";
+    let error = Query::parse(grouped).unwrap_err();
+    assert_eq!(error.position, grouped.find("count").unwrap());
+}
+
+#[test]
 fn parser_distinguishes_do_statements_from_emitting_queries() {
     let parsed = parse(&lex(
         r#"do filter(op("x")) | set_attr("tag", "hot"); filter(has_attr("tag"))"#,
