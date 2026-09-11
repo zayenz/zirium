@@ -3,7 +3,7 @@ use std::{fmt, io};
 use zirium::{
     dialect::DialectRegistry,
     parser::ParsedFile,
-    printer::{PrintError, PrintLayout},
+    printer::{FragmentScope, PrintError, PrintLayout},
     semantic::{
         LoweringMode, RetentionProfile, lower_with_dialect_registry,
         lower_with_dialect_registry_and_retention,
@@ -231,6 +231,83 @@ fn selection_rejects_foreign_and_erased_handles_before_writing() {
         assert!(matches!(result, Err(PrintError::UnsafeSelection(_))));
         assert!(output.is_empty());
     }
+}
+
+#[test]
+fn minimal_fragment_shells_omit_incidental_ancestor_metadata() {
+    fn source(metadata: &str) -> String {
+        format!(
+            r#""vendor.module"() ({{
+  "vendor.func"() ({{
+    "vendor.call"() {{keep = "selected"}} : () -> ()
+  }}) {{sym_name = "worker", function_type = () -> (), metadata = "{metadata}"}} : () -> ()
+}}) {{metadata = "{metadata}"}} : () -> ()"#
+        )
+    }
+    fn print_minimal(source: &str) -> String {
+        let document = strict_document(source);
+        let call = document
+            .operations()
+            .find(|&operation| document.operation_name(operation) == Some("vendor.call"))
+            .unwrap();
+        let mut output = Vec::new();
+        document
+            .write_selection_with_scope(
+                &mut output,
+                &[call],
+                PrintLayout::Pretty,
+                &DialectRegistry::EMPTY,
+                FragmentScope::Minimal,
+            )
+            .unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    let short_source = source("small");
+    let minimal = print_minimal(&short_source);
+    assert!(!minimal.contains("metadata"), "{minimal}");
+    assert!(minimal.contains("keep = \"selected\""), "{minimal}");
+    assert!(minimal.contains("sym_name = \"worker\""), "{minimal}");
+    assert!(minimal.contains("function_type = () -> ()"), "{minimal}");
+    strict_document(&minimal);
+    assert_eq!(minimal, print_minimal(&source(&"x".repeat(100_000))));
+
+    let document = strict_document(&short_source);
+    let call = document
+        .operations()
+        .find(|&operation| document.operation_name(operation) == Some("vendor.call"))
+        .unwrap();
+    let mut full = Vec::new();
+    document
+        .write_selection(
+            &mut full,
+            &[call],
+            PrintLayout::Pretty,
+            &DialectRegistry::EMPTY,
+        )
+        .unwrap();
+    assert!(
+        String::from_utf8(full)
+            .unwrap()
+            .contains("metadata = \"small\"")
+    );
+
+    let root = document.root_operations()[0];
+    let mut selected_root = Vec::new();
+    document
+        .write_selection_with_scope(
+            &mut selected_root,
+            &[root],
+            PrintLayout::Pretty,
+            &DialectRegistry::EMPTY,
+            FragmentScope::Minimal,
+        )
+        .unwrap();
+    assert!(
+        String::from_utf8(selected_root)
+            .unwrap()
+            .contains("metadata = \"small\"")
+    );
 }
 
 #[test]

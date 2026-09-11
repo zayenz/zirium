@@ -410,6 +410,24 @@ fn stdin_selection_retains_shell_and_comments() {
 }
 
 #[test]
+fn minimal_fragment_scope_omits_shell_metadata_only_when_requested() {
+    let source = r#""vendor.outer"() ({
+  "vendor.call"() {keep = "yes"} : () -> ()
+}) {metadata = "large incidental value"} : () -> ()"#;
+    let query = r#"filter(op("vendor.call"))"#;
+    let full = run_stdin(query, source);
+    assert!(full.status.success());
+    assert!(String::from_utf8_lossy(&full.stdout).contains("large incidental value"));
+
+    let minimal = run_stdin_with_options(&["--fragment-scope", "minimal"], query, source);
+    assert!(minimal.status.success());
+    let text = String::from_utf8(minimal.stdout).unwrap();
+    assert!(!text.contains("large incidental value"), "{text}");
+    assert!(text.contains("keep = \"yes\""), "{text}");
+    assert!(text.contains("vendor.outer"), "{text}");
+}
+
+#[test]
 fn boolean_predicates_select_names_and_decoded_string_attributes() {
     let input = "module {\n  \"test.a\"() {tag = \"say \\22hi\\22\"} : () -> ()\n  \"test.b\"() {tag = 7 : i32} : () -> ()\n  \"test.c\"() : () -> ()\n}\n";
     let output = run_stdin(

@@ -667,6 +667,20 @@ its final result unless the statement ends with an explicit emitter.
 `count` prints the stream's size followed by a newline. It is terminal;
 no stage may follow it. To emit a fragment and then count it, use `emit | count`.
 
+Selected fragments normally retain every attribute on the ancestor operations
+needed as enclosing shells. CLI `--fragment-scope minimal` instead prints those
+shell-only ancestors in generic syntax, retaining properties and structural
+identity/signature attributes while omitting incidental attributes and
+locations. Selected operations and every operation in a selected body keep all
+their metadata. Selecting the ancestor itself therefore keeps its attributes.
+This option affects selection output only; whole-document canonical output,
+editing, and source-preserving output are unchanged.
+
+A selected fragment can still be semantically incomplete: omitted siblings may
+define SSA operands, callees may be outside the selection, and required
+terminators may be absent. Minimal scope makes no standalone-validity promise;
+it only reduces metadata carried by enclosing shells.
+
 `json` emits streams as JSON arrays and maps as JSON objects, then passes the result onward.
 For value streams, the array contains strings. For operation streams, each
 entry contains the operation name, an object of attribute spellings, and

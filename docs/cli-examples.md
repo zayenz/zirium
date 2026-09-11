@@ -260,6 +260,13 @@ zirium 'filter(op("arith.addi")) | emit | users' examples/cli/arithmetic.mlir
 Zirium does not insert separators between statement or intermediate outputs.
 Use `print("text")` when a report needs an explicit heading or delimiter.
 
+Selection output includes enclosing operation shells. Use
+`--fragment-scope minimal` when large incidental attributes on those ancestors
+would dominate a small fragment. The selected operations and selected bodies
+keep their attributes, while shell-only ancestors retain structural
+identity/signature metadata. Fragments may still omit SSA producers, callees,
+or terminators and are not guaranteed to be standalone semantically valid.
+
 ## Work inside a function fragment
 
 `subtree` includes every descendant of the selected function. The following

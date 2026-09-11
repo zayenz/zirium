@@ -26,6 +26,14 @@ pub enum PrintLayout {
     Pretty,
 }
 
+/// Controls how much metadata is retained on enclosing selection shells.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FragmentScope {
+    #[default]
+    Full,
+    Minimal,
+}
+
 /// Chooses generic MLIR or registered custom syntax where available.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DialectPrintMode {
@@ -142,6 +150,17 @@ impl Document {
         layout: PrintLayout,
         registry: &DialectRegistry,
     ) -> Result<(), PrintError> {
+        self.write_selection_with_scope(sink, selected, layout, registry, FragmentScope::Full)
+    }
+
+    pub fn write_selection_with_scope<W: io::Write>(
+        &self,
+        sink: &mut W,
+        selected: &[OperationId],
+        layout: PrintLayout,
+        registry: &DialectRegistry,
+        scope: FragmentScope,
+    ) -> Result<(), PrintError> {
         for &operation in selected {
             self.check_operation(operation)
                 .map_err(|error| PrintError::UnsafeSelection(error.to_string()))?;
@@ -165,9 +184,16 @@ impl Document {
         }
         let value_names = self.selection_value_names(&selected)?;
         let mut adapter = IoAdapter { sink, error: None };
-        let result =
-            Printer::new_selection(self, &mut adapter, layout, registry, &selected, value_names)
-                .document();
+        let result = Printer::new_selection(
+            self,
+            &mut adapter,
+            layout,
+            registry,
+            &selected,
+            value_names,
+            scope,
+        )
+        .document();
         if let Some(error) = adapter.error {
             return Err(PrintError::Io(error));
         }
@@ -708,6 +734,7 @@ struct Printer<'a, W> {
     mode: DialectPrintMode,
     registry: &'a DialectRegistry,
     selected: Option<&'a HashSet<OperationId>>,
+    fragment_scope: FragmentScope,
     custom_value_replacements: HashMap<String, String>,
 }
 impl<'a, W: fmt::Write> Printer<'a, W> {
@@ -763,6 +790,7 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             mode,
             registry,
             selected: None,
+            fragment_scope: FragmentScope::Full,
             custom_value_replacements: HashMap::new(),
         }
     }
@@ -773,9 +801,11 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         registry: &'a DialectRegistry,
         selected: &'a HashSet<OperationId>,
         values: HashMap<ValueId, String>,
+        fragment_scope: FragmentScope,
     ) -> Self {
         let mut printer = Self::new(doc, sink, layout, DialectPrintMode::PreferCustom, registry);
         printer.selected = Some(selected);
+        printer.fragment_scope = fragment_scope;
         // The ordinary printer already assigned canonical names. Compute the
         // selection's changes once, rather than rescanning every value for
         // every custom operation being printed.
@@ -962,7 +992,12 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
         if !results.is_empty() {
             self.sink.write_str(" = ")?;
         }
-        if self.mode == DialectPrintMode::PreferCustom
+        let minimal_shell = self.fragment_scope == FragmentScope::Minimal
+            && self
+                .selected
+                .is_some_and(|selected| !selected.contains(&id));
+        if !minimal_shell
+            && self.mode == DialectPrintMode::PreferCustom
             && let Some(mut custom) = self
                 .doc
                 .operation_name(id)
@@ -1049,14 +1084,41 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             " <{",
             "}>",
         )?;
-        self.dictionary(
-            self.doc.operation_attributes(id).ok_or(fmt::Error)?,
-            " {",
-            "}",
-        )?;
+        if minimal_shell {
+            let structural = self
+                .doc
+                .operation_attributes(id)
+                .ok_or(fmt::Error)?
+                .iter()
+                .copied()
+                .filter(|(name, _)| {
+                    matches!(
+                        self.doc.string(*name),
+                        Some(
+                            "sym_name"
+                                | "function_type"
+                                | "sym_visibility"
+                                | "arg_attrs"
+                                | "res_attrs"
+                                | "operand_segment_sizes"
+                                | "result_segment_sizes"
+                        )
+                    )
+                })
+                .collect::<Vec<_>>();
+            self.dictionary(&structural, " {", "}")?;
+        } else {
+            self.dictionary(
+                self.doc.operation_attributes(id).ok_or(fmt::Error)?,
+                " {",
+                "}",
+            )?;
+        }
         self.sink.write_str(" : ")?;
         self.type_id(self.doc.function_type(id).ok_or(fmt::Error)?)?;
-        if let Some(location) = self.doc.operation_location_id(id).ok_or(fmt::Error)? {
+        if !minimal_shell
+            && let Some(location) = self.doc.operation_location_id(id).ok_or(fmt::Error)?
+        {
             self.sink.write_str(" loc(")?;
             self.location(self.doc.location_value(location).ok_or(fmt::Error)?)?;
             self.sink.write_char(')')?;

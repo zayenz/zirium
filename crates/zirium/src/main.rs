@@ -7,7 +7,7 @@ use zirium::{
     dialect::{DialectRegistry, RegistryConfig},
     parser::ParseDiagnosticKind,
     parser::ParsedFile,
-    printer::PrintLayout,
+    printer::{FragmentScope, PrintLayout},
     query::{EvaluationError, EvaluationLimits, EvaluationOptions, Query, QueryOutput},
     semantic::{LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention},
 };
@@ -35,6 +35,7 @@ Options:
   -f, --program-file FILE Read the query from a file instead of an argument
   --strict                Reject incomplete parsing and unknown reachable references
   --ndjson                Emit one attributable JSON record per result
+  --fragment-scope MODE   Selection shells: full (default) or minimal
   --max-work N            Evaluation work limit (default 10000000)
   --max-items N           Maximum items per stream (default 1000000)
 
@@ -65,6 +66,7 @@ fn run() -> Result<(), String> {
     let mut presets = Vec::new();
     let mut strict = false;
     let mut ndjson = false;
+    let mut fragment_scope = FragmentScope::Full;
     let mut limits = EvaluationLimits::default();
     let mut program_path = None;
     let mut inline_query = None;
@@ -94,6 +96,18 @@ fn run() -> Result<(), String> {
             ),
             "--strict" => strict = true,
             "--ndjson" => ndjson = true,
+            "--fragment-scope" => {
+                fragment_scope = match arguments
+                    .next()
+                    .and_then(|value| value.into_string().ok())
+                    .as_deref()
+                {
+                    Some("full") => FragmentScope::Full,
+                    Some("minimal") => FragmentScope::Minimal,
+                    Some(_) => return Err("--fragment-scope requires full or minimal".into()),
+                    None => return Err("missing mode after --fragment-scope".into()),
+                };
+            }
             "--max-work" | "--max-items" => {
                 let value = arguments
                     .next()
@@ -324,7 +338,13 @@ fn run() -> Result<(), String> {
                 limits,
                 |document, output| {
                     if ndjson {
-                        answers.push(ndjson_record(document, &name, output, registry)?);
+                        answers.push(ndjson_record(
+                            document,
+                            &name,
+                            output,
+                            registry,
+                            fragment_scope,
+                        )?);
                         return Ok(());
                     }
                     let mut answer = Vec::new();
@@ -335,7 +355,13 @@ fn run() -> Result<(), String> {
                             ));
                         }
                         QueryOutput::Operations(selected) => document
-                            .write_selection(&mut answer, &selected, PrintLayout::Pretty, registry)
+                            .write_selection_with_scope(
+                                &mut answer,
+                                &selected,
+                                PrintLayout::Pretty,
+                                registry,
+                                fragment_scope,
+                            )
                             .map_err(|error| {
                                 EvaluationError::new(format!("could not print {name}: {error}"))
                             })?,
@@ -399,6 +425,7 @@ fn ndjson_record(
     name: &str,
     output: QueryOutput,
     registry: &DialectRegistry,
+    fragment_scope: FragmentScope,
 ) -> Result<Vec<u8>, EvaluationError> {
     use serde::ser::{SerializeMap, Serializer};
 
@@ -420,7 +447,7 @@ fn ndjson_record(
                 .map_err(|error| EvaluationError::new(error.to_string()))?;
         }
         output => {
-            let result = ndjson_value(document, output, registry)?;
+            let result = ndjson_value(document, output, registry, fragment_scope)?;
             serde_json::to_writer(&mut record, &result)
                 .map_err(|error| EvaluationError::new(error.to_string()))?;
         }
@@ -433,6 +460,7 @@ fn ndjson_value(
     document: &zirium::semantic::Document,
     output: QueryOutput,
     registry: &DialectRegistry,
+    fragment_scope: FragmentScope,
 ) -> Result<serde_json::Value, EvaluationError> {
     Ok(match output {
         QueryOutput::Native(_) => {
@@ -443,7 +471,13 @@ fn ndjson_value(
         QueryOutput::Operations(selected) => {
             let mut bytes = Vec::new();
             document
-                .write_selection(&mut bytes, &selected, PrintLayout::Pretty, registry)
+                .write_selection_with_scope(
+                    &mut bytes,
+                    &selected,
+                    PrintLayout::Pretty,
+                    registry,
+                    fragment_scope,
+                )
                 .map_err(|error| EvaluationError::new(error.to_string()))?;
             serde_json::Value::String(
                 String::from_utf8(bytes)
