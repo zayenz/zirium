@@ -12,7 +12,8 @@ pub(in crate::semantic) fn intern_type(
     attribute_aliases: &HashMap<String, (String, TextRange)>,
     types: &mut Interner<TypeValue>,
     spellings: &mut Vec<String>,
-    generation: u128,
+    generation: u32,
+    owner: u128,
     doc: &mut Document,
 ) -> TypeId {
     let value = lower_type_value(spelling, range, type_aliases, attribute_aliases, doc);
@@ -20,7 +21,7 @@ pub(in crate::semantic) fn intern_type(
     if index as usize == spellings.len() {
         spellings.push(spelling.trim().to_owned());
     }
-    TypeId::new(index as usize, generation)
+    TypeId::with_owner(index as usize, generation, owner)
 }
 
 fn lower_type_value(

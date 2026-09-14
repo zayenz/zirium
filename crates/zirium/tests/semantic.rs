@@ -970,10 +970,90 @@ fn checked_entity_apis_reject_foreign_document_and_operation_ids() {
         .iter()
         .find(|&&id| first.operation_name(id) == Some("vendor.consume"))
         .unwrap();
+    let ty = first.result_types(make).unwrap()[0];
+    let attribute = first.attribute_id(make, "tag").unwrap();
     assert!(first.operation(make).unwrap().result(consume, 0).is_none());
     assert!(first.operation(make).unwrap().result(make, 0).is_some());
+    assert!(second.type_value(ty).is_none());
+    assert!(second.attribute_value(attribute).is_none());
     let region = first.operation_regions(operations[0]).unwrap()[0];
     assert!(first.region(region).unwrap().blocks(&second).is_none());
+}
+
+#[test]
+fn public_clone_rekeys_nested_handles_and_affine_storage() {
+    let parsed = ParsedFile::parse(generic_complete_fixture("valid.mlir")).unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
+    let operation = document
+        .operations()
+        .find(|id| document.operation_name(*id) == Some("test.regions"))
+        .unwrap();
+    let region = document.operation_regions(operation).unwrap()[0];
+    let block = document.region(region).unwrap().blocks(&document).unwrap()[0];
+    let nested = document.block_operations(block).unwrap()[0];
+    let nested_type = document.function_type(nested).unwrap();
+    let attribute_operation = document
+        .operations()
+        .find(|id| document.operation_name(*id) == Some("test.properties"))
+        .unwrap();
+    let attribute = document
+        .attribute_id(attribute_operation, "discardable")
+        .unwrap();
+    let successor_operation = document
+        .operations()
+        .find(|id| document.operation_name(*id) == Some("test.successors"))
+        .unwrap();
+    let successor = document.successors(successor_operation).unwrap()[0];
+
+    let clone = document.clone();
+    clone.validate().unwrap();
+    assert!(clone.operation(operation).is_none());
+    assert!(clone.region(region).is_none());
+    assert!(clone.block(block).is_none());
+    assert!(clone.type_value(nested_type).is_none());
+    assert!(clone.attribute_value(attribute).is_none());
+    assert!(clone.successor_arguments(successor).is_none());
+
+    let parsed = ParsedFile::parse(shaped_affine_fixture("semantic-valid.mlir")).unwrap();
+    let affine_document =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
+    let operation = affine_document.root_operations()[0];
+    let attribute = affine_document.attribute_id(operation, "map").unwrap();
+    let map = match affine_document.attribute_value(attribute).unwrap() {
+        AttributeValue::AffineMap(map) => *map,
+        value => panic!("unexpected map attribute: {value:?}"),
+    };
+    let expression = affine_document.affine_map(map).unwrap().results[0];
+    let set = match affine_document
+        .attribute_value(affine_document.attribute_id(operation, "set").unwrap())
+        .unwrap()
+    {
+        AttributeValue::IntegerSet(set) => *set,
+        value => panic!("unexpected set attribute: {value:?}"),
+    };
+
+    let affine_clone = affine_document.clone();
+    affine_clone.validate().unwrap();
+    assert!(affine_clone.attribute_value(attribute).is_none());
+    assert!(affine_clone.affine_map(map).is_none());
+    assert!(affine_clone.affine_expression(expression).is_none());
+    assert!(affine_clone.integer_set(set).is_none());
+}
+
+#[test]
+fn public_clone_rekeys_invalid_sentinels() {
+    let parsed = ParsedFile::parse(shaped_affine_fixture("semantic-malformed.mlir")).unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
+    document.validate().unwrap();
+    document.clone().validate().unwrap();
 }
 
 #[test]

@@ -202,7 +202,8 @@ pub(in crate::semantic) fn lower_dictionary(
     attribute_spellings: &mut Vec<String>,
     type_aliases: &HashMap<String, (String, TextRange)>,
     attribute_aliases: &HashMap<String, (String, TextRange)>,
-    generation: u128,
+    generation: u32,
+    owner: u128,
     kind: &str,
     doc: &mut Document,
 ) -> Vec<(u32, AttributeId)> {
@@ -332,7 +333,10 @@ pub(in crate::semantic) fn lower_dictionary(
             if index as usize == attribute_spellings.len() {
                 attribute_spellings.push(value_spelling.to_owned());
             }
-            Some((name_id, AttributeId::new(index as usize, generation)))
+            Some((
+                name_id,
+                AttributeId::with_owner(index as usize, generation, owner),
+            ))
         })
         .collect::<Vec<_>>();
     result.sort_by_key(|(name, _)| strings.values[*name as usize].clone());

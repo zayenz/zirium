@@ -12,6 +12,8 @@ impl Document {
         let valid_op = |id: OperationId| self.valid_operation(id);
         if self.operation_generations.len() != self.operations.len()
             || self.operation_alive.len() != self.operations.len()
+            || self.type_generations.len() != self.types.len()
+            || self.attribute_generations.len() != self.attributes.len()
         {
             return Err(ValidationError::InvalidOperationStorage);
         }
@@ -163,15 +165,11 @@ impl Document {
                 .get(op.result_types)
                 .ok_or(ValidationError::InvalidList)?
             {
-                if !self.valid(ty.index, ty.generation, self.types.len()) {
+                if !self.valid_type(ty) {
                     return Err(ValidationError::StaleType(ty));
                 }
             }
-            if !self.valid(
-                op.function_type.index,
-                op.function_type.generation,
-                self.types.len(),
-            ) {
+            if !self.valid_type(op.function_type) {
                 return Err(ValidationError::StaleType(op.function_type));
             }
             for &(name, attribute) in self
@@ -182,7 +180,7 @@ impl Document {
                 if self.strings.get(name as usize).is_none() {
                     return Err(ValidationError::InvalidString);
                 }
-                if !self.valid(attribute.index, attribute.generation, self.attributes.len()) {
+                if !self.valid_attribute(attribute) {
                     return Err(ValidationError::StaleAttribute(attribute));
                 }
             }
@@ -191,9 +189,7 @@ impl Document {
                 .get(op.properties)
                 .ok_or(ValidationError::InvalidList)?
             {
-                if self.strings.get(name as usize).is_none()
-                    || !self.valid(attribute.index, attribute.generation, self.attributes.len())
-                {
+                if self.strings.get(name as usize).is_none() || !self.valid_attribute(attribute) {
                     return Err(ValidationError::StaleAttribute(attribute));
                 }
             }
@@ -339,7 +335,7 @@ impl Document {
                 .get(block.argument_types)
                 .ok_or(ValidationError::InvalidList)?
             {
-                if !self.valid(ty.index, ty.generation, self.types.len()) {
+                if !self.valid_type(ty) {
                     return Err(ValidationError::StaleType(ty));
                 }
             }

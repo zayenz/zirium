@@ -85,13 +85,13 @@ fn allocate_document_identity() -> Arc<DocumentIdentity> {
     }
 }
 
-#[derive(Debug, Default)]
-struct OperationIdentityState {
+#[derive(Clone, Debug, Default)]
+struct HandleIdentityState {
     next: u32,
     allocated: HashSet<u32>,
 }
 
-impl OperationIdentityState {
+impl HandleIdentityState {
     fn allocate(&mut self) -> u32 {
         loop {
             self.next = self.next.wrapping_add(1).max(1);
@@ -123,6 +123,34 @@ macro_rules! id_type {
     };
 }
 
+macro_rules! allocated_id_type {
+    ($name:ident, $description:literal) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[doc = $description]
+        ///
+        /// The handle is valid only in the document that returned it. Public
+        /// document clones use a different owner, and handles abandoned by a
+        /// dropped or failed edit remain stale after later allocations.
+        pub struct $name {
+            index: u32,
+            generation: u32,
+            owner: u128,
+        }
+        impl $name {
+            fn with_owner(index: usize, generation: u32, owner: u128) -> Self {
+                Self {
+                    index: index as u32,
+                    generation,
+                    owner,
+                }
+            }
+            fn index(self) -> usize {
+                self.index as usize
+            }
+        }
+    };
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// A generation-checked operation handle owned by one [`Document`].
 ///
@@ -140,8 +168,11 @@ impl OperationId {
 }
 id_type!(RegionId);
 id_type!(BlockId);
-id_type!(TypeId);
-id_type!(AttributeId);
+allocated_id_type!(TypeId, "A generation-checked interned type handle.");
+allocated_id_type!(
+    AttributeId,
+    "A generation-checked interned attribute handle."
+);
 id_type!(LocationId);
 id_type!(DiagnosticId);
 id_type!(AffineExprId);
@@ -768,12 +799,15 @@ pub struct Block {
 ///
 /// Query methods return `None` for stale or foreign handles unless a checked
 /// variant is available. Use [`Self::edit`] for atomic changes rather than
-/// attempting to construct arena records directly.
-#[derive(Clone, Debug)]
+/// attempting to construct arena records directly. [`Clone::clone`] creates an
+/// independent handle namespace: handles from the source and clone are foreign
+/// to each other. Successful edits preserve handles for surviving entities;
+/// erased entities and handles returned by dropped or failed edits stay stale.
+#[derive(Debug)]
 pub struct Document {
     generation: u128,
     identity: Arc<DocumentIdentity>,
-    operation_identities: Arc<Mutex<OperationIdentityState>>,
+    identities: Arc<Mutex<HandleIdentityState>>,
     operations: Vec<Operation>,
     operation_generations: Vec<u32>,
     operation_alive: Vec<bool>,
@@ -788,8 +822,10 @@ pub struct Document {
     operation_lists: ListPool<OperationId>,
     strings: Vec<String>,
     types: Vec<TypeValue>,
+    type_generations: Vec<u32>,
     type_spellings: Vec<String>,
     attributes: Vec<AttributeValue>,
+    attribute_generations: Vec<u32>,
     attribute_spellings: Vec<String>,
     locations: Vec<LocationValue>,
     location_spellings: Vec<String>,
@@ -812,7 +848,307 @@ pub struct Document {
     alias_expansion_depth_limit: usize,
 }
 
+fn rekey_value_reference(value: &mut ValueReference, generation: u128) {
+    match value {
+        ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => {
+            *operation =
+                OperationId::with_owner(operation.index(), operation.generation, generation);
+        }
+        ValueReference::Resolved(ValueId::BlockArgument { block, .. }) => {
+            *block = BlockId::new(block.index(), generation);
+        }
+        ValueReference::Invalid(diagnostic) => {
+            *diagnostic = DiagnosticId::new(diagnostic.index(), generation);
+        }
+    }
+}
+
+fn rekey_type_value(value: &mut TypeValue, generation: u128) {
+    match value {
+        TypeValue::Complex(element) => rekey_type_value(element, generation),
+        TypeValue::Tuple(elements) => {
+            for element in elements {
+                rekey_type_value(element, generation);
+            }
+        }
+        TypeValue::Tensor {
+            dimensions,
+            element,
+            encoding,
+            ..
+        } => {
+            rekey_dimensions(dimensions, generation);
+            rekey_type_value(element, generation);
+            if let Some(encoding) = encoding {
+                rekey_attribute_value(encoding, generation);
+            }
+        }
+        TypeValue::Vector {
+            dimensions,
+            element,
+            ..
+        } => {
+            rekey_dimensions(dimensions, generation);
+            rekey_type_value(element, generation);
+        }
+        TypeValue::MemRef {
+            dimensions,
+            element,
+            layout,
+            memory_space,
+        } => {
+            rekey_dimensions(dimensions, generation);
+            rekey_type_value(element, generation);
+            if let Some(layout) = layout {
+                rekey_memref_layout(layout, generation);
+            }
+            if let Some(memory_space) = memory_space {
+                rekey_attribute_value(memory_space, generation);
+            }
+        }
+        TypeValue::Function { inputs, results } => {
+            for element in inputs.iter_mut().chain(results) {
+                rekey_type_value(element, generation);
+            }
+        }
+        TypeValue::Invalid(diagnostic) => {
+            *diagnostic = DiagnosticId::new(diagnostic.index(), generation);
+        }
+        _ => {}
+    }
+}
+
+fn rekey_dimensions(dimensions: &mut [ShapedDimension], generation: u128) {
+    for dimension in dimensions {
+        dimension.invalid = dimension
+            .invalid
+            .map(|id| DiagnosticId::new(id.index(), generation));
+    }
+}
+
+fn rekey_memref_layout(layout: &mut MemRefLayout, generation: u128) {
+    match layout {
+        MemRefLayout::AffineMap(id) => *id = AffineMapId::new(id.index(), generation),
+        MemRefLayout::Opaque { parameters, .. } => {
+            for parameter in parameters {
+                rekey_attribute_value(parameter, generation);
+            }
+        }
+        MemRefLayout::Attribute(attribute) => rekey_attribute_value(attribute, generation),
+        MemRefLayout::Invalid(diagnostic) => {
+            *diagnostic = DiagnosticId::new(diagnostic.index(), generation);
+        }
+    }
+}
+
+fn rekey_attribute_value(value: &mut AttributeValue, generation: u128) {
+    match value {
+        AttributeValue::Type(value) => rekey_type_value(value, generation),
+        AttributeValue::Array(values)
+        | AttributeValue::DenseArray {
+            elements: values, ..
+        } => {
+            for value in values {
+                rekey_attribute_value(value, generation);
+            }
+        }
+        AttributeValue::Dictionary(values) => {
+            for (_, value) in values {
+                rekey_attribute_value(value, generation);
+            }
+        }
+        AttributeValue::Location(value) => rekey_location_value(value, generation),
+        AttributeValue::AffineMap(id) => *id = AffineMapId::new(id.index(), generation),
+        AttributeValue::IntegerSet(id) => *id = IntegerSetId::new(id.index(), generation),
+        AttributeValue::Invalid(diagnostic) => {
+            *diagnostic = DiagnosticId::new(diagnostic.index(), generation);
+        }
+        _ => {}
+    }
+}
+
+fn rekey_location_value(value: &mut LocationValue, generation: u128) {
+    match value {
+        LocationValue::Name {
+            child: Some(child), ..
+        } => rekey_location_value(child, generation),
+        LocationValue::CallSite { callee, caller } => {
+            rekey_location_value(callee, generation);
+            rekey_location_value(caller, generation);
+        }
+        LocationValue::Fused { locations, .. } => {
+            for location in locations {
+                rekey_location_value(location, generation);
+            }
+        }
+        LocationValue::Invalid(diagnostic) => {
+            *diagnostic = DiagnosticId::new(diagnostic.index(), generation);
+        }
+        _ => {}
+    }
+}
+
+impl Clone for Document {
+    fn clone(&self) -> Self {
+        let mut cloned = self.edit_snapshot();
+        cloned.identities = Arc::new(Mutex::new(
+            self.identities
+                .lock()
+                .expect("handle identity allocator is not poisoned")
+                .clone(),
+        ));
+        cloned.rekey(allocate_document_identity());
+        cloned.analyses = AnalysisStore::default();
+        cloned
+    }
+}
+
 impl Document {
+    fn edit_snapshot(&self) -> Self {
+        Self {
+            generation: self.generation,
+            identity: Arc::clone(&self.identity),
+            identities: Arc::clone(&self.identities),
+            operations: self.operations.clone(),
+            operation_generations: self.operation_generations.clone(),
+            operation_alive: self.operation_alive.clone(),
+            regions: self.regions.clone(),
+            blocks: self.blocks.clone(),
+            values: self.values.clone(),
+            types_lists: self.types_lists.clone(),
+            attribute_lists: self.attribute_lists.clone(),
+            successor_lists: self.successor_lists.clone(),
+            region_lists: self.region_lists.clone(),
+            block_lists: self.block_lists.clone(),
+            operation_lists: self.operation_lists.clone(),
+            strings: self.strings.clone(),
+            types: self.types.clone(),
+            type_generations: self.type_generations.clone(),
+            type_spellings: self.type_spellings.clone(),
+            attributes: self.attributes.clone(),
+            attribute_generations: self.attribute_generations.clone(),
+            attribute_spellings: self.attribute_spellings.clone(),
+            locations: self.locations.clone(),
+            location_spellings: self.location_spellings.clone(),
+            affine_expressions: self.affine_expressions.clone(),
+            affine_maps: self.affine_maps.clone(),
+            integer_sets: self.integer_sets.clone(),
+            diagnostics: self.diagnostics.clone(),
+            roots: self.roots,
+            complete: self.complete,
+            retention_profile: self.retention_profile,
+            retained_source: self.retained_source.clone(),
+            retained_syntax: self.retained_syntax.clone(),
+            syntax_map: self.syntax_map.clone(),
+            blob_ranges: self.blob_ranges.clone(),
+            dirty_operations: self.dirty_operations.clone(),
+            dirty_blocks: self.dirty_blocks.clone(),
+            revision: self.revision,
+            analyses: self.analyses.clone(),
+            attribute_depth_limit: self.attribute_depth_limit,
+            alias_expansion_depth_limit: self.alias_expansion_depth_limit,
+        }
+    }
+
+    fn rekey(&mut self, identity: Arc<DocumentIdentity>) {
+        let generation = identity.0;
+        let operation =
+            |id: OperationId| OperationId::with_owner(id.index(), id.generation, generation);
+        let region = |id: RegionId| RegionId::new(id.index(), generation);
+        let block = |id: BlockId| BlockId::new(id.index(), generation);
+        let ty = |id: TypeId| TypeId::with_owner(id.index(), id.generation, generation);
+        let attribute =
+            |id: AttributeId| AttributeId::with_owner(id.index(), id.generation, generation);
+        let location = |id: LocationId| LocationId::new(id.index(), generation);
+        let diagnostic = |id: DiagnosticId| DiagnosticId::new(id.index(), generation);
+        let affine_expr = |id: AffineExprId| AffineExprId::new(id.index(), generation);
+
+        for value in &mut self.values.0 {
+            rekey_value_reference(value, generation);
+        }
+        for id in &mut self.types_lists.0 {
+            *id = ty(*id);
+        }
+        for (_, id) in &mut self.attribute_lists.0 {
+            *id = attribute(*id);
+        }
+        for successor in &mut self.successor_lists.0 {
+            successor.block = block(successor.block);
+            successor.invalid = successor.invalid.map(diagnostic);
+            successor.generation = generation;
+        }
+        for id in &mut self.region_lists.0 {
+            *id = region(*id);
+        }
+        for id in &mut self.block_lists.0 {
+            *id = block(*id);
+        }
+        for id in &mut self.operation_lists.0 {
+            *id = operation(*id);
+        }
+        for value in &mut self.types {
+            rekey_type_value(value, generation);
+        }
+        for value in &mut self.attributes {
+            rekey_attribute_value(value, generation);
+        }
+        for value in &mut self.locations {
+            rekey_location_value(value, generation);
+        }
+        for value in &mut self.affine_expressions {
+            match value {
+                AffineExprValue::Binary { left, right, .. } => {
+                    *left = affine_expr(*left);
+                    *right = affine_expr(*right);
+                }
+                AffineExprValue::Invalid(id) => *id = diagnostic(*id),
+                _ => {}
+            }
+        }
+        for value in &mut self.affine_maps {
+            for id in &mut value.results {
+                *id = affine_expr(*id);
+            }
+        }
+        for value in &mut self.integer_sets {
+            for constraint in &mut value.constraints {
+                constraint.left = affine_expr(constraint.left);
+                constraint.right = affine_expr(constraint.right);
+                if let IntegerSetRelation::Invalid(id) = &mut constraint.relation {
+                    *id = diagnostic(*id);
+                }
+            }
+        }
+        for value in &mut self.operations {
+            value.id = operation(value.id);
+            value.parent = value.parent.map(block);
+            value.function_type = ty(value.function_type);
+            value.location = value.location.map(location);
+        }
+        for value in &mut self.regions {
+            value.generation = generation;
+            value.parent = operation(value.parent);
+        }
+        for value in &mut self.blocks {
+            value.parent = region(value.parent);
+        }
+        self.syntax_map = self
+            .syntax_map
+            .iter()
+            .map(|(id, range)| (operation(*id), *range))
+            .collect();
+        self.dirty_operations = self
+            .dirty_operations
+            .iter()
+            .copied()
+            .map(operation)
+            .collect();
+        self.dirty_blocks = self.dirty_blocks.iter().copied().map(block).collect();
+
+        self.generation = generation;
+        self.identity = identity;
+    }
+
     pub fn operations(&self) -> impl Iterator<Item = OperationId> + '_ {
         self.operation_generations
             .iter()
@@ -1015,12 +1351,11 @@ impl Document {
             })
     }
     pub fn type_spelling(&self, id: TypeId) -> Option<&str> {
-        self.valid(id.index, id.generation, self.types.len())
+        self.valid_type(id)
             .then(|| self.type_spellings[id.index()].as_str())
     }
     pub fn type_value(&self, id: TypeId) -> Option<&TypeValue> {
-        self.valid(id.index, id.generation, self.types.len())
-            .then(|| &self.types[id.index()])
+        self.valid_type(id).then(|| &self.types[id.index()])
     }
     pub(crate) fn value_type_id(&self, reference: ValueReference) -> Option<TypeId> {
         match reference {
@@ -1136,11 +1471,11 @@ impl Document {
         Some(format!("^bb{}{suffix}", label?))
     }
     pub fn attribute_value(&self, id: AttributeId) -> Option<&AttributeValue> {
-        self.valid(id.index, id.generation, self.attributes.len())
+        self.valid_attribute(id)
             .then(|| &self.attributes[id.index()])
     }
     pub fn attribute_spelling_value(&self, id: AttributeId) -> Option<&str> {
-        self.valid(id.index, id.generation, self.attributes.len())
+        self.valid_attribute(id)
             .then(|| self.attribute_spellings[id.index()].as_str())
     }
     pub fn affine_expression(&self, id: AffineExprId) -> Option<&AffineExprValue> {
@@ -1233,6 +1568,7 @@ impl Document {
             + self.strings.capacity() * std::mem::size_of::<String>()
             + self.strings.iter().map(String::capacity).sum::<usize>()
             + self.types.capacity() * std::mem::size_of::<TypeValue>()
+            + self.type_generations.capacity() * std::mem::size_of::<u32>()
             + self.type_spellings.capacity() * std::mem::size_of::<String>()
             + self
                 .type_spellings
@@ -1240,6 +1576,7 @@ impl Document {
                 .map(String::capacity)
                 .sum::<usize>()
             + self.attributes.capacity() * std::mem::size_of::<AttributeValue>()
+            + self.attribute_generations.capacity() * std::mem::size_of::<u32>()
             + self.attribute_spellings.capacity() * std::mem::size_of::<String>()
             + self
                 .attribute_spellings
@@ -1340,6 +1677,24 @@ impl Document {
     }
     fn valid(&self, index: u32, generation: u128, len: usize) -> bool {
         generation == self.generation && (index as usize) < len
+    }
+
+    fn type_id(&self, index: usize) -> TypeId {
+        TypeId::with_owner(index, self.type_generations[index], self.identity.0)
+    }
+
+    fn attribute_id_at(&self, index: usize) -> AttributeId {
+        AttributeId::with_owner(index, self.attribute_generations[index], self.identity.0)
+    }
+
+    fn valid_type(&self, id: TypeId) -> bool {
+        id.owner == self.identity.0
+            && self.type_generations.get(id.index()).copied() == Some(id.generation)
+    }
+
+    fn valid_attribute(&self, id: AttributeId) -> bool {
+        id.owner == self.identity.0
+            && self.attribute_generations.get(id.index()).copied() == Some(id.generation)
     }
 
     fn valid_operation(&self, id: OperationId) -> bool {
@@ -1995,8 +2350,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operation_identity_allocation_skips_used_values_across_wrap() {
-        let mut identities = OperationIdentityState {
+    fn handle_identity_allocation_skips_used_values_across_wrap() {
+        let mut identities = HandleIdentityState {
             next: u32::MAX - 1,
             allocated: HashSet::from([u32::MAX]),
         };

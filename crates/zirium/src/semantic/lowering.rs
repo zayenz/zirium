@@ -79,11 +79,17 @@ fn lower_with_registry(
 ) -> LoweringResult {
     let identity = allocate_document_identity();
     let generation = identity.0;
-    let operation_identities = Arc::new(Mutex::new(OperationIdentityState::default()));
-    let operation_generation = operation_identities
-        .lock()
-        .expect("operation identity allocator is not poisoned")
-        .allocate();
+    let identities = Arc::new(Mutex::new(HandleIdentityState::default()));
+    let (operation_generation, type_generation, attribute_generation) = {
+        let mut identities = identities
+            .lock()
+            .expect("handle identity allocator is not poisoned");
+        (
+            identities.allocate(),
+            identities.allocate(),
+            identities.allocate(),
+        )
+    };
     let source = file.source();
     let syntax = file.syntax();
     let ops = syntax.file().operations().collect::<Vec<_>>();
@@ -195,7 +201,7 @@ fn lower_with_registry(
     let mut doc = Document {
         generation,
         identity: identity.clone(),
-        operation_identities,
+        identities,
         operations: Vec::new(),
         operation_generations: vec![operation_generation; ops.len()],
         operation_alive: vec![true; ops.len()],
@@ -210,8 +216,10 @@ fn lower_with_registry(
         operation_lists: ListPool::default(),
         strings: Vec::new(),
         types: Vec::new(),
+        type_generations: Vec::new(),
         type_spellings: Vec::new(),
         attributes: Vec::new(),
+        attribute_generations: Vec::new(),
         attribute_spellings: Vec::new(),
         locations: Vec::new(),
         location_spellings: Vec::new(),
@@ -640,7 +648,8 @@ fn lower_with_registry(
                 &attribute_aliases,
                 &mut types,
                 &mut type_spellings,
-                generation,
+                type_generation,
+                identity.0,
                 &mut doc,
             );
             tys.push(ty_id);
@@ -693,7 +702,8 @@ fn lower_with_registry(
                     &attribute_aliases,
                     &mut types,
                     &mut type_spellings,
-                    generation,
+                    type_generation,
+                    identity.0,
                     &mut doc,
                 )
             })
@@ -721,7 +731,8 @@ fn lower_with_registry(
             &attribute_aliases,
             &mut types,
             &mut type_spellings,
-            generation,
+            type_generation,
+            identity.0,
             &mut doc,
         );
         let operands = op
@@ -753,7 +764,8 @@ fn lower_with_registry(
             &mut attribute_spellings,
             &type_aliases,
             &attribute_aliases,
-            generation,
+            attribute_generation,
+            identity.0,
             "attribute",
             &mut doc,
         );
@@ -772,7 +784,8 @@ fn lower_with_registry(
                 &mut attribute_spellings,
                 &type_aliases,
                 &attribute_aliases,
-                generation,
+                attribute_generation,
+                identity.0,
                 "inherent attribute",
                 &mut doc,
             ));
@@ -791,7 +804,7 @@ fn lower_with_registry(
                 }
                 attributes.push((
                     strings.intern("sym_name"),
-                    AttributeId::new(index as usize, generation),
+                    AttributeId::with_owner(index as usize, attribute_generation, identity.0),
                 ));
             }
         }
@@ -832,7 +845,7 @@ fn lower_with_registry(
                 }
                 attributes.push((
                     strings.intern(name),
-                    AttributeId::new(index as usize, generation),
+                    AttributeId::with_owner(index as usize, attribute_generation, identity.0),
                 ));
             }
             attributes.sort_by_key(|(name, _)| strings.values[*name as usize].clone());
@@ -846,7 +859,8 @@ fn lower_with_registry(
             &mut attribute_spellings,
             &type_aliases,
             &attribute_aliases,
-            generation,
+            attribute_generation,
+            identity.0,
             "property",
             &mut doc,
         );
@@ -941,6 +955,7 @@ fn lower_with_registry(
         });
     }
     doc.types = types.values.clone();
+    doc.type_generations = vec![type_generation; doc.types.len()];
     doc.type_spellings = type_spellings.clone();
 
     for (i, op) in ops.iter().enumerate() {
@@ -1072,8 +1087,10 @@ fn lower_with_registry(
     doc.roots = doc.operation_lists.push(&roots);
     doc.strings = strings.values;
     doc.types = types.values;
+    doc.type_generations = vec![type_generation; doc.types.len()];
     doc.type_spellings = type_spellings;
     doc.attributes = attrs.values;
+    doc.attribute_generations = vec![attribute_generation; doc.attributes.len()];
     doc.attribute_spellings = attribute_spellings;
     doc.locations = locations.values;
     doc.location_spellings = location_spellings;

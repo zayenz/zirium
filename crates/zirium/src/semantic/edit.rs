@@ -5,6 +5,9 @@ impl Document {
     /// structurally valid document.
     ///
     /// Changes become visible only when [`DocumentEditor::commit`] succeeds.
+    /// The transaction snapshot keeps the document's handle namespace, so
+    /// handles for surviving entities remain valid after a successful commit.
+    /// Handles returned only by a dropped or failed edit remain stale.
     /// Registered schemas and semantic verifiers run only at commit, using the
     /// supplied registry.
     ///
@@ -22,7 +25,7 @@ impl Document {
         }
         self.validate_structure().map_err(EditError::Structural)?;
         Ok(DocumentEditor {
-            working: self.clone(),
+            working: self.edit_snapshot(),
             original: self,
             registry,
         })
@@ -87,9 +90,9 @@ impl DocumentEditor<'_> {
             .collect::<Vec<_>>();
         let generation = self
             .working
-            .operation_identities
+            .identities
             .lock()
-            .expect("operation identity allocator is not poisoned")
+            .expect("handle identity allocator is not poisoned")
             .allocate();
         let index = self
             .working
@@ -155,9 +158,9 @@ impl DocumentEditor<'_> {
         self.working.operation_alive[operation.index()] = false;
         let tombstone_generation = self
             .working
-            .operation_identities
+            .identities
             .lock()
-            .expect("operation identity allocator is not poisoned")
+            .expect("handle identity allocator is not poisoned")
             .allocate();
         self.working.operation_generations[operation.index()] = tombstone_generation;
         Ok(())
@@ -717,12 +720,19 @@ impl DocumentEditor<'_> {
             .iter()
             .position(|value| value == &spec.value)
         {
-            TypeId::new(index, self.working.generation)
+            self.working.type_id(index)
         } else {
             let index = self.working.types.len();
+            let generation = self
+                .working
+                .identities
+                .lock()
+                .expect("handle identity allocator is not poisoned")
+                .allocate();
             self.working.types.push(spec.value.clone());
+            self.working.type_generations.push(generation);
             self.working.type_spellings.push(spec.spelling.clone());
-            TypeId::new(index, self.working.generation)
+            TypeId::with_owner(index, generation, self.working.identity.0)
         }
     }
     fn intern_attribute(&mut self, spec: &AttributeSpec) -> AttributeId {
@@ -732,12 +742,19 @@ impl DocumentEditor<'_> {
             .iter()
             .position(|value| value == &spec.value)
         {
-            AttributeId::new(index, self.working.generation)
+            self.working.attribute_id_at(index)
         } else {
             let index = self.working.attributes.len();
+            let generation = self
+                .working
+                .identities
+                .lock()
+                .expect("handle identity allocator is not poisoned")
+                .allocate();
             self.working.attributes.push(spec.value.clone());
+            self.working.attribute_generations.push(generation);
             self.working.attribute_spellings.push(spec.spelling.clone());
-            AttributeId::new(index, self.working.generation)
+            AttributeId::with_owner(index, generation, self.working.identity.0)
         }
     }
     fn intern_attributes(&mut self, specs: &[AttributeSpec]) -> Vec<(u32, AttributeId)> {

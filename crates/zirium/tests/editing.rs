@@ -114,6 +114,16 @@ fn empty_function_type() -> TypeSpec {
     }
 }
 
+fn result_function_type(result: &TypeSpec) -> TypeSpec {
+    TypeSpec {
+        spelling: format!("() -> {}", result.spelling),
+        value: TypeValue::Function {
+            inputs: vec![],
+            results: vec![result.value.clone()],
+        },
+    }
+}
+
 fn unknown_spec(name: &str) -> OperationSpec {
     OperationSpec {
         name: name.into(),
@@ -1773,6 +1783,12 @@ fn provisional_handles_from_dropped_or_failed_transactions_are_stale() {
         editor.erase(dropped_operation),
         Err(EditError::StaleOperation(id)) if id == dropped_operation
     ));
+    let replacement = editor
+        .insert(InsertionPoint::Root(1), unknown_spec("replacement"))
+        .unwrap();
+    editor.commit().unwrap();
+    assert_ne!(dropped_operation, replacement);
+    assert!(dropped.operation(dropped_operation).is_none());
 
     let mut failed = registered("%constant = arith.constant 1 : i32");
     let original = failed.root_operations()[0];
@@ -1808,5 +1824,208 @@ fn provisional_handles_from_dropped_or_failed_transactions_are_stale() {
         editor.insert(InsertionPoint::Root(1), spec),
         Err(EditError::StaleValue(value)) if value == failed_value
     ));
+    let replacement = editor
+        .insert(InsertionPoint::Root(1), unknown_spec("failed.replacement"))
+        .unwrap();
+    editor.commit().unwrap();
+    assert_ne!(failed_operation, replacement);
+    assert!(failed.operation(failed_operation).is_none());
     validate(&failed);
+}
+
+#[test]
+fn public_clones_use_foreign_handle_namespaces() {
+    let mut source = hybrid(
+        b"%value = \"source\"() {tag = \"source\"} : () -> i32",
+        LoweringMode::Strict,
+    );
+    let source_operation = source.root_operations()[0];
+    let source_type = source.result_types(source_operation).unwrap()[0];
+    let source_attribute = source.attribute_id(source_operation, "tag").unwrap();
+
+    let mut clone = source.clone();
+    let clone_operation = clone.root_operations()[0];
+    let clone_type = clone.result_types(clone_operation).unwrap()[0];
+    let clone_attribute = clone.attribute_id(clone_operation, "tag").unwrap();
+    assert!(clone.operation(source_operation).is_none());
+    assert!(clone.type_value(source_type).is_none());
+    assert!(clone.attribute_value(source_attribute).is_none());
+    assert!(clone.operation_syntax_range(source_operation).is_none());
+    assert!(source.operation(clone_operation).is_none());
+    assert!(source.type_value(clone_type).is_none());
+    assert!(source.attribute_value(clone_attribute).is_none());
+    assert!(clone.operation_syntax_range(clone_operation).is_some());
+
+    let clone_of_clone = clone.clone();
+    assert!(clone_of_clone.operation(clone_operation).is_none());
+    assert!(clone_of_clone.type_value(clone_type).is_none());
+    assert!(clone_of_clone.attribute_value(clone_attribute).is_none());
+
+    let source_inserted = {
+        let mut editor = source.edit(DialectRegistry::baseline()).unwrap();
+        let inserted = editor
+            .insert(InsertionPoint::Root(1), unknown_spec("source.inserted"))
+            .unwrap();
+        editor.commit().unwrap();
+        inserted
+    };
+    let clone_inserted = {
+        let mut editor = clone.edit(DialectRegistry::baseline()).unwrap();
+        let inserted = editor
+            .insert(InsertionPoint::Root(1), unknown_spec("clone.inserted"))
+            .unwrap();
+        editor.commit().unwrap();
+        inserted
+    };
+    assert_ne!(source_inserted, clone_inserted);
+    assert!(source.operation(clone_inserted).is_none());
+    assert!(clone.operation(source_inserted).is_none());
+}
+
+#[test]
+fn ordinary_commits_preserve_surviving_handles() {
+    let mut document = generic("%value = \"source\"() {tag = \"source\"} : () -> i32");
+    let operation = document.root_operations()[0];
+    let ty = document.result_types(operation).unwrap()[0];
+    let attribute = document.attribute_id(operation, "tag").unwrap();
+
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
+    editor
+        .insert(InsertionPoint::Root(1), unknown_spec("inserted"))
+        .unwrap();
+    editor.commit().unwrap();
+
+    assert!(document.operation(operation).is_some());
+    assert_eq!(document.type_spelling(ty), Some("i32"));
+    assert_eq!(
+        document.attribute_spelling_value(attribute),
+        Some("\"source\"")
+    );
+}
+
+#[test]
+fn abandoned_type_and_attribute_handles_do_not_resolve_after_later_allocation() {
+    let mut document = generic("\"original\"() : () -> ()");
+    let (abandoned_type, abandoned_attribute) = {
+        let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
+        let result_type = i32_type();
+        let inserted = editor
+            .insert(
+                InsertionPoint::Root(1),
+                OperationSpec {
+                    function_type: result_function_type(&result_type),
+                    result_types: vec![result_type],
+                    attributes: vec![AttributeSpec {
+                        name: "tag".into(),
+                        spelling: "\"abandoned\"".into(),
+                        value: zirium::semantic::AttributeValue::String("\"abandoned\"".into()),
+                    }],
+                    ..unknown_spec("abandoned")
+                },
+            )
+            .unwrap();
+        (
+            editor.document().result_types(inserted).unwrap()[0],
+            editor.document().attribute_id(inserted, "tag").unwrap(),
+        )
+    };
+
+    let (later_type, later_attribute) = {
+        let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
+        let result_type = i64_type();
+        let inserted = editor
+            .insert(
+                InsertionPoint::Root(1),
+                OperationSpec {
+                    function_type: result_function_type(&result_type),
+                    result_types: vec![result_type],
+                    attributes: vec![AttributeSpec {
+                        name: "tag".into(),
+                        spelling: "\"later\"".into(),
+                        value: zirium::semantic::AttributeValue::String("\"later\"".into()),
+                    }],
+                    ..unknown_spec("later")
+                },
+            )
+            .unwrap();
+        let result = (
+            editor.document().result_types(inserted).unwrap()[0],
+            editor.document().attribute_id(inserted, "tag").unwrap(),
+        );
+        editor.commit().unwrap();
+        result
+    };
+
+    assert_ne!(abandoned_type, later_type);
+    assert_ne!(abandoned_attribute, later_attribute);
+    assert!(document.type_value(abandoned_type).is_none());
+    assert!(document.attribute_value(abandoned_attribute).is_none());
+    assert_eq!(document.type_spelling(later_type), Some("i64"));
+    assert_eq!(
+        document.attribute_spelling_value(later_attribute),
+        Some("\"later\"")
+    );
+}
+
+#[test]
+fn failed_type_and_attribute_handles_do_not_resolve_after_later_allocation() {
+    let mut document = generic("\"original\"() : () -> ()");
+    let (failed_type, failed_attribute) = {
+        let mut editor = document.edit(&REJECTING_VALUE_REGISTRY).unwrap();
+        let result_type = i32_type();
+        let inserted = editor
+            .insert(
+                InsertionPoint::Root(1),
+                OperationSpec {
+                    function_type: result_function_type(&result_type),
+                    result_types: vec![result_type],
+                    attributes: vec![AttributeSpec {
+                        name: "tag".into(),
+                        spelling: "#edit.rejected<failed>".into(),
+                        value: zirium::semantic::AttributeValue::Opaque(Arc::from(
+                            b"#edit.rejected<failed>".as_slice(),
+                        )),
+                    }],
+                    ..unknown_spec("failed")
+                },
+            )
+            .unwrap();
+        let result = (
+            editor.document().result_types(inserted).unwrap()[0],
+            editor.document().attribute_id(inserted, "tag").unwrap(),
+        );
+        assert!(matches!(editor.commit(), Err(EditError::Semantic(_))));
+        result
+    };
+
+    let (later_type, later_attribute) = {
+        let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
+        let result_type = i64_type();
+        let inserted = editor
+            .insert(
+                InsertionPoint::Root(1),
+                OperationSpec {
+                    function_type: result_function_type(&result_type),
+                    result_types: vec![result_type],
+                    attributes: vec![AttributeSpec {
+                        name: "tag".into(),
+                        spelling: "\"later\"".into(),
+                        value: zirium::semantic::AttributeValue::String("\"later\"".into()),
+                    }],
+                    ..unknown_spec("later")
+                },
+            )
+            .unwrap();
+        let result = (
+            editor.document().result_types(inserted).unwrap()[0],
+            editor.document().attribute_id(inserted, "tag").unwrap(),
+        );
+        editor.commit().unwrap();
+        result
+    };
+
+    assert_ne!(failed_type, later_type);
+    assert_ne!(failed_attribute, later_attribute);
+    assert!(document.type_value(failed_type).is_none());
+    assert!(document.attribute_value(failed_attribute).is_none());
 }
