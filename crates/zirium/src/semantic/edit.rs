@@ -51,6 +51,11 @@ impl DocumentEditor<'_> {
 
     /// Inserts a regionless operation at a root or block position.
     ///
+    /// On a [`RetentionProfile::Hybrid`] document, insertion is a structural
+    /// edit: it clears retained source, CST, syntax mappings, and dirty sets.
+    /// The committed document therefore cannot produce source-preserving
+    /// output; use canonical output instead.
+    ///
     /// # Errors
     ///
     /// Returns an error for a stale or foreign insertion block, an out-of-range
@@ -142,6 +147,11 @@ impl DocumentEditor<'_> {
     }
 
     /// Removes a regionless operation that has no live uses.
+    ///
+    /// On a [`RetentionProfile::Hybrid`] document, erasure is a structural
+    /// edit: it clears retained source, CST, syntax mappings, and dirty sets.
+    /// The committed document therefore cannot produce source-preserving
+    /// output; use canonical output instead.
     ///
     /// # Errors
     ///

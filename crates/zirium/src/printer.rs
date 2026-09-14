@@ -483,7 +483,9 @@ impl Document {
     /// Returns source-preserving output as bytes.
     ///
     /// Unchanged ranges are copied from retained source. Dirty operations and
-    /// blocks are regenerated using generic syntax.
+    /// blocks are regenerated using generic syntax. Structural insertion and
+    /// erasure edits clear that retained source and mappings, so preserving
+    /// output returns [`PreserveError::NotHybrid`] after either edit.
     ///
     /// # Errors
     ///

@@ -318,6 +318,34 @@ def test_operation_insertion_uses_an_existing_complete_function_type():
     assert doc.structurally_equal(reparsed.document)
 
 
+def test_hybrid_structural_edit_disables_preserving_output_but_failed_edit_retains_it():
+    doc = document()
+    doc.preserving_bytes()
+    operation = doc.operation_table("vendor.make").operation(0)
+    spec = zirium.OperationSpec(
+        "vendor.inserted", [], [operation.result_type(0)], operation.function_type()
+    )
+
+    with doc.edit() as edit:
+        edit.insert_root(0, spec)
+    with pytest.raises(ValueError, match="hybrid document"):
+        doc.preserving_bytes()
+
+    retained = document()
+    before = retained.preserving_bytes()
+    retained_operation = retained.operation_table("vendor.make").operation(0)
+    retained_spec = zirium.OperationSpec(
+        "vendor.inserted",
+        [],
+        [retained_operation.result_type(0)],
+        retained_operation.function_type(),
+    )
+    with pytest.raises(RuntimeError), retained.edit() as edit:
+        edit.insert_root(0, retained_spec)
+        raise RuntimeError("abort structural edit")
+    assert retained.preserving_bytes() == before
+
+
 def test_operation_function_type_is_checked_and_specs_reject_foreign_types():
     doc = generic_document('%value = "value"() : () -> i32')
     operation = doc.operation_table().operation(0)

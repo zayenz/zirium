@@ -29,12 +29,16 @@ rejected. Rust `TypeSpec` and `AttributeSpec` are arena-independent and may
 describe fresh valid spellings; Python wrapper specs require same-document
 wrappers where they carry identity.
 
-Insertion and erasure invalidate source mappings. Consequently, a document
-that has undergone either operation cannot use preserving output. Use
-canonical output for the edited semantic document, or retain a separate
-`ParsedFile` if byte-for-byte original bytes are needed. Attribute edits on a
-hybrid document can still use preserving output; the [output-mode guide](../README.md#output-modes)
-shows the distinction.
+Insertion and erasure are structural edits that clear retained source, CST,
+syntax mappings, and dirty sets. Consequently, a Hybrid document that has
+successfully undergone either operation transitions to semantic-only state;
+`preserving_bytes`/`write_preserving` fail with the “hybrid document” error.
+Use canonical output for the edited semantic document, or retain a separate
+`ParsedFile` if byte-for-byte original bytes are needed. A failed or abandoned
+transaction leaves the original Hybrid retention and preserving output
+unchanged. Attribute edits on a Hybrid document can still use preserving
+output. Span/comment ownership for newly inserted or surviving text is future
+work and is outside this API's scope.
 
 The CLI's `set_attr` and `remove_attr` commands edit selected operations and
 emit a complete document with `do ...; emit`; they do not construct or

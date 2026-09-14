@@ -251,6 +251,8 @@ impl SemanticEdit {
         Ok(false)
     }
 
+    /// On Hybrid documents, insertion clears retained source/CST and syntax
+    /// mappings when committed; preserving output then raises `ValueError`.
     fn insert_root(&mut self, index: usize, spec: &OperationSpec) -> PyResult<()> {
         self.ensure_open()?;
         same_document(&self.state, &spec.state)?;
@@ -261,6 +263,8 @@ impl SemanticEdit {
         Ok(())
     }
 
+    /// On Hybrid documents, insertion clears retained source/CST and syntax
+    /// mappings when committed; preserving output then raises `ValueError`.
     fn insert(
         &mut self,
         block: &SemanticBlock,
@@ -277,6 +281,8 @@ impl SemanticEdit {
         Ok(())
     }
 
+    /// On Hybrid documents, erasure clears retained source/CST and syntax
+    /// mappings when committed; preserving output then raises `ValueError`.
     fn erase(&mut self, operation: &SemanticOperation) -> PyResult<()> {
         self.ensure_open()?;
         let operation = self.operation(operation)?;
