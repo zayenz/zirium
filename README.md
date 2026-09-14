@@ -194,6 +194,10 @@ links to their exact registry definitions.
 The [corpus notes](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/README.md)
 describe how syntax compatibility is checked against `llvmorg-22.1.0`.
 
+The [cross-interface capability reference](docs/capabilities.md) compares
+parsing, verification, queries, construction, mutation, output, callbacks,
+registries, and resource limits across Rust, Python, and the CLI.
+
 ## Agent skills
 
 The repository includes optional skills for agents working with Zirium:
