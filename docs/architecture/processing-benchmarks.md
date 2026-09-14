@@ -132,5 +132,21 @@ I/O for modules with 128, 512, and 1,024 independent constants. It checks output
 counts and reports three-run medians after one warm-up. An optional positional
 argument selects another binary.
 
+The opt-in output-amplification mode measures the CLI's peak RSS while many
+emissions are staged before stdout delivery:
+
+```sh
+python3 python/benchmarks/selection_printing_benchmark.py --output-rss
+```
+
+It accepts only a binary in a `release` directory. Normal and JSONL runs execute
+in separate child processes, redirect stdout to a file, and compare every byte
+with a one-emission reference. The default workload emits one 128-constant
+selection 256, 1,024, and 4,096 times. Each row records the platform, binary,
+release profile, workload dimensions, emitted bytes, run count, elapsed-time
+median and spread, and peak-RSS median and spread. Use `--rss-constants`,
+`--rss-emissions`, and `--rss-runs` to change those dimensions. Large RSS runs
+remain manual measurements; there is no CI memory or timing threshold.
+
 For evaluator-only and generated-graph checks, see [query profiling](query-profiling.md).
 For production-shaped inputs, see the [compiler-input stress benchmark](stress-instance-benchmark.md).

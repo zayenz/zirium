@@ -150,6 +150,25 @@ fn cli_handles_closed_output_pipes() {
         assert!(output.status.success(), "{:?}", output.stderr);
         assert!(output.stderr.is_empty());
     }
+
+    let (reader, writer) = UnixStream::pair().unwrap();
+    drop(reader);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(OwnedFd::from(writer)))
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(large_staged_output_input().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert!(output.stderr.is_empty());
 }
 
 fn run_stdin_with_options(options: &[&str], query: &str, input: &str) -> std::process::Output {
@@ -390,6 +409,118 @@ fn temporary_path(name: &str, extension: &str) -> std::path::PathBuf {
         "zirium-cli-{}-{name}.{extension}",
         std::process::id()
     ))
+}
+
+fn large_staged_output_input() -> String {
+    format!(
+        "module {{ \"test.op\"() {{blob = \"{}\"}} : () -> () }}\n",
+        "x".repeat(1_100_000)
+    )
+}
+
+fn temporary_directory(name: &str) -> std::path::PathBuf {
+    let path = temporary_path(name, "dir");
+    fs::create_dir(&path).unwrap();
+    path
+}
+
+fn assert_directory_empty(path: &std::path::Path) {
+    assert_eq!(fs::read_dir(path).unwrap().count(), 0);
+}
+
+#[test]
+fn large_normal_and_jsonl_output_preserve_bytes_after_spilling() {
+    let source = large_staged_output_input();
+    let blob = "x".repeat(1_100_000);
+    let expected =
+        format!("builtin.module {{\n  \"test.op\"() {{blob = \"{blob}\"}} : () -> ()\n}}\n");
+    let staging = temporary_directory("large-output-staging");
+
+    let normal = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("")
+        .env("TMPDIR", &staging)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.take().unwrap().write_all(source.as_bytes())?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    assert!(normal.status.success(), "{:?}", normal.stderr);
+    assert_eq!(normal.stdout, expected.as_bytes());
+    assert_directory_empty(&staging);
+
+    let jsonl = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--jsonl", ""])
+        .env("TMPDIR", &staging)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.take().unwrap().write_all(source.as_bytes())?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    assert!(jsonl.status.success(), "{:?}", jsonl.stderr);
+    let record: serde_json::Value = serde_json::from_slice(&jsonl.stdout).unwrap();
+    assert_eq!(record["document"], "stdin");
+    assert_eq!(record["result"], expected);
+    assert_directory_empty(&staging);
+
+    fs::remove_dir(staging).unwrap();
+}
+
+#[test]
+fn later_input_failure_discards_spilled_output_and_temporary_file() {
+    let first = temporary_path("spilled-first", "mlir");
+    let second = temporary_path("malformed-second", "mlir");
+    let staging = temporary_directory("later-failure-staging");
+    fs::write(&first, large_staged_output_input()).unwrap();
+    fs::write(&second, "module {").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("")
+        .arg(&first)
+        .arg(&second)
+        .env("TMPDIR", &staging)
+        .output()
+        .unwrap();
+
+    fs::remove_file(first).unwrap();
+    fs::remove_file(second).unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_directory_empty(&staging);
+    fs::remove_dir(staging).unwrap();
+}
+
+#[test]
+fn spill_creation_failure_leaves_stdout_empty() {
+    let missing_staging = temporary_path("missing-staging", "dir");
+    let _ = fs::remove_dir_all(&missing_staging);
+    let source = large_staged_output_input();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("")
+        .env("TMPDIR", &missing_staging)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(source.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!missing_staging.exists());
 }
 
 #[test]

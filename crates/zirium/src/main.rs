@@ -1,6 +1,9 @@
 use std::{
-    env, fs,
-    io::{self, Read, Write},
+    env,
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use zirium::{
@@ -60,6 +63,136 @@ Predicates: true, false, op("name"), dialect("name"), result_type("type"),
 has_attr("name"), string_attr_eq("name", "value"); combine with not, and, or.
 Reference: https://github.com/zayenz/zirium/blob/main/docs/query-language.md
 "#;
+
+const OUTPUT_STAGING_MEMORY_LIMIT: usize = 1024 * 1024;
+
+enum StagedStorage {
+    Memory(Vec<u8>),
+    File(TemporaryFile),
+}
+
+struct StagedOutput {
+    storage: StagedStorage,
+    memory_limit: usize,
+    temporary_root: PathBuf,
+}
+
+impl StagedOutput {
+    fn new(memory_limit: usize, temporary_root: PathBuf) -> Self {
+        Self {
+            storage: StagedStorage::Memory(Vec::new()),
+            memory_limit,
+            temporary_root,
+        }
+    }
+
+    fn spill(&mut self) -> io::Result<()> {
+        let StagedStorage::Memory(memory) = &self.storage else {
+            return Ok(());
+        };
+        let mut temporary = TemporaryFile::create(&self.temporary_root)?;
+        temporary.file_mut().write_all(memory)?;
+        self.storage = StagedStorage::File(temporary);
+        Ok(())
+    }
+
+    fn deliver_to(mut self, output: &mut impl Write) -> io::Result<()> {
+        match &mut self.storage {
+            StagedStorage::Memory(bytes) => output.write_all(bytes),
+            StagedStorage::File(temporary) => {
+                let file = temporary.file_mut();
+                file.flush()?;
+                file.seek(SeekFrom::Start(0))?;
+                io::copy(file, output).map(|_| ())
+            }
+        }
+    }
+
+    fn deliver_stdout(self) -> Result<(), String> {
+        let stdout = io::stdout();
+        let mut output = stdout.lock();
+        match self.deliver_to(&mut output) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+impl Write for StagedOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let StagedStorage::Memory(memory) = &mut self.storage
+            && memory.len().saturating_add(bytes.len()) <= self.memory_limit
+        {
+            memory.extend_from_slice(bytes);
+            return Ok(bytes.len());
+        }
+        self.spill()?;
+        let StagedStorage::File(temporary) = &mut self.storage else {
+            unreachable!("spilling replaces memory storage")
+        };
+        temporary.file_mut().write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.storage {
+            StagedStorage::Memory(_) => Ok(()),
+            StagedStorage::File(temporary) => temporary.file_mut().flush(),
+        }
+    }
+}
+
+struct TemporaryFile {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl TemporaryFile {
+    fn create(root: &Path) -> io::Result<Self> {
+        static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+
+        for _ in 0..128 {
+            let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!(
+                ".zirium-output-{}-{sequence}.tmp",
+                std::process::id()
+            ));
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file: Some(file),
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique output staging file",
+        ))
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        self.file.as_mut().expect("temporary file remains open")
+    }
+}
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
+    }
+}
 
 fn run() -> Result<(), String> {
     let mut arguments = env::args_os().skip(1);
@@ -227,7 +360,7 @@ fn run() -> Result<(), String> {
             .map(|path| (path != "-").then_some(path))
             .collect()
     };
-    let mut answers = Vec::new();
+    let mut staged_output = StagedOutput::new(OUTPUT_STAGING_MEMORY_LIMIT, env::temp_dir());
     for path in inputs {
         let (name, bytes) = match path {
             Some(path) => {
@@ -339,16 +472,16 @@ fn run() -> Result<(), String> {
                 limits,
                 |document, output| {
                     if ndjson {
-                        answers.push(ndjson_record(
+                        write_ndjson_record(
+                            &mut staged_output,
                             document,
                             &name,
                             output,
                             registry,
                             fragment_scope,
-                        )?);
+                        )?;
                         return Ok(());
                     }
-                    let mut answer = Vec::new();
                     match output {
                         QueryOutput::Native(_) => {
                             return Err(EvaluationError::new(
@@ -357,7 +490,7 @@ fn run() -> Result<(), String> {
                         }
                         QueryOutput::Operations(selected) => document
                             .write_selection_with_scope(
-                                &mut answer,
+                                &mut staged_output,
                                 &selected,
                                 PrintLayout::Pretty,
                                 registry,
@@ -368,35 +501,31 @@ fn run() -> Result<(), String> {
                             })?,
                         QueryOutput::Count(count) => {
                             use std::io::Write;
-                            writeln!(answer, "{count}")
-                                .map_err(|error| EvaluationError::new(error.to_string()))?;
+                            writeln!(staged_output, "{count}").map_err(output_staging_error)?;
                         }
                         QueryOutput::Values(values) => {
                             use std::io::Write;
                             for value in values {
-                                writeln!(answer, "{value}")
-                                    .map_err(|error| EvaluationError::new(error.to_string()))?;
+                                writeln!(staged_output, "{value}").map_err(output_staging_error)?;
                             }
                         }
                         QueryOutput::Array(values) => {
-                            answer.extend_from_slice(
-                                serde_json::to_string_pretty(&values)
-                                    .map_err(|error| EvaluationError::new(error.to_string()))?
-                                    .as_bytes(),
-                            );
-                            answer.push(b'\n');
+                            serde_json::to_writer_pretty(&mut staged_output, &values)
+                                .map_err(|error| EvaluationError::new(error.to_string()))?;
+                            staged_output
+                                .write_all(b"\n")
+                                .map_err(output_staging_error)?;
                         }
                         QueryOutput::Map(values) => {
-                            answer.extend_from_slice(
-                                serde_json::to_string_pretty(&values)
-                                    .map_err(|error| EvaluationError::new(error.to_string()))?
-                                    .as_bytes(),
-                            );
-                            answer.push(b'\n');
+                            serde_json::to_writer_pretty(&mut staged_output, &values)
+                                .map_err(|error| EvaluationError::new(error.to_string()))?;
+                            staged_output
+                                .write_all(b"\n")
+                                .map_err(output_staging_error)?;
                         }
                         QueryOutput::RankedMap(entries) => {
                             use serde::ser::{SerializeMap, Serializer};
-                            let mut serializer = serde_json::Serializer::pretty(&mut answer);
+                            let mut serializer = serde_json::Serializer::pretty(&mut staged_output);
                             let mut map = serializer
                                 .serialize_map(Some(entries.len()))
                                 .map_err(|error| EvaluationError::new(error.to_string()))?;
@@ -406,43 +535,56 @@ fn run() -> Result<(), String> {
                             }
                             map.end()
                                 .map_err(|error| EvaluationError::new(error.to_string()))?;
-                            answer.push(b'\n');
+                            staged_output
+                                .write_all(b"\n")
+                                .map_err(output_staging_error)?;
                         }
                         QueryOutput::Json(json) | QueryOutput::Text(json) => {
-                            answer.extend_from_slice(json.as_bytes())
+                            staged_output
+                                .write_all(json.as_bytes())
+                                .map_err(output_staging_error)?;
                         }
                     }
-                    answers.push(answer);
                     Ok(())
                 },
             )
             .map_err(|error| format!("could not evaluate {name}: {error}"))?;
     }
-    write_stdout(answers)
+    staged_output.deliver_stdout()
 }
 
-fn ndjson_record(
+fn output_staging_error(error: io::Error) -> EvaluationError {
+    EvaluationError::new(format!("could not stage output: {error}"))
+}
+
+fn write_ndjson_record(
+    record: &mut impl Write,
     document: &zirium::semantic::Document,
     name: &str,
     output: QueryOutput,
     registry: &DialectRegistry,
     fragment_scope: FragmentScope,
-) -> Result<Vec<u8>, EvaluationError> {
+) -> Result<(), EvaluationError> {
     use serde::ser::{SerializeMap, Serializer};
 
-    let mut record = Vec::from(&b"{\"document\":"[..]);
-    serde_json::to_writer(&mut record, name)
+    record
+        .write_all(b"{\"document\":")
+        .map_err(output_staging_error)?;
+    serde_json::to_writer(&mut *record, name)
         .map_err(|error| EvaluationError::new(error.to_string()))?;
-    record.extend_from_slice(b",\"result\":");
+    record
+        .write_all(b",\"result\":")
+        .map_err(output_staging_error)?;
     match output {
         QueryOutput::Json(json) => {
             // The emitter already produced valid JSON. Remove formatting outside
             // strings without reparsing objects into lexically ordered maps.
+            let mut compact = Vec::with_capacity(8192);
             let mut in_string = false;
             let mut escaped = false;
             for byte in json.bytes() {
                 if in_string {
-                    record.push(byte);
+                    compact.push(byte);
                     if escaped {
                         escaped = false;
                     } else if byte == b'\\' {
@@ -451,13 +593,18 @@ fn ndjson_record(
                         in_string = false;
                     }
                 } else if !byte.is_ascii_whitespace() {
-                    record.push(byte);
+                    compact.push(byte);
                     in_string = byte == b'"';
                 }
+                if compact.len() == compact.capacity() {
+                    record.write_all(&compact).map_err(output_staging_error)?;
+                    compact.clear();
+                }
             }
+            record.write_all(&compact).map_err(output_staging_error)?;
         }
         QueryOutput::RankedMap(entries) => {
-            let mut serializer = serde_json::Serializer::new(&mut record);
+            let mut serializer = serde_json::Serializer::new(&mut *record);
             let mut map = serializer
                 .serialize_map(Some(entries.len()))
                 .map_err(|error| EvaluationError::new(error.to_string()))?;
@@ -470,12 +617,12 @@ fn ndjson_record(
         }
         output => {
             let result = ndjson_value(document, output, registry, fragment_scope)?;
-            serde_json::to_writer(&mut record, &result)
+            serde_json::to_writer(&mut *record, &result)
                 .map_err(|error| EvaluationError::new(error.to_string()))?;
         }
     }
-    record.extend_from_slice(b"}\n");
-    Ok(record)
+    record.write_all(b"}\n").map_err(output_staging_error)?;
+    Ok(())
 }
 
 fn ndjson_value(
@@ -528,4 +675,90 @@ fn write_stdout(chunks: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Result<()
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod staged_output_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn create(name: &str) -> Self {
+            static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path = env::temp_dir().join(format!(
+                "zirium-staged-output-test-{}-{name}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn entries(&self) -> usize {
+            fs::read_dir(&self.0).unwrap().count()
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn spills_only_after_the_exact_memory_limit() {
+        let directory = TestDirectory::create("boundary");
+        let mut output = StagedOutput::new(4, directory.0.clone());
+
+        output.write_all(b"abcd").unwrap();
+        assert!(matches!(output.storage, StagedStorage::Memory(_)));
+        assert_eq!(directory.entries(), 0);
+
+        output.write_all(b"e").unwrap();
+        assert!(matches!(output.storage, StagedStorage::File(_)));
+        assert_eq!(directory.entries(), 1);
+
+        let mut delivered = Vec::new();
+        output.deliver_to(&mut delivered).unwrap();
+        assert_eq!(delivered, b"abcde");
+        assert_eq!(directory.entries(), 0);
+    }
+
+    #[test]
+    fn spilled_chunks_keep_their_original_order_and_are_removed_on_drop() {
+        let directory = TestDirectory::create("order");
+        {
+            let mut output = StagedOutput::new(3, directory.0.clone());
+            for chunk in [b"ab".as_slice(), b"c", b"def", b"g"] {
+                output.write_all(chunk).unwrap();
+            }
+            assert_eq!(directory.entries(), 1);
+
+            let mut delivered = Vec::new();
+            output.deliver_to(&mut delivered).unwrap();
+            assert_eq!(delivered, b"abcdefg");
+        }
+        assert_eq!(directory.entries(), 0);
+
+        {
+            let mut output = StagedOutput::new(0, directory.0.clone());
+            output.write_all(b"discarded").unwrap();
+            assert_eq!(directory.entries(), 1);
+        }
+        assert_eq!(directory.entries(), 0);
+    }
+
+    #[test]
+    fn spill_creation_failure_keeps_staged_bytes_private() {
+        let directory = TestDirectory::create("failure");
+        let missing_root = directory.0.join("missing");
+        let mut output = StagedOutput::new(4, missing_root);
+        output.write_all(b"abcd").unwrap();
+
+        assert!(output.write_all(b"e").is_err());
+        assert!(matches!(output.storage, StagedStorage::Memory(_)));
+        assert_eq!(directory.entries(), 0);
+    }
 }
