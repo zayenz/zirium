@@ -1217,43 +1217,8 @@ impl SemanticAttribute {
     fn cached_element_spellings(&self) -> PyResult<&[Option<String>]> {
         if self.element_spellings.get().is_none() {
             let value = self.with_value(Clone::clone)?;
-            let spellings = match &value {
-                AttributeValue::Array(values) => {
-                    let parent = self.spelling_value()?;
-                    let parsed = split_attribute_elements(&parent, '[', ']');
-                    (0..values.len())
-                        .map(|index| {
-                            parsed
-                                .as_ref()
-                                .and_then(|items| items.get(index))
-                                .map(|item| (*item).to_owned())
-                        })
-                        .collect()
-                }
-                AttributeValue::Dictionary(entries) => {
-                    let parent = self.spelling_value()?;
-                    let parsed = split_attribute_elements(&parent, '{', '}').map(|items| {
-                        items
-                            .into_iter()
-                            .filter_map(|entry| {
-                                let (key, value) = entry.split_once('=')?;
-                                Some((key.trim(), value.trim()))
-                            })
-                            .collect::<HashMap<_, _>>()
-                    });
-                    entries
-                        .iter()
-                        .map(|(name, _)| {
-                            parsed
-                                .as_ref()
-                                .and_then(|items| items.get(name.as_str()))
-                                .map(|spelling| (*spelling).to_owned())
-                        })
-                        .collect()
-                }
-                AttributeValue::DenseArray { elements, .. } => vec![None; elements.len()],
-                _ => Vec::new(),
-            };
+            let parent = self.spelling_value()?;
+            let spellings = value.child_spellings(&parent);
             let _ = self.element_spellings.set(spellings);
         }
         Ok(self
@@ -1261,84 +1226,6 @@ impl SemanticAttribute {
             .get()
             .expect("element spelling cache initialized"))
     }
-}
-
-fn split_attribute_elements(spelling: &str, open: char, close: char) -> Option<Vec<&str>> {
-    let inner = spelling.trim().strip_prefix(open)?.strip_suffix(close)?;
-    if inner.trim().is_empty() {
-        return Some(Vec::new());
-    }
-    let mut result = Vec::new();
-    let mut start = 0;
-    let mut stack = Vec::new();
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, character) in inner.char_indices() {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                quoted = false;
-            }
-            continue;
-        }
-        if character == '"' {
-            quoted = true;
-            continue;
-        }
-        match character {
-            '(' => stack.push(')'),
-            '[' => stack.push(']'),
-            '{' => stack.push('}'),
-            '<' => stack.push('>'),
-            ')' | ']' | '}' | '>' if stack.last() == Some(&character) => {
-                stack.pop();
-            }
-            ',' if stack.is_empty() => {
-                result.push(inner[start..index].trim());
-                start = index + character.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    result.push(inner[start..].trim());
-    Some(result)
-}
-
-fn decode_string_attribute(spelling: &str) -> Option<String> {
-    let inner = spelling.strip_prefix('"')?.strip_suffix('"')?;
-    let bytes = inner.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != b'\\' {
-            decoded.push(bytes[index]);
-            index += 1;
-            continue;
-        }
-        index += 1;
-        match *bytes.get(index)? {
-            b'"' => decoded.push(b'"'),
-            b'\\' => decoded.push(b'\\'),
-            b'n' => decoded.push(b'\n'),
-            b't' => decoded.push(b'\t'),
-            high if high.is_ascii_hexdigit() => {
-                let low = *bytes.get(index + 1)?;
-                if !low.is_ascii_hexdigit() {
-                    return None;
-                }
-                decoded.push(
-                    (high as char).to_digit(16)? as u8 * 16 + (low as char).to_digit(16)? as u8,
-                );
-                index += 1;
-            }
-            _ => return None,
-        }
-        index += 1;
-    }
-    String::from_utf8(decoded).ok()
 }
 
 #[pymethods]
@@ -1376,46 +1263,23 @@ impl SemanticAttribute {
     }
     #[getter]
     fn string_value(&self) -> PyResult<Option<String>> {
-        self.with_value(|value| match value {
-            AttributeValue::String(value) => decode_string_attribute(value),
-            _ => None,
-        })
+        self.with_value(AttributeValue::decoded_string)
     }
     #[getter]
     fn integer_value(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let literal = self.with_value(|value| match value {
-            AttributeValue::Integer(value) => Some(value.clone()),
-            AttributeValue::WideNumber(value) => std::str::from_utf8(value).ok().map(str::to_owned),
-            _ => None,
-        })?;
-        let Some(literal) = literal
-            .as_deref()
-            .and_then(|value| value.split(':').next())
-            .map(str::trim)
-        else {
+        let Some(integer) = self.with_value(AttributeValue::decoded_integer)? else {
             return Ok(None);
-        };
-        let unsigned = literal.trim_start_matches(['+', '-']);
-        let (digits, radix) = unsigned
-            .strip_prefix("0x")
-            .map_or((unsigned, 10), |digits| (digits, 16));
-        let signed_digits = match literal.as_bytes().first() {
-            Some(b'-') => format!("-{digits}"),
-            _ => digits.to_owned(),
         };
         Ok(Some(
             py.import("builtins")?
                 .getattr("int")?
-                .call1((signed_digits, radix))?
+                .call1((integer.digits, integer.radix))?
                 .unbind(),
         ))
     }
     #[getter]
     fn float_value(&self) -> PyResult<Option<f64>> {
-        self.with_value(|value| match value {
-            AttributeValue::Float(value) => decode_float_attribute(value),
-            _ => None,
-        })
+        self.with_value(AttributeValue::decoded_float)
     }
     #[getter]
     fn boolean_value(&self) -> PyResult<Option<bool>> {
@@ -1458,21 +1322,11 @@ impl SemanticAttribute {
         let Some((name, value)) = value else {
             return Ok(None);
         };
-        let source_spelling =
-            match self.with_value(|value| matches!(value, AttributeValue::DenseArray { .. }))? {
-                true => match &value {
-                    AttributeValue::Boolean(value) => Some(value.to_string()),
-                    AttributeValue::Integer(value) | AttributeValue::Float(value) => {
-                        Some(value.clone())
-                    }
-                    _ => None,
-                },
-                false => self
-                    .cached_element_spellings()?
-                    .get(index)
-                    .cloned()
-                    .flatten(),
-            };
+        let source_spelling = self
+            .cached_element_spellings()?
+            .get(index)
+            .cloned()
+            .flatten();
         let spelling = match source_spelling.filter(|spelling| !spelling.is_empty()) {
             Some(spelling) => spelling,
             None => read_document(&self.state)?
@@ -1510,42 +1364,4 @@ impl SemanticAttribute {
         })?;
         Ok(bytes.map(|bytes| PyBytes::new(py, &bytes)))
     }
-}
-
-fn decode_float_attribute(value: &str) -> Option<f64> {
-    let (literal, ty) = value.split_once(':').unwrap_or((value, ""));
-    let literal = literal.trim();
-    let Some(digits) = literal.strip_prefix("0x") else {
-        return literal.parse().ok();
-    };
-    match ty.trim() {
-        "f16" if digits.len() == 4 => Some(decode_f16(u16::from_str_radix(digits, 16).ok()?)),
-        "bf16" if digits.len() == 4 => {
-            let bits = u16::from_str_radix(digits, 16).ok()?;
-            Some(f32::from_bits(u32::from(bits) << 16).into())
-        }
-        "f32" if digits.len() == 8 => {
-            let bits = u32::from_str_radix(digits, 16).ok()?;
-            Some(f32::from_bits(bits).into())
-        }
-        "f64" if digits.len() == 16 => {
-            let bits = u64::from_str_radix(digits, 16).ok()?;
-            Some(f64::from_bits(bits))
-        }
-        _ => None,
-    }
-}
-
-fn decode_f16(bits: u16) -> f64 {
-    let negative = bits & 0x8000 != 0;
-    let exponent = (bits >> 10) & 0x1f;
-    let fraction = bits & 0x03ff;
-    let magnitude = match exponent {
-        0 if fraction == 0 => 0.0,
-        0 => f64::from(fraction) * 2f64.powi(-24),
-        0x1f if fraction == 0 => f64::INFINITY,
-        0x1f => f64::NAN,
-        _ => (1.0 + f64::from(fraction) / 1024.0) * 2f64.powi(i32::from(exponent) - 15),
-    };
-    if negative { -magnitude } else { magnitude }
 }

@@ -352,6 +352,100 @@ pub enum AttributeValue {
     Invalid(DiagnosticId),
 }
 
+/// The parts of an MLIR integer spelling needed by arbitrary-precision clients.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodedInteger {
+    pub digits: String,
+    pub radix: u32,
+}
+
+impl AttributeValue {
+    /// Decodes the scalar value represented by a string attribute.
+    ///
+    /// `AttributeValue::String` stores serialized MLIR spelling so canonical
+    /// output can preserve quotes and escapes; this returns the decoded value.
+    pub fn decoded_string(&self) -> Option<String> {
+        match self {
+            Self::String(spelling) => decode_mlir_string(spelling),
+            _ => None,
+        }
+    }
+
+    /// Splits an integer spelling into signed digits and its radix.
+    ///
+    /// Digits remain text so clients can construct integers wider than Rust's
+    /// built-in integer types without reparsing MLIR syntax themselves.
+    pub fn decoded_integer(&self) -> Option<DecodedInteger> {
+        let value = match self {
+            Self::Integer(value) => value.as_str(),
+            Self::WideNumber(value) => std::str::from_utf8(value).ok()?,
+            _ => return None,
+        };
+        let literal = value.split(':').next()?.trim();
+        let unsigned = literal.trim_start_matches(['+', '-']);
+        let (digits, radix) = unsigned
+            .strip_prefix("0x")
+            .map_or((unsigned, 10), |digits| (digits, 16));
+        let digits = match literal.as_bytes().first() {
+            Some(b'-') => format!("-{digits}"),
+            _ => digits.to_owned(),
+        };
+        Some(DecodedInteger { digits, radix })
+    }
+
+    /// Decodes a floating-point attribute, including typed IEEE hex spellings.
+    pub fn decoded_float(&self) -> Option<f64> {
+        match self {
+            Self::Float(value) => decode_float_attribute(value),
+            _ => None,
+        }
+    }
+
+    /// Recovers serialized spellings for direct child attributes.
+    ///
+    /// The semantic children are decoded values. Their spelling must therefore
+    /// be sliced from the serialized parent rather than reconstructed from the
+    /// decoded value; dense-array children have explicit scalar spellings.
+    pub fn child_spellings(&self, parent_spelling: &str) -> Vec<Option<String>> {
+        match self {
+            Self::Array(values) => {
+                let parsed = split_attribute_elements(parent_spelling, '[', ']');
+                (0..values.len())
+                    .map(|index| {
+                        parsed
+                            .as_ref()
+                            .and_then(|items| items.get(index))
+                            .map(|item| (*item).to_owned())
+                    })
+                    .collect()
+            }
+            Self::Dictionary(entries) => {
+                let parsed = split_attribute_elements(parent_spelling, '{', '}');
+                entries
+                    .iter()
+                    .map(|(name, _)| {
+                        parsed.as_ref().and_then(|items| {
+                            items.iter().find_map(|entry| {
+                                let (key, value) = entry.split_once('=')?;
+                                (key.trim() == name).then(|| value.trim().to_owned())
+                            })
+                        })
+                    })
+                    .collect()
+            }
+            Self::DenseArray { elements, .. } => elements
+                .iter()
+                .map(|value| match value {
+                    Self::Boolean(value) => Some(value.to_string()),
+                    Self::Integer(value) | Self::Float(value) => Some(value.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LocationValue {
     Unknown,
@@ -2000,6 +2094,50 @@ impl Document {
     }
 }
 
+fn split_attribute_elements(spelling: &str, open: char, close: char) -> Option<Vec<&str>> {
+    let inner = spelling.trim().strip_prefix(open)?.strip_suffix(close)?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut stack = Vec::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in inner.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        if character == '"' {
+            quoted = true;
+            continue;
+        }
+        match character {
+            '(' => stack.push(')'),
+            '[' => stack.push(']'),
+            '{' => stack.push('}'),
+            '<' => stack.push('>'),
+            ')' | ']' | '}' | '>' if stack.last() == Some(&character) => {
+                stack.pop();
+            }
+            ',' if stack.is_empty() => {
+                result.push(inner[start..index].trim());
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    result.push(inner[start..].trim());
+    Some(result)
+}
+
 pub(crate) fn decode_mlir_string(spelling: &str) -> Option<String> {
     let inner = spelling.strip_prefix('"')?.strip_suffix('"')?;
     let bytes = inner.as_bytes();
@@ -2032,6 +2170,44 @@ pub(crate) fn decode_mlir_string(spelling: &str) -> Option<String> {
         index += 1;
     }
     String::from_utf8(decoded).ok()
+}
+
+fn decode_float_attribute(value: &str) -> Option<f64> {
+    let (literal, ty) = value.split_once(':').unwrap_or((value, ""));
+    let literal = literal.trim();
+    let Some(digits) = literal.strip_prefix("0x") else {
+        return literal.parse().ok();
+    };
+    match ty.trim() {
+        "f16" if digits.len() == 4 => Some(decode_f16(u16::from_str_radix(digits, 16).ok()?)),
+        "bf16" if digits.len() == 4 => {
+            let bits = u16::from_str_radix(digits, 16).ok()?;
+            Some(f32::from_bits(u32::from(bits) << 16).into())
+        }
+        "f32" if digits.len() == 8 => {
+            let bits = u32::from_str_radix(digits, 16).ok()?;
+            Some(f32::from_bits(bits).into())
+        }
+        "f64" if digits.len() == 16 => {
+            let bits = u64::from_str_radix(digits, 16).ok()?;
+            Some(f64::from_bits(bits))
+        }
+        _ => None,
+    }
+}
+
+fn decode_f16(bits: u16) -> f64 {
+    let negative = bits & 0x8000 != 0;
+    let exponent = (bits >> 10) & 0x1f;
+    let fraction = bits & 0x03ff;
+    let magnitude = match exponent {
+        0 if fraction == 0 => 0.0,
+        0 => f64::from(fraction) * 2f64.powi(-24),
+        0x1f if fraction == 0 => f64::INFINITY,
+        0x1f => f64::NAN,
+        _ => (1.0 + f64::from(fraction) / 1024.0) * 2f64.powi(i32::from(exponent) - 15),
+    };
+    if negative { -magnitude } else { magnitude }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2475,6 +2651,43 @@ impl std::error::Error for ValidationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attribute_values_decode_scalars_in_core() {
+        assert_eq!(
+            AttributeValue::String(r#""line\n\41""#.to_owned()).decoded_string(),
+            Some("line\nA".to_owned())
+        );
+        assert_eq!(
+            AttributeValue::Integer("-0x1f : i64".to_owned()).decoded_integer(),
+            Some(DecodedInteger {
+                digits: "-1f".to_owned(),
+                radix: 16,
+            })
+        );
+        assert_eq!(
+            AttributeValue::Float("0x3E00 : f16".to_owned()).decoded_float(),
+            Some(1.5)
+        );
+    }
+
+    #[test]
+    fn attribute_values_recover_nested_child_spellings_in_core() {
+        let value = AttributeValue::Dictionary(vec![
+            (
+                "nested".to_owned(),
+                AttributeValue::Array(vec![AttributeValue::Integer("1".to_owned())]),
+            ),
+            (
+                "quoted".to_owned(),
+                AttributeValue::String(r#""x=y,z""#.to_owned()),
+            ),
+        ]);
+        assert_eq!(
+            value.child_spellings(r#"{quoted = "x=y,z", nested = [1, 2]}"#),
+            vec![Some("[1, 2]".to_owned()), Some(r#""x=y,z""#.to_owned())]
+        );
+    }
 
     #[test]
     fn handle_identity_allocation_skips_used_values_across_wrap() {
