@@ -514,7 +514,7 @@ impl Document {
         &self,
         registry: &DialectRegistry,
     ) -> Result<(), SemanticVerificationError> {
-        let context = self.verification_context();
+        let dominance = self.build_dominance_index(registry);
         for operation in self.operations() {
             let Some(name) = self.operation_name(operation) else {
                 continue;
@@ -593,11 +593,7 @@ impl Document {
             let Some(block) = self.operation(operation).and_then(Operation::parent_block) else {
                 continue;
             };
-            let position = context
-                .operation_positions
-                .get(&operation)
-                .copied()
-                .unwrap_or(0);
+            let position = dominance.operation_position(operation).unwrap_or(0);
             let use_point = ValueUsePoint {
                 operation,
                 block,
@@ -613,12 +609,7 @@ impl Document {
                 let ValueReference::Resolved(value) = value else {
                     continue;
                 };
-                if !self.value_visible_at(
-                    *value,
-                    use_point,
-                    registry,
-                    VisibilityAnalysis::Verification(&context),
-                ) {
+                if !self.value_visible_at(*value, use_point, registry, &dominance) {
                     return Err(SemanticVerificationError::Operation {
                         operation,
                         message: "SSA definition does not dominate its use",
@@ -627,77 +618,6 @@ impl Document {
             }
         }
         Ok(())
-    }
-
-    fn verification_context(&self) -> VerificationContext {
-        let mut context = VerificationContext::default();
-        for block_index in 0..self.blocks.len() {
-            let block = BlockId::new(block_index, self.generation);
-            for (position, operation) in self
-                .block_operations(block)
-                .unwrap_or(&[])
-                .iter()
-                .enumerate()
-            {
-                context.operation_positions.insert(*operation, position);
-            }
-        }
-        for region_index in 0..self.regions.len() {
-            let region = RegionId::new(region_index, self.generation);
-            let blocks = self
-                .region(region)
-                .and_then(|region| region.blocks(self))
-                .unwrap_or(&[]);
-            if blocks.is_empty() {
-                continue;
-            }
-            if blocks.len() == 1 {
-                context
-                    .block_dominators
-                    .insert(blocks[0], HashSet::from([blocks[0]]));
-                continue;
-            }
-            let universe = blocks.iter().copied().collect::<HashSet<_>>();
-            let mut predecessors = HashMap::<BlockId, Vec<BlockId>>::new();
-            for source in blocks {
-                for owner in self.block_operations(*source).unwrap_or(&[]) {
-                    for successor in self.successors(*owner).unwrap_or(&[]) {
-                        predecessors
-                            .entry(successor.block)
-                            .or_default()
-                            .push(*source);
-                    }
-                }
-            }
-            for &block in blocks {
-                context.block_dominators.insert(
-                    block,
-                    if block == blocks[0] {
-                        HashSet::from([block])
-                    } else {
-                        universe.clone()
-                    },
-                );
-            }
-            let mut changed = true;
-            while changed {
-                changed = false;
-                for &block in blocks.iter().skip(1) {
-                    let mut next = universe.clone();
-                    for predecessor in predecessors.get(&block).into_iter().flatten() {
-                        if let Some(set) = context.block_dominators.get(predecessor) {
-                            next.retain(|candidate| set.contains(candidate));
-                        }
-                    }
-                    next.insert(block);
-                    if context.block_dominators.get(&block) != Some(&next) {
-                        context.block_dominators.insert(block, next);
-                        changed = true;
-                    }
-                }
-            }
-        }
-        context
     }
 
     pub(super) fn attribute_spelling(&self, operation: OperationId, name: &str) -> Option<&str> {
@@ -731,14 +651,14 @@ impl Document {
         &self,
         definition: OperationId,
         use_point: ValueUsePoint,
-        analysis: &VisibilityAnalysis<'_>,
+        dominance: &DominanceIndex,
     ) -> bool {
         let Some(definition_block) = self.operation(definition).and_then(Operation::parent_block)
         else {
             return false;
         };
         if definition_block == use_point.block {
-            return analysis
+            return dominance
                 .operation_position(definition)
                 .is_some_and(|position| position < use_point.position);
         }
@@ -751,7 +671,7 @@ impl Document {
         if definition_region != region {
             return false;
         }
-        analysis.block_dominates(region, definition_block, use_point.block)
+        dominance.block_dominates(region, definition_block, use_point.block)
             && self.operation(use_point.operation).is_some()
     }
 
@@ -760,7 +680,7 @@ impl Document {
         value: ValueId,
         mut use_point: ValueUsePoint,
         registry: &DialectRegistry,
-        analysis: VisibilityAnalysis<'_>,
+        dominance: &DominanceIndex,
     ) -> bool {
         let definition_block = match value {
             ValueId::OperationResult { operation, .. } => {
@@ -787,10 +707,10 @@ impl Document {
                 }
                 return match value {
                     ValueId::OperationResult { operation, .. } => {
-                        self.operation_dominates(operation, use_point, &analysis)
+                        self.operation_dominates(operation, use_point, dominance)
                     }
                     ValueId::BlockArgument { .. } => {
-                        analysis.block_dominates(use_region, definition_block, use_point.block)
+                        dominance.block_dominates(use_region, definition_block, use_point.block)
                     }
                 };
             }
@@ -809,7 +729,7 @@ impl Document {
             // The nested use is visible at the containing operation, so the
             // CFG query at the enclosing region must use that operation's
             // block rather than the original nested block.
-            let Some(parent_position) = analysis.operation_position(parent) else {
+            let Some(parent_position) = dominance.operation_position(parent) else {
                 return false;
             };
             use_point = ValueUsePoint {
@@ -1615,20 +1535,10 @@ impl Document {
         }
     }
 
-    pub(super) fn ensure_dominance_index(&self, registry: &DialectRegistry) {
-        let registry_key = registry.content_identity();
-        if self
-            .analyses
-            .borrow()
-            .dominance
-            .as_ref()
-            .is_some_and(|index| index.revision == self.revision && index.registry == registry_key)
-        {
-            return;
-        }
+    fn build_dominance_index(&self, registry: &DialectRegistry) -> DominanceIndex {
         let mut index = DominanceIndex {
             revision: self.revision,
-            registry: registry_key,
+            registry: registry.content_identity(),
             ..Default::default()
         };
         for block_index in 0..self.blocks.len() {
@@ -1757,17 +1667,27 @@ impl Document {
             index.regions.insert(
                 region_id,
                 RegionDominance {
-                    blocks: blocks.to_vec(),
                     block_indices,
-                    successors,
-                    predecessors,
-                    immediate_dominators,
-                    dominator_tree,
                     intervals,
                     reachable,
                 },
             );
         }
+        index
+    }
+
+    pub(super) fn ensure_dominance_index(&self, registry: &DialectRegistry) {
+        let registry_key = registry.content_identity();
+        if self
+            .analyses
+            .borrow()
+            .dominance
+            .as_ref()
+            .is_some_and(|index| index.revision == self.revision && index.registry == registry_key)
+        {
+            return;
+        }
+        let index = self.build_dominance_index(registry);
         self.analyses
             .0
             .write()

@@ -40,6 +40,46 @@ The report fits 1, 10, 25, and 50 MiB samples and checks projections against
 within 10%, plus at least 5 ms of latency at 10 MiB. Treat passing projections
 as estimates for the same fixture mix and environment, not measured results.
 
+## Verifier dominance
+
+The ignored release benchmark generates chain, repeated-diamond, loop, and
+unreachable control-flow shapes. Each fixture places the requested number of
+blocks in one SSA CFG region. It checks semantic verification and the public
+dominance query, confirms verification does not populate the query cache, and
+measures verifier-only time and peak allocated bytes above the lowered document:
+
+```sh
+ZIRIUM_DOMINANCE_BENCH_SMOKE=1 \
+cargo test --release -p zirium --test verify_dominance_benchmark -- --ignored --nocapture --test-threads=1
+
+ZIRIUM_DOMINANCE_BENCH_BLOCKS=64,128,256,512 \
+ZIRIUM_DOMINANCE_BENCH_WARMUPS=1 \
+ZIRIUM_DOMINANCE_BENCH_RUNS=3 \
+cargo test --release -p zirium --test verify_dominance_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+Use one release test thread because allocation tracking is process-wide. The
+output records the compiler, host target, operating system, workload dimensions,
+repetitions, medians, min-to-max spread, and endpoint peak-growth ratio. It has
+no timing or allocation threshold.
+
+On 14 September 2026, an Apple M1 Max running Rust 1.98.1 for
+`aarch64-apple-darwin` on Darwin 25.6.0 measured the default matrix above. The
+old verifier stored a full dominator set per block; the revised verifier builds
+the same compact interval index used by queries as fresh local data. Peak
+allocation spread was zero bytes in both three-run samples.
+
+| Shape | Old peak, 64 blocks | Old peak, 512 blocks | Old growth | Compact peak, 64 blocks | Compact peak, 512 blocks | Compact growth | Old 512-block time | Compact 512-block time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Chain | 314,680 B | 17,654,968 B | 56.105x | 35,937 B | 282,785 B | 7.869x | 20.897 ms (2.562 ms spread) | 0.479 ms (0.061 ms spread) |
+| Diamond | 314,680 B | 17,654,968 B | 56.105x | 34,081 B | 267,809 B | 7.858x | 19.066 ms (0.284 ms spread) | 0.486 ms (0.036 ms spread) |
+| Loop | 314,680 B | 17,654,968 B | 56.105x | 35,937 B | 282,785 B | 7.869x | 19.519 ms (1.040 ms spread) | 0.464 ms (0.055 ms spread) |
+| Unreachable | 314,680 B | 17,654,968 B | 56.105x | 31,537 B | 246,129 B | 7.804x | 26.336 ms (0.630 ms spread) | 0.437 ms (0.031 ms spread) |
+
+The 8x block increase now produces less than 8x peak growth for every shape in
+this sample, rather than about 56x. These numbers describe this machine and
+fixture; re-run the benchmark for capacity decisions.
+
 ## Edit transactions
 
 The ignored Rust benchmark compares one transaction containing many attribute

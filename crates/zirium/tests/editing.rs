@@ -1478,6 +1478,97 @@ fn editor_commit_rejects_invisible_successor_argument_atomically() {
 }
 
 #[test]
+fn verifier_uses_current_positions_after_an_edit_with_a_prepopulated_dominance_cache() {
+    let mut document = registered(
+        "func.func @f() { %value = arith.constant 1 : i32 \"use\"(%value) : (i32) -> () func.return }",
+    );
+    let function = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("func.func"))
+        .unwrap();
+    let block = document
+        .region(document.operation_regions(function).unwrap()[0])
+        .unwrap()
+        .blocks(&document)
+        .unwrap()[0];
+    let definition = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("arith.constant"))
+        .unwrap();
+    let value = document
+        .operation(definition)
+        .unwrap()
+        .result(definition, 0)
+        .unwrap();
+    let use_operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("use"))
+        .unwrap();
+    assert!(document.dominates(value, use_operation, DialectRegistry::baseline()));
+    assert!(document.statistics().dominance_index_entries > 0);
+
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
+    assert!(editor.document().statistics().dominance_index_entries > 0);
+    let mut inserted_use = unknown_spec("use");
+    inserted_use.operands.push(value);
+    inserted_use.function_type = TypeSpec {
+        spelling: "(i32) -> ()".into(),
+        value: TypeValue::Function {
+            inputs: vec![i32_type().value],
+            results: vec![],
+        },
+    };
+    editor
+        .insert(InsertionPoint::Block { block, index: 0 }, inserted_use)
+        .unwrap();
+    assert_eq!(editor.document().statistics().dominance_index_entries, 0);
+    assert!(matches!(
+        editor.commit(),
+        Err(EditError::Semantic(SemanticVerificationError::Operation {
+            message,
+            ..
+        })) if message == "SSA definition does not dominate its use"
+    ));
+}
+
+#[test]
+fn verifier_and_query_dominance_match_for_a_reachable_chain() {
+    let document = registered_best_effort(
+        r#"builtin.module {
+  func.func @chain() {
+  ^entry:
+    %value = arith.constant 1 : i32
+    cf.br ^middle
+  ^middle:
+    cf.br ^exit
+  ^exit:
+    "use"(%value) : (i32) -> ()
+    func.return
+  }
+}"#,
+    );
+    let definition = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("arith.constant"))
+        .unwrap();
+    let value = document
+        .operation(definition)
+        .unwrap()
+        .result(definition, 0)
+        .unwrap();
+    let use_operation = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("use"))
+        .unwrap();
+
+    document
+        .verify_semantics(DialectRegistry::baseline())
+        .unwrap();
+    assert_eq!(document.statistics().dominance_index_entries, 0);
+    assert!(document.dominates(value, use_operation, DialectRegistry::baseline()));
+}
+
+#[test]
 fn indexed_dominance_matches_full_verification_for_loops_and_unreachable_blocks() {
     let loop_document = registered_best_effort(
         r#"builtin.module {

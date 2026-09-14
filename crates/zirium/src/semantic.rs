@@ -635,31 +635,14 @@ struct DominanceIndex {
 
 #[derive(Clone, Debug, Default)]
 struct RegionDominance {
-    blocks: Vec<BlockId>,
     block_indices: HashMap<BlockId, usize>,
-    successors: Vec<Vec<usize>>,
-    predecessors: Vec<Vec<usize>>,
-    immediate_dominators: Vec<Option<usize>>,
-    dominator_tree: Vec<Vec<usize>>,
     intervals: Vec<Option<(usize, usize)>>,
     reachable: Vec<bool>,
 }
 
 impl RegionDominance {
     fn entry_count(&self) -> usize {
-        self.blocks.len()
-            + self.block_indices.len()
-            + self.successors.len()
-            + self.successors.iter().map(Vec::len).sum::<usize>()
-            + self.predecessors.len()
-            + self.predecessors.iter().map(Vec::len).sum::<usize>()
-            + self
-                .immediate_dominators
-                .iter()
-                .filter(|dominator| dominator.is_some())
-                .count()
-            + self.dominator_tree.len()
-            + self.dominator_tree.iter().map(Vec::len).sum::<usize>()
+        self.block_indices.len()
             + self
                 .intervals
                 .iter()
@@ -669,12 +652,6 @@ impl RegionDominance {
     }
 }
 
-#[derive(Default)]
-struct VerificationContext {
-    block_dominators: HashMap<BlockId, HashSet<BlockId>>,
-    operation_positions: HashMap<OperationId, usize>,
-}
-
 #[derive(Clone, Copy)]
 struct ValueUsePoint {
     operation: OperationId,
@@ -682,17 +659,9 @@ struct ValueUsePoint {
     position: usize,
 }
 
-enum VisibilityAnalysis<'a> {
-    Verification(&'a VerificationContext),
-    Indexed(&'a DominanceIndex),
-}
-
-impl VisibilityAnalysis<'_> {
+impl DominanceIndex {
     fn operation_position(&self, operation: OperationId) -> Option<usize> {
-        match self {
-            Self::Verification(context) => context.operation_positions.get(&operation).copied(),
-            Self::Indexed(index) => index.operation_positions.get(&operation).copied(),
-        }
+        self.operation_positions.get(&operation).copied()
     }
 
     fn block_dominates(
@@ -701,32 +670,24 @@ impl VisibilityAnalysis<'_> {
         definition_block: BlockId,
         use_block: BlockId,
     ) -> bool {
-        match self {
-            Self::Verification(context) => context
-                .block_dominators
-                .get(&use_block)
-                .is_some_and(|blocks| blocks.contains(&definition_block)),
-            Self::Indexed(index) => {
-                let Some(region) = index.regions.get(&region) else {
-                    return false;
-                };
-                let (Some(&definition), Some(&use_position)) = (
-                    region.block_indices.get(&definition_block),
-                    region.block_indices.get(&use_block),
-                ) else {
-                    return false;
-                };
-                if !region.reachable[use_position] {
-                    return true;
-                }
-                let (Some((definition_entry, definition_exit)), Some((use_entry, use_exit))) =
-                    (region.intervals[definition], region.intervals[use_position])
-                else {
-                    return false;
-                };
-                definition_entry <= use_entry && use_exit <= definition_exit
-            }
+        let Some(region) = self.regions.get(&region) else {
+            return false;
+        };
+        let (Some(&definition), Some(&use_position)) = (
+            region.block_indices.get(&definition_block),
+            region.block_indices.get(&use_block),
+        ) else {
+            return false;
+        };
+        if !region.reachable[use_position] {
+            return true;
         }
+        let (Some((definition_entry, definition_exit)), Some((use_entry, use_exit))) =
+            (region.intervals[definition], region.intervals[use_position])
+        else {
+            return false;
+        };
+        definition_entry <= use_entry && use_exit <= definition_exit
     }
 }
 
@@ -1998,7 +1959,7 @@ impl Document {
                 position: use_position,
             },
             registry,
-            VisibilityAnalysis::Indexed(index),
+            index,
         )
     }
 }
