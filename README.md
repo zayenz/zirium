@@ -170,6 +170,9 @@ Canonical output normalizes formatting and SSA names and does not preserve
 comments or aliases. Use original output to reproduce the input, or hybrid
 retention when edits should preserve unrelated source text.
 
+For the exact structural-editing limits of Rust, Python, and the CLI, see the
+[structural editing capability matrix](docs/structural-editing.md).
+
 ## Dialect support
 
 Generic quoted operations are handled without a dialect registry. Unknown

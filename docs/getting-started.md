@@ -451,6 +451,10 @@ appears in the message instead.
 
 ## Further reading
 
+The [structural editing capability matrix](structural-editing.md) summarizes
+what Rust, Python, and the CLI can insert, erase, inspect, or deliberately
+leave unsupported.
+
 - [Compatibility and local wheel checks](compatibility.md) contains the full Rust checks and CPython test matrix.
 - [Syntax representation](architecture/syntax-representation.md) explains the flat immutable CST.
 - [Processing benchmarks](architecture/processing-benchmarks.md) describes how to measure parsing, semantic processing, and Python access.
