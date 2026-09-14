@@ -28,7 +28,7 @@
 //!     parser::ParsedFile,
 //!     printer::PrintLayout,
 //!     semantic::{
-//!         AttributeSpec, AttributeValue, EditError, LoweringMode, RetentionProfile,
+//!         AttributeSpec, EditError, LoweringMode, RetentionProfile,
 //!         lower_with_dialect_registry_and_retention,
 //!     },
 //! };
@@ -49,11 +49,7 @@
 //! let mut transaction = document.edit(&registry)?;
 //! transaction.set_attribute(
 //!     edited,
-//!     AttributeSpec {
-//!         name: "tag".into(),
-//!         spelling: "\"checked\"".into(),
-//!         value: AttributeValue::String("\"checked\"".into()),
-//!     },
+//!     AttributeSpec::string("tag", "checked"),
 //! )?;
 //! transaction.commit()?;
 //! let output = document.preserving_bytes(PrintLayout::Pretty)?;

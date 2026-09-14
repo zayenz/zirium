@@ -112,7 +112,7 @@ fn bare_symbol_component(value: &str) -> bool {
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$' | b'.'))
 }
 
-fn quote_mlir_string(value: &str) -> String {
+pub(crate) fn quote_mlir_string(value: &str) -> String {
     let mut result = String::with_capacity(value.len() + 2);
     result.push('"');
     for character in value.chars() {

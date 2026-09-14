@@ -14,7 +14,7 @@ use crate::lexer::TokenKind;
 use crate::semantic::{
     AffineExprValue, AttributeValue, BlockId, Document, LargeAttributeValue, LocationValue,
     MemRefLayout, OperationId, RegionId, ShapedDimension, TypeValue, ValidationError, ValueId,
-    ValueReference,
+    ValueReference, decode_mlir_string, quote_mlir_string,
 };
 use crate::{SyntaxKind, source::TextRange};
 
@@ -1459,9 +1459,12 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             AttributeValue::Boolean(value) => {
                 self.sink.write_str(if *value { "true" } else { "false" })
             }
-            AttributeValue::Integer(v) | AttributeValue::Float(v) | AttributeValue::String(v) => {
-                self.sink.write_str(v)
-            }
+            AttributeValue::Integer(v) | AttributeValue::Float(v) => self.sink.write_str(v),
+            AttributeValue::String(v) => self.sink.write_str(
+                &decode_mlir_string(v)
+                    .map(|decoded| quote_mlir_string(&decoded))
+                    .unwrap_or_else(|| v.clone()),
+            ),
             AttributeValue::Type(v) => self.type_value(v),
             AttributeValue::Symbol(parts) => self
                 .sink

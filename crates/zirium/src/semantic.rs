@@ -26,7 +26,9 @@ mod values;
 mod verify;
 
 pub use lowering::{lower_with_dialect_registry, lower_with_dialect_registry_and_retention};
-pub(crate) use values::{format_symbol_path, split_arrow, split_registered_types};
+pub(crate) use values::{
+    format_symbol_path, quote_mlir_string, split_arrow, split_registered_types,
+};
 pub(crate) use verify::{
     verify_builtin_module, verify_cf_br, verify_cf_cond_br, verify_func_call, verify_func_func,
     verify_func_return,
@@ -316,6 +318,9 @@ pub enum AttributeValue {
     Boolean(bool),
     Integer(String),
     Float(String),
+    /// A serialized MLIR string attribute, including quotes and escapes.
+    ///
+    /// Use [`AttributeSpec::string`] when starting from a decoded Rust string.
     String(String),
     Type(TypeValue),
     Symbol(Vec<String>),
@@ -2192,17 +2197,45 @@ impl Successor {
     }
 }
 
+/// An arena-independent type spelling and its corresponding semantic value.
+///
+/// Editors reject malformed spellings and pairs that do not describe the same
+/// type. A pair copied from a document may retain that document's alias or
+/// noncanonical source spelling.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeSpec {
+    /// MLIR type spelling corresponding to `value`.
     pub spelling: String,
     pub value: TypeValue,
 }
 
+/// An arena-independent named attribute spelling and semantic value.
+///
+/// Editors reject malformed spellings and pairs that do not describe the same
+/// attribute. A pair copied from a document may retain that document's alias or
+/// noncanonical source spelling.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttributeSpec {
     pub name: String,
+    /// MLIR attribute spelling corresponding to `value`.
     pub spelling: String,
     pub value: AttributeValue,
+}
+
+impl AttributeSpec {
+    /// Constructs a string attribute from a decoded Rust string.
+    ///
+    /// [`AttributeValue::String`] stores serialized MLIR, including its quotes;
+    /// this constructor applies the required escaping and keeps `spelling` and
+    /// `value` consistent.
+    pub fn string(name: impl Into<String>, value: impl AsRef<str>) -> Self {
+        let spelling = quote_mlir_string(value.as_ref());
+        Self {
+            name: name.into(),
+            value: AttributeValue::String(spelling.clone()),
+            spelling,
+        }
+    }
 }
 
 /// Arena-independent description of a regionless operation to insert.
@@ -2239,6 +2272,11 @@ pub enum EditError {
     InvalidSuccessorArgumentIndex,
     ResultCountChange,
     TypeMismatch,
+    InvalidSpecification {
+        kind: String,
+        spelling: String,
+        message: String,
+    },
     OwnedRegionsUnsupported,
     LiveUses(OperationId),
     Structural(ValidationError),
@@ -2276,6 +2314,11 @@ impl fmt::Display for EditError {
                 f.write_str("editing cannot change an operation's result count")
             }
             Self::TypeMismatch => f.write_str("edited value has an incompatible type"),
+            Self::InvalidSpecification {
+                kind,
+                spelling,
+                message,
+            } => write!(f, "invalid {kind} specification `{spelling}`: {message}"),
             Self::OwnedRegionsUnsupported => {
                 f.write_str("editing operations with owned regions is unsupported")
             }

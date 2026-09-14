@@ -52,7 +52,11 @@ pub(super) fn resolve_attribute(
             .ok_or_else(|| format!("malformed symbol reference `{spelling}`"));
     }
     if spelling.starts_with('"') {
-        return Ok(AttributeValue::String(spelling.to_owned()));
+        return Ok(AttributeValue::String(
+            decode_mlir_string(spelling)
+                .map(|decoded| quote_mlir_string(&decoded))
+                .unwrap_or_else(|| spelling.to_owned()),
+        ));
     }
     if let Some(inner) = bracket_inner(spelling, '[', ']') {
         return Ok(AttributeValue::Array(
@@ -379,7 +383,11 @@ fn lower_attribute_value_with_depth(
         return AttributeValue::Opaque(Arc::from(b"unit".as_slice()));
     }
     if spelling.starts_with('"') {
-        return AttributeValue::String(spelling.to_owned());
+        return AttributeValue::String(
+            decode_mlir_string(spelling)
+                .map(|decoded| quote_mlir_string(&decoded))
+                .unwrap_or_else(|| spelling.to_owned()),
+        );
     }
     if let Some(inner) = angle_inner(spelling, "array") {
         if depth >= doc.attribute_depth_limit {

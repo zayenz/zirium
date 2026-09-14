@@ -72,6 +72,7 @@ impl DocumentEditor<'_> {
         for value in &spec.operands {
             self.require_value(*value)?;
         }
+        self.validate_operation_spec(&spec)?;
         self.invalidate_syntax_mapping();
         let name = self.intern_string(&spec.name);
         let result_types = spec
@@ -439,6 +440,7 @@ impl DocumentEditor<'_> {
         if old.len() != types.len() {
             return Err(EditError::ResultCountChange);
         }
+        self.validate_specifications(types.iter().map(Specification::Type))?;
         let inputs = match self
             .working
             .function_type(operation)
@@ -713,6 +715,104 @@ impl DocumentEditor<'_> {
             index
         }
     }
+    fn validate_operation_spec(&self, spec: &OperationSpec) -> Result<(), EditError> {
+        let mut specifications = Vec::with_capacity(
+            spec.result_types.len() + spec.attributes.len() + spec.properties.len() + 1,
+        );
+        specifications.extend(spec.result_types.iter().map(Specification::Type));
+        specifications.push(Specification::Type(&spec.function_type));
+        specifications.extend(
+            spec.attributes
+                .iter()
+                .chain(&spec.properties)
+                .map(Specification::Attribute),
+        );
+        self.validate_specifications(specifications)
+    }
+    fn validate_attribute_spec(&self, spec: &AttributeSpec) -> Result<(), EditError> {
+        self.validate_specifications([Specification::Attribute(spec)])
+    }
+    fn validate_specifications<'a>(
+        &self,
+        specifications: impl IntoIterator<Item = Specification<'a>>,
+    ) -> Result<(), EditError> {
+        let pending = specifications
+            .into_iter()
+            .filter(|specification| !specification.is_owned_by(&self.working))
+            .map(|specification| {
+                let supplied = specification.canonical_spelling(&self.working)?;
+                Ok((specification, supplied))
+            })
+            .collect::<Result<Vec<_>, EditError>>()?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let mut source = String::from("\"zirium.spec\"() {");
+        for (index, (specification, _)) in pending.iter().enumerate() {
+            if index != 0 {
+                source.push_str(", ");
+            }
+            source.push_str(&format!("__zirium_spec_{index} = "));
+            match specification {
+                Specification::Type(spec) => {
+                    source.push_str("type<");
+                    source.push_str(&spec.spelling);
+                    source.push('>');
+                }
+                Specification::Attribute(spec) => source.push_str(&spec.spelling),
+            }
+        }
+        source.push_str("} : () -> ()");
+
+        let document = lower_specification(&source).map_err(|message| {
+            let specification = pending[0].0;
+            invalid_specification(specification.kind(), specification.spelling(), message)
+        })?;
+        let operation = only_root(&document).map_err(|message| {
+            let specification = pending[0].0;
+            invalid_specification(specification.kind(), specification.spelling(), message)
+        })?;
+        let entries = document.operation_attributes(operation).ok_or_else(|| {
+            let specification = pending[0].0;
+            invalid_specification(
+                specification.kind(),
+                specification.spelling(),
+                "probe operation is missing its attribute dictionary".into(),
+            )
+        })?;
+        if entries.len() != pending.len() {
+            let specification = pending[0].0;
+            return Err(invalid_specification(
+                specification.kind(),
+                specification.spelling(),
+                "spelling does not form exactly one value".into(),
+            ));
+        }
+
+        for (index, (specification, supplied)) in pending.into_iter().enumerate() {
+            let name = format!("__zirium_spec_{index}");
+            let value = document
+                .attribute_id(operation, &name)
+                .and_then(|id| document.attribute_value(id))
+                .ok_or_else(|| {
+                    invalid_specification(
+                        specification.kind(),
+                        specification.spelling(),
+                        "lowered value is unavailable".into(),
+                    )
+                })?;
+            let lowered = specification.canonical_lowered_spelling(&document, value)?;
+            if supplied != lowered {
+                return Err(invalid_specification(
+                    specification.kind(),
+                    specification.spelling(),
+                    format!("spelling lowers to `{lowered}`, but value prints as `{supplied}`"),
+                ));
+            }
+        }
+        Ok(())
+    }
     pub(super) fn intern_type_spec(&mut self, spec: &TypeSpec) -> TypeId {
         if let Some(index) = self
             .working
@@ -777,6 +877,7 @@ impl DocumentEditor<'_> {
             .working
             .operation(operation)
             .ok_or_else(|| self.operation_error(operation))?;
+        self.validate_attribute_spec(&spec)?;
         let list = if property {
             op.properties
         } else {
@@ -837,4 +938,108 @@ impl DocumentEditor<'_> {
         }
         Ok(())
     }
+}
+
+fn invalid_specification(kind: &str, spelling: &str, message: String) -> EditError {
+    EditError::InvalidSpecification {
+        kind: kind.to_owned(),
+        spelling: spelling.to_owned(),
+        message,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Specification<'a> {
+    Type(&'a TypeSpec),
+    Attribute(&'a AttributeSpec),
+}
+
+impl<'a> Specification<'a> {
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Type(_) => "type",
+            Self::Attribute(_) => "attribute",
+        }
+    }
+
+    fn spelling(self) -> &'a str {
+        match self {
+            Self::Type(spec) => &spec.spelling,
+            Self::Attribute(spec) => &spec.spelling,
+        }
+    }
+
+    fn is_owned_by(self, document: &Document) -> bool {
+        match self {
+            Self::Type(spec) => document
+                .types
+                .iter()
+                .zip(&document.type_spellings)
+                .any(|(value, spelling)| value == &spec.value && spelling == &spec.spelling),
+            Self::Attribute(spec) => document
+                .attributes
+                .iter()
+                .zip(&document.attribute_spellings)
+                .any(|(value, spelling)| value == &spec.value && spelling == &spec.spelling),
+        }
+    }
+
+    fn canonical_spelling(self, document: &Document) -> Result<String, EditError> {
+        match self {
+            Self::Type(spec) => document
+                .canonical_type_spelling(&spec.value)
+                .map_err(|error| invalid_specification("type", &spec.spelling, error.to_string())),
+            Self::Attribute(spec) => {
+                document
+                    .canonical_attribute_spelling(&spec.value)
+                    .map_err(|error| {
+                        invalid_specification("attribute", &spec.spelling, error.to_string())
+                    })
+            }
+        }
+    }
+
+    fn canonical_lowered_spelling(
+        self,
+        document: &Document,
+        value: &AttributeValue,
+    ) -> Result<String, EditError> {
+        match (self, value) {
+            (Self::Type(spec), AttributeValue::Type(value)) => document
+                .canonical_type_spelling(value)
+                .map_err(|error| invalid_specification("type", &spec.spelling, error.to_string())),
+            (Self::Attribute(spec), value) => {
+                document
+                    .canonical_attribute_spelling(value)
+                    .map_err(|error| {
+                        invalid_specification("attribute", &spec.spelling, error.to_string())
+                    })
+            }
+            (Self::Type(spec), _) => Err(invalid_specification(
+                "type",
+                &spec.spelling,
+                "spelling does not lower to a type".into(),
+            )),
+        }
+    }
+}
+
+fn lower_specification(source: &str) -> Result<Document, String> {
+    let parsed = ParsedFile::parse(source.as_bytes()).map_err(|error| error.to_string())?;
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY);
+    lowered.document.ok_or_else(|| {
+        lowered
+            .diagnostics
+            .first()
+            .map(|diagnostic| diagnostic.message.clone())
+            .unwrap_or_else(|| "spelling is not valid MLIR".to_owned())
+    })
+}
+
+fn only_root(document: &Document) -> Result<OperationId, String> {
+    let [operation] = document.root_operations() else {
+        return Err("spelling does not form exactly one value".into());
+    };
+    Ok(*operation)
 }

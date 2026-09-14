@@ -740,17 +740,9 @@ fn evaluate_pipeline(
             model::Stage::SetAttr { name, value, .. } => {
                 let selected = operations(&current, "set_attr")?;
                 let mut editor = document.editable()?.edit(registry).map_err(edit_error)?;
-                let spelling = quote_mlir_string(value);
                 for operation in selected.iter().copied().collect::<HashSet<_>>() {
                     editor
-                        .set_attribute(
-                            operation,
-                            AttributeSpec {
-                                name: name.clone(),
-                                spelling: spelling.clone(),
-                                value: AttributeValue::String(spelling.clone()),
-                            },
-                        )
+                        .set_attribute(operation, AttributeSpec::string(name.clone(), value))
                         .map_err(edit_error)?;
                 }
                 editor.commit().map_err(edit_error)?;
@@ -1413,10 +1405,6 @@ fn evaluate_predicate(
         }
         model::Predicate::Group { predicate, .. } => evaluate_predicate(predicate, document, operation, budget)?,
     })
-}
-
-fn quote_mlir_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn edit_error(error: impl fmt::Display) -> EvaluationError {

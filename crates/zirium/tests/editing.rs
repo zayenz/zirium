@@ -268,8 +268,8 @@ fn editor_rejects_out_of_range_dense_integer_elements() {
     let operation = document.root_operations()[0];
     let registry = DialectRegistry::EMPTY;
     let mut editor = document.edit(&registry).unwrap();
-    editor
-        .set_attribute(
+    assert!(matches!(
+        editor.set_attribute(
             operation,
             AttributeSpec {
                 name: "values".into(),
@@ -279,14 +279,166 @@ fn editor_rejects_out_of_range_dense_integer_elements() {
                     elements: vec![zirium::semantic::AttributeValue::Integer("256".into())],
                 },
             },
+        ),
+        Err(EditError::InvalidSpecification { .. })
+    ));
+    assert!(
+        editor
+            .document()
+            .attribute_id(operation, "values")
+            .is_none()
+    );
+}
+
+#[test]
+fn decoded_string_specs_escape_and_reparse_canonically() {
+    let decoded = "say \"hi\"\\then\nnext";
+    let spec = AttributeSpec::string("tag", decoded);
+    assert_eq!(spec.spelling, r#""say \"hi\"\\then\nnext""#);
+    assert_eq!(
+        spec.value,
+        zirium::semantic::AttributeValue::String(spec.spelling.clone())
+    );
+
+    let mut document = generic("\"editable\"() : () -> ()");
+    let operation = document.root_operations()[0];
+    let registry = DialectRegistry::EMPTY;
+    let mut editor = document.edit(&registry).unwrap();
+    editor.set_attribute(operation, spec).unwrap();
+    editor.commit().unwrap();
+
+    let mut output = String::new();
+    document.print(&mut output, PrintLayout::Compact).unwrap();
+    assert!(output.contains(r#"tag = "say \"hi\"\\then\nnext""#));
+    let reparsed = ParsedFile::parse(output.as_bytes()).unwrap();
+    let reparsed =
+        lower_with_dialect_registry(&reparsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
+    assert!(document.structurally_eq(&reparsed));
+}
+
+#[test]
+fn malformed_and_mismatched_specs_fail_without_changing_the_working_copy() {
+    let mut document = generic("%0 = \"make\"() : () -> i32");
+    let operation = document.root_operations()[0];
+    let original_type = document.result_types(operation).unwrap()[0];
+    let registry = DialectRegistry::EMPTY;
+    let mut editor = document.edit(&registry).unwrap();
+    let before = editor.document().statistics();
+
+    for attribute in [
+        AttributeSpec {
+            name: "raw".into(),
+            spelling: "not-a-number".into(),
+            value: zirium::semantic::AttributeValue::Integer("not-a-number".into()),
+        },
+        AttributeSpec {
+            name: "mismatch".into(),
+            spelling: "1".into(),
+            value: zirium::semantic::AttributeValue::Integer("2".into()),
+        },
+        AttributeSpec {
+            name: "nested".into(),
+            spelling: r#"[1, {value = "right"}]"#.into(),
+            value: zirium::semantic::AttributeValue::Array(vec![
+                zirium::semantic::AttributeValue::Integer("1".into()),
+                zirium::semantic::AttributeValue::Dictionary(vec![(
+                    "value".into(),
+                    zirium::semantic::AttributeValue::String(r#""wrong""#.into()),
+                )]),
+            ]),
+        },
+    ] {
+        assert!(matches!(
+            editor.set_attribute(operation, attribute),
+            Err(EditError::InvalidSpecification { .. })
+        ));
+    }
+    assert!(matches!(
+        editor.replace_result_types(
+            operation,
+            &[TypeSpec {
+                spelling: "i32".into(),
+                value: TypeValue::Integer {
+                    width: 64,
+                    signedness: None,
+                },
+            }],
+        ),
+        Err(EditError::InvalidSpecification { .. })
+    ));
+
+    let after = editor.document().statistics();
+    assert_eq!(after.local_strings, before.local_strings);
+    assert_eq!(after.local_types, before.local_types);
+    assert_eq!(after.local_attributes, before.local_attributes);
+    assert_eq!(
+        editor.document().result_types(operation),
+        Some(&[original_type][..])
+    );
+    assert!(editor.document().attribute_id(operation, "raw").is_none());
+    assert!(
+        editor
+            .document()
+            .attribute_id(operation, "mismatch")
+            .is_none()
+    );
+    assert!(
+        editor
+            .document()
+            .attribute_id(operation, "nested")
+            .is_none()
+    );
+
+    editor
+        .set_attribute(operation, AttributeSpec::string("tag", "valid"))
+        .unwrap();
+    editor.commit().unwrap();
+    assert_eq!(
+        document.attributes(operation).unwrap().next(),
+        Some(("tag", "\"valid\""))
+    );
+}
+
+#[test]
+fn invalid_insert_specs_and_valid_opaque_payloads_are_bounded() {
+    let mut document = generic("\"original\"() : () -> ()");
+    let original = document.root_operations()[0];
+    let registry = DialectRegistry::EMPTY;
+    let mut editor = document.edit(&registry).unwrap();
+    assert!(matches!(
+        editor.insert(
+            InsertionPoint::Root(1),
+            OperationSpec {
+                attributes: vec![AttributeSpec {
+                    name: "bad".into(),
+                    spelling: r#""unterminated"#.into(),
+                    value: zirium::semantic::AttributeValue::String(r#""unterminated"#.into()),
+                }],
+                ..unknown_spec("invalid")
+            },
+        ),
+        Err(EditError::InvalidSpecification { .. })
+    ));
+    assert_eq!(editor.document().root_operations(), &[original]);
+
+    let opaque = "#vendor.payload<[1, 2]>";
+    editor
+        .set_property(
+            original,
+            AttributeSpec {
+                name: "payload".into(),
+                spelling: opaque.into(),
+                value: zirium::semantic::AttributeValue::Opaque(Arc::from(opaque.as_bytes())),
+            },
         )
         .unwrap();
-    assert!(matches!(
-        editor.commit(),
-        Err(EditError::Semantic(
-            SemanticVerificationError::Attribute { .. }
-        ))
-    ));
+    editor.commit().unwrap();
+    assert_eq!(
+        document.properties(original).unwrap().next(),
+        Some(("payload", opaque))
+    );
 }
 
 #[test]
@@ -1510,7 +1662,7 @@ fn committed_edit_invalidates_and_rebuilds_the_dominance_index() {
             AttributeSpec {
                 name: "tag".into(),
                 spelling: "1 : i32".into(),
-                value: zirium::semantic::AttributeValue::Integer("1".into()),
+                value: zirium::semantic::AttributeValue::Integer("1:i32".into()),
             },
         )
         .unwrap();

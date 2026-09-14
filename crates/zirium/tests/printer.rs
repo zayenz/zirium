@@ -99,6 +99,15 @@ fn type_attributes_print_as_bare_mlir_types() {
 }
 
 #[test]
+fn string_attributes_print_with_canonical_escapes_and_reparse() {
+    let document = strict_document(r#""test"() {tag = "\22\5C\0A"} : () -> ()"#);
+    let mut printed = String::new();
+    document.print(&mut printed, PrintLayout::Compact).unwrap();
+    assert_eq!(printed, r#""test"() {tag = "\"\\\n"} : () -> ()"#);
+    assert!(document.structurally_eq(&strict_document(&printed)));
+}
+
+#[test]
 fn streams_to_fmt_and_io_sinks_deterministically() {
     let parsed = ParsedFile::parse(
         include_bytes!("../../../tests/corpus/mlir-22.1/generic-complete/valid.mlir").as_slice(),
