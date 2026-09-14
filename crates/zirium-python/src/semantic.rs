@@ -710,6 +710,15 @@ impl SemanticOperation {
             id,
         })
     }
+    fn function_type(&self) -> PyResult<SemanticType> {
+        let id = read_document(&self.state)?
+            .function_type(self.id)
+            .ok_or_else(|| stale("operation"))?;
+        Ok(SemanticType {
+            state: self.state.clone(),
+            id,
+        })
+    }
     fn attribute_count(&self) -> PyResult<usize> {
         Ok(read_document(&self.state)?
             .attribute_entries(self.id)

@@ -224,16 +224,14 @@ def test_buffering_holds_no_document_lock_across_python_execution():
         assert len(set(outputs)) == 1
 
 
-def test_bounded_operation_and_attribute_specs_snapshot_existing_values():
-    doc = generic_document(
-        '!fn = type () -> (i32)\n%f = "fn"() : () -> !fn\n'
-        '%v = "value"() {tag = #vendor.tag<"x">} : () -> i32'
-    )
-    function_type = doc.operation_table("fn").operation(0).result_type(0)
+def test_operation_insertion_uses_an_existing_complete_function_type():
+    doc = generic_document('%v = "value"() {tag = #vendor.tag<"x">} : () -> i32')
     value = doc.operation_table("value").operation(0)
     result_type = value.result_type(0)
     tag = zirium.AttributeSpecHandle(value.attribute(0), "copied_tag")
-    spec = zirium.OperationSpec("vendor.copy", [], [result_type], function_type, [tag])
+    spec = zirium.OperationSpec(
+        "vendor.copy", [], [result_type], value.function_type(), [tag]
+    )
 
     with doc.edit() as edit:
         edit.insert_root(1, spec)
@@ -241,9 +239,37 @@ def test_bounded_operation_and_attribute_specs_snapshot_existing_values():
     inserted = doc.operation_table("vendor.copy").operation(0)
     assert inserted.attribute_snapshot() == [("copied_tag", '#vendor.tag<"x">')]
     assert inserted.result_count() == 1
+    assert inserted.result_type(0).spelling == "i32"
+    assert inserted.function_type().spelling == "() -> i32"
     inserted_table = doc.operation_table("vendor.copy")
     assert int.from_bytes(inserted_table.source_start, sys.byteorder) == 0xFFFFFFFF
     assert int.from_bytes(inserted_table.source_end, sys.byteorder) == 0xFFFFFFFF
+
+    canonical = doc.canonical_bytes()
+    reparsed = zirium.parse_bytes(
+        canonical, registry=zirium.DialectRegistry.baseline()
+    ).lower_strict("semantic")
+    assert reparsed.document is not None, reparsed.diagnostics
+    assert doc.structurally_equal(reparsed.document)
+
+
+def test_operation_function_type_is_checked_and_specs_reject_foreign_types():
+    doc = generic_document('%value = "value"() : () -> i32')
+    operation = doc.operation_table().operation(0)
+    function_type = operation.function_type()
+    assert function_type.kind == "function"
+
+    foreign = generic_document('%other = "other"() : () -> i64')
+    foreign_result_type = foreign.operation_table().operation(0).result_type(0)
+    before = doc.canonical_bytes()
+    with pytest.raises(zirium.ForeignHandleError):
+        zirium.OperationSpec("copy", [], [foreign_result_type], function_type)
+    assert doc.canonical_bytes() == before
+
+    with doc.edit() as edit:
+        edit.erase(operation)
+    with pytest.raises(zirium.StaleHandleError):
+        operation.function_type()
 
 
 def test_operand_and_successor_rewiring_are_buffered_and_indexed():

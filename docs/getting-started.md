@@ -350,10 +350,39 @@ document raise `ForeignHandleError`.
 
 Python edit specifications copy existing semantic values: `AttributeSpecHandle`
 wraps an existing attribute, and `OperationSpec` takes existing types and values
-from the same document. They do not parse fresh type or attribute strings.
-Insertion supports regionless operations and returns no provisional handle;
-look up the inserted operation after the context commits. Use the Rust API when
-the task needs richer construction through `TypeSpec` and `AttributeSpec`.
+from the same document. `SemanticOperation.function_type()` returns the complete
+checked function type needed by `OperationSpec`, so a regionless operation can
+be inserted using an existing operation as its type template:
+
+```python
+registry = zirium.DialectRegistry.baseline()
+lowered = zirium.parse_text(
+    '%template = "vendor.make"() : () -> i32', registry=registry
+).lower_strict("semantic")
+assert lowered.document is not None, lowered.diagnostics
+document = lowered.document
+template = document.operation_table("vendor.make").operation(0)
+spec = zirium.OperationSpec(
+    "vendor.copy",
+    [],
+    [template.result_type(0)],
+    template.function_type(),
+)
+with document.edit() as edit:
+    edit.insert_root(1, spec)
+
+canonical = document.canonical_bytes()
+reparsed = zirium.parse_bytes(canonical, registry=registry).lower_strict("semantic")
+assert reparsed.document is not None, reparsed.diagnostics
+assert document.structurally_equal(reparsed.document)
+```
+
+All values and types must belong to the edited document; stale handles and
+handles from another document are rejected. Edit commands remain buffered until
+the context exits normally. These APIs do not parse fresh type or attribute
+strings, so deriving a genuinely new signature still requires the Rust API's
+`TypeSpec`. Insertion supports regionless operations and returns no provisional
+handle; look up the inserted operation after the context commits.
 
 Preserving output copies unchanged source and regenerates edited operations or
 blocks, as in the attribute replacement above. Inserting or erasing an operation
