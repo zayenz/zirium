@@ -361,5 +361,38 @@ median and spread, and peak-RSS median and spread. Use `--rss-constants`,
 `--rss-emissions`, and `--rss-runs` to change those dimensions. Large RSS runs
 remain manual measurements; there is no CI memory or timing threshold.
 
+The retention mode runs two isolated release workloads: a scalar `count` and
+one large JSONL operation selection. Each CLI invocation runs in a fresh helper
+process, writes stdout to a file, and is checked byte-for-byte against an exact
+reference. Rows include the platform, Python version, CPU count, release binary,
+workload dimensions, input and output bytes, repetitions, latency median and
+spread, and peak-RSS median and spread.
+
+```sh
+python3 python/benchmarks/selection_printing_benchmark.py \
+  --retention-rss --retention-constants 100000 --retention-runs 7
+```
+
+On macOS 26.6.2 arm64 with Python 3.14.6 and 10 logical CPUs, the 100,000
+constant fixture was 3,677,791 bytes. At commit `1efe1fdd`, the scalar workload
+emitted 7 bytes in 336.361 ms median (13.011 ms spread) at 181.859 MiB median
+peak RSS (0.094 MiB spread). The large JSONL workload emitted 3,977,924 bytes in
+771.403 ms median (48.821 ms spread) at 199.859 MiB median peak RSS (2.188 MiB
+spread).
+
+After streaming JSONL operation selections through the common staged output and
+dropping the parsed file before evaluation, the same scalar workload measured
+333.427 ms (26.819 ms spread) and 181.875 MiB (2.906 MiB spread). The JSONL
+workload measured 530.728 ms (31.479 ms spread) and 198.703 MiB (1.953 MiB
+spread). This removes the full rendered-selection copy with no scalar latency
+regression and reduces JSONL latency and peak RSS in this run.
+
+A query-dependent `SemanticOnly` CLI retention profile is deferred. A measured
+prototype did not reduce the scalar workload's process peak because parsing and
+lowering remained the high-water stage, while safely admitting more programs
+would require proving that every statement and nested stage cannot edit or emit
+an operation selection. Selection, edit, recovery, and source-preserving paths
+therefore continue to use `Hybrid`.
+
 For evaluator-only and generated-graph checks, see [query profiling](query-profiling.md).
 For production-shaped inputs, see the [compiler-input stress benchmark](stress-instance-benchmark.md).

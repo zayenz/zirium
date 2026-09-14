@@ -2,7 +2,7 @@ use std::{
     env,
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, BufWriter, Read, Seek, SeekFrom, Write},
     ops::Range,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -643,6 +643,7 @@ fn run() -> Result<(), String> {
                 };
                 format!("could not lower {name}:\n{detail}")
             })?;
+        drop(parsed);
         query
             .evaluate_with_context_options_and_limits(
                 &mut document,
@@ -797,8 +798,26 @@ fn write_ndjson_record(
             map.end()
                 .map_err(|error| EvaluationError::new(error.to_string()))?;
         }
+        QueryOutput::Operations(selected) => {
+            record.write_all(b"\"").map_err(output_staging_error)?;
+            {
+                let mut buffered = BufWriter::with_capacity(8192, &mut *record);
+                let mut writer = JsonStringWriter::new(&mut buffered);
+                document
+                    .write_selection_with_scope(
+                        &mut writer,
+                        &selected,
+                        PrintLayout::Pretty,
+                        registry,
+                        fragment_scope,
+                    )
+                    .map_err(|error| EvaluationError::new(error.to_string()))?;
+                writer.flush().map_err(output_staging_error)?;
+            }
+            record.write_all(b"\"").map_err(output_staging_error)?;
+        }
         output => {
-            let result = ndjson_value(document, output, registry, fragment_scope)?;
+            let result = ndjson_value(output)?;
             serde_json::to_writer(&mut *record, &result)
                 .map_err(|error| EvaluationError::new(error.to_string()))?;
         }
@@ -807,34 +826,65 @@ fn write_ndjson_record(
     Ok(())
 }
 
-fn ndjson_value(
-    document: &zirium::semantic::Document,
-    output: QueryOutput,
-    registry: &DialectRegistry,
-    fragment_scope: FragmentScope,
-) -> Result<serde_json::Value, EvaluationError> {
+struct JsonStringWriter<W> {
+    output: W,
+}
+
+impl<W> JsonStringWriter<W> {
+    fn new(output: W) -> Self {
+        Self { output }
+    }
+}
+
+impl<W: Write> Write for JsonStringWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut unchanged = 0;
+        for (index, &byte) in bytes.iter().enumerate() {
+            let escaped: &[u8] = match byte {
+                b'\"' => br#"\""#,
+                b'\\' => br#"\\"#,
+                b'\x08' => br#"\b"#,
+                b'\t' => br#"\t"#,
+                b'\n' => br#"\n"#,
+                b'\x0c' => br#"\f"#,
+                b'\r' => br#"\r"#,
+                0x00..=0x1f => {
+                    self.output.write_all(&bytes[unchanged..index])?;
+                    self.output.write_all(&[
+                        b'\\',
+                        b'u',
+                        b'0',
+                        b'0',
+                        HEX[(byte >> 4) as usize],
+                        HEX[(byte & 0xf) as usize],
+                    ])?;
+                    unchanged = index + 1;
+                    continue;
+                }
+                _ => continue,
+            };
+            self.output.write_all(&bytes[unchanged..index])?;
+            self.output.write_all(escaped)?;
+            unchanged = index + 1;
+        }
+        self.output.write_all(&bytes[unchanged..])?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
+}
+
+fn ndjson_value(output: QueryOutput) -> Result<serde_json::Value, EvaluationError> {
     Ok(match output {
         QueryOutput::Native(_) => {
             return Err(EvaluationError::new(
                 "native query results require a library consumer",
             ));
         }
-        QueryOutput::Operations(selected) => {
-            let mut bytes = Vec::new();
-            document
-                .write_selection_with_scope(
-                    &mut bytes,
-                    &selected,
-                    PrintLayout::Pretty,
-                    registry,
-                    fragment_scope,
-                )
-                .map_err(|error| EvaluationError::new(error.to_string()))?;
-            serde_json::Value::String(
-                String::from_utf8(bytes)
-                    .map_err(|error| EvaluationError::new(error.to_string()))?,
-            )
-        }
+        QueryOutput::Operations(_) => unreachable!("operation selections stream into NDJSON"),
         QueryOutput::Values(values) => serde_json::json!(values),
         QueryOutput::Count(count) => serde_json::json!(count),
         QueryOutput::Map(values) => serde_json::Value::Object(values),
@@ -863,6 +913,17 @@ fn write_stdout(chunks: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Result<()
 mod staged_output_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn json_string_writer_matches_serde_json_escaping() {
+        let value = "\0\x01\x08\t\n\x0c\r\x1f\"\\é";
+        let expected = serde_json::to_vec(value).unwrap();
+        let mut actual = Vec::new();
+        JsonStringWriter::new(&mut actual)
+            .write_all(value.as_bytes())
+            .unwrap();
+        assert_eq!(actual, expected[1..expected.len() - 1]);
+    }
 
     struct GrowingFile {
         reader: File,

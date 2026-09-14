@@ -82,6 +82,33 @@ fn recovery_warns_when_semantic_queries_may_be_incomplete() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("incomplete"));
 }
 
+#[test]
+fn scalar_count_and_source_aware_selection_remain_byte_exact() {
+    let source = "module {\n  // Keep this comment.\n  \"vendor.test\"() : () -> ()\n}\n";
+    let count = run_stdin(r#"filter(op("vendor.test")) | count"#, source);
+    assert!(count.status.success(), "{:?}", count.stderr);
+    assert_eq!(count.stdout, b"1\n");
+
+    let selection = run_stdin(r#"filter(op("vendor.test"))"#, source);
+    assert!(selection.status.success(), "{:?}", selection.stderr);
+    assert_eq!(
+        selection.stdout,
+        b"builtin.module {\n  // Keep this comment.\n  \"vendor.test\"() : () -> ()\n}\n"
+    );
+}
+
+#[test]
+fn jsonl_operation_selection_uses_serde_compatible_escaping() {
+    let source = "module {\n  // quote \" and slash \\\n  \"vendor.test\"() {text = \"say \\22hi\\22\"} : () -> ()\n}\n";
+    let output = run_stdin_with_options(&["--jsonl"], r#"filter(op("vendor.test"))"#, source);
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let selection = "builtin.module {\n  // quote \" and slash \\\n  \"vendor.test\"() {text = \"say \\\"hi\\\"\"} : () -> ()\n}\n";
+    let mut expected =
+        serde_json::to_vec(&serde_json::json!({"document": "stdin", "result": selection})).unwrap();
+    expected.push(b'\n');
+    assert_eq!(output.stdout, expected);
+}
+
 fn run_stdin(query: &str, input: &str) -> std::process::Output {
     run_stdin_with_options(&[], query, input)
 }

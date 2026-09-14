@@ -12,6 +12,7 @@ checks every emitted byte without retaining the amplified output in the helper.
 
 import argparse
 import json
+import os
 import platform
 import resource
 import statistics
@@ -81,6 +82,131 @@ def run_output_rss_child(args):
             }
         )
     )
+
+
+def run_retention_rss_child(args):
+    cli = [str(args.binary)]
+    if args.child_mode == "large-jsonl":
+        cli.append("--jsonl")
+        query = ""
+    else:
+        query = "count"
+    cli.extend([query, str(args.child_input)])
+
+    with tempfile.TemporaryDirectory(prefix="zirium-retention-rss-") as directory:
+        output_path = Path(directory) / "stdout"
+        start = time.perf_counter()
+        with output_path.open("wb") as output:
+            result = subprocess.run(
+                cli,
+                stdout=output,
+                stderr=subprocess.PIPE,
+                timeout=120,
+                check=False,
+            )
+        elapsed = time.perf_counter() - start
+        if result.returncode:
+            raise RuntimeError(result.stderr.decode(errors="replace"))
+        if result.stderr:
+            raise RuntimeError(result.stderr.decode(errors="replace"))
+        output = output_path.read_bytes()
+        expected = args.child_expected.read_bytes()
+        if output != expected:
+            raise RuntimeError(f"{args.child_mode} output differs from exact reference")
+    print(
+        json.dumps(
+            {
+                "elapsed_seconds": elapsed,
+                "emitted_bytes": len(output),
+                "peak_rss_bytes": peak_child_rss_bytes(),
+            }
+        )
+    )
+
+
+def run_retention_rss(binary, constants, runs):
+    if binary.parent.name != "release":
+        raise SystemExit("--retention-rss requires a binary from a release directory")
+
+    with tempfile.TemporaryDirectory(prefix="zirium-retention-rss-input-") as directory:
+        directory = Path(directory)
+        input_path = directory / "input.mlir"
+        source = selection_source(constants)
+        input_path.write_bytes(source)
+
+        normal = subprocess.run(
+            [str(binary), "", str(input_path)],
+            capture_output=True,
+            timeout=120,
+            check=True,
+        )
+        if normal.stderr:
+            raise RuntimeError(normal.stderr.decode(errors="replace"))
+        expected = {
+            "scalar-count": f"{constants + 1}\n".encode(),
+            "large-jsonl": (
+                json.dumps(
+                    {
+                        "document": str(input_path),
+                        "result": normal.stdout.decode(),
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode(),
+        }
+
+        for mode in ("scalar-count", "large-jsonl"):
+            expected_path = directory / f"expected-{mode}"
+            expected_path.write_bytes(expected[mode])
+            samples = []
+            for _ in range(runs):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        __file__,
+                        str(binary),
+                        "--_retention-rss-child",
+                        "--child-mode",
+                        mode,
+                        "--child-input",
+                        str(input_path),
+                        "--child-expected",
+                        str(expected_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    check=True,
+                )
+                samples.append(json.loads(result.stdout))
+            elapsed_ms = [sample["elapsed_seconds"] * 1000 for sample in samples]
+            peak_mib = [
+                sample["peak_rss_bytes"] / (1024 * 1024) for sample in samples
+            ]
+            emitted_bytes = len(expected[mode])
+            assert all(sample["emitted_bytes"] == emitted_bytes for sample in samples)
+            print(
+                " ".join(
+                    [
+                        f"platform={platform.platform()}",
+                        f"python={platform.python_version()}",
+                        f"cpu_count={os.cpu_count()}",
+                        "profile=release",
+                        f"binary={binary}",
+                        f"workload={mode}",
+                        f"constants={constants}",
+                        f"input_bytes={len(source)}",
+                        f"output_bytes={emitted_bytes}",
+                        f"runs={runs}",
+                        f"median_ms={statistics.median(elapsed_ms):.3f}",
+                        f"spread_ms={max(elapsed_ms) - min(elapsed_ms):.3f}",
+                        f"median_peak_rss_mib={statistics.median(peak_mib):.3f}",
+                        f"spread_peak_rss_mib={max(peak_mib) - min(peak_mib):.3f}",
+                    ]
+                ),
+                flush=True,
+            )
 
 
 def run_output_rss(binary, constants, emission_counts, runs):
@@ -170,6 +296,13 @@ def main():
         action="store_true",
         help="run the opt-in release output-amplification RSS workload",
     )
+    parser.add_argument(
+        "--retention-rss",
+        action="store_true",
+        help="run isolated scalar-count and single-large-JSONL release workloads",
+    )
+    parser.add_argument("--retention-constants", type=int, default=100_000)
+    parser.add_argument("--retention-runs", type=int, default=5)
     parser.add_argument("--rss-constants", type=int, default=128)
     parser.add_argument(
         "--rss-emissions", type=int, nargs="+", default=[256, 1024, 4096]
@@ -179,7 +312,12 @@ def main():
         "--_output-rss-child", action="store_true", help=argparse.SUPPRESS
     )
     parser.add_argument(
-        "--child-mode", choices=("normal", "jsonl"), help=argparse.SUPPRESS
+        "--_retention-rss-child", action="store_true", help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--child-mode",
+        choices=("normal", "jsonl", "scalar-count", "large-jsonl"),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--child-input", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--child-expected", type=Path, help=argparse.SUPPRESS)
@@ -188,6 +326,9 @@ def main():
     args.binary = args.binary.resolve()
     if args._output_rss_child:
         run_output_rss_child(args)
+        return
+    if args._retention_rss_child:
+        run_retention_rss_child(args)
         return
     if args.output_rss:
         if (
@@ -199,6 +340,11 @@ def main():
         run_output_rss(
             args.binary, args.rss_constants, args.rss_emissions, args.rss_runs
         )
+        return
+    if args.retention_rss:
+        if args.retention_constants < 1 or args.retention_runs < 1:
+            parser.error("retention workload sizes and runs must be positive")
+        run_retention_rss(args.binary, args.retention_constants, args.retention_runs)
         return
 
     binary = args.binary
