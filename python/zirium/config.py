@@ -1,8 +1,9 @@
 """JSON-compatible configuration for Zirium's shared registry reader."""
 
+from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class OperationShapeConfig(BaseModel):
@@ -92,6 +93,7 @@ class RegistryConfig(BaseModel):
 
     model_config = ConfigDict(strict=True, extra="forbid")
 
+    imports: list[str] = Field(default_factory=list)
     presets: list[str] = Field(default_factory=list)
     builtins: list[str]
     operation_shapes: list[OperationShapeConfig]
@@ -99,3 +101,13 @@ class RegistryConfig(BaseModel):
     operation_alternatives: list[OperationAlternativesConfig] = Field(
         default_factory=list
     )
+
+    @field_validator("imports")
+    @classmethod
+    def validate_imports(cls, imports: list[str]):
+        if any(
+            not import_path or Path(import_path).is_absolute()
+            for import_path in imports
+        ):
+            raise ValueError("registry imports must be non-empty relative paths")
+        return imports

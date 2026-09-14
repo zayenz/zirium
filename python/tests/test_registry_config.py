@@ -1,4 +1,6 @@
 import json
+import shutil
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -6,6 +8,39 @@ import zirium
 from pydantic import ValidationError
 
 EXAMPLES = Path(__file__).parents[2] / "examples" / "cli"
+BUNDLES = Path(__file__).parents[2] / "tests" / "fixtures" / "registry-bundles"
+WIDEN_SOURCE = """"builtin.module"() ({
+^bb0:
+  %lhs = "test.source"() : () -> i16
+  %rhs = "test.source"() : () -> i16
+  %result = vendor.widen %lhs, %rhs {tag = true} : i16 to i32
+}) : () -> ()"""
+
+
+def assert_bundle_behavior(registry):
+    assert registry.call_target_attribute("vendor.invoke") == "target"
+    assert registry.operation_alternatives("vendor.choice") == [
+        ("format", "$value `:` type($value) attr-dict `:` type($result)"),
+        ("shape", "operand_clauses"),
+    ]
+    parsed = zirium.parse_text(WIDEN_SOURCE, registry=registry)
+    assert parsed.diagnostics == []
+    lowered = parsed.lower_strict()
+    assert lowered.diagnostics == []
+    document = lowered.document
+    assert document is not None
+    operation = document.operation_table("vendor.widen").operation(0)
+    operand_types = [operation.operand(index).type_value for index in range(2)]
+    assert all(operand_type is not None for operand_type in operand_types)
+    assert [
+        operand_type.spelling for operand_type in operand_types if operand_type
+    ] == [
+        "i16",
+        "i16",
+    ]
+    assert operation.result_type(0).spelling == "i32"
+    tag = operation.attribute_by_name("tag")
+    assert tag is not None and tag.spelling == "true"
 
 
 def test_file_dict_and_pydantic_registry_agree():
@@ -13,6 +48,7 @@ def test_file_dict_and_pydantic_registry_agree():
     model = zirium.RegistryConfig.model_validate(config)
     config["operation_formats"] = []
     config["operation_alternatives"] = []
+    config["imports"] = []
     assert model.model_dump(mode="json") == config
     assert json.loads(model.model_dump_json()) == config
     assert model.model_json_schema()["additionalProperties"] is False
@@ -410,3 +446,81 @@ def test_multiple_configs_share_identical_entries_and_reject_conflicts(tmp_path:
     }
     with pytest.raises(ValueError, match="conflicts with registered"):
         zirium.DialectRegistry.from_config(shadow, second)
+
+
+def test_filesystem_bundle_matches_direct_composition_and_moves(tmp_path: Path):
+    bundled = zirium.DialectRegistry.from_file(BUNDLES / "root.json")
+    direct = zirium.DialectRegistry.from_file(
+        BUNDLES / "leaves" / "builtins.json",
+        BUNDLES / "leaves" / "shapes.json",
+        BUNDLES / "leaves" / "formats.json",
+    )
+    assert bundled.operation_names() == direct.operation_names()
+    assert bundled.operation_shape("vendor.function") == "func_like"
+    assert_bundle_behavior(bundled)
+    assert_bundle_behavior(direct)
+
+    moved = tmp_path / "moved"
+    shutil.copytree(BUNDLES, moved)
+    assert_bundle_behavior(zirium.DialectRegistry.from_file(moved / "root.json"))
+
+
+def test_import_models_stay_io_free_and_zip_resources_remain_supported(tmp_path: Path):
+    model = zirium.RegistryConfig(
+        imports=["child.json"], builtins=[], operation_shapes=[]
+    )
+    assert model.imports == ["child.json"]
+    with pytest.raises(ValueError, match="filesystem loader"):
+        zirium.DialectRegistry.from_config(model)
+    for invalid in ["", str(tmp_path / "absolute.json")]:
+        with pytest.raises(ValidationError, match="relative paths"):
+            zirium.RegistryConfig(imports=[invalid], builtins=[], operation_shapes=[])
+
+    archive = tmp_path / "registry.zip"
+    config = {"builtins": ["builtin.module"], "operation_shapes": []}
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("package/registry.json", json.dumps(config))
+    resource = zipfile.Path(archive, "package/registry.json")
+    registry = zirium.DialectRegistry.from_config(json.loads(resource.read_text()))
+    assert registry.operation_names() == ("builtin.module",)
+
+
+def test_registry_graph_errors_and_limits_use_public_exception_classes(tmp_path: Path):
+    missing = tmp_path / "missing-root.json"
+    missing.write_text(
+        json.dumps({"imports": ["child.json"], "builtins": [], "operation_shapes": []})
+    )
+    with pytest.raises(OSError, match="child.json"):
+        zirium.DialectRegistry.from_file(missing)
+
+    cycle_files = {
+        "root.json": "parent.json",
+        "parent.json": "a.json",
+        "a.json": "b.json",
+        "b.json": "a.json",
+    }
+    for name, imported in cycle_files.items():
+        (tmp_path / name).write_text(
+            json.dumps({"imports": [imported], "builtins": [], "operation_shapes": []})
+        )
+    with pytest.raises(ValueError, match="cycle") as raised:
+        zirium.DialectRegistry.from_file(tmp_path / "root.json")
+    diagnostic = str(raised.value)
+    positions = [
+        diagnostic.find(name)
+        for name in ["root.json", "parent.json", "a.json", "b.json"]
+    ]
+    positions.append(diagnostic.find("a.json", positions[-1]))
+    assert positions == sorted(positions) and all(
+        position >= 0 for position in positions
+    )
+    assert "(cycle:" in diagnostic
+
+    with pytest.raises(zirium.ResourceLimitError, match="file count"):
+        zirium.DialectRegistry.from_file(BUNDLES / "root.json", max_files=3)
+    with pytest.raises(zirium.ResourceLimitError, match="import edges"):
+        zirium.DialectRegistry.from_file(BUNDLES / "root.json", max_edges=2)
+    with pytest.raises(zirium.ResourceLimitError, match="import depth"):
+        zirium.DialectRegistry.from_file(BUNDLES / "root.json", max_depth=0)
+    with pytest.raises(zirium.ResourceLimitError, match="registry bytes"):
+        zirium.DialectRegistry.from_file(BUNDLES / "root.json", max_bytes=1)

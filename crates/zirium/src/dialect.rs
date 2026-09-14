@@ -6,7 +6,7 @@ mod config;
 mod format;
 pub use config::{
     OperationAlternativesConfig, OperationFormatConfig, OperationGrammarConfig,
-    OperationShapeConfig, RegistryConfig, RegistryConfigError,
+    OperationShapeConfig, RegistryConfig, RegistryConfigError, RegistryLoadOptions,
 };
 pub(crate) use format::{FormatCapture, FormatStep, FormatTarget, OperationFormat};
 
@@ -339,6 +339,7 @@ pub enum DeclarativeRegistryError {
     RegisteredOperation(String),
     UnknownPreset(String),
     DuplicatePreset(String),
+    UnresolvedImports,
 }
 
 impl std::fmt::Display for DeclarativeRegistryError {
@@ -391,6 +392,10 @@ impl std::fmt::Display for DeclarativeRegistryError {
             ),
             Self::UnknownPreset(name) => write!(formatter, "unknown registry preset: {name}"),
             Self::DuplicatePreset(name) => write!(formatter, "duplicate registry preset: {name}"),
+            Self::UnresolvedImports => write!(
+                formatter,
+                "registry imports require a filesystem loader such as DialectRegistry::from_config_file"
+            ),
         }
     }
 }

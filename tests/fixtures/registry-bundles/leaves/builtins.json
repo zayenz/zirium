@@ -1,0 +1,4 @@
+{
+  "builtins": ["builtin.module", "arith.constant"],
+  "operation_shapes": []
+}

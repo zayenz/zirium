@@ -1891,6 +1891,65 @@ fn invalid_registry_fails_without_waiting_for_mlir_stdin() {
 }
 
 #[test]
+fn filesystem_registry_bundle_and_preset_share_cli_composition() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/registry-bundles/root.json");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--registry")
+        .arg(root)
+        .args([
+            "--preset",
+            "arith",
+            r#"filter(op("vendor.invoke")) | count"#,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"vendor.invoke @callee() : () -> ()")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"1\n");
+}
+
+#[test]
+fn registry_graph_limits_fail_before_reading_mlir_stdin() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/registry-bundles/root.json");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--max-registry-files", "3", "--registry"])
+        .arg(root)
+        .arg("count")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            panic!("read stdin before rejecting registry graph limit");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("file count"));
+}
+
+#[test]
 fn implicit_input_and_emit_cover_empty_programs_and_explicit_taps() {
     let expected = run_stdin("input | emit", INPUT);
     assert!(expected.status.success());

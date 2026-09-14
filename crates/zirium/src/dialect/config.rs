@@ -3,15 +3,19 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs, io,
+    io::Read,
     path::{Path, PathBuf},
 };
 
 use super::{DeclarativeRegistryError, DialectRegistry, OperationShape};
+use serde::Deserialize;
 
 /// A complete registry: selected built-ins plus caller-named operation shapes.
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryConfig {
+    #[serde(default, deserialize_with = "deserialize_imports")]
+    pub imports: Vec<String>,
     #[serde(default)]
     pub presets: Vec<String>,
     pub builtins: Vec<String>,
@@ -20,6 +24,43 @@ pub struct RegistryConfig {
     pub operation_formats: Vec<OperationFormatConfig>,
     #[serde(default)]
     pub operation_alternatives: Vec<OperationAlternativesConfig>,
+}
+
+/// Resource limits for loading a filesystem registry graph.
+#[derive(Clone, Copy, Debug)]
+pub struct RegistryLoadOptions {
+    pub max_depth: usize,
+    pub max_files: usize,
+    pub max_edges: usize,
+    pub max_bytes: usize,
+}
+
+impl Default for RegistryLoadOptions {
+    fn default() -> Self {
+        Self {
+            max_depth: 64,
+            max_files: 1024,
+            max_edges: 4096,
+            max_bytes: 16 * 1024 * 1024,
+        }
+    }
+}
+
+fn deserialize_imports<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let imports = Vec::<String>::deserialize(deserializer)?;
+    for import in &imports {
+        if import.is_empty() || Path::new(import).is_absolute() {
+            return Err(D::Error::custom(
+                "registry imports must be non-empty relative paths",
+            ));
+        }
+    }
+    Ok(imports)
 }
 
 /// One named operation using an existing custom grammar.
@@ -205,6 +246,9 @@ impl RegistryConfig {
     /// Combines complete configurations. Identical entries across configurations
     /// are shared; duplicate entries within a configuration still fail validation.
     pub fn build_many(configs: &[Self]) -> Result<DialectRegistry, DeclarativeRegistryError> {
+        if configs.iter().any(|config| !config.imports.is_empty()) {
+            return Err(DeclarativeRegistryError::UnresolvedImports);
+        }
         let mut builtins = BTreeSet::new();
         let mut shapes = BTreeMap::new();
         let mut formats = BTreeMap::new();
@@ -262,6 +306,9 @@ impl RegistryConfig {
 
     /// Validates all registrations and constructs an owned registry.
     pub fn build(&self) -> Result<DialectRegistry, DeclarativeRegistryError> {
+        if !self.imports.is_empty() {
+            return Err(DeclarativeRegistryError::UnresolvedImports);
+        }
         let (builtins, shapes, formats, alternatives, call_target_attributes) = self.expanded()?;
         Self::build_entries(
             builtins,
@@ -465,7 +512,19 @@ pub enum RegistryConfigError {
         path: PathBuf,
         error: serde_json::Error,
     },
+    IoInGraph {
+        path: PathBuf,
+        error: io::Error,
+        chain: Vec<PathBuf>,
+    },
+    JsonInGraph {
+        path: PathBuf,
+        error: serde_json::Error,
+        chain: Vec<PathBuf>,
+    },
     Registry(DeclarativeRegistryError),
+    Graph(String),
+    Limit(String),
 }
 
 impl fmt::Display for RegistryConfigError {
@@ -473,19 +532,373 @@ impl fmt::Display for RegistryConfigError {
         match self {
             Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
             Self::Json { path, error } => write!(f, "{}: {error}", path.display()),
+            Self::IoInGraph { path, error, chain } => {
+                write!(f, "{}: {error}{}", path.display(), display_chain(chain))
+            }
+            Self::JsonInGraph { path, error, chain } => {
+                write!(f, "{}: {error}{}", path.display(), display_chain(chain))
+            }
             Self::Registry(error) => error.fmt(f),
+            Self::Graph(message) | Self::Limit(message) => f.write_str(message),
         }
     }
 }
 
 impl std::error::Error for RegistryConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(match self {
-            Self::Io { error, .. } => error,
-            Self::Json { error, .. } => error,
-            Self::Registry(error) => error,
-        })
+        match self {
+            Self::Io { error, .. } | Self::IoInGraph { error, .. } => Some(error),
+            Self::Json { error, .. } | Self::JsonInGraph { error, .. } => Some(error),
+            Self::Registry(error) => Some(error),
+            Self::Graph(_) | Self::Limit(_) => None,
+        }
     }
+}
+
+fn io_error(path: PathBuf, error: io::Error, chain: Vec<PathBuf>) -> RegistryConfigError {
+    if chain.len() < 2 {
+        RegistryConfigError::Io { path, error }
+    } else {
+        RegistryConfigError::IoInGraph { path, error, chain }
+    }
+}
+
+fn json_error(path: PathBuf, error: serde_json::Error, chain: Vec<PathBuf>) -> RegistryConfigError {
+    if chain.len() < 2 {
+        RegistryConfigError::Json { path, error }
+    } else {
+        RegistryConfigError::JsonInGraph { path, error, chain }
+    }
+}
+
+fn display_chain(chain: &[PathBuf]) -> String {
+    if chain.len() < 2 {
+        String::new()
+    } else {
+        format!(
+            " (import chain: {})",
+            chain
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        )
+    }
+}
+
+#[derive(Clone)]
+struct SourcedConfig {
+    config: RegistryConfig,
+    origin: PathBuf,
+    chain: Vec<PathBuf>,
+}
+
+struct RegistryGraphLoader {
+    options: RegistryLoadOptions,
+    files: usize,
+    edges: usize,
+    bytes: usize,
+    active: Vec<PathBuf>,
+    completed: BTreeSet<PathBuf>,
+    configs: Vec<SourcedConfig>,
+}
+
+impl RegistryGraphLoader {
+    fn new(options: RegistryLoadOptions) -> Self {
+        Self {
+            options,
+            files: 0,
+            edges: 0,
+            bytes: 0,
+            active: Vec::new(),
+            completed: BTreeSet::new(),
+            configs: Vec::new(),
+        }
+    }
+
+    fn load_root(&mut self, path: &Path) -> Result<(), RegistryConfigError> {
+        let canonical = fs::canonicalize(path).map_err(|error| RegistryConfigError::Io {
+            path: path.to_owned(),
+            error,
+        })?;
+        self.load(canonical, 0, Vec::new())
+    }
+
+    fn load(
+        &mut self,
+        path: PathBuf,
+        depth: usize,
+        mut parent_chain: Vec<PathBuf>,
+    ) -> Result<(), RegistryConfigError> {
+        parent_chain.push(path.clone());
+        if depth > self.options.max_depth {
+            return Err(RegistryConfigError::Limit(format!(
+                "registry import depth {depth} exceeds limit {}{}",
+                self.options.max_depth,
+                display_chain(&parent_chain)
+            )));
+        }
+        if let Some(cycle_start) = self.active.iter().position(|active| active == &path) {
+            let mut cycle = self.active[cycle_start..].to_vec();
+            cycle.push(path.clone());
+            return Err(RegistryConfigError::Graph(format!(
+                "registry import cycle in chain {} (cycle: {})",
+                parent_chain
+                    .iter()
+                    .map(|entry| entry.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" -> "),
+                cycle
+                    .iter()
+                    .map(|entry| entry.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            )));
+        }
+        if self.completed.contains(&path) {
+            return Ok(());
+        }
+        if self.files >= self.options.max_files {
+            return Err(RegistryConfigError::Limit(format!(
+                "registry file count exceeds limit {}{}",
+                self.options.max_files,
+                display_chain(&parent_chain)
+            )));
+        }
+
+        let remaining = self.options.max_bytes.saturating_sub(self.bytes);
+        let file = fs::File::open(&path)
+            .map_err(|error| io_error(path.clone(), error, parent_chain.clone()))?;
+        let mut json = Vec::new();
+        file.take(remaining.saturating_add(1) as u64)
+            .read_to_end(&mut json)
+            .map_err(|error| io_error(path.clone(), error, parent_chain.clone()))?;
+        if json.len() > remaining {
+            return Err(RegistryConfigError::Limit(format!(
+                "registry bytes exceed limit {}{}",
+                self.options.max_bytes,
+                display_chain(&parent_chain)
+            )));
+        }
+        let json = String::from_utf8(json).map_err(|error| {
+            io_error(
+                path.clone(),
+                io::Error::new(io::ErrorKind::InvalidData, error),
+                parent_chain.clone(),
+            )
+        })?;
+        let config = RegistryConfig::from_json(&json)
+            .map_err(|error| json_error(path.clone(), error, parent_chain.clone()))?;
+        self.files += 1;
+        self.bytes += json.len();
+        self.active.push(path.clone());
+
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut siblings = BTreeMap::<PathBuf, String>::new();
+        for import in &config.imports {
+            self.edges = self.edges.saturating_add(1);
+            if self.edges > self.options.max_edges {
+                return Err(RegistryConfigError::Limit(format!(
+                    "registry import edges exceed limit {}{}",
+                    self.options.max_edges,
+                    display_chain(&parent_chain)
+                )));
+            }
+            let referenced = parent.join(import);
+            let child = fs::canonicalize(&referenced)
+                .map_err(|error| io_error(referenced, error, parent_chain.clone()))?;
+            if let Some(first) = siblings.insert(child.clone(), import.clone()) {
+                return Err(RegistryConfigError::Graph(format!(
+                    "{} imports the same canonical child {} twice as {first:?} and {import:?}{}",
+                    path.display(),
+                    child.display(),
+                    display_chain(&parent_chain)
+                )));
+            }
+            self.load(child, depth + 1, parent_chain.clone())?;
+        }
+
+        self.active.pop();
+        self.completed.insert(path.clone());
+        self.configs.push(SourcedConfig {
+            config,
+            origin: path,
+            chain: parent_chain,
+        });
+        Ok(())
+    }
+}
+
+fn source_description(source: &SourcedConfig) -> String {
+    format!(
+        "{}{}",
+        source.origin.display(),
+        display_chain(&source.chain)
+    )
+}
+
+fn conflicting_sources(
+    what: &str,
+    name: &str,
+    first: &SourcedConfig,
+    second: &SourcedConfig,
+) -> RegistryConfigError {
+    RegistryConfigError::Graph(format!(
+        "conflicting {what} for {name}: {} and {}",
+        source_description(first),
+        source_description(second)
+    ))
+}
+
+fn build_sourced(configs: &[SourcedConfig]) -> Result<DialectRegistry, RegistryConfigError> {
+    let mut builtins = BTreeSet::new();
+    let mut shapes = BTreeMap::new();
+    let mut formats = BTreeMap::new();
+    let mut alternatives = BTreeMap::new();
+    let mut call_target_attributes = BTreeMap::new();
+    let mut shape_sources = BTreeMap::<String, usize>::new();
+    let mut format_sources = BTreeMap::<String, usize>::new();
+    let mut alternative_sources = BTreeMap::<String, usize>::new();
+    let mut call_sources = BTreeMap::<String, usize>::new();
+    let mut definition_sources = BTreeMap::<String, (&'static str, usize)>::new();
+
+    for (index, source) in configs.iter().enumerate() {
+        let (source_builtins, source_shapes, source_formats, source_alternatives, source_calls) =
+            source.config.expanded().map_err(|error| {
+                RegistryConfigError::Graph(format!("{error} in {}", source_description(source)))
+            })?;
+
+        for name in &source_builtins {
+            record_definition(
+                &mut definition_sources,
+                configs,
+                name,
+                "built-in operation",
+                index,
+            )?;
+        }
+        for name in source_shapes.keys() {
+            record_definition(
+                &mut definition_sources,
+                configs,
+                name,
+                "operation shape",
+                index,
+            )?;
+        }
+        for name in source_formats.keys() {
+            record_definition(
+                &mut definition_sources,
+                configs,
+                name,
+                "operation format",
+                index,
+            )?;
+        }
+        for name in source_alternatives.keys() {
+            record_definition(
+                &mut definition_sources,
+                configs,
+                name,
+                "operation alternatives",
+                index,
+            )?;
+        }
+
+        builtins.extend(source_builtins);
+        for (name, shape) in source_shapes {
+            if let Some(previous) = shapes.insert(name.clone(), shape)
+                && previous != shape
+            {
+                return Err(conflicting_sources(
+                    "operation shapes",
+                    &name,
+                    &configs[shape_sources[&name]],
+                    source,
+                ));
+            }
+            shape_sources.entry(name).or_insert(index);
+        }
+        for (name, format) in source_formats {
+            if let Some(previous) = formats.insert(name.clone(), format.clone())
+                && previous != format
+            {
+                return Err(conflicting_sources(
+                    "operation formats",
+                    &name,
+                    &configs[format_sources[&name]],
+                    source,
+                ));
+            }
+            format_sources.entry(name).or_insert(index);
+        }
+        for (name, grammars) in source_alternatives {
+            if let Some(previous) = alternatives.insert(name.clone(), grammars.clone())
+                && previous != grammars
+            {
+                return Err(conflicting_sources(
+                    "operation alternatives",
+                    &name,
+                    &configs[alternative_sources[&name]],
+                    source,
+                ));
+            }
+            alternative_sources.entry(name).or_insert(index);
+        }
+        for (name, attribute) in source_calls {
+            if let Some(previous) = call_target_attributes.insert(name.clone(), attribute.clone())
+                && previous != attribute
+            {
+                return Err(conflicting_sources(
+                    "call-target attributes",
+                    &name,
+                    &configs[call_sources[&name]],
+                    source,
+                ));
+            }
+            call_sources.entry(name).or_insert(index);
+        }
+    }
+
+    RegistryConfig::build_entries(
+        builtins,
+        shapes,
+        formats,
+        alternatives,
+        call_target_attributes,
+    )
+    .map_err(|error| {
+        RegistryConfigError::Graph(format!(
+            "{error} while composing {}",
+            configs
+                .iter()
+                .map(source_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    })
+}
+
+fn record_definition(
+    definitions: &mut BTreeMap<String, (&'static str, usize)>,
+    configs: &[SourcedConfig],
+    name: &str,
+    kind: &'static str,
+    index: usize,
+) -> Result<(), RegistryConfigError> {
+    if let Some(&(previous_kind, previous_index)) = definitions.get(name) {
+        if previous_kind != kind {
+            return Err(conflicting_sources(
+                "registry definitions",
+                name,
+                &configs[previous_index],
+                &configs[index],
+            ));
+        }
+    } else {
+        definitions.insert(name.to_owned(), (kind, index));
+    }
+    Ok(())
 }
 
 impl DialectRegistry {
@@ -497,6 +910,7 @@ impl DialectRegistry {
     /// Builds one registry preset bundled with this Zirium release.
     pub fn from_name(name: &str) -> Result<Self, DeclarativeRegistryError> {
         RegistryConfig {
+            imports: Vec::new(),
             presets: vec![name.to_owned()],
             builtins: Vec::new(),
             operation_shapes: Vec::new(),
@@ -518,20 +932,50 @@ impl DialectRegistry {
     pub fn from_config_files<P: AsRef<Path>>(
         paths: impl IntoIterator<Item = P>,
     ) -> Result<Self, RegistryConfigError> {
-        let mut configs = Vec::new();
+        Self::from_config_files_with_options(paths, RegistryLoadOptions::default())
+    }
+
+    /// Combines filesystem registry graphs with explicit loader limits.
+    pub fn from_config_files_with_options<P: AsRef<Path>>(
+        paths: impl IntoIterator<Item = P>,
+        options: RegistryLoadOptions,
+    ) -> Result<Self, RegistryConfigError> {
+        Self::load_config_files(paths, None, options)
+    }
+
+    /// Combines filesystem roots and trailing bundled presets.
+    pub fn from_config_files_with_options_and_presets<P: AsRef<Path>>(
+        paths: impl IntoIterator<Item = P>,
+        presets: Vec<String>,
+        options: RegistryLoadOptions,
+    ) -> Result<Self, RegistryConfigError> {
+        let trailing = (!presets.is_empty()).then_some(RegistryConfig {
+            imports: Vec::new(),
+            presets,
+            builtins: Vec::new(),
+            operation_shapes: Vec::new(),
+            operation_formats: Vec::new(),
+            operation_alternatives: Vec::new(),
+        });
+        Self::load_config_files(paths, trailing, options)
+    }
+
+    fn load_config_files<P: AsRef<Path>>(
+        paths: impl IntoIterator<Item = P>,
+        trailing: Option<RegistryConfig>,
+        options: RegistryLoadOptions,
+    ) -> Result<Self, RegistryConfigError> {
+        let mut loader = RegistryGraphLoader::new(options);
         for path in paths {
-            let path = path.as_ref();
-            let json = fs::read_to_string(path).map_err(|error| RegistryConfigError::Io {
-                path: path.to_owned(),
-                error,
-            })?;
-            configs.push(RegistryConfig::from_json(&json).map_err(|error| {
-                RegistryConfigError::Json {
-                    path: path.to_owned(),
-                    error,
-                }
-            })?);
+            loader.load_root(path.as_ref())?;
         }
-        RegistryConfig::build_many(&configs).map_err(RegistryConfigError::Registry)
+        if let Some(config) = trailing {
+            loader.configs.push(SourcedConfig {
+                config,
+                origin: PathBuf::from("<command-line presets>"),
+                chain: Vec::new(),
+            });
+        }
+        build_sourced(&loader.configs)
     }
 }

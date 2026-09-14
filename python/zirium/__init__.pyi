@@ -95,7 +95,14 @@ class DialectRegistry:
         *additional_configs: RegistryConfig | dict[str, Any],
     ) -> DialectRegistry: ...
     @staticmethod
-    def from_file(path: _Path, *additional_paths: _Path) -> DialectRegistry: ...
+    def from_file(
+        path: _Path,
+        *additional_paths: _Path,
+        max_depth: int | None = None,
+        max_files: int | None = None,
+        max_edges: int | None = None,
+        max_bytes: int | None = None,
+    ) -> DialectRegistry: ...
     @staticmethod
     def empty() -> DialectRegistry: ...
     @staticmethod

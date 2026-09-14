@@ -1,0 +1,16 @@
+{
+  "builtins": [],
+  "operation_shapes": [],
+  "operation_formats": [
+    {"name": "vendor.widen", "format": "$operands attr-dict `:` type($operands) `to` type($results)"}
+  ],
+  "operation_alternatives": [
+    {
+      "name": "vendor.choice",
+      "alternatives": [
+        {"format": "$value `:` type($value) attr-dict `:` type($result)"},
+        {"shape": "operand_clauses"}
+      ]
+    }
+  ]
+}

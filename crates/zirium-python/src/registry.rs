@@ -1,6 +1,8 @@
 use super::*;
 use pyo3::types::{PyDict, PyMapping, PyMappingMethods, PyTuple};
-use zirium::dialect::{OperationAlternative, RegistryConfig, RegistryConfigError};
+use zirium::dialect::{
+    OperationAlternative, RegistryConfig, RegistryConfigError, RegistryLoadOptions,
+};
 
 #[derive(Clone)]
 pub(super) enum RegistryKind {
@@ -138,18 +140,38 @@ impl DialectRegistryHandle {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (path, *additional_paths))]
+    #[pyo3(signature = (path, *additional_paths, max_depth=None, max_files=None, max_edges=None, max_bytes=None))]
     fn from_file(
         path: PathBuf,
         additional_paths: &Bound<'_, PyTuple>,
+        max_depth: Option<usize>,
+        max_files: Option<usize>,
+        max_edges: Option<usize>,
+        max_bytes: Option<usize>,
         py: Python<'_>,
     ) -> PyResult<Self> {
         let mut paths = vec![path];
         paths.extend(additional_paths.extract::<Vec<PathBuf>>()?);
+        let mut options = RegistryLoadOptions::default();
+        if let Some(value) = max_depth {
+            options.max_depth = value;
+        }
+        if let Some(value) = max_files {
+            options.max_files = value;
+        }
+        if let Some(value) = max_edges {
+            options.max_edges = value;
+        }
+        if let Some(value) = max_bytes {
+            options.max_bytes = value;
+        }
         py.detach(move || {
-            let registry =
-                DialectRegistry::from_config_files(paths).map_err(|error| match error {
-                    RegistryConfigError::Io { .. } => PyIOError::new_err(error.to_string()),
+            let registry = DialectRegistry::from_config_files_with_options(paths, options)
+                .map_err(|error| match error {
+                    RegistryConfigError::Io { .. } | RegistryConfigError::IoInGraph { .. } => {
+                        PyIOError::new_err(error.to_string())
+                    }
+                    RegistryConfigError::Limit(_) => ResourceLimitError::new_err(error.to_string()),
                     _ => PyValueError::new_err(error.to_string()),
                 })?;
             Ok(Self {

@@ -7,7 +7,7 @@ use std::{
 };
 
 use zirium::{
-    dialect::{DialectRegistry, RegistryConfig},
+    dialect::{DialectRegistry, RegistryLoadOptions},
     parser::{ParseDiagnosticKind, ParseLimits, ParsedFile},
     printer::{FragmentScope, PrintLayout},
     query::{EvaluationError, EvaluationLimits, EvaluationOptions, Query, QueryOutput},
@@ -34,6 +34,10 @@ Options:
   --preset NAME           Load a bundled dialect preset (repeatable)
   --list-presets          List bundled presets
   --registry FILE         Load a JSON registry (repeatable; combines with presets)
+  --max-registry-depth N  Maximum registry import depth (default 64)
+  --max-registry-files N  Maximum unique registry files (default 1024)
+  --max-registry-edges N  Maximum declared registry imports (default 4096)
+  --max-registry-bytes N  Maximum aggregate registry bytes (default 16777216)
   -f, --program-file FILE Read the query from a file instead of an argument
   --strict                Reject incomplete parsing and unknown reachable references
   --jsonl                 Emit one attributable JSON record per line
@@ -218,6 +222,7 @@ fn run() -> Result<(), String> {
     let mut fragment_scope = FragmentScope::Full;
     let mut evaluation_limits = EvaluationLimits::default();
     let mut parse_limits = ParseLimits::default();
+    let mut registry_limits = RegistryLoadOptions::default();
     let mut program_path = None;
     let mut inline_query = None;
     let mut paths = Vec::new();
@@ -258,25 +263,36 @@ fn run() -> Result<(), String> {
                     None => return Err("missing mode after --fragment-scope".into()),
                 };
             }
-            "--max-file-bytes" | "--max-work" | "--max-items" => {
-                let requirement = if option == "--max-file-bytes" {
-                    "a non-negative integer"
-                } else {
-                    "a positive integer"
-                };
+            "--max-file-bytes"
+            | "--max-work"
+            | "--max-items"
+            | "--max-registry-depth"
+            | "--max-registry-files"
+            | "--max-registry-edges"
+            | "--max-registry-bytes" => {
+                let requirement =
+                    if option == "--max-file-bytes" || option.starts_with("--max-registry-") {
+                        "a non-negative integer"
+                    } else {
+                        "a positive integer"
+                    };
                 let value = arguments
                     .next()
                     .ok_or_else(|| format!("missing number after {option}"))?
                     .to_str()
                     .and_then(|value| value.parse::<usize>().ok())
                     .ok_or_else(|| format!("{option} requires {requirement}"))?;
-                if value == 0 && option != "--max-file-bytes" {
+                if value == 0 && matches!(option, "--max-work" | "--max-items") {
                     return Err(format!("{option} requires a positive integer"));
                 }
                 match option {
                     "--max-file-bytes" => parse_limits.max_file_bytes = value,
                     "--max-work" => evaluation_limits.max_work = value,
-                    _ => evaluation_limits.max_items = value,
+                    "--max-items" => evaluation_limits.max_items = value,
+                    "--max-registry-depth" => registry_limits.max_depth = value,
+                    "--max-registry-files" => registry_limits.max_files = value,
+                    "--max-registry-edges" => registry_limits.max_edges = value,
+                    _ => registry_limits.max_bytes = value,
                 }
             }
             "--registry" => {
@@ -345,32 +361,12 @@ fn run() -> Result<(), String> {
     let registry = if registry_paths.is_empty() && presets.is_empty() {
         DialectRegistry::baseline().clone()
     } else {
-        let mut configs = Vec::new();
-        for path in registry_paths {
-            let json = fs::read_to_string(&path).map_err(|error| {
-                format!(
-                    "could not load registry {}: {error}",
-                    path.to_string_lossy()
-                )
-            })?;
-            configs.push(RegistryConfig::from_json(&json).map_err(|error| {
-                format!(
-                    "could not load registry {}: {error}",
-                    path.to_string_lossy()
-                )
-            })?);
-        }
-        if !presets.is_empty() {
-            configs.push(RegistryConfig {
-                presets,
-                builtins: Vec::new(),
-                operation_shapes: Vec::new(),
-                operation_formats: Vec::new(),
-                operation_alternatives: Vec::new(),
-            });
-        }
-        RegistryConfig::build_many(&configs)
-            .map_err(|error| format!("could not load registry: {error}"))?
+        DialectRegistry::from_config_files_with_options_and_presets(
+            registry_paths,
+            presets,
+            registry_limits,
+        )
+        .map_err(|error| format!("could not load registry: {error}"))?
     };
     let registry = &registry;
     let inputs = if paths.is_empty() {

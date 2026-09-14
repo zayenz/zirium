@@ -114,6 +114,7 @@ the caller's default registry; include every preset and built-in you need.
 
 | Field | Meaning |
 | --- | --- |
+| `imports` | Filesystem registry paths resolved relative to the file that declares them. Defaults to an empty list. |
 | `presets` | Bundled registry names. Defaults to an empty list. |
 | `builtins` | Operation names selected from the baseline catalog. Required; may be empty. |
 | `operation_shapes` | Exact operation names paired with reusable grammars. A `call_like` entry may set `callee_attribute`. Required; may be empty. |
@@ -256,6 +257,48 @@ Identical registrations shared across configurations are included once.
 Conflicting definitions and collisions between built-ins, shapes, and formats
 are errors. Duplicate explicit entries within one configuration are also errors.
 File order does not determine which definition wins.
+
+### Compose a movable filesystem bundle
+
+A registry file may import other registry files. Each path is resolved relative
+to the file containing that `imports` entry, so the whole directory can move
+without changing either the process working directory or the manifest:
+
+```text
+registry/
+├── root.json
+└── leaves/
+    ├── common.json
+    └── vendor.json
+```
+
+```json
+{
+  "imports": ["leaves/common.json", "leaves/vendor.json"],
+  "builtins": [],
+  "operation_shapes": []
+}
+```
+
+Load `registry/root.json` with `DialectRegistry.from_file`,
+`DialectRegistry::from_config_file`, or `zirium --registry`. Imported files are
+composed before the entries in the file that imports them. A canonical file is
+loaded once across different parents and repeated roots, which makes diamonds
+safe. Listing the same canonical child twice in one file is an error, including
+equivalent relative spellings or same-parent symlink aliases. Cycles are also
+errors. Diagnostics include canonical file paths and import chains.
+
+The filesystem loader has limits for import depth, unique files, declared
+edges, and aggregate JSON bytes. Rust callers set `RegistryLoadOptions` and use
+`from_config_files_with_options`. Python's `from_file` accepts `max_depth`,
+`max_files`, `max_edges`, and `max_bytes`. The CLI spells these as
+`--max-registry-depth`, `--max-registry-files`, `--max-registry-edges`, and
+`--max-registry-bytes`.
+
+`RegistryConfig.build` and `DialectRegistry.from_config` remain I/O-free and
+reject a model or dictionary with unresolved imports. This keeps JSON read from
+a zip file or a Python package resource usable through `from_config`, but Zirium
+does not yet resolve `imports` natively inside zip files or package resources.
 
 Pydantic models validate structure without coercing types. The shared Rust
 builder checks registered names, duplicates, and conflicts. In Python, invalid

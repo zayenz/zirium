@@ -1,0 +1,7 @@
+{
+  "builtins": [],
+  "operation_shapes": [
+    {"name": "vendor.function", "shape": "func_like"},
+    {"name": "vendor.invoke", "shape": "call_like", "callee_attribute": "target"}
+  ]
+}
