@@ -2,6 +2,15 @@ schema_version = 1
 upstream_tag = "llvmorg-22.1.0"
 
 [[families]]
+name = "cross-contract-generic-arithmetic"
+implementation_source = "mlir/test/IR/operation.mlir and mlir/test/Dialect/Arith/invalid.mlir"
+implementation_rule = "generic operation results, SSA operands, integer attributes, and function types"
+fixture = "cross-contract/valid.mlir"
+fixture_source = "generic arith.constant and arith.addi spellings adapted from llvmorg-22.1.0 tests, plus a project-authored generic consumer"
+intentional_differences = "Zirium resolves enough SSA structure to edit and verify the fixture but does not apply Arith dialect-specific constant or add type constraints; the generic consumer has no upstream dialect semantics."
+license_notice = "Arithmetic spellings are adapted from LLVM tests under Apache-2.0 WITH LLVM-exception; the consumer is project-authored."
+
+[[families]]
 name = "complete-baseline-dialect-set"
 implementation_source = "mlir/include/mlir/IR/BuiltinOps.td, mlir/include/mlir/Dialect/Func/IR/FuncOps.td, mlir/include/mlir/Dialect/Arith/IR/ArithOps.td, and mlir/include/mlir/Dialect/ControlFlow/IR/ControlFlowOps.td"
 implementation_rule = "fixed assembly formats and semantic traits for builtin.module, func.func, func.return, func.call, arith.constant, arith.addi, cf.br, and cf.cond_br"

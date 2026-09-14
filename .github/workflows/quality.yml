@@ -111,6 +111,7 @@ jobs:
       - run: test "$(uname -m)" = arm64
       - run: uv python install ${{ matrix.python-version }}
       - run: uv sync --locked --python ${{ matrix.python-version }}
+      - run: uv run --locked --no-sync pytest -q
       - run: >-
           uv run --locked --no-sync maturin build --release --locked
           --target aarch64-apple-darwin
