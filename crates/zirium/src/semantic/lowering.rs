@@ -215,10 +215,13 @@ fn lower_with_registry(
         block_lists: ListPool::default(),
         operation_lists: ListPool::default(),
         strings: Vec::new(),
+        strings_by_value: HashMap::new(),
         types: Vec::new(),
+        types_by_value: HashMap::new(),
         type_generations: Vec::new(),
         type_spellings: Vec::new(),
         attributes: Vec::new(),
+        attributes_by_value: HashMap::new(),
         attribute_generations: Vec::new(),
         attribute_spellings: Vec::new(),
         locations: Vec::new(),
@@ -1086,10 +1089,13 @@ fn lower_with_registry(
         .collect::<Vec<_>>();
     doc.roots = doc.operation_lists.push(&roots);
     doc.strings = strings.values;
+    doc.strings_by_value = strings.by_value;
     doc.types = types.values;
+    doc.types_by_value = types.by_value;
     doc.type_generations = vec![type_generation; doc.types.len()];
     doc.type_spellings = type_spellings;
     doc.attributes = attrs.values;
+    doc.attributes_by_value = attrs.by_value;
     doc.attribute_generations = vec![attribute_generation; doc.attributes.len()];
     doc.attribute_spellings = attribute_spellings;
     doc.locations = locations.values;

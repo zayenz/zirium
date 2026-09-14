@@ -826,10 +826,13 @@ pub struct Document {
     block_lists: ListPool<BlockId>,
     operation_lists: ListPool<OperationId>,
     strings: Vec<String>,
+    strings_by_value: HashMap<String, u32>,
     types: Vec<TypeValue>,
+    types_by_value: HashMap<TypeValue, u32>,
     type_generations: Vec<u32>,
     type_spellings: Vec<String>,
     attributes: Vec<AttributeValue>,
+    attributes_by_value: HashMap<AttributeValue, u32>,
     attribute_generations: Vec<u32>,
     attribute_spellings: Vec<String>,
     locations: Vec<LocationValue>,
@@ -1027,10 +1030,13 @@ impl Document {
             block_lists: self.block_lists.clone(),
             operation_lists: self.operation_lists.clone(),
             strings: self.strings.clone(),
+            strings_by_value: self.strings_by_value.clone(),
             types: self.types.clone(),
+            types_by_value: self.types_by_value.clone(),
             type_generations: self.type_generations.clone(),
             type_spellings: self.type_spellings.clone(),
             attributes: self.attributes.clone(),
+            attributes_by_value: self.attributes_by_value.clone(),
             attribute_generations: self.attribute_generations.clone(),
             attribute_spellings: self.attribute_spellings.clone(),
             locations: self.locations.clone(),
@@ -1152,6 +1158,22 @@ impl Document {
 
         self.generation = generation;
         self.identity = identity;
+        self.rebuild_identity_sensitive_interner_indexes();
+    }
+
+    fn rebuild_identity_sensitive_interner_indexes(&mut self) {
+        self.types_by_value.clear();
+        self.types_by_value.reserve(self.types.len());
+        for (index, value) in self.types.iter().cloned().enumerate() {
+            self.types_by_value.entry(value).or_insert(index as u32);
+        }
+        self.attributes_by_value.clear();
+        self.attributes_by_value.reserve(self.attributes.len());
+        for (index, value) in self.attributes.iter().cloned().enumerate() {
+            self.attributes_by_value
+                .entry(value)
+                .or_insert(index as u32);
+        }
     }
 
     pub fn operations(&self) -> impl Iterator<Item = OperationId> + '_ {
@@ -2346,6 +2368,9 @@ pub struct DocumentEditor<'a> {
     original: &'a mut Document,
     working: Document,
     registry: &'a DialectRegistry,
+    last_string: Option<u32>,
+    last_type: Option<u32>,
+    last_attribute: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

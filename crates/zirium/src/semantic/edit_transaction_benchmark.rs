@@ -67,6 +67,9 @@ fn transaction(document: &mut Document, targets: &[super::OperationId]) -> Stage
         working,
         original: document,
         registry: &DialectRegistry::EMPTY,
+        last_string: None,
+        last_type: None,
+        last_attribute: None,
     };
 
     let started = Instant::now();

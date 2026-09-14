@@ -1,6 +1,10 @@
 use super::*;
 
 #[cfg(test)]
+#[path = "edit_interner_benchmark.rs"]
+mod edit_interner_benchmark;
+
+#[cfg(test)]
 #[path = "edit_transaction_benchmark.rs"]
 mod edit_transaction_benchmark;
 
@@ -32,6 +36,9 @@ impl Document {
             working: self.edit_snapshot(),
             original: self,
             registry,
+            last_string: None,
+            last_type: None,
+            last_attribute: None,
         })
     }
 }
@@ -711,13 +718,22 @@ impl DocumentEditor<'_> {
     }
 
     fn intern_string(&mut self, value: &str) -> u32 {
-        if let Some(index) = self.working.strings.iter().position(|item| item == value) {
-            index as u32
+        let index = if let Some(index) = self.last_string
+            && self.working.strings[index as usize] == value
+        {
+            index
+        } else if let Some(&index) = self.working.strings_by_value.get(value) {
+            index
         } else {
             let index = self.working.strings.len() as u32;
             self.working.strings.push(value.to_owned());
+            self.working
+                .strings_by_value
+                .insert(value.to_owned(), index);
             index
-        }
+        };
+        self.last_string = Some(index);
+        index
     }
     fn validate_operation_spec(&self, spec: &OperationSpec) -> Result<(), EditError> {
         let mut specifications = Vec::with_capacity(
@@ -818,13 +834,12 @@ impl DocumentEditor<'_> {
         Ok(())
     }
     pub(super) fn intern_type_spec(&mut self, spec: &TypeSpec) -> TypeId {
-        if let Some(index) = self
-            .working
-            .types
-            .iter()
-            .position(|value| value == &spec.value)
+        let index = if let Some(index) = self.last_type
+            && self.working.types[index as usize] == spec.value
         {
-            self.working.type_id(index)
+            index
+        } else if let Some(&index) = self.working.types_by_value.get(&spec.value) {
+            index
         } else {
             let index = self.working.types.len();
             let generation = self
@@ -834,19 +849,23 @@ impl DocumentEditor<'_> {
                 .expect("handle identity allocator is not poisoned")
                 .allocate();
             self.working.types.push(spec.value.clone());
+            self.working
+                .types_by_value
+                .insert(spec.value.clone(), index as u32);
             self.working.type_generations.push(generation);
             self.working.type_spellings.push(spec.spelling.clone());
-            TypeId::with_owner(index, generation, self.working.identity.0)
-        }
+            index as u32
+        };
+        self.last_type = Some(index);
+        self.working.type_id(index as usize)
     }
     fn intern_attribute(&mut self, spec: &AttributeSpec) -> AttributeId {
-        if let Some(index) = self
-            .working
-            .attributes
-            .iter()
-            .position(|value| value == &spec.value)
+        let index = if let Some(index) = self.last_attribute
+            && self.working.attributes[index as usize] == spec.value
         {
-            self.working.attribute_id_at(index)
+            index
+        } else if let Some(&index) = self.working.attributes_by_value.get(&spec.value) {
+            index
         } else {
             let index = self.working.attributes.len();
             let generation = self
@@ -856,10 +875,15 @@ impl DocumentEditor<'_> {
                 .expect("handle identity allocator is not poisoned")
                 .allocate();
             self.working.attributes.push(spec.value.clone());
+            self.working
+                .attributes_by_value
+                .insert(spec.value.clone(), index as u32);
             self.working.attribute_generations.push(generation);
             self.working.attribute_spellings.push(spec.spelling.clone());
-            AttributeId::with_owner(index, generation, self.working.identity.0)
-        }
+            index as u32
+        };
+        self.last_attribute = Some(index);
+        self.working.attribute_id_at(index as usize)
     }
     fn intern_attributes(&mut self, specs: &[AttributeSpec]) -> Vec<(u32, AttributeId)> {
         specs

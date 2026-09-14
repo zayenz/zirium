@@ -135,6 +135,20 @@ fn unknown_spec(name: &str) -> OperationSpec {
     }
 }
 
+fn preexisting_interner_spec() -> OperationSpec {
+    OperationSpec {
+        name: "anchor".into(),
+        operands: vec![],
+        result_types: vec![i32_type()],
+        function_type: result_function_type(&i32_type()),
+        attributes: vec![
+            AttributeSpec::string("first", "one"),
+            AttributeSpec::string("second", "two"),
+        ],
+        properties: vec![],
+    }
+}
+
 fn validate(document: &zirium::semantic::Document) {
     document.validate_structure().unwrap();
     document
@@ -1755,6 +1769,136 @@ fn pool_compaction_reclaims_fragments_without_changing_live_ids() {
     for operation in operations {
         assert!(document.operation(operation).is_some());
     }
+    validate(&document);
+}
+
+#[test]
+fn interner_indexes_follow_edit_lifecycles_without_changing_output_order() {
+    let mut document = generic(r#"%0 = "anchor"() {first = "one", second = "two"} : () -> i32"#);
+    let original = document.root_operations()[0];
+    let original_type = document.result_types(original).unwrap()[0];
+    let original_first = document.attribute_id(original, "first").unwrap();
+    let original_second = document.attribute_id(original, "second").unwrap();
+    let initial = document.statistics();
+    let registry = DialectRegistry::EMPTY;
+
+    let inserted = {
+        let mut editor = document.edit(&registry).unwrap();
+        let inserted = editor
+            .insert(InsertionPoint::Root(1), preexisting_interner_spec())
+            .unwrap();
+        assert_eq!(
+            editor.document().result_types(inserted),
+            Some(&[original_type][..])
+        );
+        assert_eq!(
+            editor.document().attribute_id(inserted, "first"),
+            Some(original_first)
+        );
+        assert_eq!(
+            editor.document().attribute_id(inserted, "second"),
+            Some(original_second)
+        );
+        let after_interning = editor.document().statistics();
+        assert_eq!(after_interning.local_strings, initial.local_strings);
+        assert_eq!(after_interning.local_types, initial.local_types);
+        assert_eq!(after_interning.local_attributes, initial.local_attributes);
+        editor.compact_pools();
+        editor.commit().unwrap();
+        inserted
+    };
+
+    assert_eq!(
+        document.attributes(inserted).unwrap().collect::<Vec<_>>(),
+        vec![("first", "\"one\""), ("second", "\"two\"")]
+    );
+    let mut output = String::new();
+    document.print(&mut output, PrintLayout::Compact).unwrap();
+    assert!(output.contains(r#"{first = "one", second = "two"}"#));
+
+    let committed = document.statistics();
+    {
+        let mut editor = document.edit(&registry).unwrap();
+        editor
+            .insert(InsertionPoint::Root(2), preexisting_interner_spec())
+            .unwrap();
+        editor.commit().unwrap();
+    }
+    assert_eq!(document.statistics().local_strings, committed.local_strings);
+    assert_eq!(document.statistics().local_types, committed.local_types);
+    assert_eq!(
+        document.statistics().local_attributes,
+        committed.local_attributes
+    );
+
+    let mut cloned = document.clone();
+    let clone_initial = cloned.statistics();
+    {
+        let mut editor = cloned.edit(&registry).unwrap();
+        editor
+            .insert(
+                InsertionPoint::Root(editor.document().root_operations().len()),
+                preexisting_interner_spec(),
+            )
+            .unwrap();
+        editor.commit().unwrap();
+    }
+    assert_eq!(
+        cloned.statistics().local_strings,
+        clone_initial.local_strings
+    );
+    assert_eq!(cloned.statistics().local_types, clone_initial.local_types);
+    assert_eq!(
+        cloned.statistics().local_attributes,
+        clone_initial.local_attributes
+    );
+
+    let before_rollback = document.statistics();
+    {
+        let mut editor = document.edit(&registry).unwrap();
+        editor
+            .insert(
+                InsertionPoint::Root(editor.document().root_operations().len()),
+                OperationSpec {
+                    result_types: vec![i64_type()],
+                    function_type: result_function_type(&i64_type()),
+                    attributes: vec![AttributeSpec::string("abandoned", "value")],
+                    ..unknown_spec("abandoned")
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(document.statistics(), before_rollback);
+
+    {
+        let mut editor = document.edit(&REJECTING_VALUE_REGISTRY).unwrap();
+        let end = editor.document().root_operations().len();
+        editor
+            .insert(
+                InsertionPoint::Root(end),
+                OperationSpec {
+                    attributes: vec![AttributeSpec {
+                        name: "rejected".into(),
+                        spelling: "#edit.rejected<index>".into(),
+                        value: zirium::semantic::AttributeValue::Opaque(Arc::from(
+                            b"#edit.rejected<index>".as_slice(),
+                        )),
+                    }],
+                    ..unknown_spec("rejected")
+                },
+            )
+            .unwrap();
+        assert!(matches!(editor.commit(), Err(EditError::Semantic(_))));
+    }
+    assert_eq!(document.statistics(), before_rollback);
+
+    let mut editor = document.edit(&registry).unwrap();
+    let end = editor.document().root_operations().len();
+    editor
+        .insert(InsertionPoint::Root(end), preexisting_interner_spec())
+        .unwrap();
+    editor.compact_pools();
+    editor.commit().unwrap();
     validate(&document);
 }
 

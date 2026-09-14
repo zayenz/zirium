@@ -90,6 +90,53 @@ This single recorded run illustrates the repeated document-wide work; it is not
 a performance guarantee. Re-run the harness on the target machine and workload
 before making design or capacity decisions.
 
+## Edit interning
+
+The ignored Rust benchmark isolates the private string, type, and attribute
+interners used by one open edit. It varies distinct and repeated values, value
+count, and nesting depth, checks the resulting interner cardinality, and records
+peak allocated bytes above the open editor:
+
+```sh
+ZIRIUM_EDIT_INTERNER_BENCH_SMOKE=1 \
+cargo test --release -p zirium semantic::edit::edit_interner_benchmark::measure_edit_interner_scaling -- --ignored --nocapture --test-threads=1
+
+ZIRIUM_EDIT_INTERNER_BENCH_COUNTS=1000,2000,4000 \
+ZIRIUM_EDIT_INTERNER_BENCH_DEPTHS=0,4,16 \
+ZIRIUM_EDIT_INTERNER_BENCH_WARMUPS=1 \
+ZIRIUM_EDIT_INTERNER_BENCH_RUNS=3 \
+cargo test --release -p zirium semantic::edit::edit_interner_benchmark::measure_edit_interner_scaling -- --ignored --nocapture --test-threads=1
+```
+
+Strings use depth zero. Types and attributes run every selected depth. Full
+defaults are the dimensions in the second command; override them with the same
+environment variables. Use one release test thread because allocation tracking
+is process-wide. There is no timing or memory threshold in CI.
+
+On 14 September 2026, an Apple M1 Max with Rust 1.98.1 ran the matrix above with
+three measured runs after one warm-up. These representative medians compare the
+original linear scan with first-value indexes; durations are milliseconds:
+
+| Kind | Depth | Pattern | Count | Linear scan | Indexed | Indexed peak allocation |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| String | 0 | Distinct | 1,000 | 1.319 | 0.187 | 154 KB |
+| String | 0 | Distinct | 4,000 | 14.095 | 0.757 | 623 KB |
+| String | 0 | Repeated | 4,000 | 0.246 | 0.239 | 126 B |
+| Type | 16 | Distinct | 1,000 | 27.874 | 2.170 | 3.46 MB |
+| Type | 16 | Distinct | 4,000 | 426.025 | 8.908 | 13.82 MB |
+| Type | 16 | Repeated | 4,000 | 2.703 | 2.703 | 5.0 KB |
+| Attribute | 16 | Distinct | 1,000 | 79.958 | 4.546 | 4.69 MB |
+| Attribute | 16 | Distinct | 4,000 | 1,241.027 | 18.625 | 18.77 MB |
+| Attribute | 16 | Repeated | 4,000 | 5.584 | 5.530 | 7.5 KB |
+
+The retained string, type, and attribute indexes reduced the distinct 4,000-value
+cases by 18.6x, 47.8x, and 66.6x respectively. Their 1,000-to-4,000 distinct
+ratios were 4.1x after indexing, while the measured repeated cases did not
+regress. Index keys increase allocation for distinct values: the corresponding
+linear-scan peaks at 4,000 values were 165 KB, 6.75 MB, and 9.22 MB. The existing
+vectors remain the storage and output-order authority; hash maps are used only
+to find the first equal vector index and are never iterated for output.
+
 ## Parser construction
 
 The ignored internal test separates lexing, grammar events, compaction, and
