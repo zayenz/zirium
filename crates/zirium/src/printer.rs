@@ -118,7 +118,8 @@ impl std::error::Error for PrintError {
 }
 
 impl Document {
-    pub(crate) fn canonical_type_spelling(&self, value: &TypeValue) -> Result<String, PrintError> {
+    /// Formats one semantic type as valid canonical MLIR.
+    pub fn canonical_type_spelling(&self, value: &TypeValue) -> Result<String, PrintError> {
         let mut spelling = String::new();
         Printer::new(
             self,

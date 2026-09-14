@@ -70,9 +70,9 @@ impl OperationSpec {
             .collect::<PyResult<Vec<_>>>()?;
         let result_types = result_types
             .into_iter()
-            .map(|ty| type_spec(&document, ty.id))
+            .map(|ty| type_spec(&document, &ty))
             .collect::<PyResult<Vec<_>>>()?;
-        let function_type = type_spec(&document, function_type.id)?;
+        let function_type = type_spec(&document, &function_type)?;
         drop(document);
         Ok(Self {
             state,
@@ -88,7 +88,16 @@ impl OperationSpec {
     }
 }
 
-fn type_spec(document: &CoreDocument, id: TypeId) -> PyResult<TypeSpec> {
+fn type_spec(document: &CoreDocument, ty: &SemanticType) -> PyResult<TypeSpec> {
+    if let Some(value) = &ty.owned {
+        return Ok(TypeSpec {
+            spelling: document
+                .canonical_type_spelling(value)
+                .map_err(py_print_error)?,
+            value: value.clone(),
+        });
+    }
+    let id = ty.id.ok_or_else(|| stale("type"))?;
     Ok(TypeSpec {
         spelling: document
             .type_spelling(id)
@@ -318,7 +327,7 @@ impl SemanticEdit {
         let document = read_document(&self.state)?;
         let types = types
             .into_iter()
-            .map(|ty| type_spec(&document, ty.id))
+            .map(|ty| type_spec(&document, &ty))
             .collect::<PyResult<Vec<_>>>()?;
         drop(document);
         self.commands

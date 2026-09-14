@@ -707,7 +707,8 @@ impl SemanticOperation {
             .ok_or_else(|| PyIndexError::new_err("result index out of range"))?;
         Ok(SemanticType {
             state: self.state.clone(),
-            id,
+            id: Some(id),
+            owned: None,
         })
     }
     fn function_type(&self) -> PyResult<SemanticType> {
@@ -716,7 +717,8 @@ impl SemanticOperation {
             .ok_or_else(|| stale("operation"))?;
         Ok(SemanticType {
             state: self.state.clone(),
-            id,
+            id: Some(id),
+            owned: None,
         })
     }
     fn attribute_count(&self) -> PyResult<usize> {
@@ -940,7 +942,8 @@ impl SemanticValue {
         drop(document);
         Ok(id.map(|id| SemanticType {
             state: self.state.clone(),
-            id,
+            id: Some(id),
+            owned: None,
         }))
     }
 }
@@ -949,38 +952,172 @@ impl SemanticValue {
 #[derive(Clone)]
 pub(super) struct SemanticType {
     pub(super) state: SharedDocument,
-    pub(super) id: TypeId,
+    pub(super) id: Option<TypeId>,
+    pub(super) owned: Option<TypeValue>,
+}
+
+impl SemanticType {
+    fn with_value<T>(&self, inspect: impl FnOnce(&TypeValue) -> T) -> PyResult<T> {
+        if let Some(value) = &self.owned {
+            return Ok(inspect(value));
+        }
+        let id = self.id.ok_or_else(|| stale("type"))?;
+        let document = read_document(&self.state)?;
+        let value = document.type_value(id).ok_or_else(|| stale("type"))?;
+        Ok(inspect(value))
+    }
+
+    fn nested(&self, value: TypeValue) -> Self {
+        Self {
+            state: self.state.clone(),
+            id: None,
+            owned: Some(value),
+        }
+    }
 }
 
 #[pymethods]
 impl SemanticType {
     #[getter]
     fn spelling(&self) -> PyResult<String> {
+        if let Some(value) = &self.owned {
+            return read_document(&self.state)?
+                .canonical_type_spelling(value)
+                .map_err(py_print_error);
+        }
         read_document(&self.state)?
-            .type_spelling(self.id)
+            .type_spelling(self.id.ok_or_else(|| stale("type"))?)
             .map(str::to_owned)
             .ok_or_else(|| stale("type"))
     }
     #[getter]
     fn kind(&self) -> PyResult<&'static str> {
-        Ok(
-            match read_document(&self.state)?
-                .type_value(self.id)
-                .ok_or_else(|| stale("type"))?
-            {
-                TypeValue::Integer { .. } => "integer",
-                TypeValue::Float(_) => "float",
-                TypeValue::Index => "index",
-                TypeValue::Complex(_) => "complex",
-                TypeValue::Tuple(_) => "tuple",
-                TypeValue::Tensor { .. } => "tensor",
-                TypeValue::Vector { .. } => "vector",
-                TypeValue::MemRef { .. } => "memref",
-                TypeValue::Function { .. } => "function",
-                TypeValue::Opaque(_) => "opaque",
-                TypeValue::Invalid(_) => "invalid",
-            },
-        )
+        self.with_value(|value| match value {
+            TypeValue::Integer { .. } => "integer",
+            TypeValue::Float(_) => "float",
+            TypeValue::Index => "index",
+            TypeValue::Complex(_) => "complex",
+            TypeValue::Tuple(_) => "tuple",
+            TypeValue::Tensor { .. } => "tensor",
+            TypeValue::Vector { .. } => "vector",
+            TypeValue::MemRef { .. } => "memref",
+            TypeValue::Function { .. } => "function",
+            TypeValue::Opaque(_) => "opaque",
+            TypeValue::Invalid(_) => "invalid",
+        })
+    }
+    #[getter]
+    fn integer_width(&self) -> PyResult<Option<u32>> {
+        self.with_value(|value| match value {
+            TypeValue::Integer { width, .. } => Some(*width),
+            _ => None,
+        })
+    }
+    #[getter]
+    fn integer_signedness(&self) -> PyResult<Option<&'static str>> {
+        self.with_value(|value| match value {
+            TypeValue::Integer { signedness, .. } => Some(match signedness {
+                None => "signless",
+                Some(true) => "signed",
+                Some(false) => "unsigned",
+            }),
+            _ => None,
+        })
+    }
+    #[getter]
+    fn float_name(&self) -> PyResult<Option<String>> {
+        self.with_value(|value| match value {
+            TypeValue::Float(name) => Some(name.clone()),
+            _ => None,
+        })
+    }
+    #[getter]
+    fn dimensions(&self) -> PyResult<Option<Vec<Option<u64>>>> {
+        self.with_value(|value| match value {
+            TypeValue::Tensor { unranked: true, .. } => Some(Vec::new()),
+            TypeValue::Tensor { dimensions, .. }
+            | TypeValue::Vector { dimensions, .. }
+            | TypeValue::MemRef { dimensions, .. } => {
+                Some(dimensions.iter().map(|dimension| dimension.size).collect())
+            }
+            _ => None,
+        })
+    }
+    #[getter]
+    fn scalable_dimensions(&self) -> PyResult<Option<Vec<bool>>> {
+        self.with_value(|value| match value {
+            TypeValue::Tensor { unranked: true, .. } => Some(Vec::new()),
+            TypeValue::Tensor { dimensions, .. } | TypeValue::MemRef { dimensions, .. } => Some(
+                dimensions
+                    .iter()
+                    .map(|dimension| dimension.scalable)
+                    .collect(),
+            ),
+            TypeValue::Vector { scalable, .. } => Some(scalable.clone()),
+            _ => None,
+        })
+    }
+    #[getter]
+    fn unranked(&self) -> PyResult<Option<bool>> {
+        self.with_value(|value| match value {
+            TypeValue::Tensor { unranked, .. } => Some(*unranked),
+            _ => None,
+        })
+    }
+    #[getter]
+    fn element_type(&self) -> PyResult<Option<SemanticType>> {
+        self.with_value(|value| match value {
+            TypeValue::Complex(element)
+            | TypeValue::Tensor { element, .. }
+            | TypeValue::Vector { element, .. }
+            | TypeValue::MemRef { element, .. } => Some(self.nested((**element).clone())),
+            _ => None,
+        })
+    }
+    #[getter]
+    fn element_count(&self) -> PyResult<Option<usize>> {
+        self.with_value(|value| match value {
+            TypeValue::Tuple(elements) => Some(elements.len()),
+            _ => None,
+        })
+    }
+    fn element(&self, index: usize) -> PyResult<Option<SemanticType>> {
+        self.with_value(|value| match value {
+            TypeValue::Tuple(elements) => {
+                elements.get(index).cloned().map(|value| self.nested(value))
+            }
+            _ => None,
+        })
+    }
+    #[getter]
+    fn input_count(&self) -> PyResult<Option<usize>> {
+        self.with_value(|value| match value {
+            TypeValue::Function { inputs, .. } => Some(inputs.len()),
+            _ => None,
+        })
+    }
+    fn input(&self, index: usize) -> PyResult<Option<SemanticType>> {
+        self.with_value(|value| match value {
+            TypeValue::Function { inputs, .. } => {
+                inputs.get(index).cloned().map(|value| self.nested(value))
+            }
+            _ => None,
+        })
+    }
+    #[getter]
+    fn result_count(&self) -> PyResult<Option<usize>> {
+        self.with_value(|value| match value {
+            TypeValue::Function { results, .. } => Some(results.len()),
+            _ => None,
+        })
+    }
+    fn result(&self, index: usize) -> PyResult<Option<SemanticType>> {
+        self.with_value(|value| match value {
+            TypeValue::Function { results, .. } => {
+                results.get(index).cloned().map(|value| self.nested(value))
+            }
+            _ => None,
+        })
     }
 }
 
@@ -1191,14 +1328,33 @@ impl SemanticAttribute {
         })
     }
     #[getter]
-    fn integer_value(&self) -> PyResult<Option<i128>> {
-        self.with_value(|value| match value {
-            AttributeValue::Integer(value) => value
-                .split(':')
-                .next()
-                .and_then(|value| value.trim().parse().ok()),
+    fn integer_value(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let literal = self.with_value(|value| match value {
+            AttributeValue::Integer(value) => Some(value.clone()),
+            AttributeValue::WideNumber(value) => std::str::from_utf8(value).ok().map(str::to_owned),
             _ => None,
-        })
+        })?;
+        let Some(literal) = literal
+            .as_deref()
+            .and_then(|value| value.split(':').next())
+            .map(str::trim)
+        else {
+            return Ok(None);
+        };
+        let unsigned = literal.trim_start_matches(['+', '-']);
+        let (digits, radix) = unsigned
+            .strip_prefix("0x")
+            .map_or((unsigned, 10), |digits| (digits, 16));
+        let signed_digits = match literal.as_bytes().first() {
+            Some(b'-') => format!("-{digits}"),
+            _ => digits.to_owned(),
+        };
+        Ok(Some(
+            py.import("builtins")?
+                .getattr("int")?
+                .call1((signed_digits, radix))?
+                .unbind(),
+        ))
     }
     #[getter]
     fn float_value(&self) -> PyResult<Option<f64>> {

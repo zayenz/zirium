@@ -1166,3 +1166,91 @@ def test_attribute_element_spellings_preserve_nested_and_quoted_delimiters():
         '"x=y,z"',
     ]
     assert dictionary.element(2) is None
+
+
+def test_semantic_types_expose_checked_structure():
+    source = """%types:9 = "test.types"() : () -> (i32, si64, ui128, f32, complex<f64>, tuple<i1, tensor<?x[4]xf32>>, tensor<*xf32>, vector<[4]x8xf32>, memref<3x?xi8>)"""
+    document = zirium.parse_text(source).lower_strict().document
+    assert document is not None
+    operation = document.operation_table().operation(0)
+    types = [operation.result_type(index) for index in range(operation.result_count())]
+
+    assert (types[0].integer_width, types[0].integer_signedness) == (32, "signless")
+    assert (types[1].integer_width, types[1].integer_signedness) == (64, "signed")
+    assert (types[2].integer_width, types[2].integer_signedness) == (128, "unsigned")
+    assert types[3].float_name == "f32"
+    assert types[4].element_type is not None
+    assert types[4].element_type.spelling == "f64"
+
+    tuple_type = types[5]
+    assert tuple_type.element_count == 2
+    first_tuple_element = tuple_type.element(0)
+    assert first_tuple_element is not None
+    assert first_tuple_element.spelling == "i1"
+    nested_tensor = tuple_type.element(1)
+    assert nested_tensor is not None
+    assert nested_tensor.dimensions == [None, 4]
+    assert nested_tensor.scalable_dimensions == [False, False]
+
+    assert types[6].unranked is True
+    assert types[6].dimensions == []
+    assert types[7].dimensions == [4, 8]
+    assert types[7].scalable_dimensions == [True, False]
+    assert types[8].dimensions == [3, None]
+    assert types[8].element_type is not None
+    assert types[8].element_type.spelling == "i8"
+
+    assert types[0].dimensions is None
+    assert types[0].element_type is None
+    assert types[0].element_count is None
+    assert types[0].input_count is None
+
+    function = operation.function_type()
+    assert function.input_count == 0
+    assert function.result_count == 9
+    function_result = function.result(5)
+    assert function_result is not None
+    assert function_result.kind == "tuple"
+
+    opaque_document = (
+        zirium.parse_text('%value = "test.opaque"() : () -> !vendor.type<"x">')
+        .lower_strict()
+        .document
+    )
+    assert opaque_document is not None
+    opaque = opaque_document.operation_table().operation(0).result_type(0)
+    assert opaque.kind == "opaque"
+    assert opaque.spelling == '!vendor.type<"x">'
+    assert opaque.element_type is None
+
+
+def test_integer_value_preserves_integral_wide_spellings():
+    source = """"test.values"() {
+      positive = 340282366920938463463374607431768211456 : ui256,
+      negative = -340282366920938463463374607431768211457 : si256,
+      explicit_positive = +340282366920938463463374607431768211458 : i256,
+      hexadecimal = 0x100000000000000000000000000000000 : ui256,
+      float_bits = 0x3ff0000000000000 : f64,
+      decimal_float = 1e400 : f64
+    } : () -> ()"""
+    document = zirium.parse_text(source).lower_strict().document
+    assert document is not None
+    operation = document.operation_table().operation(0)
+
+    def integer_value(name: str) -> int | None:
+        attribute = operation.attribute_by_name(name)
+        assert attribute is not None
+        return attribute.integer_value
+
+    values = {
+        name: integer_value(name)
+        for name in ("positive", "negative", "explicit_positive", "hexadecimal")
+    }
+    assert values == {
+        "positive": 2**128,
+        "negative": -(2**128) - 1,
+        "explicit_positive": 2**128 + 2,
+        "hexadecimal": 2**128,
+    }
+    assert integer_value("float_bits") is None
+    assert integer_value("decimal_float") is None

@@ -642,7 +642,8 @@ fn native(
                     py,
                     SemanticType {
                         state: state.clone(),
-                        id,
+                        id: Some(id),
+                        owned: None,
                     },
                 )?)?;
             }

@@ -384,6 +384,26 @@ strings, so deriving a genuinely new signature still requires the Rust API's
 `TypeSpec`. Insertion supports regionless operations and returns no provisional
 handle; look up the inserted operation after the context commits.
 
+### Inspect types and integer attributes
+
+`SemanticType` exposes structure without requiring callers to parse `spelling`.
+Integer types provide `integer_width` and `integer_signedness`; float types
+provide `float_name`. Tensor, vector, and memref types provide `dimensions`,
+`scalable_dimensions`, and `element_type`, while tensors also provide
+`unranked`. A dynamic dimension is `None` in `dimensions`; scalability is kept
+separately in `scalable_dimensions`. Tuple types use `element_count` and
+`element(index)`, complex types use `element_type`, and function types use
+`input_count`/`input(index)` and `result_count`/`result(index)`.
+
+Properties and indexed accessors return `None` when they do not apply. Opaque
+types retain their exact `spelling` fallback and have no structural fields.
+Nested types returned by these accessors have canonical spellings.
+
+`SemanticAttribute.integer_value` returns a Python `int` for integral decimal
+or hexadecimal spellings, including signed, unsigned, and wider-than-128-bit
+values. It returns `None` for float attributes and non-integral wide-number
+spellings.
+
 Preserving output copies unchanged source and regenerates edited operations or
 blocks, as in the attribute replacement above. Inserting or erasing an operation
 invalidates source mappings and makes the document semantic-only, so preserving
