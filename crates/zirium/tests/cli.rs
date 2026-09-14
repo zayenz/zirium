@@ -1588,15 +1588,28 @@ fn multiple_empty_file_results_produce_no_output() {
 fn malformed_query_and_input_fail_usefully() {
     let bad_query = run_stdin("filter(op(\"arith.addi\")", INPUT);
     assert!(!bad_query.status.success());
-    assert!(String::from_utf8_lossy(&bad_query.stderr).contains("query error at byte"));
+    assert!(bad_query.stdout.is_empty());
+    let query_diagnostic = String::from_utf8_lossy(&bad_query.stderr);
+    assert!(
+        query_diagnostic.contains("<query>:1:"),
+        "{query_diagnostic}"
+    );
+    assert!(
+        query_diagnostic.contains("query error"),
+        "{query_diagnostic}"
+    );
+    assert!(query_diagnostic.contains('^'), "{query_diagnostic}");
     let bad_input = run_stdin(
         "filter(op(\"arith.addi\"))",
         "module {\n  %x = arith.constant nope : i32\n}\n",
     );
     assert!(!bad_input.status.success());
+    assert!(bad_input.stdout.is_empty());
     let diagnostic = String::from_utf8_lossy(&bad_input.stderr);
     assert!(diagnostic.contains("could not parse stdin"), "{diagnostic}");
-    assert!(diagnostic.contains("Syntax at bytes"), "{diagnostic}");
+    assert!(diagnostic.contains("stdin:2:"), "{diagnostic}");
+    assert!(diagnostic.contains("invalid MLIR syntax"), "{diagnostic}");
+    assert!(diagnostic.contains('^'), "{diagnostic}");
 }
 
 #[test]
@@ -1604,15 +1617,18 @@ fn lowering_failure_reports_identity_and_original_range() {
     let input = "module {\n  \"example.use\"(%missing) : (i32) -> ()\n}\n";
     let output = run_stdin("filter(op(\"example.use\"))", input);
     assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
     let diagnostic = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        diagnostic.contains("diagnostic #1 at bytes"),
-        "{diagnostic}"
-    );
+    assert!(diagnostic.contains("stdin:2:"), "{diagnostic}");
     assert!(
         diagnostic.contains("unresolved SSA value `%missing`"),
         "{diagnostic}"
     );
+    assert!(
+        diagnostic.contains("\"example.use\"(%missing)"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("^~~~~~~~"), "{diagnostic}");
 }
 
 #[test]
@@ -2327,10 +2343,13 @@ fn query_diagnostics_keep_program_file_lines_and_unicode_columns() {
         .args(["-f", program.to_str().unwrap()])
         .output()
         .unwrap();
-    let _ = fs::remove_file(program);
+    let _ = fs::remove_file(&program);
     assert!(!output.status.success());
     let error = String::from_utf8(output.stderr).unwrap();
-    assert!(error.contains("line 3, column 19"), "{error}");
+    assert!(
+        error.contains(&format!("{}:3:19", program.to_string_lossy())),
+        "{error}"
+    );
     assert!(error.contains("\n                  ^"), "{error}");
 }
 
@@ -2344,14 +2363,14 @@ fn set_operand_diagnostic_points_to_the_stage_after_leading_comments() {
         .args(["-f", program.to_str().unwrap()])
         .output()
         .unwrap();
-    let _ = fs::remove_file(program);
+    let _ = fs::remove_file(&program);
     assert!(!output.status.success());
     let error = String::from_utf8(output.stderr).unwrap();
     let prefix = &source[source[..source.find("count").unwrap()].rfind('\n').unwrap() + 1
         ..source.find("count").unwrap()];
     let column = prefix.chars().count() + 1;
     assert!(
-        error.contains(&format!("line 3, column {column}")),
+        error.contains(&format!("{}:3:{column}", program.to_string_lossy())),
         "{error}"
     );
     assert!(

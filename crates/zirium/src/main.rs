@@ -2,6 +2,7 @@ use std::{
     env,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
+    ops::Range,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -71,6 +72,145 @@ Reference: https://github.com/zayenz/zirium/blob/main/docs/query-language.md
 "#;
 
 const OUTPUT_STAGING_MEMORY_LIMIT: usize = 1024 * 1024;
+const DIAGNOSTIC_EXCERPT_COLUMNS: usize = 120;
+const TAB_WIDTH: usize = 4;
+
+fn source_diagnostic(
+    source_name: &str,
+    source: &[u8],
+    range: Range<usize>,
+    message: &str,
+) -> String {
+    let start = range.start.min(source.len());
+    let end = range.end.max(start).min(source.len());
+    let line_start = source[..start]
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |position| position + 1);
+    let line_end = source[start..]
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(source.len(), |position| start + position);
+    let line_end = if line_end > line_start && source[line_end - 1] == b'\r' {
+        line_end - 1
+    } else {
+        line_end
+    };
+    let line_number = source[..line_start]
+        .iter()
+        .filter(|&&byte| byte == b'\n')
+        .count()
+        + 1;
+    let before = diagnostic_text(&source[line_start..start.min(line_end)]);
+    let selected = diagnostic_text(&source[start.min(line_end)..end.min(line_end)]);
+    let column = display_width(&before) + 1;
+    let marker_width = display_width(&selected).max(1);
+    let rendered_line = expand_tabs(&diagnostic_text(&source[line_start..line_end]));
+    let marker_offset = column - 1;
+    let (excerpt, excerpt_offset, left_trimmed, right_trimmed) =
+        bounded_excerpt(&rendered_line, marker_offset, DIAGNOSTIC_EXCERPT_COLUMNS);
+    let marker_width = marker_width
+        .min(DIAGNOSTIC_EXCERPT_COLUMNS.saturating_sub(excerpt_offset))
+        .max(1);
+    let left = if left_trimmed { "…" } else { "" };
+    let right = if right_trimmed { "…" } else { "" };
+    format!(
+        "{source_name}:{line_number}:{column}: error: {message}\n{left}{excerpt}{right}\n{}^{}",
+        " ".repeat(excerpt_offset + usize::from(left_trimmed)),
+        "~".repeat(marker_width.saturating_sub(1))
+    )
+}
+
+fn diagnostic_text(bytes: &[u8]) -> String {
+    let mut text = String::new();
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        match std::str::from_utf8(remaining) {
+            Ok(valid) => {
+                text.push_str(valid);
+                break;
+            }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                text.push_str(std::str::from_utf8(&remaining[..valid]).unwrap());
+                let invalid = error.error_len().unwrap_or(remaining.len() - valid);
+                text.extend(std::iter::repeat_n('�', invalid));
+                remaining = &remaining[valid + invalid..];
+            }
+        }
+    }
+    text
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars().fold(0, |column, character| {
+        if character == '\t' {
+            column + (TAB_WIDTH - column % TAB_WIDTH)
+        } else {
+            column + 1
+        }
+    })
+}
+
+fn expand_tabs(text: &str) -> String {
+    let mut rendered = String::new();
+    let mut column = 0;
+    for character in text.chars() {
+        if character == '\t' {
+            let spaces = TAB_WIDTH - column % TAB_WIDTH;
+            rendered.extend(std::iter::repeat_n(' ', spaces));
+            column += spaces;
+        } else {
+            rendered.push(character);
+            column += 1;
+        }
+    }
+    rendered
+}
+
+fn bounded_excerpt(line: &str, marker: usize, limit: usize) -> (String, usize, bool, bool) {
+    let characters = line.chars().collect::<Vec<_>>();
+    if characters.len() <= limit {
+        return (line.to_owned(), marker, false, false);
+    }
+    let start = marker
+        .saturating_sub(limit / 2)
+        .min(characters.len() - limit);
+    let end = start + limit;
+    (
+        characters[start..end].iter().collect(),
+        marker.saturating_sub(start),
+        start > 0,
+        end < characters.len(),
+    )
+}
+
+fn lexer_diagnostic_message(kind: zirium::lexer::DiagnosticKind) -> &'static str {
+    use zirium::lexer::DiagnosticKind;
+    match kind {
+        DiagnosticKind::FileLimit => "file size limit exceeded",
+        DiagnosticKind::TokenLimit => "token limit exceeded",
+        DiagnosticKind::InvalidByte => "invalid byte in input",
+        DiagnosticKind::UnterminatedString => "unterminated string literal",
+        DiagnosticKind::InvalidEscape => "invalid escape sequence",
+        DiagnosticKind::InvalidIdentifier => "invalid identifier",
+    }
+}
+
+fn parser_diagnostic_message(kind: ParseDiagnosticKind) -> String {
+    match kind {
+        ParseDiagnosticKind::Syntax => "invalid MLIR syntax".to_owned(),
+        ParseDiagnosticKind::UnknownCustomOperation => "unknown custom operation".to_owned(),
+        ParseDiagnosticKind::ShapeMismatch(shape) => {
+            format!("custom operation does not match registered shape `{shape:?}`")
+        }
+        ParseDiagnosticKind::FormatMismatch => {
+            "custom operation does not match its registered format".to_owned()
+        }
+        ParseDiagnosticKind::ProgressLimit => "parser recovery made no progress".to_owned(),
+        ParseDiagnosticKind::DepthLimit => "delimiter nesting depth limit exceeded".to_owned(),
+    }
+}
 
 enum StagedStorage {
     Memory(Vec<u8>),
@@ -336,26 +476,24 @@ fn run() -> Result<(), String> {
             }
         }
     }
-    let query_text = if let Some(path) = program_path {
-        fs::read_to_string(&path).map_err(|error| {
+    let (query_name, query_text) = if let Some(path) = program_path {
+        let text = fs::read_to_string(&path).map_err(|error| {
             format!(
                 "could not read program file {}: {error}",
                 path.to_string_lossy()
             )
-        })?
+        })?;
+        (path.to_string_lossy().into_owned(), text)
     } else {
-        inline_query.unwrap_or_default()
+        ("<query>".to_owned(), inline_query.unwrap_or_default())
     };
     let query = Query::parse_with_document_context(&query_text).map_err(|error| {
-        let prefix = &query_text[..error.position];
-        let line_number = prefix.bytes().filter(|&byte| byte == b'\n').count() + 1;
-        let line_start = prefix.rfind('\n').map_or(0, |offset| offset + 1);
-        let line = query_text[line_start..].split('\n').next().unwrap_or("");
-        let column = query_text[line_start..error.position].chars().count();
-        format!(
-            "{error} (line {line_number}, column {})\n{line}\n{}^",
-            column + 1,
-            " ".repeat(column)
+        let message = format!("query error: {}", error.message);
+        source_diagnostic(
+            &query_name,
+            query_text.as_bytes(),
+            error.position..error.position,
+            &message,
         )
     })?;
     let registry = if registry_paths.is_empty() && presets.is_empty() {
@@ -409,25 +547,25 @@ fn run() -> Result<(), String> {
             let mut diagnostics = Vec::new();
             diagnostics.extend(parsed.lexer_diagnostics().iter().map(|diagnostic| {
                 let range = diagnostic.range();
-                format!(
-                    "{:?} at bytes {}..{}",
-                    diagnostic.kind(),
-                    range.start(),
-                    range.end()
+                source_diagnostic(
+                    &name,
+                    parsed.original_bytes(),
+                    range.start() as usize..range.end() as usize,
+                    lexer_diagnostic_message(diagnostic.kind()),
                 )
             }));
             diagnostics.extend(parsed.syntax().diagnostics().iter().map(|diagnostic| {
                 let range = diagnostic.range();
-                format!(
-                    "{:?} at bytes {}..{}",
-                    diagnostic.kind(),
-                    range.start(),
-                    range.end()
+                source_diagnostic(
+                    &name,
+                    parsed.original_bytes(),
+                    range.start() as usize..range.end() as usize,
+                    &parser_diagnostic_message(diagnostic.kind()),
                 )
             }));
             return Err(format!(
-                "could not parse {name}: {}",
-                diagnostics.join("; ")
+                "could not parse {name}:\n{}",
+                diagnostics.join("\n")
             ));
         }
         if recovered_unknown_custom {
@@ -460,24 +598,22 @@ fn run() -> Result<(), String> {
                 let details = lowered
                     .diagnostics
                     .iter()
-                    .enumerate()
-                    .map(|(index, diagnostic)| {
+                    .map(|diagnostic| {
                         let range = diagnostic.range;
-                        format!(
-                            "diagnostic #{} at bytes {}..{}: {}",
-                            index + 1,
-                            range.start(),
-                            range.end(),
-                            diagnostic.message
+                        source_diagnostic(
+                            &name,
+                            parsed.original_bytes(),
+                            range.start() as usize..range.end() as usize,
+                            &diagnostic.message,
                         )
                     })
                     .collect::<Vec<_>>();
                 let detail = if details.is_empty() {
                     "strict lowering failed".to_owned()
                 } else {
-                    details.join("; ")
+                    details.join("\n")
                 };
-                format!("could not lower {name}: {detail}")
+                format!("could not lower {name}:\n{detail}")
             })?;
         query
             .evaluate_with_context_options_and_limits(
@@ -820,5 +956,32 @@ mod staged_output_tests {
         assert!(output.write_all(b"e").is_err());
         assert!(matches!(output.storage, StagedStorage::Memory(_)));
         assert_eq!(directory.entries(), 0);
+    }
+
+    #[test]
+    fn source_diagnostics_handle_unicode_invalid_utf8_crlf_tabs_and_eof() {
+        let unicode = source_diagnostic("input.mlir", "\téx".as_bytes(), 3..4, "bad token");
+        assert!(unicode.starts_with("input.mlir:1:6: error: bad token\n    éx\n     ^"));
+
+        let invalid = source_diagnostic("bytes.mlir", b"ok\xffx", 2..3, "invalid byte");
+        assert_eq!(invalid, "bytes.mlir:1:3: error: invalid byte\nok�x\n  ^");
+
+        let crlf = source_diagnostic("input.mlir", b"first\r\nsecond\r\n", 7..8, "bad");
+        assert_eq!(crlf, "input.mlir:2:1: error: bad\nsecond\n^");
+
+        let eof = source_diagnostic("input.mlir", b"last\n", 5..5, "unexpected EOF");
+        assert_eq!(eof, "input.mlir:2:1: error: unexpected EOF\n\n^");
+    }
+
+    #[test]
+    fn source_diagnostics_bound_long_lines_around_the_marker() {
+        let source = format!("{}BAD{}", "a".repeat(200), "z".repeat(200));
+        let diagnostic = source_diagnostic("long.mlir", source.as_bytes(), 200..203, "bad");
+        let mut lines = diagnostic.lines();
+        assert_eq!(lines.next(), Some("long.mlir:1:201: error: bad"));
+        let excerpt = lines.next().unwrap();
+        assert!(excerpt.starts_with('…') && excerpt.ends_with('…'));
+        assert!(excerpt.chars().count() <= DIAGNOSTIC_EXCERPT_COLUMNS + 2);
+        assert!(lines.next().unwrap().contains("^~~"));
     }
 }

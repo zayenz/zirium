@@ -31,6 +31,29 @@ as a leaf and continues elsewhere. Add `--strict` to reject either case in
 scripts. Options can appear before or after the query argument. Use `--` before
 input paths beginning with a dash.
 
+## Troubleshoot source errors
+
+Syntax and lowering failures are written to stderr with the input or query
+name, a one-based line and display column, a specific message, a bounded source
+excerpt, and a marker. For example, an unresolved operand looks like:
+
+```console
+$ zirium count broken.mlir
+zirium: could not lower broken.mlir:
+broken.mlir:2:17: error: unresolved SSA value `%missing`
+  "example.use"(%missing) : (i32) -> ()
+                ^~~~~~~~
+```
+
+Inline queries use `<query>` as their source name; `-f` diagnostics use the
+program path. Columns count Unicode characters rather than UTF-8 bytes. Invalid
+UTF-8 bytes are shown as `�`, each invalid byte occupies one column, tabs
+advance to four-column stops, CR in CRLF is omitted, and an error at end of file
+gets a marker at the corresponding empty or final line. Source lines longer
+than 120 display columns are clipped around the marker and marked with `…`.
+The original byte ranges remain attached to parser and lowering diagnostics.
+As with other failures before delivery, stdout stays empty.
+
 Every CLI evaluation provides `{document}` as the supplied input path, or
 `stdin` for standard input. Use it in report text or JSON strings:
 
