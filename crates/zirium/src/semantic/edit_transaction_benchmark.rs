@@ -225,7 +225,7 @@ fn measure_edit_transaction_costs() {
         command("uname", &["-srv"]),
     );
     println!(
-        "operations,edits,mode,opening_validation_ns,opening_validation_spread_ns,copy_ns,copy_spread_ns,edit_ns,edit_spread_ns,commit_validation_ns,commit_validation_spread_ns,verifier_ns,verifier_spread_ns,total_ns,total_spread_ns,peak_allocated_bytes"
+        "operations,edits,mode,opening_validation_ns,opening_validation_spread_ns,copy_ns,copy_spread_ns,edit_ns,edit_spread_ns,commit_validation_ns,commit_validation_spread_ns,verifier_ns,verifier_spread_ns,total_ns,total_spread_ns,peak_allocated_bytes,peak_allocated_spread_bytes"
     );
 
     for operation_count in operations {
@@ -248,9 +248,11 @@ fn measure_edit_transaction_costs() {
                     .iter()
                     .map(|sample| sample.peak_bytes as u128)
                     .collect::<Vec<_>>();
+                let peak_min = *peaks.iter().min().unwrap();
+                let peak_max = *peaks.iter().max().unwrap();
                 let peak = median(&mut peaks);
                 println!(
-                    "{operation_count},{edit_count},{mode},{},{},{},{},{},{},{},{},{},{},{},{},{peak}",
+                    "{operation_count},{edit_count},{mode},{},{},{},{},{},{},{},{},{},{},{},{},{peak},{}",
                     opening.0,
                     opening.1,
                     copy.0,
@@ -263,6 +265,7 @@ fn measure_edit_transaction_costs() {
                     verifier.1,
                     total.0,
                     total.1,
+                    peak_max - peak_min,
                 );
             }
         }

@@ -3,7 +3,7 @@
 
 Build first: cargo build --release -p zirium --bin zirium
 Run with an optional binary path to compare two release builds.
-Each size uses one warmup and the median of three measured subprocesses.
+The default workload uses one warmup and the median of three measured subprocesses.
 
 Use --output-rss for an opt-in output-amplification run. That mode launches each
 measurement through a fresh helper process, redirects CLI stdout to a file, and
@@ -34,6 +34,15 @@ def selection_source(size):
 def peak_child_rss_bytes():
     peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     return peak if sys.platform == "darwin" else peak * 1024
+
+
+def rustc_version():
+    try:
+        return subprocess.run(
+            ["rustc", "-V"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
 
 
 def verify_repeated_output(output_path, expected_path, repetitions):
@@ -124,7 +133,22 @@ def run_retention_rss_child(args):
     )
 
 
-def run_retention_rss(binary, constants, runs):
+def child_samples(command, warmups, runs):
+    samples = []
+    for index in range(warmups + runs):
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=True,
+        )
+        if index >= warmups:
+            samples.append(json.loads(result.stdout))
+    return samples
+
+
+def run_retention_rss(binary, constants, warmups, runs):
     if binary.parent.name != "release":
         raise SystemExit("--retention-rss requires a binary from a release directory")
 
@@ -159,31 +183,24 @@ def run_retention_rss(binary, constants, runs):
         for mode in ("scalar-count", "large-jsonl"):
             expected_path = directory / f"expected-{mode}"
             expected_path.write_bytes(expected[mode])
-            samples = []
-            for _ in range(runs):
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        __file__,
-                        str(binary),
-                        "--_retention-rss-child",
-                        "--child-mode",
-                        mode,
-                        "--child-input",
-                        str(input_path),
-                        "--child-expected",
-                        str(expected_path),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=180,
-                    check=True,
-                )
-                samples.append(json.loads(result.stdout))
+            samples = child_samples(
+                [
+                    sys.executable,
+                    __file__,
+                    str(binary),
+                    "--_retention-rss-child",
+                    "--child-mode",
+                    mode,
+                    "--child-input",
+                    str(input_path),
+                    "--child-expected",
+                    str(expected_path),
+                ],
+                warmups,
+                runs,
+            )
             elapsed_ms = [sample["elapsed_seconds"] * 1000 for sample in samples]
-            peak_mib = [
-                sample["peak_rss_bytes"] / (1024 * 1024) for sample in samples
-            ]
+            peak_mib = [sample["peak_rss_bytes"] / (1024 * 1024) for sample in samples]
             emitted_bytes = len(expected[mode])
             assert all(sample["emitted_bytes"] == emitted_bytes for sample in samples)
             print(
@@ -191,6 +208,7 @@ def run_retention_rss(binary, constants, runs):
                     [
                         f"platform={platform.platform()}",
                         f"python={platform.python_version()}",
+                        f"rustc={json.dumps(rustc_version())}",
                         f"cpu_count={os.cpu_count()}",
                         "profile=release",
                         f"binary={binary}",
@@ -198,7 +216,9 @@ def run_retention_rss(binary, constants, runs):
                         f"constants={constants}",
                         f"input_bytes={len(source)}",
                         f"output_bytes={emitted_bytes}",
-                        f"runs={runs}",
+                        f"warmups={warmups}",
+                        f"measured_runs={runs}",
+                        "boundary=fresh_process_startup_parse_lower_select_stage_write",
                         f"median_ms={statistics.median(elapsed_ms):.3f}",
                         f"spread_ms={max(elapsed_ms) - min(elapsed_ms):.3f}",
                         f"median_peak_rss_mib={statistics.median(peak_mib):.3f}",
@@ -209,14 +229,15 @@ def run_retention_rss(binary, constants, runs):
             )
 
 
-def run_output_rss(binary, constants, emission_counts, runs):
+def run_output_rss(binary, constants, emission_counts, warmups, runs):
     if binary.parent.name != "release":
         raise SystemExit("--output-rss requires a binary from a release directory")
 
     with tempfile.TemporaryDirectory(prefix="zirium-output-rss-input-") as directory:
         directory = Path(directory)
         input_path = directory / "input.mlir"
-        input_path.write_bytes(selection_source(constants))
+        source = selection_source(constants)
+        input_path.write_bytes(source)
         for mode in ("normal", "jsonl"):
             expected_path = directory / f"expected-{mode}"
             command = [str(binary)]
@@ -231,29 +252,24 @@ def run_output_rss(binary, constants, emission_counts, runs):
             expected_path.write_bytes(expected.stdout)
 
             for emissions in emission_counts:
-                samples = []
-                for _ in range(runs):
-                    result = subprocess.run(
-                        [
-                            sys.executable,
-                            __file__,
-                            str(binary),
-                            "--_output-rss-child",
-                            "--child-mode",
-                            mode,
-                            "--child-input",
-                            str(input_path),
-                            "--child-expected",
-                            str(expected_path),
-                            "--child-emissions",
-                            str(emissions),
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=180,
-                        check=True,
-                    )
-                    samples.append(json.loads(result.stdout))
+                samples = child_samples(
+                    [
+                        sys.executable,
+                        __file__,
+                        str(binary),
+                        "--_output-rss-child",
+                        "--child-mode",
+                        mode,
+                        "--child-input",
+                        str(input_path),
+                        "--child-expected",
+                        str(expected_path),
+                        "--child-emissions",
+                        str(emissions),
+                    ],
+                    warmups,
+                    runs,
+                )
                 elapsed_ms = [sample["elapsed_seconds"] * 1000 for sample in samples]
                 peak_mib = [
                     sample["peak_rss_bytes"] / (1024 * 1024) for sample in samples
@@ -266,13 +282,18 @@ def run_output_rss(binary, constants, emission_counts, runs):
                     " ".join(
                         [
                             f"platform={platform.platform()}",
+                            f"python={platform.python_version()}",
+                            f"rustc={json.dumps(rustc_version())}",
                             "profile=release",
                             f"binary={binary}",
                             f"mode={mode}",
                             f"constants={constants}",
+                            f"input_bytes={len(source)}",
                             f"emissions={emissions}",
                             f"emitted_bytes={emitted_bytes}",
-                            f"runs={runs}",
+                            f"warmups={warmups}",
+                            f"measured_runs={runs}",
+                            "boundary=fresh_process_startup_parse_lower_select_stage_write",
                             f"median_ms={statistics.median(elapsed_ms):.3f}",
                             f"spread_ms={max(elapsed_ms) - min(elapsed_ms):.3f}",
                             f"median_peak_rss_mib={statistics.median(peak_mib):.3f}",
@@ -302,12 +323,14 @@ def main():
         help="run isolated scalar-count and single-large-JSONL release workloads",
     )
     parser.add_argument("--retention-constants", type=int, default=100_000)
+    parser.add_argument("--retention-warmups", type=int, default=1)
     parser.add_argument("--retention-runs", type=int, default=5)
     parser.add_argument("--rss-constants", type=int, default=128)
     parser.add_argument(
         "--rss-emissions", type=int, nargs="+", default=[256, 1024, 4096]
     )
     parser.add_argument("--rss-runs", type=int, default=3)
+    parser.add_argument("--rss-warmups", type=int, default=1)
     parser.add_argument(
         "--_output-rss-child", action="store_true", help=argparse.SUPPRESS
     )
@@ -333,18 +356,34 @@ def main():
     if args.output_rss:
         if (
             args.rss_constants < 1
+            or args.rss_warmups < 0
             or args.rss_runs < 1
             or any(emissions < 1 for emissions in args.rss_emissions)
         ):
-            parser.error("RSS workload sizes and runs must be positive")
+            parser.error("RSS sizes/runs must be positive and warmups non-negative")
         run_output_rss(
-            args.binary, args.rss_constants, args.rss_emissions, args.rss_runs
+            args.binary,
+            args.rss_constants,
+            args.rss_emissions,
+            args.rss_warmups,
+            args.rss_runs,
         )
         return
     if args.retention_rss:
-        if args.retention_constants < 1 or args.retention_runs < 1:
-            parser.error("retention workload sizes and runs must be positive")
-        run_retention_rss(args.binary, args.retention_constants, args.retention_runs)
+        if (
+            args.retention_constants < 1
+            or args.retention_warmups < 0
+            or args.retention_runs < 1
+        ):
+            parser.error(
+                "retention sizes/runs must be positive and warmups non-negative"
+            )
+        run_retention_rss(
+            args.binary,
+            args.retention_constants,
+            args.retention_warmups,
+            args.retention_runs,
+        )
         return
 
     binary = args.binary

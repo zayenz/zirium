@@ -98,7 +98,7 @@ fn measure_verifier_dominance_scaling() {
         .to_owned();
     let os = command_output("uname", &["-sr"]);
     println!(
-        "environment profile=release rustc={rustc:?} host={host} os={os:?} warmups={warmups} runs={runs} dimensions={dimensions:?}"
+        "environment profile=release rustc={rustc:?} host={host} os={os:?} warmups={warmups} measured_runs={runs} dimensions={dimensions:?} boundary=semantic_verifier_only_above_lowered_document"
     );
     println!(
         "shape,blocks,verify_ns_min,verify_ns_median,verify_ns_max,verify_ns_spread,peak_bytes_min,peak_bytes_median,peak_bytes_max,peak_bytes_spread"

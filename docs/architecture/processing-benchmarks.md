@@ -5,6 +5,32 @@ printing, and bulk API access. Fixtures are deterministic; compare runs using
 the same fixture, build profile, machine, and compiler. Generate results from
 the checkout being measured.
 
+## Comparison policy
+
+Change one workload dimension at a time and keep the other dimensions and the
+measurement environment fixed. The suite covers input bytes in the processing
+harness, operation and edit counts in edit transactions, distinct versus
+repeated values in edit interning, elements and attribute shape in Python
+attribute traversal, blocks in one CFG region in the dominance benchmark, and
+emitted bytes in the CLI RSS benchmark. Each harness checks the measured result;
+a faster run with different output or semantics is invalid.
+
+Reports distinguish three kinds of claim:
+
+- **Measurements** are medians with min-to-max spread and peak memory from the
+  named boundary. Compare them only across the same profile, toolchain, platform,
+  fixture shape, warm-up count, and repetition count.
+- **Code-derived complexity** explains work visible in the implementation, such
+  as a whole-document validation per edit transaction. It is not a measured
+  growth rate.
+- **Projections** are estimates beyond measured sizes. Only the full processing
+  report emits them, using its documented fit and held-out checks. No projection
+  is an acceptance threshold or a substitute for measuring the target workload.
+
+The release harnesses have no absolute timing or memory gates. Smoke modes use
+smaller dimensions to check construction, semantics, output equality, and report
+shape; they are not performance evidence.
+
 ## Full pipeline
 
 ### Python table access policy
@@ -294,13 +320,17 @@ Python fills final `bytes` columns directly, without temporary column copies.
 Attribute traversal has a separate release benchmark for ordinary arrays,
 dictionaries, and dense arrays. It checks every child value and dictionary key,
 includes the first traversal that builds the wrapper's spelling index, and
-reports medians, spread, per-element cost, and adjacent size ratios from 1,000
-through 8,000 elements. Ratios near 2 when the element count doubles are the
-expected linear shape; they are measurement evidence, not CI timing gates.
+reports Python and Rust toolchains, build profile, input bytes, medians, spread,
+Python peak allocation, per-element cost,
+and adjacent size ratios from 1,000 through 8,000 elements. Timed samples cover
+only first-pass child-wrapper traversal; parsing and lowering happen before the
+measurement. The separately sampled peak uses `tracemalloc`, so it excludes the
+Rust heap and the already-built document. Ratios near 2 when the element count
+doubles are measurement evidence, not CI timing gates.
 
 ```sh
 uv run --locked maturin develop --release
-.venv/bin/python python/benchmarks/attribute_traversal_benchmark.py --runs 5
+ZIRIUM_BUILD_PROFILE=release .venv/bin/python python/benchmarks/attribute_traversal_benchmark.py --runs 5
 ```
 
 Canonical and custom file output validate once and stream through a Rust
@@ -355,11 +385,14 @@ python3 python/benchmarks/selection_printing_benchmark.py --output-rss
 It accepts only a binary in a `release` directory. Normal and JSONL runs execute
 in separate child processes, redirect stdout to a file, and compare every byte
 with a one-emission reference. The default workload emits one 128-constant
-selection 256, 1,024, and 4,096 times. Each row records the platform, binary,
-release profile, workload dimensions, emitted bytes, run count, elapsed-time
-median and spread, and peak-RSS median and spread. Use `--rss-constants`,
-`--rss-emissions`, and `--rss-runs` to change those dimensions. Large RSS runs
-remain manual measurements; there is no CI memory or timing threshold.
+selection 256, 1,024, and 4,096 times. Each row records the platform, Python and
+Rust toolchains, binary, release profile, workload dimensions, emitted bytes,
+warm-ups and run count, elapsed-time median and spread, and peak-RSS median and
+spread. Use `--rss-constants`,
+`--rss-emissions`, `--rss-warmups`, and `--rss-runs` to change those dimensions.
+The boundary is a fresh CLI process including startup, parse, lower, selection,
+staging, and file output. Large RSS runs remain manual measurements; there is no
+CI memory or timing threshold.
 
 The retention mode runs two isolated release workloads: a scalar `count` and
 one large JSONL operation selection. Each CLI invocation runs in a fresh helper
