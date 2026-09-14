@@ -1,5 +1,6 @@
 use std::{
     env,
+    ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     ops::Range,
@@ -28,6 +29,8 @@ const HELP: &str = r#"Usage: zirium [OPTIONS] [QUERY] [INPUT ...]
 Read MLIR from stdin when INPUT is omitted or is -. An empty query prints the document.
 Input files are independent; files are never overwritten. Options may appear
 before or after QUERY. Use -- before paths beginning with a dash.
+Value-taking long options accept separated or equals forms. `-f -` names a
+literal query file named `-`; standard input may be an MLIR operand only once.
 
 Options:
   -h, --help              Show this help
@@ -367,7 +370,34 @@ fn run() -> Result<(), String> {
     let mut inline_query = None;
     let mut paths = Vec::new();
     while let Some(argument) = arguments.next() {
-        let option = argument.to_str().unwrap_or("");
+        let option_text = argument.to_str().unwrap_or("");
+        let (option, inline_value) = option_text
+            .split_once('=')
+            .filter(|(name, _)| {
+                matches!(
+                    *name,
+                    "--preset"
+                        | "--registry"
+                        | "--program-file"
+                        | "--fragment-scope"
+                        | "--max-file-bytes"
+                        | "--max-work"
+                        | "--max-items"
+                        | "--max-registry-depth"
+                        | "--max-registry-files"
+                        | "--max-registry-edges"
+                        | "--max-registry-bytes"
+                )
+            })
+            .map_or((option_text, None), |(name, value)| (name, Some(value)));
+        macro_rules! option_value {
+            ($message:expr) => {
+                inline_value
+                    .map(OsString::from)
+                    .or_else(|| arguments.next())
+                    .ok_or($message)?
+            };
+        }
         match option {
             "-h" | "--help" => {
                 return write_stdout([HELP]);
@@ -383,17 +413,16 @@ fn run() -> Result<(), String> {
                 );
             }
             "--preset" => presets.push(
-                arguments
-                    .next()
-                    .ok_or("missing name after --preset")?
+                option_value!("missing name after --preset")
                     .into_string()
                     .map_err(|_| "preset name must be UTF-8")?,
             ),
             "--strict" => strict = true,
             "--jsonl" | "--ndjson" => ndjson = true,
             "--fragment-scope" => {
-                fragment_scope = match arguments
-                    .next()
+                fragment_scope = match inline_value
+                    .map(OsString::from)
+                    .or_else(|| arguments.next())
                     .and_then(|value| value.into_string().ok())
                     .as_deref()
                 {
@@ -416,9 +445,7 @@ fn run() -> Result<(), String> {
                     } else {
                         "a positive integer"
                     };
-                let value = arguments
-                    .next()
-                    .ok_or_else(|| format!("missing number after {option}"))?
+                let value = option_value!(format!("missing number after {option}"))
                     .to_str()
                     .and_then(|value| value.parse::<usize>().ok())
                     .ok_or_else(|| format!("{option} requires {requirement}"))?;
@@ -436,7 +463,7 @@ fn run() -> Result<(), String> {
                 }
             }
             "--registry" => {
-                let path = arguments.next().ok_or("missing path after --registry")?;
+                let path = option_value!("missing path after --registry");
                 if path == "-" {
                     return Err(
                         "--registry requires a file path; stdin is reserved for MLIR".into(),
@@ -448,11 +475,9 @@ fn run() -> Result<(), String> {
                 if program_path.is_some() || inline_query.is_some() {
                     return Err("supply one inline query or one program file".into());
                 }
-                program_path = Some(
-                    arguments
-                        .next()
-                        .ok_or("missing program file after -f/--program-file")?,
-                );
+                program_path = Some(option_value!(
+                    "missing program file after -f/--program-file"
+                ));
             }
             "--" => {
                 if program_path.is_none() && inline_query.is_none() {
@@ -510,6 +535,9 @@ fn run() -> Result<(), String> {
     let inputs = if paths.is_empty() {
         vec![None]
     } else {
+        if paths.iter().filter(|path| path.as_os_str() == "-").count() > 1 {
+            return Err("standard input may be specified only once".into());
+        }
         paths
             .into_iter()
             .map(|path| (path != "-").then_some(path))

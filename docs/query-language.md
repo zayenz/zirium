@@ -46,6 +46,9 @@ Use `zirium --help` for CLI usage and `zirium --list-presets` for bundled dialec
 `--preset NAME` and `--registry FILE` are repeatable and combine their registries.
 Options can appear before or after the query; `--` ends option processing.
 `-f` replaces the inline query rather than adding another program.
+Value-taking long options accept both separated and equals forms, such as
+`--preset stablehlo` and `--preset=stablehlo`. `-f -` is a literal query
+filename, and standard input may be supplied as an MLIR input only once.
 
 Without a registry option, Zirium uses the baseline registry. Unsupported custom
 operations may still support name and structural queries, but their operands,

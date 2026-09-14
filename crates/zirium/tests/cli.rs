@@ -94,6 +94,128 @@ fn explicit_stdin_path_works() {
 }
 
 #[test]
+fn value_options_accept_equals_form() {
+    let output = run_stdin_with_options(&["--max-work=100"], "count", INPUT);
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(output.stdout, b"4\n");
+}
+
+#[test]
+fn fragment_scope_equals_form_does_not_consume_input_path() {
+    let path = temporary_path("fragment-scope", "mlir");
+    fs::write(&path, INPUT).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--fragment-scope=minimal", "count"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(output.stdout, b"4\n");
+}
+
+#[test]
+fn equals_form_is_rejected_for_flags_and_short_options() {
+    for args in [["--strict=unexpected", "count"], ["-f=missing", "count"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+    }
+}
+
+#[test]
+fn short_program_file_dash_is_a_literal_filename() {
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["-f", "-", "count"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("program file"));
+}
+
+#[test]
+fn separator_preserves_dash_prefixed_input_filename() {
+    let path = "-zirium-f22-input.mlir";
+    fs::write(path, INPUT).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["count", "--", path])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(output.stdout, b"4\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn non_utf8_input_filename_is_preserved() {
+    use std::os::unix::ffi::OsStringExt;
+    let path = std::ffi::OsString::from_vec(b"f22-\xff.mlir".to_vec());
+    fs::write(&path, INPUT).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("count")
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_file(&path).unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(output.stdout, b"4\n");
+}
+
+#[test]
+fn duplicate_stdin_rejects_without_waiting_for_stdin_eof() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["count", "-", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"not consumed").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "duplicate stdin check blocked"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("only once"));
+}
+
+#[test]
+fn command_failures_keep_exit_code_one() {
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["not valid query"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn duplicate_stdin_operands_fail_before_reading_stdin() {
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["count", "-", "-"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("only once"));
+}
+
+#[test]
 fn cli_file_limit_is_byte_accurate_for_stdin() {
     let input = "\"op\"() {name = \"räka\"} : () -> ()";
     let byte_length = input.len().to_string();

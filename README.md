@@ -82,6 +82,9 @@ zirium 'filter(op("arith.addi"))' input.mlir
 ```
 
 Use `zirium --help` for CLI options and `--list-presets` for dialect coverage.
+Value-taking long options accept both `--option VALUE` and `--option=VALUE`.
+Use `-f -` for a literal query file named `-`; it does not read query source
+from stdin. An MLIR stdin operand (`-`) may be supplied only once.
 For semantic queries on StableHLO, pass `--preset stablehlo --strict` to reject
 unsupported custom forms rather than continuing with incomplete information.
 
