@@ -8,8 +8,7 @@ use std::{
 
 use zirium::{
     dialect::{DialectRegistry, RegistryConfig},
-    parser::ParseDiagnosticKind,
-    parser::ParsedFile,
+    parser::{ParseDiagnosticKind, ParseLimits, ParsedFile},
     printer::{FragmentScope, PrintLayout},
     query::{EvaluationError, EvaluationLimits, EvaluationOptions, Query, QueryOutput},
     semantic::{LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention},
@@ -40,6 +39,9 @@ Options:
   --jsonl                 Emit one attributable JSON record per line
   --ndjson                Alias for --jsonl
   --fragment-scope MODE   Selection shells: full (default) or minimal
+Parser limits:
+  --max-file-bytes N      Maximum input size in bytes (default 4294967295)
+Evaluator limits:
   --max-work N            Evaluation work limit (default 10000000)
   --max-items N           Maximum items per stream (default 1000000)
 
@@ -194,6 +196,19 @@ impl Drop for TemporaryFile {
     }
 }
 
+fn read_bounded(mut input: impl Read, limit: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    input
+        .by_ref()
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > limit {
+        return Err(format!("file size {} exceeds limit {limit}", bytes.len()));
+    }
+    Ok(bytes)
+}
+
 fn run() -> Result<(), String> {
     let mut arguments = env::args_os().skip(1);
     let mut registry_paths = Vec::new();
@@ -201,7 +216,8 @@ fn run() -> Result<(), String> {
     let mut strict = false;
     let mut ndjson = false;
     let mut fragment_scope = FragmentScope::Full;
-    let mut limits = EvaluationLimits::default();
+    let mut evaluation_limits = EvaluationLimits::default();
+    let mut parse_limits = ParseLimits::default();
     let mut program_path = None;
     let mut inline_query = None;
     let mut paths = Vec::new();
@@ -242,20 +258,25 @@ fn run() -> Result<(), String> {
                     None => return Err("missing mode after --fragment-scope".into()),
                 };
             }
-            "--max-work" | "--max-items" => {
+            "--max-file-bytes" | "--max-work" | "--max-items" => {
+                let requirement = if option == "--max-file-bytes" {
+                    "a non-negative integer"
+                } else {
+                    "a positive integer"
+                };
                 let value = arguments
                     .next()
                     .ok_or_else(|| format!("missing number after {option}"))?
                     .to_str()
                     .and_then(|value| value.parse::<usize>().ok())
-                    .ok_or_else(|| format!("{option} requires a positive integer"))?;
-                if value == 0 {
+                    .ok_or_else(|| format!("{option} requires {requirement}"))?;
+                if value == 0 && option != "--max-file-bytes" {
                     return Err(format!("{option} requires a positive integer"));
                 }
-                if option == "--max-work" {
-                    limits.max_work = value;
-                } else {
-                    limits.max_items = value;
+                match option {
+                    "--max-file-bytes" => parse_limits.max_file_bytes = value,
+                    "--max-work" => evaluation_limits.max_work = value,
+                    _ => evaluation_limits.max_items = value,
                 }
             }
             "--registry" => {
@@ -364,20 +385,21 @@ fn run() -> Result<(), String> {
     for path in inputs {
         let (name, bytes) = match path {
             Some(path) => {
-                let bytes = fs::read(&path).map_err(|error| {
+                let file = File::open(&path).map_err(|error| {
+                    format!("could not read {}: {error}", path.to_string_lossy())
+                })?;
+                let bytes = read_bounded(file, parse_limits.max_file_bytes).map_err(|error| {
                     format!("could not read {}: {error}", path.to_string_lossy())
                 })?;
                 (path.to_string_lossy().into_owned(), bytes)
             }
             None => {
-                let mut bytes = Vec::new();
-                io::stdin()
-                    .read_to_end(&mut bytes)
+                let bytes = read_bounded(io::stdin().lock(), parse_limits.max_file_bytes)
                     .map_err(|error| format!("could not read stdin: {error}"))?;
                 ("stdin".to_owned(), bytes)
             }
         };
-        let parsed = ParsedFile::parse_with_registry(bytes, registry)
+        let parsed = ParsedFile::parse_with_limits_and_registry(bytes, parse_limits, registry)
             .map_err(|error| format!("could not parse {name}: {error}"))?;
         let recovered_unknown_custom =
             parsed.lexer_diagnostics().is_empty()
@@ -469,7 +491,7 @@ fn run() -> Result<(), String> {
                 EvaluationOptions {
                     strict_unknown_references: strict,
                 },
-                limits,
+                evaluation_limits,
                 |document, output| {
                     if ndjson {
                         write_ndjson_record(
@@ -682,6 +704,30 @@ mod staged_output_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    struct GrowingFile {
+        reader: File,
+        writer: File,
+        initial_bytes: usize,
+        grew: bool,
+    }
+
+    impl Read for GrowingFile {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let available = if self.grew {
+                buffer.len()
+            } else {
+                buffer.len().min(self.initial_bytes)
+            };
+            let read = self.reader.read(&mut buffer[..available])?;
+            if !self.grew {
+                self.writer.write_all(b"e")?;
+                self.writer.flush()?;
+                self.grew = true;
+            }
+            Ok(read)
+        }
+    }
+
     struct TestDirectory(PathBuf);
 
     impl TestDirectory {
@@ -724,6 +770,24 @@ mod staged_output_tests {
         output.deliver_to(&mut delivered).unwrap();
         assert_eq!(delivered, b"abcde");
         assert_eq!(directory.entries(), 0);
+    }
+
+    #[test]
+    fn bounded_read_rejects_a_file_that_grows_after_the_initial_read() {
+        let directory = TestDirectory::create("growing-input");
+        let path = directory.0.join("input.mlir");
+        fs::write(&path, b"abcd").unwrap();
+        let input = GrowingFile {
+            reader: File::open(&path).unwrap(),
+            writer: OpenOptions::new().append(true).open(&path).unwrap(),
+            initial_bytes: 4,
+            grew: false,
+        };
+
+        assert_eq!(
+            read_bounded(input, 4).unwrap_err(),
+            "file size 5 exceeds limit 4"
+        );
     }
 
     #[test]

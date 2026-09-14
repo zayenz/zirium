@@ -27,6 +27,20 @@ def test_keyword_resource_limits_are_lossless_except_file_size(tmp_path: Path):
         zirium.parse_file(path, max_file_bytes=1)
 
 
+def test_python_file_limit_uses_utf8_bytes_at_the_exact_boundary():
+    text = '"op"() {name = "räka"} : () -> ()'
+    byte_length = len(text.encode())
+
+    assert zirium.parse_text(text, max_file_bytes=byte_length).original_bytes() == (
+        text.encode()
+    )
+    with pytest.raises(
+        zirium.ResourceLimitError,
+        match=rf"file size {byte_length} exceeds limit {byte_length - 1}",
+    ):
+        zirium.parse_text(text, max_file_bytes=byte_length - 1)
+
+
 def test_nested_attribute_limit_recovers_following_operation():
     nested = b"1"
     for depth in range(24):

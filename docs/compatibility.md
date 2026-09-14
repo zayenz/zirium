@@ -104,6 +104,9 @@ uv run --locked --no-sync twine check target/sdist/*
 ## Resource limits
 
 Rust callers can use `ParsedFile::parse_with_limits` with `ParseLimits`.
+The CLI accepts `--max-file-bytes N`; it reads at most one byte beyond that
+boundary from each path or standard input so growing and streamed inputs cannot
+bypass the limit. The limit counts bytes, including the UTF-8 encoding of text.
 Python's `parse_bytes`, `parse_text`, and `parse_file` accept the same limits as
 keyword-only arguments: `max_file_bytes`, `max_tokens`, `max_delimiter_depth`,
 `max_payload_bytes`, `max_numeric_literal_bytes`, `max_attribute_depth`, and

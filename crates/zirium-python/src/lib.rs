@@ -103,6 +103,16 @@ fn parsed(bytes: Vec<u8>, limits: ParseLimits, registry: RegistryKind) -> PyResu
         })
 }
 
+fn check_file_size(actual: usize, limit: usize) -> PyResult<()> {
+    if actual > limit {
+        Err(ResourceLimitError::new_err(format!(
+            "file size {actual} exceeds limit {limit}"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn parse_limits(
     max_file_bytes: Option<usize>,
@@ -146,7 +156,6 @@ fn parse_bytes(
     max_alias_expansion_depth: Option<usize>,
     py: Python<'_>,
 ) -> PyResult<File> {
-    let bytes = data.as_bytes().to_vec();
     let limits = parse_limits(
         max_file_bytes,
         max_tokens,
@@ -156,6 +165,9 @@ fn parse_bytes(
         max_attribute_depth,
         max_alias_expansion_depth,
     );
+    let data = data.as_bytes();
+    check_file_size(data.len(), limits.max_file_bytes)?;
+    let bytes = data.to_vec();
     let registry = registry.map_or(RegistryKind::Empty, |registry| registry.kind.clone());
     py.detach(move || parsed(bytes, limits, registry))
 }
@@ -179,7 +191,6 @@ fn parse_text(
     max_alias_expansion_depth: Option<usize>,
     py: Python<'_>,
 ) -> PyResult<File> {
-    let bytes = text.as_bytes().to_vec();
     let limits = parse_limits(
         max_file_bytes,
         max_tokens,
@@ -189,6 +200,8 @@ fn parse_text(
         max_attribute_depth,
         max_alias_expansion_depth,
     );
+    check_file_size(text.len(), limits.max_file_bytes)?;
+    let bytes = text.as_bytes().to_vec();
     let registry = registry.map_or(RegistryKind::Empty, |registry| registry.kind.clone());
     py.detach(move || parsed(bytes, limits, registry))
 }

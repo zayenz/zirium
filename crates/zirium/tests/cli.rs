@@ -94,6 +94,46 @@ fn explicit_stdin_path_works() {
 }
 
 #[test]
+fn cli_file_limit_is_byte_accurate_for_stdin() {
+    let input = "\"op\"() {name = \"räka\"} : () -> ()";
+    let byte_length = input.len().to_string();
+    let exact = run_stdin_with_options(&["--max-file-bytes", &byte_length], "count", input);
+    assert!(exact.status.success(), "{:?}", exact.stderr);
+
+    let over_limit = (input.len() - 1).to_string();
+    let over = run_stdin_with_options(&["--max-file-bytes", &over_limit], "count", input);
+    assert!(!over.status.success());
+    assert!(over.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&over.stderr).contains("file size"));
+}
+
+#[test]
+fn cli_file_limit_detects_one_byte_over_from_a_path() {
+    let path = temporary_path("input-limit", "mlir");
+    fs::write(&path, INPUT).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--max-file-bytes", &(INPUT.len() - 1).to_string(), "count"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("file size"));
+}
+
+#[test]
+fn cli_help_separates_parser_and_evaluator_limits() {
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.contains("Parser limits:\n  --max-file-bytes"));
+    assert!(help.contains("Evaluator limits:\n  --max-work"));
+}
+
+#[test]
 fn ancestor_traversal_consumes_the_work_budget() {
     let input = "module { func.func @f() { return } }";
     let output = run_stdin_with_options(&["--max-work", "4"], "root(false) | count", input);
