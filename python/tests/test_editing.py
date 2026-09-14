@@ -1,3 +1,4 @@
+import inspect
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -99,7 +100,6 @@ def test_buffered_rauw_replaces_a_used_value_and_invalidates_use_index():
     old_value, replacement = a.result(0), b.result(0)
     assert len(doc.uses(old_value)) == 1
     assert doc.statistics().use_index_entries == 1
-
     with doc.edit() as edit:
         edit.replace_all_uses(old_value, replacement)
 
@@ -110,6 +110,23 @@ def test_buffered_rauw_replaces_a_used_value_and_invalidates_use_index():
     ] == [("use", "operand", 0)]
     assert use.operand(0).valid
     assert doc.statistics().use_index_entries == 1
+
+
+def test_replace_all_uses_accepts_documented_from_keyword():
+    signature = inspect.signature(zirium.SemanticEdit.replace_all_uses)
+    assert "from_" in signature.parameters
+    assert "from" not in signature.parameters
+
+    doc = generic_document(
+        '%a = "def.a"() : () -> i32\n'
+        '%b = "def.b"() : () -> i32\n'
+        '"use"(%a) : (i32) -> ()'
+    )
+    a, b, _ = operations(doc)
+    with doc.edit() as edit:
+        edit.replace_all_uses(from_=a.result(0), to=b.result(0))
+
+    assert doc.uses(a.result(0)) == []
 
 
 def test_erased_handles_are_stale_and_failed_transaction_is_atomic():

@@ -368,9 +368,10 @@ impl SemanticEdit {
         Ok(())
     }
 
-    fn replace_all_uses(&mut self, from: &SemanticValue, to: &SemanticValue) -> PyResult<()> {
+    #[pyo3(signature = (from_, to))]
+    fn replace_all_uses(&mut self, from_: &SemanticValue, to: &SemanticValue) -> PyResult<()> {
         self.ensure_open()?;
-        let from = self.value(from)?;
+        let from = self.value(from_)?;
         let to = self.value(to)?;
         self.commands.push(EditCommand::ReplaceAllUses(from, to));
         Ok(())
