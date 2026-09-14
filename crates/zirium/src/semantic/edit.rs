@@ -436,13 +436,34 @@ impl DocumentEditor<'_> {
         if old.len() != types.len() {
             return Err(EditError::ResultCountChange);
         }
-        self.mark_block_dirty_for(operation);
-        let types = types
+        let inputs = match self
+            .working
+            .function_type(operation)
+            .and_then(|function_type| self.working.type_value(function_type))
+        {
+            Some(TypeValue::Function { inputs, .. }) => inputs.clone(),
+            _ => return Err(EditError::TypeMismatch),
+        };
+        let function_value = TypeValue::Function {
+            inputs,
+            results: types.iter().map(|spec| spec.value.clone()).collect(),
+        };
+        let function_spelling = self
+            .working
+            .canonical_type_spelling(&function_value)
+            .map_err(|_| EditError::TypeMismatch)?;
+        let result_types = types
             .iter()
             .map(|spec| self.intern_type_spec(spec))
             .collect::<Vec<_>>();
+        let function_type = self.intern_type_spec(&TypeSpec {
+            spelling: function_spelling,
+            value: function_value,
+        });
+        self.mark_block_dirty_for(operation);
         self.working.operations[operation.index()].result_types =
-            self.working.types_lists.push(&types);
+            self.working.types_lists.push(&result_types);
+        self.working.operations[operation.index()].function_type = function_type;
         Ok(())
     }
 

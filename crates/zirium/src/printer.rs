@@ -118,6 +118,20 @@ impl std::error::Error for PrintError {
 }
 
 impl Document {
+    pub(crate) fn canonical_type_spelling(&self, value: &TypeValue) -> Result<String, PrintError> {
+        let mut spelling = String::new();
+        Printer::new(
+            self,
+            &mut spelling,
+            PrintLayout::Compact,
+            DialectPrintMode::GenericOnly,
+            &DialectRegistry::EMPTY,
+        )
+        .type_value(value)
+        .map_err(PrintError::Format)?;
+        Ok(spelling)
+    }
+
     /// Formats one semantic attribute as valid canonical MLIR.
     ///
     /// This is useful when a value has no independent source spelling, such as

@@ -268,26 +268,31 @@ def test_erased_handles_do_not_become_negative_query_results():
 
 
 def test_fixed_result_types_attrs_properties_and_pool_compaction():
-    doc = generic_document('%a = "a"() : () -> i32\n%b = "b"() : () -> i64')
+    doc = generic_document("%a = arith.constant 1 : i32\n%b = arith.constant 2 : i64")
     first, second = operations(doc)
     result = first.result(0)
-    original = doc.canonical_bytes()
-    with (
-        pytest.raises(
-            zirium.SemanticVerificationError,
-            match="result types do not match the stored function type outputs",
-        ),
-        doc.edit() as edit,
-    ):
+    with doc.edit() as edit:
         edit.replace_result_types(
             first, [second.result_type(i) for i in range(second.result_count())]
         )
     assert first.result(0).valid
-    assert first.result_type(0).spelling == "i32"
     result_type = result.type_value
     assert result_type is not None
-    assert result_type.spelling == "i32"
-    assert doc.canonical_bytes() == original
+    assert result_type.spelling == "i64"
+    assert first.result_type(0).spelling == "i64"
+    doc.verify_semantics()
+    canonical = doc.canonical_bytes()
+    assert b'"arith.constant"' in canonical
+    assert b": () -> i64" in canonical
+    assert b"arith.constant 1 : i64" in doc.custom_bytes()
+
+    reparsed = zirium.parse_text(
+        canonical.decode(), registry=zirium.DialectRegistry.baseline()
+    ).lower_strict()
+    assert reparsed.document is not None, reparsed.diagnostics
+    reparsed.document.verify_semantics()
+    reparsed_first = operations(reparsed.document)[0]
+    assert reparsed_first.result_type(0).spelling == "i64"
 
     properties_doc = generic_document(PROPERTIES_SOURCE)
     operation = properties_doc.operation_table("test.properties").operation(0)

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use zirium::{
     dialect::{AttributeDescriptor, DialectRegistry, TypeDescriptor},
     parser::ParsedFile,
-    printer::PrintLayout,
+    printer::{DialectPrintMode, PrintLayout},
     semantic::{
         AttributeSpec, EditError, InsertionPoint, LoweringMode, OperationSpec, RetentionProfile,
         SemanticVerificationError, TypeSpec, TypeValue, ValueId, lower_with_dialect_registry,
@@ -136,6 +136,9 @@ fn validate(document: &zirium::semantic::Document) {
 fn editor_commit_runs_registered_type_and_attribute_verifiers() {
     let mut type_document = generic("%0 = \"make\"() : () -> i32");
     let operation = type_document.root_operations()[0];
+    let original_type = type_document.result_types(operation).unwrap()[0];
+    let original_function_type = type_document.function_type(operation).unwrap();
+    let original_revision = type_document.revision();
     let mut editor = type_document.edit(&REJECTING_VALUE_REGISTRY).unwrap();
     editor
         .replace_result_types(
@@ -150,6 +153,15 @@ fn editor_commit_runs_registered_type_and_attribute_verifiers() {
         editor.commit(),
         Err(EditError::Semantic(SemanticVerificationError::Type { .. }))
     ));
+    assert_eq!(
+        type_document.result_types(operation).unwrap()[0],
+        original_type
+    );
+    assert_eq!(
+        type_document.function_type(operation),
+        Some(original_function_type)
+    );
+    assert_eq!(type_document.revision(), original_revision);
 
     let mut attribute_document = generic("\"use\"() : () -> ()");
     let operation = attribute_document.root_operations()[0];
@@ -268,8 +280,9 @@ fn editor_rejects_out_of_range_dense_integer_elements() {
 }
 
 #[test]
-fn result_type_edits_widen_preservation_to_the_enclosing_block() {
-    let source = b"\"outer\"() ({\n  %x = \"make\"() : () -> i32\n  \"use\"(%x) : (i32) -> ()\n}) : () -> ()";
+fn result_type_edits_regenerate_hybrid_blocks_with_the_updated_signature() {
+    let source =
+        b"\"outer\"() ({\n  %x = \"make\"() : () -> i32\n  \"keep\"() : () -> ()\n}) : () -> ()";
     let mut document = hybrid(source, LoweringMode::Strict);
     let outer = document.root_operations()[0];
     let region = document.operation_regions(outer).unwrap()[0];
@@ -277,9 +290,14 @@ fn result_type_edits_widen_preservation_to_the_enclosing_block() {
     let make = document.block_operations(block).unwrap()[0];
     let empty_registry = DialectRegistry::EMPTY;
     let mut editor = document.edit(&empty_registry).unwrap();
-    editor.replace_result_types(make, &[i32_type()]).unwrap();
+    editor.replace_result_types(make, &[i64_type()]).unwrap();
     editor.commit().unwrap();
     let output = document.preserving_bytes(PrintLayout::Pretty).unwrap();
+    assert!(
+        String::from_utf8_lossy(&output).contains("\"make\"() : () -> i64"),
+        "{}",
+        String::from_utf8_lossy(&output)
+    );
     let reparsed = ParsedFile::parse(output).unwrap();
     reparsed.syntax().tree().verify().unwrap();
     let relowered =
@@ -660,32 +678,136 @@ fn generic_operand_rewiring_enforces_the_stored_input_type() {
 }
 
 #[test]
-fn generic_result_type_edits_must_match_the_stored_output_type() {
+fn registered_result_type_edits_update_all_views_and_preserve_shared_state() {
+    let mut document =
+        registered("%first = arith.constant 1 : i32\n%second = arith.constant 2 : i32");
+    let operations = document.root_operations().to_vec();
+    let first = operations[0];
+    let second = operations[1];
+    let shared_function_type = document.function_type(first).unwrap();
+    assert_eq!(
+        document.function_type(second),
+        Some(shared_function_type),
+        "the fixture must start with a shared interned signature"
+    );
+    let saved_result = document.operation(first).unwrap().result(first, 0).unwrap();
+
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
+    editor.replace_result_types(first, &[i64_type()]).unwrap();
+    assert_eq!(
+        editor
+            .document()
+            .type_spelling(editor.document().result_types(first).unwrap()[0]),
+        Some("i64")
+    );
+    assert_eq!(
+        editor
+            .document()
+            .type_spelling(editor.document().function_type(first).unwrap()),
+        Some("() -> i64")
+    );
+    editor.commit().unwrap();
+
+    document.validate_structure().unwrap();
+    document
+        .verify_semantics(DialectRegistry::baseline())
+        .unwrap();
+    assert_eq!(
+        document.operation(first).unwrap().result(first, 0),
+        Some(saved_result)
+    );
+    assert_eq!(
+        document.type_spelling(document.result_types(first).unwrap()[0]),
+        Some("i64")
+    );
+    assert_ne!(document.function_type(first), Some(shared_function_type));
+    assert_eq!(document.function_type(second), Some(shared_function_type));
+    assert_eq!(
+        document.type_spelling(shared_function_type),
+        Some("() -> i32")
+    );
+
+    let canonical =
+        String::from_utf8(document.canonical_bytes(PrintLayout::Compact).unwrap()).unwrap();
+    assert!(canonical.contains("\"arith.constant\""), "{canonical}");
+    assert!(canonical.contains(": () -> i64"), "{canonical}");
+    let mut custom = String::new();
+    document
+        .print_with_registry(
+            &mut custom,
+            PrintLayout::Compact,
+            DialectPrintMode::PreferCustom,
+            DialectRegistry::baseline(),
+        )
+        .unwrap();
+    assert!(custom.contains("arith.constant 1 : i64"), "{custom}");
+
+    let reparsed = ParsedFile::parse_with_registry(
+        Arc::<[u8]>::from(canonical.as_bytes()),
+        DialectRegistry::baseline(),
+    )
+    .unwrap();
+    let reparsed =
+        lower_with_dialect_registry(&reparsed, LoweringMode::Strict, DialectRegistry::baseline())
+            .document
+            .unwrap();
+    let reparsed_first = reparsed.root_operations()[0];
+    assert_eq!(
+        reparsed.type_spelling(reparsed.result_types(reparsed_first).unwrap()[0]),
+        Some("i64")
+    );
+    assert_eq!(
+        reparsed.type_spelling(reparsed.function_type(reparsed_first).unwrap()),
+        Some("() -> i64")
+    );
+    reparsed
+        .verify_semantics(DialectRegistry::baseline())
+        .unwrap();
+}
+
+#[test]
+fn generic_result_type_edits_update_the_signature_and_roll_back_live_use_mismatches() {
     let mut document = generic("%value = \"make\"() : () -> i32");
     let operation = document.root_operations()[0];
-    let original_type = document.result_types(operation).unwrap()[0];
-    let original_revision = document.revision();
     let empty_registry = DialectRegistry::EMPTY;
 
     let mut editor = document.edit(&empty_registry).unwrap();
     editor
         .replace_result_types(operation, &[i64_type()])
         .unwrap();
+    editor.commit().unwrap();
+    assert_eq!(
+        document.type_spelling(document.result_types(operation).unwrap()[0]),
+        Some("i64")
+    );
+    assert_eq!(
+        document.type_spelling(document.function_type(operation).unwrap()),
+        Some("() -> i64")
+    );
+    document.verify_semantics(&empty_registry).unwrap();
+
+    let mut used = generic("%value = \"make\"() : () -> i32\n\"use\"(%value) : (i32) -> ()");
+    let make = used.root_operations()[0];
+    let original_type = used.result_types(make).unwrap()[0];
+    let original_function_type = used.function_type(make).unwrap();
+    let original_revision = used.revision();
+    let original_output = used.canonical_bytes(PrintLayout::Compact).unwrap();
+    let mut editor = used.edit(&empty_registry).unwrap();
+    editor.replace_result_types(make, &[i64_type()]).unwrap();
     assert!(matches!(
         editor.commit(),
         Err(EditError::Semantic(SemanticVerificationError::Operation {
             message,
             ..
-        })) if message == "result types do not match the stored function type outputs"
+        })) if message == "operand types do not match the stored function type inputs"
     ));
-    assert_eq!(document.result_types(operation).unwrap()[0], original_type);
-    assert_eq!(document.revision(), original_revision);
-
-    let mut editor = document.edit(&empty_registry).unwrap();
-    editor
-        .replace_result_types(operation, &[i32_type()])
-        .unwrap();
-    editor.commit().unwrap();
+    assert_eq!(used.result_types(make).unwrap()[0], original_type);
+    assert_eq!(used.function_type(make), Some(original_function_type));
+    assert_eq!(used.revision(), original_revision);
+    assert_eq!(
+        used.canonical_bytes(PrintLayout::Compact).unwrap(),
+        original_output
+    );
 }
 
 #[test]
