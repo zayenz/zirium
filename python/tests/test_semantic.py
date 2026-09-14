@@ -1126,3 +1126,43 @@ def test_dense_array_element_spellings(payload: str, spellings: list[str]):
         assert element is not None
         assert element.spelling == spelling
     assert attribute.element(len(spellings)) is None
+
+
+def test_attribute_element_spellings_preserve_nested_and_quoted_delimiters():
+    document = (
+        zirium.parse_text(
+            '"test"() {a = [], b = ["x,y", {nested = [1, 2]}], '
+            'c = {quoted = "x=y,z", nested = [3, 4]}} : () -> ()'
+        )
+        .lower_strict()
+        .document
+    )
+    assert document is not None
+    operation = document.operation_table().operation(0)
+
+    empty = operation.attribute_by_name("a")
+    assert empty is not None
+    assert empty.element_count == 0
+    assert empty.element(0) is None
+
+    array = operation.attribute_by_name("b")
+    assert array is not None
+    array_elements = [array.element(index) for index in range(2)]
+    assert all(element is not None for element in array_elements)
+    assert [element.spelling for element in array_elements if element is not None] == [
+        '"x,y"',
+        "{nested = [1, 2]}",
+    ]
+    assert array.element(2) is None
+
+    dictionary = operation.attribute_by_name("c")
+    assert dictionary is not None
+    dictionary_elements = [dictionary.element(index) for index in range(2)]
+    assert all(element is not None for element in dictionary_elements)
+    assert [
+        element.spelling for element in dictionary_elements if element is not None
+    ] == [
+        "[3, 4]",
+        '"x=y,z"',
+    ]
+    assert dictionary.element(2) is None

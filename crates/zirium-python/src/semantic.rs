@@ -730,6 +730,7 @@ impl SemanticOperation {
             name: name.to_owned(),
             owned: None,
             owned_spelling: None,
+            element_spellings: Arc::new(OnceLock::new()),
         })
     }
     fn attribute_by_name(&self, name: &str) -> PyResult<Option<SemanticAttribute>> {
@@ -745,6 +746,7 @@ impl SemanticOperation {
                 name: name.to_owned(),
                 owned: None,
                 owned_spelling: None,
+                element_spellings: Arc::new(OnceLock::new()),
             }))
     }
     fn attribute_snapshot(&self) -> PyResult<Vec<(String, String)>> {
@@ -981,6 +983,7 @@ pub(super) struct SemanticAttribute {
     pub(super) name: String,
     pub(super) owned: Option<AttributeValue>,
     pub(super) owned_spelling: Option<String>,
+    pub(super) element_spellings: Arc<OnceLock<Vec<Option<String>>>>,
 }
 
 impl SemanticAttribute {
@@ -1009,6 +1012,54 @@ impl SemanticAttribute {
 
     pub(super) fn cloned_value_and_spelling(&self) -> PyResult<(AttributeValue, String)> {
         Ok((self.with_value(Clone::clone)?, self.spelling_value()?))
+    }
+
+    fn cached_element_spellings(&self) -> PyResult<&[Option<String>]> {
+        if self.element_spellings.get().is_none() {
+            let value = self.with_value(Clone::clone)?;
+            let spellings = match &value {
+                AttributeValue::Array(values) => {
+                    let parent = self.spelling_value()?;
+                    let parsed = split_attribute_elements(&parent, '[', ']');
+                    (0..values.len())
+                        .map(|index| {
+                            parsed
+                                .as_ref()
+                                .and_then(|items| items.get(index))
+                                .map(|item| (*item).to_owned())
+                        })
+                        .collect()
+                }
+                AttributeValue::Dictionary(entries) => {
+                    let parent = self.spelling_value()?;
+                    let parsed = split_attribute_elements(&parent, '{', '}').map(|items| {
+                        items
+                            .into_iter()
+                            .filter_map(|entry| {
+                                let (key, value) = entry.split_once('=')?;
+                                Some((key.trim(), value.trim()))
+                            })
+                            .collect::<HashMap<_, _>>()
+                    });
+                    entries
+                        .iter()
+                        .map(|(name, _)| {
+                            parsed
+                                .as_ref()
+                                .and_then(|items| items.get(name.as_str()))
+                                .map(|spelling| (*spelling).to_owned())
+                        })
+                        .collect()
+                }
+                AttributeValue::DenseArray { elements, .. } => vec![None; elements.len()],
+                _ => Vec::new(),
+            };
+            let _ = self.element_spellings.set(spellings);
+        }
+        Ok(self
+            .element_spellings
+            .get()
+            .expect("element spelling cache initialized"))
     }
 }
 
@@ -1171,7 +1222,6 @@ impl SemanticAttribute {
         })
     }
     fn element(&self, index: usize) -> PyResult<Option<SemanticAttribute>> {
-        let parent_spelling = self.spelling_value()?;
         let value = self.with_value(|value| match value {
             AttributeValue::Array(values) => values
                 .get(index)
@@ -1189,28 +1239,21 @@ impl SemanticAttribute {
         let Some((name, value)) = value else {
             return Ok(None);
         };
-        let source_spelling = match self.with_value(|value| {
-            (
-                matches!(value, AttributeValue::Dictionary(_)),
-                matches!(value, AttributeValue::DenseArray { .. }),
-            )
-        })? {
-            (true, _) => split_attribute_elements(&parent_spelling, '{', '}').and_then(|entries| {
-                entries.into_iter().find_map(|entry| {
-                    let (key, value) = entry.split_once('=')?;
-                    (key.trim() == name).then(|| value.trim().to_owned())
-                })
-            }),
-            (_, true) => match &value {
-                AttributeValue::Boolean(value) => Some(value.to_string()),
-                AttributeValue::Integer(value) | AttributeValue::Float(value) => {
-                    Some(value.clone())
-                }
-                _ => None,
-            },
-            _ => split_attribute_elements(&parent_spelling, '[', ']')
-                .and_then(|elements| elements.get(index).map(|value| (*value).to_owned())),
-        };
+        let source_spelling =
+            match self.with_value(|value| matches!(value, AttributeValue::DenseArray { .. }))? {
+                true => match &value {
+                    AttributeValue::Boolean(value) => Some(value.to_string()),
+                    AttributeValue::Integer(value) | AttributeValue::Float(value) => {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                },
+                false => self
+                    .cached_element_spellings()?
+                    .get(index)
+                    .cloned()
+                    .flatten(),
+            };
         let spelling = match source_spelling.filter(|spelling| !spelling.is_empty()) {
             Some(spelling) => spelling,
             None => read_document(&self.state)?
@@ -1223,6 +1266,7 @@ impl SemanticAttribute {
             name,
             owned: Some(value),
             owned_spelling: Some(spelling),
+            element_spellings: Arc::new(OnceLock::new()),
         }))
     }
     #[getter]

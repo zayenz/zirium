@@ -659,6 +659,7 @@ fn native(
                         name,
                         owned: None,
                         owned_spelling: None,
+                        element_spellings: Arc::new(OnceLock::new()),
                     },
                 )?)?;
             }

@@ -78,6 +78,18 @@ payload construction includes allocation and encoding that a bare walk omits.
 Python fills final `bytes` columns directly, without temporary column copies.
 `tracemalloc` measures Python allocations, not the Rust heap.
 
+Attribute traversal has a separate release benchmark for ordinary arrays,
+dictionaries, and dense arrays. It checks every child value and dictionary key,
+includes the first traversal that builds the wrapper's spelling index, and
+reports medians, spread, per-element cost, and adjacent size ratios from 1,000
+through 8,000 elements. Ratios near 2 when the element count doubles are the
+expected linear shape; they are measurement evidence, not CI timing gates.
+
+```sh
+uv run --locked maturin develop --release
+.venv/bin/python python/benchmarks/attribute_traversal_benchmark.py --runs 5
+```
+
 Canonical and custom file output validate once and stream through a Rust
 `BufWriter`. Original output copies the parsed source. Preserving output depends
 on hybrid retention and valid source mappings; see [output contracts](../getting-started.md#write-output).
