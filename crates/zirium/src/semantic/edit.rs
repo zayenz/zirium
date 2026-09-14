@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "edit_transaction_benchmark.rs"]
+mod edit_transaction_benchmark;
+
 impl Document {
     /// Starts an atomic edit against a private copy of a complete,
     /// structurally valid document.

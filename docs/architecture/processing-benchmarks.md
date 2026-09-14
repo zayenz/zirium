@@ -40,6 +40,56 @@ The report fits 1, 10, 25, and 50 MiB samples and checks projections against
 within 10%, plus at least 5 ms of latency at 10 MiB. Treat passing projections
 as estimates for the same fixture mix and environment, not measured results.
 
+## Edit transactions
+
+The ignored Rust benchmark compares one transaction containing many attribute
+edits with the same edits committed as separate transactions. It varies both
+the number of operations in the document and the number of edits, checks the
+result after every measured run, and separates the transaction-opening
+structural validation, document copy, edit calls, commit structural validation,
+semantic verifier, total time, and peak allocated bytes above the live input.
+
+```sh
+ZIRIUM_EDIT_BENCH_SMOKE=1 cargo test --release -p zirium semantic::edit::edit_transaction_benchmark::measure_edit_transaction_costs -- --ignored --nocapture --test-threads=1
+
+ZIRIUM_EDIT_BENCH_OPERATIONS=1000,10000 \
+ZIRIUM_EDIT_BENCH_EDITS=1,10,100 \
+ZIRIUM_EDIT_BENCH_WARMUPS=1 \
+ZIRIUM_EDIT_BENCH_RUNS=3 \
+cargo test --release -p zirium semantic::edit::edit_transaction_benchmark::measure_edit_transaction_costs -- --ignored --nocapture --test-threads=1
+```
+
+Use a release build and one test thread because the harness measures process-wide
+allocations. Output records the compiler, target, operating system, deterministic
+seed, workload dimensions, repetitions, medians, and min-to-max spread. Peak
+bytes are allocator high-water growth during the transaction workload; they do
+not include fixture parsing and lowering, and allocator retention can affect the
+baseline. The benchmark has no timing or memory pass/fail threshold.
+
+`Document::edit` checks the whole starting document and copies its semantic
+storage. `DocumentEditor::commit` checks the whole working document again and
+runs semantic verification. Consequently, separate transactions repeat
+document-wide work even when each transaction changes only one operation.
+Batch related edits in one transaction when they should succeed or roll back as
+one unit. Use separate transactions when an intermediate committed state must be
+observable or when edits need independent rollback; expect their validation,
+copying, and verification costs to scale with the transaction count. These
+measurements establish the current cost boundary and do not justify journaling,
+copy-on-write storage, or targeted validation on their own.
+
+For orientation, a 14 September 2026 release run on an Apple M1 Max with Rust
+1.98.1 measured 1,000 operations and ten edits as follows (three measured runs
+after one warm-up):
+
+| Mode | Opening validation | Copy | Edit | Commit validation | Verifier | Total | Peak allocation |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| One batch | 10.0 us | 9.6 us | 23.3 us | 10.3 us | 20.1 us | 75.5 us | 327 KB |
+| Ten transactions | 98.1 us | 98.2 us | 24.5 us | 101 us | 200 us | 547 us | 326 KB |
+
+This single recorded run illustrates the repeated document-wide work; it is not
+a performance guarantee. Re-run the harness on the target machine and workload
+before making design or capacity decisions.
+
 ## Parser construction
 
 The ignored internal test separates lexing, grammar events, compaction, and

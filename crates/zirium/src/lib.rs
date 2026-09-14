@@ -65,6 +65,8 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+#[cfg(test)]
+mod benchmark_allocator;
 pub mod dialect;
 pub mod lexer;
 pub mod parser;
