@@ -193,11 +193,17 @@ impl OperationId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RetentionProfile {
-    /// Retain source bytes and the parser CST, without semantic-to-syntax mappings.
+    /// Retain the original source bytes and parser CST. Semantic storage is
+    /// still built for the lowered document, but operation-to-syntax mappings
+    /// are not retained; this profile is for syntax inspection, not
+    /// source-preserving semantic edits.
     SyntaxOnly,
-    /// Retain semantic storage only; source bytes, CST, and mappings are discarded.
+    /// Retain semantic storage only. Source bytes, the parser CST, and
+    /// operation-to-syntax mappings are discarded.
     SemanticOnly,
-    /// Retain source bytes, the parser CST, and sparse operation-to-source mappings.
+    /// Retain semantic storage, source bytes, the parser CST, and sparse
+    /// operation-to-source mappings, allowing unchanged portions to be
+    /// reproduced after edits.
     Hybrid,
 }
 
@@ -228,6 +234,7 @@ pub enum AffineExprValue {
         left: AffineExprId,
         right: AffineExprId,
     },
+    /// Recovery sentinel; the diagnostic identifies the invalid input.
     Invalid(DiagnosticId),
 }
 
@@ -264,6 +271,8 @@ pub struct IntegerSetValue {
 pub enum TypeValue {
     Integer {
         width: u32,
+        /// `Some(true)` is signed, `Some(false)` is unsigned, and `None`
+        /// means the source did not specify signedness.
         signedness: Option<bool>,
     },
     Float(String),
@@ -297,8 +306,12 @@ pub enum TypeValue {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShapedDimension {
+    /// `Some(n)` is a fixed dimension; `None` means a dynamic/unknown size.
     pub size: Option<u64>,
     pub scalable: bool,
+    /// `Some` identifies a diagnostic explaining why this dimension is
+    /// invalid. It is distinct from `size == None`, which is a valid dynamic
+    /// dimension.
     pub invalid: Option<DiagnosticId>,
 }
 
@@ -372,11 +385,16 @@ pub enum ValueId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueReference {
     Resolved(ValueId),
+    /// A value reference that could not be resolved; the diagnostic explains
+    /// the failure. This is different from an absent optional result.
     Invalid(DiagnosticId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Successor {
+    /// Target block. An invalid target is reported by the private diagnostic
+    /// state and by checked accessors; a missing value is not represented by
+    /// this field.
     pub block: BlockId,
     invalid: Option<DiagnosticId>,
     generation: u128,
@@ -1160,6 +1178,8 @@ impl Document {
     pub fn root_operations(&self) -> &[OperationId] {
         self.operation_lists.get(self.roots).unwrap_or(&[])
     }
+    /// Returns `None` when `id` is stale, foreign, or otherwise not an
+    /// operation in this document.
     pub fn operation(&self, id: OperationId) -> Option<&Operation> {
         self.valid_operation(id)
             .then(|| &self.operations[id.index()])
@@ -1274,6 +1294,8 @@ impl Document {
         let name = *self.block(id)?.argument_names.get(argument)?;
         self.strings.get(name as usize).map(String::as_str)
     }
+    /// Returns `None` for an invalid block handle. For a valid block, the
+    /// inner `None` means the block has no label.
     pub fn block_label(&self, id: BlockId) -> Option<Option<&str>> {
         let block = self.block(id)?;
         Some(
@@ -1282,6 +1304,8 @@ impl Document {
                 .and_then(|label| self.strings.get(label as usize).map(String::as_str)),
         )
     }
+    /// Returns `None` for an invalid operation handle. For a valid operation,
+    /// the inner `None` means no location was present in the source.
     pub fn operation_location(&self, id: OperationId) -> Option<Option<&str>> {
         let op = self.operation(id)?;
         Some(op.location.and_then(|location| {
@@ -1290,6 +1314,8 @@ impl Document {
                 .map(String::as_str)
         }))
     }
+    /// Returns `None` for an invalid operation handle. For a valid operation,
+    /// the inner `None` means no location value was present.
     pub fn operation_location_value(&self, id: OperationId) -> Option<Option<&LocationValue>> {
         let op = self.operation(id)?;
         Some(
@@ -1703,12 +1729,19 @@ impl Document {
     pub fn retention_profile(&self) -> RetentionProfile {
         self.retention_profile
     }
+    /// Returns retained source bytes, or `None` when the retention profile did
+    /// not retain source storage (for example, `SemanticOnly`).
     pub fn source_bytes(&self) -> Option<&[u8]> {
         self.retained_source.as_deref()
     }
+    /// Returns the retained parser CST, or `None` when the retention profile
+    /// did not retain syntax storage.
     pub fn syntax_tree(&self) -> Option<&crate::representation::SyntaxTree> {
         self.retained_syntax.as_deref()
     }
+    /// Returns `None` for an invalid operation handle or when this retention
+    /// profile has no mapping for the valid operation. In particular,
+    /// `SyntaxOnly` retains the CST but intentionally has no mappings.
     pub fn operation_syntax_range(&self, id: OperationId) -> Option<TextRange> {
         self.valid_operation(id)
             .then(|| {
