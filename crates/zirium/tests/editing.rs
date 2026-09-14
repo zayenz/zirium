@@ -582,13 +582,13 @@ fn attributes_properties_foreign_values_and_incomplete_documents_are_bounded() {
 #[test]
 fn successor_argument_rewire_allows_definition_deletion() {
     let mut document = registered(
-        r#"%function = "func.func"() ({
+        r#"%function = "test.function"() ({
 ^entry:
   %a = arith.constant 1 : i32
   %b = arith.constant 2 : i32
   cf.br ^exit(%a : i32)
 ^exit(%arg: i32):
-  func.return %arg : i32
+  "test.return"(%arg) : (i32) -> ()
 }) : () -> i32"#,
     );
     let constants = document
@@ -623,6 +623,27 @@ fn successor_argument_rewire_allows_definition_deletion() {
     );
     assert!(document.operation(constants[0]).is_none());
     assert!(matches!(old_value, ValueId::OperationResult { .. }));
+}
+
+#[test]
+fn removing_a_registered_function_attribute_fails_atomically() {
+    let mut document = registered("builtin.module { func.func @f() { func.return } }");
+    let function = document
+        .operations()
+        .find(|operation| document.operation_name(*operation) == Some("func.func"))
+        .unwrap();
+    let revision = document.revision();
+
+    let mut editor = document.edit(DialectRegistry::baseline()).unwrap();
+    editor.remove_attribute(function, "function_type").unwrap();
+    assert!(matches!(
+        editor.commit(),
+        Err(EditError::Semantic(SemanticVerificationError::Schema { message, .. }))
+            if message == "a required registered attribute is missing"
+    ));
+    assert!(document.attribute_id(function, "function_type").is_some());
+    assert_eq!(document.revision(), revision);
+    validate(&document);
 }
 
 #[test]

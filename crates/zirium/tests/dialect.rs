@@ -4889,12 +4889,12 @@ fn generic_fallback_remains_available_for_each_declarative_operation() {
 
 #[test]
 fn declarative_return_and_branch_check_enclosing_types() {
-    let source = r#"%function = "func.func"() ({
-^entry(%arg: i32):
+    let source = r#"func.func @function(%arg: i32) -> i32 {
+^entry:
   cf.br ^exit(%arg : i32)
 ^exit(%result: i32):
   func.return %result : i32
-}) : () -> i32"#;
+}"#;
     let document = lower_registered(source);
     document
         .verify_semantics(DialectRegistry::baseline())
@@ -4920,7 +4920,7 @@ fn declarative_return_and_branch_check_enclosing_types() {
         )
         .unwrap();
     assert!(
-        generic.contains("\"func.return\"(%v2) : (i32) -> ()"),
+        generic.contains("\"func.return\"(%v1) : (i32) -> ()"),
         "{generic}"
     );
     let generic_document = lower_registered(&generic);
@@ -4928,6 +4928,21 @@ fn declarative_return_and_branch_check_enclosing_types() {
         .verify_semantics(DialectRegistry::baseline())
         .unwrap();
     assert!(document.structurally_eq(&generic_document));
+}
+
+#[test]
+fn registered_function_requires_its_schema_attributes_during_explicit_verification() {
+    let parsed = ParsedFile::parse(b"\"func.func\"() : () -> ()".as_slice()).unwrap();
+    let document =
+        lower_with_dialect_registry(&parsed, LoweringMode::Strict, &DialectRegistry::EMPTY)
+            .document
+            .unwrap();
+
+    assert!(matches!(
+        document.verify_semantics(DialectRegistry::baseline()),
+        Err(SemanticVerificationError::Schema { message, .. })
+            if message == "a required registered attribute is missing"
+    ));
 }
 
 #[test]

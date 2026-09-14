@@ -1,9 +1,9 @@
 %a = arith.constant 1 {tag = "left"} : i32
 %b = arith.constant 2 : i32
 %sum = arith.addi %a, %b {tag = "sum"} : i32
-"func.func"() ({
+func.func @branch() {
 ^entry:
   cf.br ^exit {tag = "edge"}
 ^exit:
   func.return {tag = "return"}
-}) : () -> ()
+}

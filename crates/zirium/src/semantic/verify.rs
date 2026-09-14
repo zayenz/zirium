@@ -379,12 +379,6 @@ impl Document {
             let Some(descriptor) = registry.operation(name) else {
                 continue;
             };
-            // The phase-4 baseline corpus used a generic `func.func`-named
-            // container before the exact schema existed. Keep that explicit
-            // handwritten fallback distinct from schema-backed functions.
-            if name == "func.func" && self.attribute_id(operation, "function_type").is_none() {
-                continue;
-            }
             let operands = self.operands(operation).map_or(0, <[_]>::len);
             let results = self.result_types(operation).map_or(0, <[_]>::len);
             if !descriptor.schema.operands.accepts(operands)
@@ -515,9 +509,7 @@ impl Document {
             let Some(name) = self.operation_name(operation) else {
                 continue;
             };
-            let descriptor = registry.operation(name).filter(|_| {
-                name != "func.func" || self.attribute_id(operation, "function_type").is_some()
-            });
+            let descriptor = registry.operation(name);
             if let Some(descriptor) = descriptor {
                 for (region_index, region) in self
                     .operation_regions(operation)
