@@ -7,6 +7,32 @@ the checkout being measured.
 
 ## Full pipeline
 
+### Python table access policy
+
+The Python semantic API exposes immutable packed operation tables. Reuse one
+table when several passes need its columns; calling `operation_table()` again
+constructs a fresh snapshot and rescans the document. Use `table.operation(i)`
+only at wrapper boundaries, since each call allocates a Python wrapper and
+reacquires the document state. For counts and other scalar reports, prefer a
+native query such as `document.query(ops().count())`; it avoids materializing a
+list of wrappers. The focused probe checks that all four paths agree:
+
+```sh
+uv run python python/benchmarks/table_access_benchmark.py --smoke
+uv run python python/benchmarks/table_access_benchmark.py
+```
+
+The probe reports mixed fresh-table construction timing (Python call plus Rust
+payload and Python table construction), Python allocation during that snapshot,
+reused-table access, wrapper traversal, and native aggregation. The Python
+harness cannot isolate Rust-only payload time; the mixed boundary is reported
+explicitly rather than presented as a Rust-only measurement. It intentionally adds no bulk API: the
+existing packed columns and query scalars cover the measured workload while
+preserving immutable snapshots and stale-handle checks.
+Output also records `python`, `platform`, and `build_profile`. Set
+`ZIRIUM_BUILD_PROFILE=debug` or `release` when invoking the matching extension
+build; otherwise the profile is reported as `unknown` rather than inferred.
+
 The Rust harness generates exact-size fixtures in temporary storage with seed
 `0x5a495249554d0028`. Select stages to isolate parsing, traversal, payload
 construction, lowering, printing, indexes, or editing:
