@@ -147,6 +147,71 @@ def test_erased_handles_are_stale_and_failed_transaction_is_atomic():
         _ = consume.name
 
 
+def test_semantic_handles_have_stable_document_scoped_identity():
+    doc = generic_document(
+        '"container"() ({\n^entry(%arg : i32):\n'
+        '%value = "value"() {tag = #vendor.tag<"x">} : () -> i32\n'
+        "}) : () -> ()"
+    )
+    container = doc.operation_table("container").operation(0)
+    region = container.region(0)
+    block = region.block(0)
+    value = block.operation(0).result(0)
+
+    repeated = [
+        doc.operation_table("container").operation(0),
+        block.parent_region().parent_operation(),
+    ]
+    assert repeated == [container, container]
+    assert len({container, *repeated}) == 1
+    assert {container: "same"}[repeated[0]] == "same"
+    assert len({region, container.region(0)}) == 1
+    assert len({block, region.block(0)}) == 1
+    assert len({value, block.operation(0).result(0)}) == 1
+    assert len({block.argument(0), block.argument(0)}) == 1
+
+    operation = block.operation(0)
+    first_type, second_type = operation.result_type(0), operation.result_type(0)
+    first_attribute, second_attribute = operation.attribute(0), operation.attribute(0)
+    assert first_type is not second_type and first_type != second_type
+    assert first_type.spelling == second_type.spelling == "i32"
+    assert (
+        first_attribute is not second_attribute and first_attribute != second_attribute
+    )
+    assert first_attribute.spelling == second_attribute.spelling == '#vendor.tag<"x">'
+
+    other = generic_document(
+        '"container"() ({\n^entry(%arg : i32):\n'
+        '%value = "value"() {tag = #vendor.tag<"x">} : () -> i32\n'
+        "}) : () -> ()"
+    )
+    other_container = other.operation_table("container").operation(0)
+    assert container != other_container
+    assert value != other_container.region(0).block(0).operation(0).result(0)
+
+
+def test_stale_handle_identity_is_hashable_and_never_matches_reused_slot():
+    doc = generic_document('"dead"() : () -> ()')
+    dead = doc.operation_table().operation(0)
+    same_dead = doc.operation_table().operation(0)
+    dead_hash = hash(dead)
+    spec = zirium.OperationSpec("replacement", [], [], dead.function_type())
+
+    with doc.edit() as edit:
+        edit.erase(dead)
+    assert hash(dead) == dead_hash
+    assert dead == same_dead
+    assert dead in {dead}
+
+    with doc.edit() as edit:
+        edit.insert_root(0, spec)
+    replacement = doc.operation_table().operation(0)
+    assert dead != replacement
+    assert len({dead, replacement}) == 2
+    with pytest.raises(zirium.StaleHandleError):
+        _ = dead.name
+
+
 def test_failed_transaction_is_atomic_and_exceptions_are_specific():
     doc = document()
     make = doc.operation_table("vendor.make").operation(0)

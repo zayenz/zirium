@@ -1,6 +1,24 @@
 use super::*;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub(super) type SharedDocument = Arc<RwLock<CoreDocument>>;
+
+fn same_handle<T: PartialEq>(
+    left_state: &SharedDocument,
+    left: &T,
+    right_state: &SharedDocument,
+    right: &T,
+) -> bool {
+    Arc::ptr_eq(left_state, right_state) && left == right
+}
+
+fn handle_hash<T: Hash>(state: &SharedDocument, handle: &T) -> isize {
+    let mut hasher = DefaultHasher::new();
+    Arc::as_ptr(state).hash(&mut hasher);
+    handle.hash(&mut hasher);
+    let hash = hasher.finish() as isize;
+    if hash == -1 { -2 } else { hash }
+}
 
 #[pyclass(frozen, module = "zirium._zirium")]
 pub(super) struct OperationTable {
@@ -577,6 +595,14 @@ impl SemanticOperation {
 
 #[pymethods]
 impl SemanticOperation {
+    fn __eq__(&self, other: &Self) -> bool {
+        same_handle(&self.state, &self.id, &other.state, &other.id)
+    }
+
+    fn __hash__(&self) -> isize {
+        handle_hash(&self.state, &self.id)
+    }
+
     #[getter]
     fn mnemonic(&self) -> PyResult<String> {
         self.name()
@@ -785,6 +811,14 @@ pub(super) struct SemanticRegion {
 
 #[pymethods]
 impl SemanticRegion {
+    fn __eq__(&self, other: &Self) -> bool {
+        same_handle(&self.state, &self.id, &other.state, &other.id)
+    }
+
+    fn __hash__(&self) -> isize {
+        handle_hash(&self.state, &self.id)
+    }
+
     fn block_count(&self) -> PyResult<usize> {
         let document = read_document(&self.state)?;
         Ok(document
@@ -824,6 +858,14 @@ pub(super) struct SemanticBlock {
 
 #[pymethods]
 impl SemanticBlock {
+    fn __eq__(&self, other: &Self) -> bool {
+        same_handle(&self.state, &self.id, &other.state, &other.id)
+    }
+
+    fn __hash__(&self) -> isize {
+        handle_hash(&self.state, &self.id)
+    }
+
     #[getter]
     fn label(&self) -> PyResult<Option<String>> {
         Ok(read_document(&self.state)?
@@ -888,6 +930,18 @@ pub(super) struct SemanticValue {
 
 #[pymethods]
 impl SemanticValue {
+    fn __eq__(&self, other: &Self) -> bool {
+        same_handle(&self.state, &self.value, &other.state, &other.value)
+    }
+
+    fn __hash__(&self) -> isize {
+        let identity = match self.value {
+            ValueReference::Resolved(value) => (0, Some(value), None),
+            ValueReference::Invalid(diagnostic) => (1, None, Some(diagnostic)),
+        };
+        handle_hash(&self.state, &identity)
+    }
+
     #[getter]
     fn valid(&self) -> bool {
         let ValueReference::Resolved(value) = self.value else {

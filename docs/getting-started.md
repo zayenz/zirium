@@ -348,6 +348,21 @@ or an exception leaves the document unchanged. Surviving operation handles keep
 their identity; erased handles raise `StaleHandleError`. Handles from another
 document raise `ForeignHandleError`.
 
+Semantic operation, region, block, and value wrappers use immutable,
+document-scoped identity for equality and hashing. Looking up the same live
+entity again therefore produces an equal wrapper that deduplicates in sets and
+works as the same dictionary key. Stale wrappers remain comparable and hashable:
+comparison does not access the erased entity, and a later occupant of a reused
+slot has a different identity. Wrappers from different documents are never
+equal, even when their contents match. Accessing data through a stale wrapper
+still raises `StaleHandleError` as above.
+
+`SemanticType` and `SemanticAttribute` are immutable snapshot/view wrappers,
+not entity handles. They intentionally retain normal Python object identity:
+retrieving the same type or attribute twice returns distinct wrapper objects,
+even though both expose the same immutable semantic contents. Use their public
+properties when comparing those contents.
+
 Python edit specifications copy existing semantic values: `AttributeSpecHandle`
 wraps an existing attribute, and `OperationSpec` takes existing types and values
 from the same document. `SemanticOperation.function_type()` returns the complete
