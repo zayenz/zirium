@@ -45,6 +45,7 @@ impl<T: Clone + Eq + std::hash::Hash> Interner<T> {
 /// inspect [`LoweringResult::diagnostics`].
 ///
 /// The registry must match the one used to parse registered custom syntax.
+/// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
 pub fn lower_with_dialect_registry(
     file: &ParsedFile,
     mode: LoweringMode,
@@ -62,6 +63,7 @@ pub fn lower_with_dialect_registry(
 ///
 /// The registry must match the one used during parsing. A mismatched registry
 /// can leave custom operations unlowered or apply the wrong verifier contract.
+/// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
 pub fn lower_with_dialect_registry_and_retention(
     file: &ParsedFile,
     mode: LoweringMode,

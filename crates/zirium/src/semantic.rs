@@ -1856,6 +1856,7 @@ impl Document {
 
     /// Looks up a symbol from an operation through registered enclosing symbol
     /// tables. Unregistered operations and attributes never enter this index.
+    /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
     pub fn lookup_symbol(
         &self,
         from: OperationId,
@@ -1889,6 +1890,7 @@ impl Document {
 
     /// Reports unresolved references found only on operations registered as
     /// symbol users.
+    /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
     pub fn symbol_index_diagnostics(
         &self,
         registry: &DialectRegistry,
@@ -1909,6 +1911,7 @@ impl Document {
 
     /// Answers whether a value is visible and dominates an operation according
     /// to registered region metadata and the verifier's conservative CFG rules.
+    /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
     pub fn dominates(
         &self,
         value: ValueId,

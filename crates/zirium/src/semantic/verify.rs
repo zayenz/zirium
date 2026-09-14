@@ -350,6 +350,8 @@ impl Document {
 
     /// Runs structural checks followed by registered schemas and verifiers.
     ///
+    /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
+    ///
     /// Unregistered operations remain valid generic operations. Registered type
     /// and attribute verifiers run for matching opaque values.
     ///

@@ -119,6 +119,8 @@ impl ParsedFile {
     }
     /// Parses bytes with default limits and registered custom operation syntax.
     ///
+    /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
+    ///
     /// Pass the same registry to semantic lowering, verification, and custom
     /// printing so every stage uses the same dialect contract.
     ///
@@ -217,6 +219,8 @@ impl ParsedFile {
         self.apply_text_edits_with_registry(edits, &DialectRegistry::EMPTY)
     }
     /// Applies text edits and reparses with explicit custom syntax.
+    ///
+    /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
     ///
     /// # Errors
     ///

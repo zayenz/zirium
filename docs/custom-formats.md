@@ -359,6 +359,60 @@ retain an owned registry. Text edits on registered syntax need
 `apply_text_edits_with_registry`; `apply_text_edits` reparses with the empty
 registry.
 
+<a id="registry-contract-for-each-rust-stage"></a>
+The registry contract for each Rust stage is summarized here. A method described
+as “explicit” must receive the exact registry used to parse the source; the
+default is suitable only when the document uses no registered custom semantics.
+
+| Stage | Default or override | Methods affected |
+| --- | --- | --- |
+| Parse | `ParsedFile::parse` and `parse_with_limits` use `DialectRegistry::EMPTY`; use `parse_with_registry` (or `parse_with_limits_and_registry`) for custom syntax. | `ParsedFile::parse*` |
+| Lower | No implicit registry: pass the same registry explicitly. | `lower_with_dialect_registry`, `lower_with_dialect_registry_and_retention` |
+| Verify | No implicit registry: pass the same registry explicitly. | `Document::verify_semantics` |
+| Query | `Document::query` uses `DialectRegistry::baseline()`; use the explicit override for a custom dialect. | `query`, `query_with_registry` |
+| Symbol and dominance analysis | No implicit registry: pass the same registry explicitly. | `lookup_symbol`, `symbol_index_diagnostics`, `dominates` |
+| Editing | `apply_text_edits` reparses with `DialectRegistry::EMPTY`; use the explicit override for registered syntax. | `apply_text_edits`, `apply_text_edits_with_registry` |
+| Printing | Canonical printing is registry-independent; custom printing requires the explicit registry. | `canonical_bytes`, `print_with_registry` |
+
+For example, one custom-dialect workflow keeps one value in scope and passes it
+at every registry-taking boundary:
+
+```rust
+use zirium::{
+    dialect::DialectRegistry,
+    parser::ParsedFile,
+    printer::{DialectPrintMode, PrintLayout},
+    semantic::{lower_with_dialect_registry, LoweringMode},
+};
+
+let registry = DialectRegistry::baseline(); // or a configured custom registry
+let parsed = ParsedFile::parse_with_registry(source, &registry)?;
+let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+let document = lowered.document.ok_or("strict lowering failed")?;
+document.verify_semantics(&registry)?;
+let _matches = document.query_with_registry(&query, &registry)?;
+let _symbols = document.symbol_index_diagnostics(&registry);
+let mut printed = String::new();
+document.print_with_registry(
+    &mut printed,
+    PrintLayout::Pretty,
+    DialectPrintMode::PreferCustom,
+    &registry,
+)?;
+```
+
+The same rule applies after an edit: reparse with
+`apply_text_edits_with_registry(&edits, &registry)`, then lower, verify, query,
+and print with that registry again. A registry is not retained by Rust's
+`ParsedFile`, so keeping it in the caller is intentional.
+
+Symbol and dominance indexes are cached per document revision *and*
+`DialectRegistry::content_identity()`. Reusing a document with a different
+effective registry therefore rebuilds those indexes before answering the
+query; edits also invalidate them through the document revision. The use index
+does not depend on a registry. Do not rely on a prior query having populated an
+index for a different registry.
+
 Rust callers can also construct static descriptors with parser, lowering,
 verification, and printing callbacks. Python does not expose those callbacks.
 See the [dialect API source](../crates/zirium/src/dialect.rs) for descriptor

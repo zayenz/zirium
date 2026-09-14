@@ -365,6 +365,8 @@ impl Document {
     }
     /// Writes semantic output with optional registered custom syntax.
     ///
+    /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
+    ///
     /// In [`DialectPrintMode::PreferCustom`], a registered operation uses its
     /// built-in assembly printer or callback when that printer succeeds, and
     /// falls back to generic syntax otherwise.

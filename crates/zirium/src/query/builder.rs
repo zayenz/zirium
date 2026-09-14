@@ -196,6 +196,7 @@ pub fn input() -> OpQuery {
 
 impl Document {
     /// Evaluate a structured query with the baseline dialect registry and default limits.
+    /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
     pub fn query<T: QueryResult>(&self, query: &QueryExpr<T>) -> Result<T, EvaluationError> {
         query.evaluate(
             self,
