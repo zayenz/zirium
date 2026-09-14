@@ -491,11 +491,21 @@ impl Document {
     ) -> Result<(), SemanticVerificationError> {
         let mut types = HashSet::new();
         let mut attributes = HashSet::new();
-        for value in &self.types {
-            verify_type_value(value, registry, &mut types, &mut attributes)?;
+        let (_, live_types, live_attributes) = self.live_interned_value_ids();
+        let mut live_types = live_types.into_iter().collect::<Vec<_>>();
+        live_types.sort_unstable();
+        for index in live_types {
+            verify_type_value(&self.types[index], registry, &mut types, &mut attributes)?;
         }
-        for value in &self.attributes {
-            verify_attribute_value(value, registry, &mut types, &mut attributes)?;
+        let mut live_attributes = live_attributes.into_iter().collect::<Vec<_>>();
+        live_attributes.sort_unstable();
+        for index in live_attributes {
+            verify_attribute_value(
+                &self.attributes[index],
+                registry,
+                &mut types,
+                &mut attributes,
+            )?;
         }
         Ok(())
     }

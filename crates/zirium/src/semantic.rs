@@ -538,6 +538,18 @@ pub struct DocumentStatistics {
     pub local_strings: usize,
     pub local_types: usize,
     pub local_attributes: usize,
+    /// Interned strings referenced by live operations and blocks.
+    pub live_strings: usize,
+    /// Interned types referenced by live operations and blocks.
+    pub live_types: usize,
+    /// Interned attributes referenced by live operations.
+    pub live_attributes: usize,
+    /// All retained string arena entries, including unreachable edit history.
+    pub retained_strings: usize,
+    /// All retained type arena entries, including unreachable edit history.
+    pub retained_types: usize,
+    /// All retained attribute arena entries, including unreachable edit history.
+    pub retained_attributes: usize,
     pub affine_expressions: usize,
     pub affine_maps: usize,
     pub integer_sets: usize,
@@ -1542,6 +1554,7 @@ impl Document {
             .then(|| &self.locations[id.index()])
     }
     pub fn statistics(&self) -> DocumentStatistics {
+        let (live_strings, live_types, live_attributes) = self.live_interned_value_ids();
         let (mut payload_blobs, mut payload_blob_bytes) =
             self.attributes
                 .iter()
@@ -1637,6 +1650,12 @@ impl Document {
             local_strings: self.strings.len(),
             local_types: self.types.len(),
             local_attributes: self.attributes.len(),
+            live_strings: live_strings.len(),
+            live_types: live_types.len(),
+            live_attributes: live_attributes.len(),
+            retained_strings: self.strings.len(),
+            retained_types: self.types.len(),
+            retained_attributes: self.attributes.len(),
             affine_expressions: self.affine_expressions.len(),
             affine_maps: self.affine_maps.len(),
             integer_sets: self.integer_sets.len(),
@@ -1676,6 +1695,49 @@ impl Document {
                         .sum::<usize>()
             }),
         }
+    }
+
+    fn live_interned_value_ids(&self) -> (HashSet<u32>, HashSet<usize>, HashSet<usize>) {
+        let mut strings = HashSet::new();
+        let mut types = HashSet::new();
+        let mut attributes = HashSet::new();
+        let mut blocks = HashSet::new();
+
+        for operation in self.operations() {
+            let record = &self.operations[operation.index()];
+            strings.insert(record.name);
+            types.insert(record.function_type.index());
+            if let Some(result_types) = self.types_lists.get(record.result_types) {
+                types.extend(result_types.iter().map(|id| id.index()));
+            }
+            if let Some(regions) = self.region_lists.get(record.regions) {
+                for region in regions {
+                    if let Some(region_blocks) =
+                        self.block_lists.get(self.regions[region.index()].blocks)
+                    {
+                        blocks.extend(region_blocks.iter().map(|id| id.index()));
+                    }
+                }
+            }
+            for list in [record.attributes, record.properties] {
+                if let Some(values) = self.attribute_lists.get(list) {
+                    for &(name, attribute) in values {
+                        strings.insert(name);
+                        attributes.insert(attribute.index());
+                    }
+                }
+            }
+        }
+        for index in blocks {
+            let block = &self.blocks[index];
+            if let Some(label) = block.label {
+                strings.insert(label);
+            }
+            if let Some(argument_types) = self.types_lists.get(block.argument_types) {
+                types.extend(argument_types.iter().map(|id| id.index()));
+            }
+        }
+        (strings, types, attributes)
     }
     pub fn retention_profile(&self) -> RetentionProfile {
         self.retention_profile

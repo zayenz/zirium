@@ -137,6 +137,56 @@ linear-scan peaks at 4,000 values were 165 KB, 6.75 MB, and 9.22 MB. The existin
 vectors remain the storage and output-order authority; hash maps are used only
 to find the first equal vector index and are never iterated for output.
 
+## Semantic compaction lifetimes
+
+`Editor::compact_pools` reclaims only fragmented list-pool entries. It does not
+reclaim or remap interned strings, types, attributes, locations, affine
+expressions, affine maps, or integer sets. Those IDs may have escaped through a
+public accessor or a dialect callback. They remain valid for their original
+value for the lifetime of the document, and a later edit never reuses an ID for
+a different value. Erased operation and value handles remain stale under the
+document's generation checks.
+
+Registered type and attribute verification callbacks run only for values
+reachable from live operation result and function types, live block argument
+types, live attributes, live properties, locations, and their nested values.
+Callbacks must not retain borrowed value references beyond the call. They may
+copy a public ID or owned spelling; copied IDs follow the document-lifetime
+rule above. Nested type/attribute values, locations, aliases after lowering,
+and affine references are followed by structural validation and registered
+value traversal before callbacks run.
+
+This deliberately trades bounded identity semantics for retained arena growth.
+Long-lived processes with unbounded replacement workloads should periodically
+rebuild a document from canonical output when memory matters. Rebuilding
+creates a new document identity, so old handles become foreign rather than
+being silently remapped.
+
+The release benchmark performs unique result-type replacement plus temporary
+attribute insertion/removal, compacts list pools, and checks the final document.
+It reports live and retained string/type/attribute counts, direct owned bytes,
+and reclaimed list entries. Timed fields cover the complete edit transaction
+(`edit_ns`), final semantic verification (`verify_ns`), and peak allocation
+above each run's live input (`peak_allocated_bytes`). Each timed field reports
+minimum, median, maximum, and absolute spread across measured runs. The header
+records the Rust compiler, host target, OS kernel, and debug/release profile.
+Warm-ups are discarded, measurements rebuild the same input for every run, and
+there are no timing or memory thresholds.
+
+```sh
+cargo run --release -p zirium --example semantic_compaction_benchmark -- \
+  --iterations 10000 --warmups 1 --runs 3
+```
+
+On 14 September 2026, an Apple M1 Max ran the command above using Rust 1.98.1,
+target `aarch64-apple-darwin`, Darwin 25.6.0, and a release build. It retained
+10,001 strings, 20,002 types, 10,000 attributes, and 6,904,361 direct owned
+bytes while only 1 string, 2 types, and no attributes remained live. List
+compaction reclaimed 20,001 entries. The three-run edit median was 707.80 ms
+with 9.44 ms spread; verification was 127.83 us with 2.33 us spread; peak
+allocation was 16,977,428 bytes with zero spread. These values are descriptive
+evidence for this machine, not acceptance limits.
+
 ## Parser construction
 
 The ignored internal test separates lexing, grammar events, compaction, and

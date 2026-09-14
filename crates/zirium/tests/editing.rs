@@ -1968,6 +1968,75 @@ fn pool_compaction_preserves_nested_entities_and_stales_erased_operations() {
 }
 
 #[test]
+fn semantic_compaction_retains_escaped_ids_but_callbacks_visit_only_live_values() {
+    let mut document = generic(r#"%0 = "anchor"() : () -> i32"#);
+    let operation = document.root_operations()[0];
+    let original_type = document.result_types(operation).unwrap()[0];
+    let initial = document.statistics();
+
+    let mut editor = document.edit(&REJECTING_VALUE_REGISTRY).unwrap();
+    for index in 0..32 {
+        editor
+            .replace_result_types(
+                operation,
+                &[TypeSpec {
+                    spelling: format!("i{}", 33 + index),
+                    value: TypeValue::Integer {
+                        width: 33 + index,
+                        signedness: None,
+                    },
+                }],
+            )
+            .unwrap();
+        editor
+            .set_attribute(
+                operation,
+                AttributeSpec::string(format!("temporary_{index}"), format!("value_{index}")),
+            )
+            .unwrap();
+        editor
+            .remove_attribute(operation, &format!("temporary_{index}"))
+            .unwrap();
+    }
+    editor
+        .replace_result_types(operation, &[i32_type()])
+        .unwrap();
+    editor
+        .set_attribute(
+            operation,
+            AttributeSpec {
+                name: "temporary_rejected".into(),
+                spelling: "#edit.rejected<dead>".into(),
+                value: zirium::semantic::AttributeValue::Opaque(Arc::from(
+                    b"#edit.rejected<dead>".as_slice(),
+                )),
+            },
+        )
+        .unwrap();
+    let rejected = editor
+        .document()
+        .attribute_id(operation, "temporary_rejected")
+        .unwrap();
+    editor
+        .remove_attribute(operation, "temporary_rejected")
+        .unwrap();
+    editor.compact_pools();
+    editor.commit().unwrap();
+
+    let stats = document.statistics();
+    assert!(stats.retained_strings > stats.live_strings);
+    assert!(stats.retained_types > stats.live_types);
+    assert!(stats.retained_attributes > stats.live_attributes);
+    assert!(stats.direct_owned_bytes > initial.direct_owned_bytes);
+    assert_eq!(document.result_types(operation), Some(&[original_type][..]));
+    assert!(document.type_value(original_type).is_some());
+    assert!(document.attribute_value(rejected).is_some());
+    document
+        .verify_semantics(&REJECTING_VALUE_REGISTRY)
+        .unwrap();
+}
+
+#[test]
 fn stale_invalid_and_foreign_handles_have_distinct_edit_errors() {
     let mut document = generic("%x = \"value\"() : () -> i32");
     let local = document.root_operations()[0];

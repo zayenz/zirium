@@ -288,8 +288,14 @@ impl DocumentEditor<'_> {
         Ok(sites.len())
     }
 
-    /// Rebuilds all append-only list pools from live records. Arena slots and
-    /// generation-checked public IDs are deliberately left unchanged.
+    /// Rebuilds all append-only list pools from live records.
+    ///
+    /// Interned strings, types, attributes, locations, and affine values are
+    /// deliberately retained: their IDs can escape through public accessors or
+    /// dialect callbacks, so reclaiming or remapping them would make a former ID
+    /// identify a different value. Registered verification callbacks visit only
+    /// values reachable from live operations and blocks. See the processing
+    /// benchmark documentation for the complete retention contract.
     pub fn compact_pools(&mut self) -> usize {
         let before = self.working.statistics().pooled_list_entries;
         let mut values = ListPool::default();
