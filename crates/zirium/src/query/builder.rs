@@ -121,6 +121,12 @@ impl<T> QueryExpr<T> {
         )
     }
     /// Execute with a specific registry and evaluation budget, returning native data.
+    ///
+    /// The result owns its collection storage; operation, type, and attribute IDs
+    /// remain scoped to `document`. Evaluation is read-only and deterministic.
+    /// Work and result materialization are bounded by `limits`; exceeding either
+    /// bound returns [`EvaluationError`]. Cost follows visited stages and produced
+    /// items rather than expression-construction time.
     pub fn evaluate(
         &self,
         document: &Document,
@@ -132,6 +138,9 @@ impl<T> QueryExpr<T> {
     {
         T::from_query_output(self.evaluate_output(document, registry, limits)?)
     }
+    /// Execute with explicit semantic options and limits.
+    ///
+    /// This has the same ownership, error, and cost contract as [`Self::evaluate`].
     pub fn evaluate_with_options(
         &self,
         document: &Document,
@@ -197,6 +206,9 @@ pub fn input() -> OpQuery {
 impl Document {
     /// Evaluate a structured query with the baseline dialect registry and default limits.
     /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
+    /// The document is not mutated. Returned IDs remain document-owned and may
+    /// become stale after later edits; owned strings and collections are snapshots.
+    /// Errors include invalid expression structure and exhausted budgets.
     pub fn query<T: QueryResult>(&self, query: &QueryExpr<T>) -> Result<T, EvaluationError> {
         query.evaluate(
             self,
@@ -205,6 +217,9 @@ impl Document {
         )
     }
     /// Evaluate with the registry describing this document's dialect semantics.
+    ///
+    /// Ownership, mutation visibility, conversion, and error behavior match
+    /// [`Self::query`]. Default evaluation limits apply.
     pub fn query_with_registry<T: QueryResult>(
         &self,
         query: &QueryExpr<T>,
@@ -320,7 +335,19 @@ macro_rules! stages {
     };
 }
 stages!(OpQuery; parent => Parent: OpQuery, children => Children: OpQuery, subtree => Subtree: OpQuery,
-    closure => Closure: OpQuery, slice => Slice: OpQuery, reachable => Reachable: OpQuery, names => Names: StringQuery);
+    closure => Closure: OpQuery, reachable => Reachable: OpQuery, names => Names: StringQuery);
+impl OpQuery {
+    /// Follow transitive SSA definitions from the current selection.
+    ///
+    /// Construction clones the existing expression but does not inspect a document.
+    /// Evaluation terminates on cycles, preserves deterministic order, and charges
+    /// traversal against [`EvaluationLimits::max_work`]. Returned IDs belong to the
+    /// evaluated document and later edits can make them stale. Use
+    /// [`Self::reachable`] to include control-flow reachability.
+    pub fn slice(&self) -> OpQuery {
+        self.stage(Stage::Slice { range: range() })
+    }
+}
 stages!(StringQuery; sort => Sort: StringQuery, min => Min: StringQuery, max => Max: StringQuery,
     min_all => MinAll: StringQuery, max_all => MaxAll: StringQuery, tally => Tally: MapQuery<usize>);
 

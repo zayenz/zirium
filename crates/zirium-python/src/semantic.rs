@@ -95,6 +95,12 @@ pub(super) struct SemanticUse {
 
 #[pyclass(frozen, module = "zirium._zirium")]
 #[derive(Clone)]
+/// A mutable semantic document that owns all handles returned from it.
+///
+/// Queries return Python values or document-scoped wrappers. Edits are buffered
+/// by `edit()` and become visible atomically when its context exits normally.
+/// Handles for surviving entities keep their identity; erased handles raise
+/// `StaleHandleError`, and cross-document use raises `ForeignHandleError`.
 pub(super) struct Document {
     pub(super) state: SharedDocument,
     pub(super) registry: RegistryKind,
@@ -111,6 +117,12 @@ impl Document {
 
 #[pymethods]
 impl Document {
+    /// Evaluate a reusable structured query against the document.
+    ///
+    /// Building an expression does no document work. Evaluation preserves order
+    /// and duplicates unless the expression changes them. `max_work` and
+    /// `max_items` bound its cost. Returned operation handles remain live views
+    /// and can later become stale.
     #[pyo3(signature = (expression, *, max_work=None, max_items=None, strict=false))]
     fn query(
         &self,
@@ -288,6 +300,10 @@ impl Document {
         })
     }
 
+    /// Start a buffered, atomic semantic edit.
+    ///
+    /// Commands require a `with` block. Normal exit verifies and commits the
+    /// whole batch; an exception or failed validation leaves the document unchanged.
     fn edit(&self) -> SemanticEdit {
         SemanticEdit::new(self.state.clone(), self.registry.clone())
     }
@@ -582,6 +598,11 @@ pub(super) struct SemanticStatistics {
 
 #[pyclass(frozen, module = "zirium._zirium")]
 #[derive(Clone)]
+/// A generation-checked operation handle owned by one `Document`.
+///
+/// Repeated lookup of the same live operation compares equal and hashes alike.
+/// Surviving handles reflect committed edits. Reading an erased operation raises
+/// `StaleHandleError`; cross-document edits raise `ForeignHandleError`.
 pub(super) struct SemanticOperation {
     pub(super) state: SharedDocument,
     pub(super) id: OperationId,

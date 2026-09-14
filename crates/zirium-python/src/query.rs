@@ -273,6 +273,11 @@ impl OpQuery {
             inner: self.inner.closure(),
         }
     }
+    /// Follow transitive SSA definitions from the current selection.
+    ///
+    /// This only builds an immutable expression; work happens in
+    /// `Document.query()`. Cycles terminate and the evaluation budget applies.
+    /// Use `reachable()` when control-flow reachability is also wanted.
     fn slice(&self) -> OpQuery {
         OpQuery {
             inner: self.inner.slice(),

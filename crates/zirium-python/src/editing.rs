@@ -126,6 +126,11 @@ enum EditCommand {
 }
 
 #[pyclass(module = "zirium._zirium")]
+/// A buffered semantic transaction created by `Document.edit()`.
+///
+/// Queue commands inside one `with` block. They become visible together after
+/// validation on normal exit; any exception or failed verification leaves the
+/// document unchanged.
 pub(super) struct SemanticEdit {
     state: SharedDocument,
     registry: RegistryKind,
@@ -281,8 +286,12 @@ impl SemanticEdit {
         Ok(())
     }
 
-    /// On Hybrid documents, erasure clears retained source/CST and syntax
-    /// mappings when committed; preserving output then raises `ValueError`.
+    /// Queue removal of a regionless operation with no live uses.
+    ///
+    /// The handle must belong to this document and still be live. It becomes
+    /// stale only after commit. On Hybrid documents, committed erasure clears
+    /// retained source/CST and syntax mappings, so preserving output then raises
+    /// `ValueError`; canonical output remains available.
     fn erase(&mut self, operation: &SemanticOperation) -> PyResult<()> {
         self.ensure_open()?;
         let operation = self.operation(operation)?;

@@ -455,6 +455,17 @@ impl DocumentEditor<'_> {
         Ok(())
     }
 
+    /// Replaces every result type and updates the operation's function type.
+    ///
+    /// The result count cannot change. Type specifications are copied into the
+    /// transaction's interner. The change is visible through [`Self::document`]
+    /// immediately and through the original document only after [`Self::commit`].
+    /// Work is linear in the number and structural size of the supplied types.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale/foreign operation error, [`EditError::ResultCountChange`],
+    /// [`EditError::InvalidSpecification`], or [`EditError::TypeMismatch`].
     pub fn replace_result_types(
         &mut self,
         operation: OperationId,

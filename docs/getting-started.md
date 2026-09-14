@@ -399,6 +399,35 @@ strings, so deriving a genuinely new signature still requires the Rust API's
 `TypeSpec`. Insertion supports regionless operations and returns no provisional
 handle; look up the inserted operation after the context commits.
 
+Type changes and related rewrites belong in the same transaction. This avoids
+publishing an intermediate document and pays cloning and verification costs
+once for the batch:
+
+```python
+lowered = zirium.parse_text(
+    '%old = "vendor.make"() : () -> i32\n'
+    '%new = "vendor.make"() : () -> i64\n',
+    registry=zirium.DialectRegistry.baseline(),
+).lower_strict("hybrid")
+assert lowered.document is not None, lowered.diagnostics
+document = lowered.document
+old = document.operation_table().operation(0)
+new = document.operation_table().operation(1)
+
+with document.edit() as edit:
+    edit.replace_result_types(old, [new.result_type(0)])
+    edit.replace_all_uses(old.result(0), new.result(0))
+
+assert old.result_type(0).spelling == "i64"
+# Non-structural edits retain source/CST and can still preserve output.
+assert b'vendor.make' in document.preserving_bytes()
+```
+
+Commands use pre-transaction handles and run in order on a private working
+document. If any command or final verification fails, none of the batch becomes
+visible. Insertion and erasure are structural exceptions: after either commits,
+use `canonical_bytes()` or `custom_bytes()` instead of preserving output.
+
 ### Inspect types and integer attributes
 
 `SemanticType` exposes structure without requiring callers to parse `spelling`.

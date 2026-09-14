@@ -298,7 +298,12 @@ class OperationTable:
     def operation(self, index: int) -> SemanticOperation: ...
 
 class Document:
-    """Mutable semantic document with generation-checked handles and atomic edits."""
+    """Mutable semantic document owning generation-checked handles.
+
+    Queries return snapshots or live document-scoped wrappers. A normal edit
+    context exit publishes its buffered commands atomically; surviving handles
+    retain identity and erased handles become stale.
+    """
 
     @property
     def semantically_complete(self) -> bool: ...
@@ -313,10 +318,12 @@ class Document:
         max_work: int | None = None,
         max_items: int | None = None,
         strict: bool = False,
-    ) -> _QueryResult: ...
+    ) -> _QueryResult:
+        """Evaluate a reusable expression, subject to optional work/item limits."""
     def operation_table(self, name: str | None = None) -> OperationTable: ...
     def statistics(self) -> SemanticStatistics: ...
-    def edit(self) -> SemanticEdit: ...
+    def edit(self) -> SemanticEdit:
+        """Create a buffered transaction to use as a context manager."""
     def uses(self, value: SemanticValue) -> list[SemanticUse]: ...
     def lookup_symbol(
         self, from_operation: SemanticOperation, symbol: str
@@ -354,7 +361,7 @@ class OperationSpec:
     ) -> None: ...
 
 class SemanticEdit:
-    """Buffered transaction that commits when its context exits normally."""
+    """Buffered transaction that atomically commits on normal context exit."""
 
     def __enter__(self) -> Self: ...
     def __exit__(
@@ -369,9 +376,13 @@ class SemanticEdit:
     # On Hybrid documents, insertion clears retained source/CST and syntax
     # mappings when committed; preserving output then raises ValueError.
     def insert(self, block: SemanticBlock, index: int, spec: OperationSpec) -> None: ...
-    # On Hybrid documents, erasure clears retained source/CST and syntax
-    # mappings when committed; preserving output then raises ValueError.
-    def erase(self, operation: SemanticOperation) -> None: ...
+    def erase(self, operation: SemanticOperation) -> None:
+        """Queue erasure; on commit the handle becomes stale.
+
+        The operation must be regionless, have no live uses, and belong to this
+        document. Hybrid erasure disables preserving output; canonical output
+        remains available.
+        """
     def rewire_operand(
         self, operation: SemanticOperation, index: int, value: SemanticValue
     ) -> None: ...
@@ -407,6 +418,12 @@ class SemanticUse:
     def successor(self) -> int | None: ...
 
 class SemanticOperation:
+    """Document-owned live operation identity.
+
+    Equal lookups hash alike and surviving handles reflect edits. Reading an
+    erased operation raises ``StaleHandleError``; cross-document edits raise
+    ``ForeignHandleError``.
+    """
     @property
     def mnemonic(self) -> str: ...
     @property
