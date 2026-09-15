@@ -1,4 +1,8 @@
-# Zirium
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/zirium-logo-light.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/zirium-logo-dark.svg">
+  <img alt="Zirium" src="assets/zirium-logo-dark.svg" width="420">
+</picture>
 
 Zirium is a Rust library and command-line tool for reading, inspecting, editing,
 and writing textual MLIR, with typed Python bindings. It works without linking

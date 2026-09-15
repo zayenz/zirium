@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Zirium periodic-table logo</title>
+  <desc id="desc">A light periodic-table tile for Zirium, element 119, with a dark Z and orange i.</desc>
+  <rect x="18" y="18" width="476" height="476" rx="28" fill="#172027"/>
+  <rect x="27" y="27" width="458" height="458" rx="20" fill="#ffffff"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="52" y="98" fill="#ff5a1f" font-size="58" font-weight="700">119</text>
+    <text x="318" y="82" fill="#626a70" font-size="36">[Og] 8s¹</text>
+    <text x="146" y="326" fill="#11191f" font-size="202" font-weight="800" letter-spacing="-14">Z</text>
+    <text x="299" y="326" fill="#ff5a1f" font-size="202" font-weight="800">i</text>
+    <text x="148" y="390" fill="#11191f" font-size="63" font-weight="700">Zirium</text>
+    <text x="52" y="462" fill="#626a70" font-size="39" font-weight="700">[315]</text>
+  </g>
+</svg>

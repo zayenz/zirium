@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Zirium</title>
+  <desc id="desc">Zirium, a lossless toolkit for textual MLIR.</desc>
+  <rect width="1280" height="640" fill="#11191f"/>
+  <circle cx="1070" cy="-20" r="310" fill="#ff5a1f" opacity=".055"/>
+  <circle cx="1260" cy="580" r="410" fill="#ff5a1f" opacity=".035"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <rect x="112" y="150" width="340" height="340" rx="62" fill="#ff5a1f"/>
+    <rect x="130" y="168" width="304" height="304" rx="46" fill="#11191f"/>
+    <text x="164" y="410" fill="#f7f8f9" font-size="264" font-weight="800" letter-spacing="-26">Z</text>
+    <text x="342" y="410" fill="#ff5a1f" font-size="264" font-weight="800">i</text>
+    <text x="522" y="314" fill="#f7f8f9" font-size="150" font-weight="800">Zirium</text>
+    <text x="530" y="386" fill="#aeb6bc" font-size="32" font-weight="500">A lossless toolkit for textual MLIR</text>
+    <rect x="530" y="425" width="112" height="8" rx="4" fill="#ff5a1f"/>
+  </g>
+</svg>

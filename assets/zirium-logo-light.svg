@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" role="img" aria-labelledby="title desc">
+  <title id="title">Zirium</title>
+  <desc id="desc">The Zirium wordmark with an orange outlined Zi monogram for dark backgrounds.</desc>
+  <g font-family="Arial, Helvetica, sans-serif" font-weight="800">
+    <rect x="9" y="9" width="162" height="162" rx="30" fill="#ff5a1f"/>
+    <rect x="18" y="18" width="144" height="144" rx="22" fill="#11191f"/>
+    <text x="34" y="135" fill="#f7f8f9" font-size="126" letter-spacing="-12">Z</text>
+    <text x="119" y="135" fill="#ff5a1f" font-size="126">i</text>
+    <text x="207" y="128" fill="#f7f8f9" font-size="104">Zirium</text>
+  </g>
+</svg>
