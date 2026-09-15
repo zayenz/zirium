@@ -1,5 +1,7 @@
+import importlib
 import json
 import shutil
+import sys
 import zipfile
 from pathlib import Path
 
@@ -238,9 +240,7 @@ def test_call_target_attribute_is_configurable_and_introspectable():
         )
     )
     assert formatted.call_target_attribute("vendor.formatted_invoke") == "target"
-    parsed = zirium.parse_text(
-        "vendor.formatted_invoke @worker", registry=formatted
-    )
+    parsed = zirium.parse_text("vendor.formatted_invoke @worker", registry=formatted)
     document = parsed.lower_strict().document
     assert document is not None
     operation = document.operation_table("vendor.formatted_invoke").operation(0)
@@ -540,7 +540,9 @@ def test_filesystem_bundle_matches_direct_composition_and_moves(tmp_path: Path):
     assert_bundle_behavior(zirium.DialectRegistry.from_file(moved / "root.json"))
 
 
-def test_import_models_stay_io_free_and_zip_resources_remain_supported(tmp_path: Path):
+def test_import_models_stay_io_free_and_zip_resources_remain_supported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     model = zirium.RegistryConfig(
         imports=["child.json"], builtins=[], operation_shapes=[]
     )
@@ -551,13 +553,49 @@ def test_import_models_stay_io_free_and_zip_resources_remain_supported(tmp_path:
         with pytest.raises(ValidationError, match="relative paths"):
             zirium.RegistryConfig(imports=[invalid], builtins=[], operation_shapes=[])
 
+    bundle = {
+        "bundle.json": {
+            "imports": ["functions.json", "arithmetic.json"],
+            "builtins": [],
+            "operation_shapes": [],
+        },
+        "functions.json": {
+            "imports": ["common.json"],
+            "builtins": [],
+            "operation_shapes": [{"name": "vendor.function", "shape": "func_like"}],
+        },
+        "arithmetic.json": {
+            "imports": ["common.json"],
+            "builtins": [],
+            "operation_shapes": [{"name": "vendor.add", "shape": "binary_operands"}],
+        },
+        "common.json": {
+            "builtins": ["builtin.module"],
+            "operation_shapes": [],
+        },
+    }
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    for name, config in bundle.items():
+        (directory / name).write_text(json.dumps(config))
+    filesystem = zirium.DialectRegistry.from_file(directory / "bundle.json")
+
     archive = tmp_path / "registry.zip"
-    config = {"builtins": ["builtin.module"], "operation_shapes": []}
     with zipfile.ZipFile(archive, "w") as output:
-        output.writestr("package/registry.json", json.dumps(config))
-    resource = zipfile.Path(archive, "package/registry.json")
-    registry = zirium.DialectRegistry.from_config(json.loads(resource.read_text()))
-    assert registry.operation_names() == ("builtin.module",)
+        output.writestr("resource_bundle/__init__.py", "")
+        for name, config in bundle.items():
+            output.writestr(f"resource_bundle/registries/{name}", json.dumps(config))
+    monkeypatch.syspath_prepend(str(archive))
+    importlib.invalidate_caches()
+    resource = zirium.DialectRegistry.from_package_resources(
+        "resource_bundle", "registries/bundle.json"
+    )
+    assert resource.operation_names() == filesystem.operation_names()
+    assert resource.operation_shape("vendor.function") == "func_like"
+    assert resource.operation_shape("vendor.add") == "binary_operands"
+    sys.modules.pop("resource_bundle", None)
+    archive.unlink()
+    assert resource.operation_names() == filesystem.operation_names()
 
 
 def test_registry_graph_errors_and_limits_use_public_exception_classes(tmp_path: Path):

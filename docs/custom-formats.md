@@ -114,7 +114,7 @@ the caller's default registry; include every preset and built-in you need.
 
 | Field | Meaning |
 | --- | --- |
-| `imports` | Filesystem registry paths resolved relative to the file that declares them. Defaults to an empty list. |
+| `imports` | Relative filesystem paths or package-resource identifiers resolved from the file that declares them. Defaults to an empty list. |
 | `presets` | Bundled registry names. Defaults to an empty list. |
 | `builtins` | Operation names selected from the baseline catalog. Required; may be empty. |
 | `operation_shapes` | Exact operation names paired with reusable grammars. A `call_like` entry may set `callee_attribute`. Required; may be empty. |
@@ -309,9 +309,30 @@ edges, and aggregate JSON bytes. Rust callers set `RegistryLoadOptions` and use
 `--max-registry-bytes`.
 
 `RegistryConfig.build` and `DialectRegistry.from_config` remain I/O-free and
-reject a model or dictionary with unresolved imports. This keeps JSON read from
-a zip file or a Python package resource usable through `from_config`, but Zirium
-does not yet resolve `imports` natively inside zip files or package resources.
+reject a model or dictionary with unresolved imports.
+
+For package data, including a zipped Python package, pass the package and the
+root resource identifier without extracting it:
+
+```python
+registry = zirium.DialectRegistry.from_package_resources(
+    "my_compiler", "registries/bundle.json"
+)
+```
+
+Imports use `/`-separated identifiers relative to their parent's identifier.
+Normalized identifiers define resource identity, so shared imports are read
+once and cycles are detected across equivalent spellings. `..` may move within
+the package but cannot cross its root. The same depth, unique-file, edge, and
+aggregate-byte options accepted by `from_file` are accepted here. Errors name
+the resource and import chain. The resulting registry owns all compiled
+definitions and does not retain the package reader or archive.
+
+Rust callers that have another resource system use
+`DialectRegistry::from_config_resources_with_options`. Its reader receives a
+normalized identifier and a byte limit and returns that resource's bytes. The
+native loader remains responsible for relative resolution, graph traversal,
+deduplication, cycles, composition, and budgets.
 
 Pydantic models validate structure without coercing types. The shared Rust
 builder checks registered names, duplicates, and conflicts. In Python, invalid

@@ -181,6 +181,63 @@ impl DialectRegistryHandle {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (package, resource, *additional_resources, max_depth=None, max_files=None, max_edges=None, max_bytes=None))]
+    fn from_package_resources(
+        package: &str,
+        resource: String,
+        additional_resources: &Bound<'_, PyTuple>,
+        max_depth: Option<usize>,
+        max_files: Option<usize>,
+        max_edges: Option<usize>,
+        max_bytes: Option<usize>,
+        py: Python<'_>,
+    ) -> PyResult<Self> {
+        let mut roots = vec![resource];
+        roots.extend(additional_resources.extract::<Vec<String>>()?);
+        let base = py
+            .import("importlib.resources")?
+            .call_method1("files", (package,))?
+            .unbind();
+        let mut options = RegistryLoadOptions::default();
+        if let Some(value) = max_depth {
+            options.max_depth = value;
+        }
+        if let Some(value) = max_files {
+            options.max_files = value;
+        }
+        if let Some(value) = max_edges {
+            options.max_edges = value;
+        }
+        if let Some(value) = max_bytes {
+            options.max_bytes = value;
+        }
+        let registry = DialectRegistry::from_config_resources_with_options(
+            roots,
+            |identifier, limit| {
+                Python::attach(|py| {
+                    let file = base
+                        .bind(py)
+                        .call_method1("joinpath", (identifier,))?
+                        .call_method1("open", ("rb",))?;
+                    file.call_method1("read", (limit,))?.extract::<Vec<u8>>()
+                })
+                .map_err(|error| std::io::Error::other(error.to_string()))
+            },
+            options,
+        )
+        .map_err(|error| match error {
+            RegistryConfigError::Io { .. } | RegistryConfigError::IoInGraph { .. } => {
+                PyIOError::new_err(error.to_string())
+            }
+            RegistryConfigError::Limit(_) => ResourceLimitError::new_err(error.to_string()),
+            _ => PyValueError::new_err(error.to_string()),
+        })?;
+        Ok(Self {
+            kind: RegistryKind::Declarative(Arc::new(registry)),
+        })
+    }
+
+    #[staticmethod]
     #[pyo3(signature = (config, *additional_configs))]
     fn from_config(
         config: &Bound<'_, PyAny>,

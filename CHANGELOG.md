@@ -8,6 +8,8 @@
   target attribute shared by custom and generic spellings.
 - Expose decoded symbol-reference path segments on Python attributes and direct
   calls while retaining normalized strings and original attribute spellings.
+- Load imported registry graphs directly from Python package resources,
+  including zip packages, through the same bounded native graph traversal.
 
 ## 0.2.0
 

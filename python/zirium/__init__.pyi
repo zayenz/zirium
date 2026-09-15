@@ -104,6 +104,16 @@ class DialectRegistry:
         max_bytes: int | None = None,
     ) -> DialectRegistry: ...
     @staticmethod
+    def from_package_resources(
+        package: str,
+        resource: str,
+        *additional_resources: str,
+        max_depth: int | None = None,
+        max_files: int | None = None,
+        max_edges: int | None = None,
+        max_bytes: int | None = None,
+    ) -> DialectRegistry: ...
+    @staticmethod
     def empty() -> DialectRegistry: ...
     @staticmethod
     def core() -> DialectRegistry: ...

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -159,6 +160,89 @@ fn nested_diamonds_and_repeated_roots_deduplicate_across_parents() {
         registry.operation_shape("vendor.leaf").unwrap().name(),
         "unary_operand"
     );
+}
+
+#[test]
+fn resource_reader_matches_filesystem_and_owns_the_result() {
+    let mut resources = BTreeMap::new();
+    for relative in [
+        "root.json",
+        "leaves/builtins.json",
+        "leaves/shapes.json",
+        "leaves/formats.json",
+    ] {
+        resources.insert(
+            format!("registries/{relative}"),
+            fs::read(fixture(relative)).unwrap(),
+        );
+    }
+    let mut reads = BTreeMap::<String, usize>::new();
+    let resource = DialectRegistry::from_config_resources(
+        ["registries/root.json", "registries/./root.json"],
+        |identifier, limit| {
+            *reads.entry(identifier.to_owned()).or_default() += 1;
+            let bytes = resources.get(identifier).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "missing resource")
+            })?;
+            Ok(bytes[..bytes.len().min(limit)].to_vec())
+        },
+    )
+    .unwrap();
+    assert!(reads.values().all(|reads| *reads == 1), "{reads:?}");
+    drop(resources);
+    let filesystem = DialectRegistry::from_config_file(fixture("root.json")).unwrap();
+    assert_eq!(
+        resource.operation_names().collect::<Vec<_>>(),
+        filesystem.operation_names().collect::<Vec<_>>()
+    );
+    assert_bundle_behavior(&resource);
+}
+
+#[test]
+fn resource_reader_enforces_boundaries_cycles_and_limits() {
+    let resources = BTreeMap::from([
+        ("root.json", empty(r#"["child.json"]"#).into_bytes()),
+        ("child.json", empty(r#"["root.json"]"#).into_bytes()),
+    ]);
+    let read = |identifier: &str, limit: usize| {
+        let bytes = resources
+            .get(identifier)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "missing resource"))?;
+        Ok(bytes[..bytes.len().min(limit)].to_vec())
+    };
+    assert!(
+        DialectRegistry::from_config_resources(["root.json"], read)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("cycle")
+    );
+    assert!(matches!(
+        DialectRegistry::from_config_resources_with_options(
+            ["root.json"],
+            read,
+            RegistryLoadOptions {
+                max_files: 1,
+                ..RegistryLoadOptions::default()
+            }
+        ),
+        Err(RegistryConfigError::Limit(_))
+    ));
+
+    let escaping = BTreeMap::from([(
+        "bundle/root.json",
+        empty(r#"["../../outside.json"]"#).into_bytes(),
+    )]);
+    let error = DialectRegistry::from_config_resources(["bundle/root.json"], |identifier, _| {
+        escaping
+            .get(identifier)
+            .cloned()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "missing resource"))
+    })
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(error.contains("package boundary"), "{error}");
 }
 
 #[test]

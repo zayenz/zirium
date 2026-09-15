@@ -636,19 +636,115 @@ struct SourcedConfig {
     chain: Vec<PathBuf>,
 }
 
-struct RegistryGraphLoader {
+trait RegistryResolver {
+    type Id: Clone + Ord + Eq;
+
+    fn read(&mut self, id: &Self::Id, limit: usize) -> io::Result<Vec<u8>>;
+    fn resolve(&mut self, parent: &Self::Id, import: &str) -> io::Result<Self::Id>;
+    fn display(&self, id: &Self::Id) -> PathBuf;
+}
+
+struct FilesystemResolver;
+
+impl RegistryResolver for FilesystemResolver {
+    type Id = PathBuf;
+
+    fn read(&mut self, id: &Self::Id, limit: usize) -> io::Result<Vec<u8>> {
+        let mut json = Vec::new();
+        fs::File::open(id)?
+            .take(limit as u64)
+            .read_to_end(&mut json)?;
+        Ok(json)
+    }
+
+    fn resolve(&mut self, parent: &Self::Id, import: &str) -> io::Result<Self::Id> {
+        fs::canonicalize(
+            parent
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(import),
+        )
+    }
+
+    fn display(&self, id: &Self::Id) -> PathBuf {
+        id.clone()
+    }
+}
+
+struct ResourceResolver<F> {
+    reader: F,
+}
+
+impl<F> RegistryResolver for ResourceResolver<F>
+where
+    F: FnMut(&str, usize) -> io::Result<Vec<u8>>,
+{
+    type Id = String;
+
+    fn read(&mut self, id: &Self::Id, limit: usize) -> io::Result<Vec<u8>> {
+        (self.reader)(id, limit)
+    }
+
+    fn resolve(&mut self, parent: &Self::Id, import: &str) -> io::Result<Self::Id> {
+        let parent = parent.rsplit_once('/').map_or("", |(parent, _)| parent);
+        if parent.is_empty() {
+            normalize_resource_id(import)
+        } else {
+            normalize_resource_id(&format!("{parent}/{import}"))
+        }
+    }
+
+    fn display(&self, id: &Self::Id) -> PathBuf {
+        PathBuf::from(id)
+    }
+}
+
+fn normalize_resource_id(identifier: &str) -> io::Result<String> {
+    if identifier.is_empty() || identifier.starts_with('/') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "resource identifiers must be non-empty relative paths",
+        ));
+    }
+    let mut components = Vec::new();
+    for component in identifier.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                if components.pop().is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "resource import escapes the package boundary",
+                    ));
+                }
+            }
+            component => components.push(component),
+        }
+    }
+    if components.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "resource identifier does not name a file",
+        ));
+    }
+    Ok(components.join("/"))
+}
+
+struct RegistryGraphLoader<R: RegistryResolver> {
+    resolver: R,
     options: RegistryLoadOptions,
     files: usize,
     edges: usize,
     bytes: usize,
-    active: Vec<PathBuf>,
-    completed: BTreeSet<PathBuf>,
+    active: Vec<R::Id>,
+    completed: BTreeSet<R::Id>,
     configs: Vec<SourcedConfig>,
 }
 
-impl RegistryGraphLoader {
-    fn new(options: RegistryLoadOptions) -> Self {
+impl<R: RegistryResolver> RegistryGraphLoader<R> {
+    fn new(options: RegistryLoadOptions, resolver: R) -> Self {
         Self {
+            resolver,
             options,
             files: 0,
             edges: 0,
@@ -659,20 +755,17 @@ impl RegistryGraphLoader {
         }
     }
 
-    fn load_root(&mut self, path: &Path) -> Result<(), RegistryConfigError> {
-        let canonical = fs::canonicalize(path).map_err(|error| RegistryConfigError::Io {
-            path: path.to_owned(),
-            error,
-        })?;
-        self.load(canonical, 0, Vec::new())
+    fn load_root(&mut self, id: R::Id) -> Result<(), RegistryConfigError> {
+        self.load(id, 0, Vec::new())
     }
 
     fn load(
         &mut self,
-        path: PathBuf,
+        id: R::Id,
         depth: usize,
         mut parent_chain: Vec<PathBuf>,
     ) -> Result<(), RegistryConfigError> {
+        let path = self.resolver.display(&id);
         parent_chain.push(path.clone());
         if depth > self.options.max_depth {
             return Err(RegistryConfigError::Limit(format!(
@@ -681,8 +774,11 @@ impl RegistryGraphLoader {
                 display_chain(&parent_chain)
             )));
         }
-        if let Some(cycle_start) = self.active.iter().position(|active| active == &path) {
-            let mut cycle = self.active[cycle_start..].to_vec();
+        if let Some(cycle_start) = self.active.iter().position(|active| active == &id) {
+            let mut cycle = self.active[cycle_start..]
+                .iter()
+                .map(|id| self.resolver.display(id))
+                .collect::<Vec<_>>();
             cycle.push(path.clone());
             return Err(RegistryConfigError::Graph(format!(
                 "registry import cycle in chain {} (cycle: {})",
@@ -698,7 +794,7 @@ impl RegistryGraphLoader {
                     .join(" -> ")
             )));
         }
-        if self.completed.contains(&path) {
+        if self.completed.contains(&id) {
             return Ok(());
         }
         if self.files >= self.options.max_files {
@@ -710,11 +806,9 @@ impl RegistryGraphLoader {
         }
 
         let remaining = self.options.max_bytes.saturating_sub(self.bytes);
-        let file = fs::File::open(&path)
-            .map_err(|error| io_error(path.clone(), error, parent_chain.clone()))?;
-        let mut json = Vec::new();
-        file.take(remaining.saturating_add(1) as u64)
-            .read_to_end(&mut json)
+        let json = self
+            .resolver
+            .read(&id, remaining.saturating_add(1))
             .map_err(|error| io_error(path.clone(), error, parent_chain.clone()))?;
         if json.len() > remaining {
             return Err(RegistryConfigError::Limit(format!(
@@ -734,10 +828,9 @@ impl RegistryGraphLoader {
             .map_err(|error| json_error(path.clone(), error, parent_chain.clone()))?;
         self.files += 1;
         self.bytes += json.len();
-        self.active.push(path.clone());
+        self.active.push(id.clone());
 
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let mut siblings = BTreeMap::<PathBuf, String>::new();
+        let mut siblings = BTreeMap::<R::Id, String>::new();
         for import in &config.imports {
             self.edges = self.edges.saturating_add(1);
             if self.edges > self.options.max_edges {
@@ -747,14 +840,16 @@ impl RegistryGraphLoader {
                     display_chain(&parent_chain)
                 )));
             }
-            let referenced = parent.join(import);
-            let child = fs::canonicalize(&referenced)
-                .map_err(|error| io_error(referenced, error, parent_chain.clone()))?;
+            let child = self
+                .resolver
+                .resolve(&id, import)
+                .map_err(|error| io_error(PathBuf::from(import), error, parent_chain.clone()))?;
             if let Some(first) = siblings.insert(child.clone(), import.clone()) {
+                let child_path = self.resolver.display(&child);
                 return Err(RegistryConfigError::Graph(format!(
                     "{} imports the same canonical child {} twice as {first:?} and {import:?}{}",
                     path.display(),
-                    child.display(),
+                    child_path.display(),
                     display_chain(&parent_chain)
                 )));
             }
@@ -762,7 +857,7 @@ impl RegistryGraphLoader {
         }
 
         self.active.pop();
-        self.completed.insert(path.clone());
+        self.completed.insert(id);
         self.configs.push(SourcedConfig {
             config,
             origin: path,
@@ -986,6 +1081,47 @@ impl DialectRegistry {
         Self::load_config_files(paths, None, options)
     }
 
+    /// Loads path-like resource identifiers through a caller-supplied reader.
+    ///
+    /// Imports are resolved lexically relative to their parent identifier.
+    /// Normalized identifiers establish identity for deduplication and cycle
+    /// checks. `..` is accepted within the package but rejected when it would
+    /// escape the package boundary. The reader receives the maximum number of
+    /// bytes it should return; returned bytes count toward `max_bytes`.
+    pub fn from_config_resources_with_options<S, F>(
+        roots: impl IntoIterator<Item = S>,
+        reader: F,
+        options: RegistryLoadOptions,
+    ) -> Result<Self, RegistryConfigError>
+    where
+        S: AsRef<str>,
+        F: FnMut(&str, usize) -> io::Result<Vec<u8>>,
+    {
+        let mut loader = RegistryGraphLoader::new(options, ResourceResolver { reader });
+        for root in roots {
+            let root = root.as_ref();
+            let normalized =
+                normalize_resource_id(root).map_err(|error| RegistryConfigError::Io {
+                    path: PathBuf::from(root),
+                    error,
+                })?;
+            loader.load_root(normalized)?;
+        }
+        build_sourced(&loader.configs)
+    }
+
+    /// Loads resource identifiers with the default graph limits.
+    pub fn from_config_resources<S, F>(
+        roots: impl IntoIterator<Item = S>,
+        reader: F,
+    ) -> Result<Self, RegistryConfigError>
+    where
+        S: AsRef<str>,
+        F: FnMut(&str, usize) -> io::Result<Vec<u8>>,
+    {
+        Self::from_config_resources_with_options(roots, reader, RegistryLoadOptions::default())
+    }
+
     /// Combines filesystem roots and trailing bundled presets.
     pub fn from_config_files_with_options_and_presets<P: AsRef<Path>>(
         paths: impl IntoIterator<Item = P>,
@@ -1008,9 +1144,14 @@ impl DialectRegistry {
         trailing: Option<RegistryConfig>,
         options: RegistryLoadOptions,
     ) -> Result<Self, RegistryConfigError> {
-        let mut loader = RegistryGraphLoader::new(options);
+        let mut loader = RegistryGraphLoader::new(options, FilesystemResolver);
         for path in paths {
-            loader.load_root(path.as_ref())?;
+            let path = path.as_ref();
+            let canonical = fs::canonicalize(path).map_err(|error| RegistryConfigError::Io {
+                path: path.to_owned(),
+                error,
+            })?;
+            loader.load_root(canonical)?;
         }
         if let Some(config) = trailing {
             loader.configs.push(SourcedConfig {
