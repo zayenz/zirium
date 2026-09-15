@@ -1001,7 +1001,16 @@ fn evaluate_diff_cli(
     }
 
     let statements = split_diff_statements(source)?;
-    let mut bindings = std::collections::HashMap::new();
+    let mut bindings = std::collections::HashMap::from([
+        (
+            "before_document".to_owned(),
+            DiffCliValue::Names(vec![before_name.to_owned()]),
+        ),
+        (
+            "after_document".to_owned(),
+            DiffCliValue::Names(vec![after_name.to_owned()]),
+        ),
+    ]);
     let mut budget = DiffQueryBudget::new(limits);
     for statement in statements {
         let statement = statement.trim();
@@ -1289,6 +1298,15 @@ fn evaluate_diff_pipeline(
             })?
         } else if stage == "markdown" {
             DiffCliValue::Text(markdown_diff_value(diff, value)?)
+        } else if stage == "emit" {
+            value
+        } else if stage.starts_with("print(") {
+            let arguments = split_diff_call_arguments(stage, "print")?;
+            if arguments.len() != 1 {
+                return Err("print requires one string template".into());
+            }
+            let template = parse_diff_string(arguments[0])?;
+            DiffCliValue::Text(interpolate_diff_template(&template, bindings, budget)?)
         } else if stage == "json" {
             let (json, side) = match value {
                 DiffCliValue::Changes(items) => (
@@ -1442,6 +1460,47 @@ fn split_diff_call_arguments<'a>(stage: &'a str, name: &str) -> Result<Vec<&'a s
     }
     arguments.push(inner[start..].trim());
     Ok(arguments)
+}
+
+fn parse_diff_string(source: &str) -> Result<String, String> {
+    serde_json::from_str(source).map_err(|_| "expected a quoted UTF-8 string".into())
+}
+
+fn interpolate_diff_template(
+    template: &str,
+    bindings: &std::collections::HashMap<String, DiffCliValue>,
+    budget: &mut DiffQueryBudget,
+) -> Result<String, String> {
+    let mut output = String::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        output.push_str(&rest[..open]);
+        rest = &rest[open + 1..];
+        if rest.starts_with('{') {
+            output.push('{');
+            rest = &rest[1..];
+            continue;
+        }
+        let close = rest
+            .find('}')
+            .ok_or("unterminated interpolation in print")?;
+        let name = &rest[..close];
+        let value = match bindings.get(name) {
+            Some(DiffCliValue::Count(count)) => count.to_string(),
+            Some(DiffCliValue::Names(values)) if values.len() == 1 => values[0].clone(),
+            Some(_) => {
+                return Err(format!(
+                    "string interpolation `{{{name}}}` requires a count or exactly one string"
+                ));
+            }
+            None => return Err(format!("binding `{name}` is unavailable in diff mode")),
+        };
+        budget.charge(value.len())?;
+        output.push_str(&value);
+        rest = &rest[close + 1..];
+    }
+    output.push_str(rest);
+    Ok(format!("{output}\n"))
 }
 
 fn map_diff_value(

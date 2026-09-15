@@ -428,3 +428,35 @@ fn diff_records_can_be_ordered_by_relative_keys() {
         assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
     }
 }
+
+#[test]
+fn diff_print_interpolates_document_labels_and_scalar_bindings() {
+    let (before, after) = pair();
+    let program = "N = filter(changed(\"attributes\")) | count; print(\"{before_document} -> {after_document}: {N} change\")";
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg(program)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{} -> {}: 1 change\n", before.display(), after.display())
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg("names | emit")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"arith.constant\n");
+}
