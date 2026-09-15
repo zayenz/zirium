@@ -1712,15 +1712,10 @@ fn combine_diff_selections(
         (
             DiffCliValue::Operations(left_side, left),
             DiffCliValue::Operations(right_side, right),
-        ) if left_side == right_side => {
-            let mut canonical = Vec::new();
-            canonical.extend(left.iter().copied());
-            canonical.extend(right.iter().copied());
-            DiffCliValue::Operations(
-                left_side,
-                combine(canonical.into_iter(), left, right, operator),
-            )
-        }
+        ) if left_side == right_side => DiffCliValue::Operations(
+            left_side,
+            combine(diff.document(left_side).operations(), left, right, operator),
+        ),
         (DiffCliValue::Operations(_, _), DiffCliValue::Operations(_, _)) => {
             return Err(
                 "set operations require operation selections from the same diff side".into(),

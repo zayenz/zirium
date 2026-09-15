@@ -255,6 +255,24 @@ fn diff_sets_preserve_kind_and_reject_cross_side_empty_selections() {
             .unwrap()
             .contains("same diff side")
     );
+
+    let before = fixture(
+        "set-order-before",
+        "module { \"test.a\"() {v = 1 : i64} : () -> () \"test.b\"() {v = 1 : i64} : () -> () }\n",
+    );
+    let after = fixture(
+        "set-order-after",
+        "module { \"test.a\"() {v = 2 : i64} : () -> () \"test.b\"() {v = 2 : i64} : () -> () }\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg("(after | reverse union after) | names")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"test.a\ntest.b\n");
 }
 
 #[test]
