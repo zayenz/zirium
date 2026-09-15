@@ -10,6 +10,9 @@
   them in `do` statements for individual silent checks. Add `--silent` to
   suppress all successful query output while preserving diagnostics and exit
   status.
+- Add structural and dataflow diff APIs for Rust and Python, paired `--diff`
+  CLI input, change predicates, side projections, and `zirium.diff.v1` reports.
+  Thanks to [@pgerell](https://github.com/pgerell) for the idea.
 
 ## 0.2.0
 
@@ -383,7 +386,3 @@ First public experimental release of Zirium.
   platform and interpreter matrix.
 
 The API is experimental and may change before 1.0.
-
-- Added structural and dataflow diff APIs for Rust and Python, paired `--diff`
-  CLI input, change predicates, side projections, and `zirium.diff.v1` reports.
-  Thanks to [@pgerell](https://github.com/pgerell) for the idea.

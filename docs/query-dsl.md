@@ -254,4 +254,7 @@ Typed diff builders start with `changes()`. A `ChangeQuery` accepts ordinary and
 change predicates; `.before()` and `.after()` return side-scoped operation
 queries. Rust returns `DiffOperationSelection` rather than bare operation IDs.
 Python resolves those selections to wrappers backed by immutable snapshots.
+Use `diff_op_input()` to build a relative fixed-point body, for example
+`changed_ops.fixpoint(diff_op_input().slice())`. Diff value projections include
+`names()`, `attr(...)`, `result_types()`, and `operand_types()`.
 See [semantic diff](semantic-diff.md) for examples.

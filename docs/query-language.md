@@ -788,4 +788,9 @@ records. `change("added")` selects a primary kind and `changed("operands")`
 selects a direct changed field. Ordinary predicates inspect the after endpoint,
 or the before endpoint for removals. Use `before` or `after` before operation
 navigation. The two sides remain distinct even for an empty selection, and diff
-programs reject edits. See [semantic diff](semantic-diff.md) for the full policy.
+programs reject edits. Nested expressions keep their current input; explicit
+`input` resets to every change record. Projected operations support the ordinary
+graph traversals and same-side fixed points. Change streams support keyed
+ordering and `map_by`, and the document labels are available as
+`before_document` and `after_document` for interpolation. See
+[semantic diff](semantic-diff.md) for the full policy.

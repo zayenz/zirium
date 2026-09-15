@@ -20,6 +20,11 @@ It compares operation fields, ordered SSA connections, successors, regions,
 and relative sibling order. It does not prove computational equivalence or
 recognize dialect-specific rewrites.
 
+Reordering two distinguishable sibling operations is therefore a change even
+when they are independent: both records are marked moved. Semantic diff
+describes represented structure and dataflow, not freedom to reschedule
+operations.
+
 Each operation produces at most one `added`, `removed`, `modified`, or `moved`
 record. A modified operation that moved stays `modified` with `moved = true`.
 Records follow after-document structural preorder, then before-side removals.
@@ -39,6 +44,22 @@ when present, otherwise the before endpoint.
 `before` and `after` project records to operations in that document. Missing
 endpoints are dropped. Projected selections use the normal MLIR printer. Diff
 programs are read-only.
+
+After projection, `users`, `defs`, `parent`, `children`, `root`, `subtree`,
+`slice`, `closure`, and `reachable` inspect the selected complete document.
+`fixpoint(...)` is supported on projected operations and must remain on the
+same side. `--strict` makes `reachable` reject operations whose reference
+semantics are unknown.
+
+Change and projected-operation streams support `unique`, bounds, reversal,
+sets, `sort_by(...)`, keyed extrema, and `map_by(...)`. `names`, `attr`,
+`result_types`, and `operand_types` produce value streams; those streams support
+`sort`, extrema, `tally`, JSON, and Markdown. Nested expressions start from the
+current record or selection, while explicit `input` resets to all changes.
+
+Bindings retain their stream side. The reserved scalar bindings
+`before_document` and `after_document` contain the two CLI labels for
+`print("{before_document} -> {after_document}")` and similar reports.
 
 Change JSON uses schema `zirium.diff.v1`. Endpoints contain the operation name,
 symbol context, structural path, and half-open byte range. `--jsonl` adds both
@@ -74,3 +95,6 @@ after_operations = delta.query(changes().after())
 Python takes immutable snapshots of both documents. Snapshot-backed operation
 wrappers remain valid if an original is edited or dropped, at the cost of
 retaining semantic storage for both inputs.
+
+Use `change_input()` and `diff_op_input()` for relative typed expressions such
+as fixed-point bodies. They do not reset to the full comparison.
