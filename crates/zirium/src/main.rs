@@ -587,6 +587,7 @@ fn run() -> Result<(), String> {
             fragment_scope,
             ndjson,
             silent,
+            strict,
         );
     }
     let query = Query::parse_with_document_context(&query_text).map_err(|error| {
@@ -822,6 +823,7 @@ fn run_diff(
     fragment_scope: FragmentScope,
     ndjson: bool,
     silent: bool,
+    strict: bool,
 ) -> Result<(), String> {
     if before_path == "-" && after_path == "-" {
         return Err("both diff inputs cannot read from stdin".into());
@@ -844,6 +846,7 @@ fn run_diff(
             evaluation_limits,
             fragment_scope,
             ndjson,
+            strict,
             &mut output,
         )?;
     }
@@ -975,6 +978,7 @@ fn evaluate_diff_cli(
     limits: EvaluationLimits,
     fragment_scope: FragmentScope,
     ndjson: bool,
+    strict: bool,
     output: &mut StagedOutput,
 ) -> Result<(), String> {
     if source.trim().is_empty() {
@@ -1005,7 +1009,7 @@ fn evaluate_diff_cli(
             continue;
         }
         if let Some(expression) = statement.strip_prefix("do ") {
-            evaluate_diff_expression(diff, expression, &bindings, &mut budget)?;
+            evaluate_diff_expression(diff, expression, &bindings, &mut budget, strict)?;
             continue;
         }
         if let Some((name, expression)) = split_diff_binding(statement) {
@@ -1018,11 +1022,11 @@ fn evaluate_diff_cli(
             if bindings.contains_key(name) {
                 return Err(format!("binding `{name}` is already defined"));
             }
-            let value = evaluate_diff_expression(diff, expression, &bindings, &mut budget)?;
+            let value = evaluate_diff_expression(diff, expression, &bindings, &mut budget, strict)?;
             bindings.insert(name.to_owned(), value);
             continue;
         }
-        let value = evaluate_diff_expression(diff, statement, &bindings, &mut budget)?;
+        let value = evaluate_diff_expression(diff, statement, &bindings, &mut budget, strict)?;
         write_diff_value(
             diff,
             value,
@@ -1041,6 +1045,7 @@ fn evaluate_diff_expression(
     source: &str,
     bindings: &std::collections::HashMap<String, DiffCliValue>,
     budget: &mut DiffQueryBudget,
+    strict: bool,
 ) -> Result<DiffCliValue, String> {
     evaluate_diff_expression_from(
         diff,
@@ -1048,6 +1053,7 @@ fn evaluate_diff_expression(
         bindings,
         budget,
         DiffCliValue::Changes(diff.change_ids().collect()),
+        strict,
     )
 }
 
@@ -1057,13 +1063,15 @@ fn evaluate_diff_expression_from(
     bindings: &std::collections::HashMap<String, DiffCliValue>,
     budget: &mut DiffQueryBudget,
     input: DiffCliValue,
+    strict: bool,
 ) -> Result<DiffCliValue, String> {
     let parts = split_diff_sets(source)?;
     let mut parts = parts.into_iter();
     let (_, first) = parts.next().ok_or("empty diff expression")?;
-    let mut value = evaluate_diff_pipeline(diff, first, bindings, budget, input.clone())?;
+    let mut value = evaluate_diff_pipeline(diff, first, bindings, budget, input.clone(), strict)?;
     for (operator, pipeline) in parts {
-        let right = evaluate_diff_pipeline(diff, pipeline, bindings, budget, input.clone())?;
+        let right =
+            evaluate_diff_pipeline(diff, pipeline, bindings, budget, input.clone(), strict)?;
         value = combine_diff_selections(diff, value, right, operator.expect("later set part"))?;
         budget.check_items(diff_value_len(&value))?;
     }
@@ -1076,6 +1084,7 @@ fn evaluate_diff_pipeline(
     bindings: &std::collections::HashMap<String, DiffCliValue>,
     budget: &mut DiffQueryBudget,
     input: DiffCliValue,
+    strict: bool,
 ) -> Result<DiffCliValue, String> {
     let stages = split_diff_pipeline(source)?;
     let mut value = input;
@@ -1086,7 +1095,14 @@ fn evaluate_diff_pipeline(
             .strip_prefix('(')
             .and_then(|stage| stage.strip_suffix(')'))
         {
-            evaluate_diff_expression_from(diff, expression, bindings, budget, value.clone())?
+            evaluate_diff_expression_from(
+                diff,
+                expression,
+                bindings,
+                budget,
+                value.clone(),
+                strict,
+            )?
         } else if stage == "input" {
             DiffCliValue::Changes(diff.change_ids().collect())
         } else if let Some(value) = bindings.get(stage) {
@@ -1128,7 +1144,7 @@ fn evaluate_diff_pipeline(
                 result
             })?
         } else if matches!(stage, "reachable" | "closure" | "slice") {
-            graph_diff_operations(diff, value, stage, budget)?
+            graph_diff_operations(diff, value, stage, budget, strict)?
         } else if stage.starts_with("root(") {
             let names = extract_string_calls(stage, "op");
             if names.len() != 1 {
@@ -1187,7 +1203,15 @@ fn evaluate_diff_pipeline(
             if arguments.len() != 2 {
                 return Err("map_by requires a key and value expression".into());
             }
-            map_diff_value(diff, value, arguments[0], arguments[1], bindings, budget)?
+            map_diff_value(
+                diff,
+                value,
+                arguments[0],
+                arguments[1],
+                bindings,
+                budget,
+                strict,
+            )?
         } else if stage == "reverse" {
             reverse_diff_value(value)?
         } else if stage.starts_with("head(") || stage.starts_with("tail(") {
@@ -1416,6 +1440,7 @@ fn map_diff_value(
     value_expression: &str,
     bindings: &std::collections::HashMap<String, DiffCliValue>,
     budget: &mut DiffQueryBudget,
+    strict: bool,
 ) -> Result<DiffCliValue, String> {
     let inputs = match value {
         DiffCliValue::Changes(items) => items
@@ -1430,8 +1455,14 @@ fn map_diff_value(
     };
     let mut entries = serde_json::Map::new();
     for input in inputs {
-        let key =
-            evaluate_diff_expression_from(diff, key_expression, bindings, budget, input.clone())?;
+        let key = evaluate_diff_expression_from(
+            diff,
+            key_expression,
+            bindings,
+            budget,
+            input.clone(),
+            strict,
+        )?;
         let DiffCliValue::Names(mut keys) = key else {
             return Err("map_by key must produce exactly one string".into());
         };
@@ -1445,7 +1476,7 @@ fn map_diff_value(
             ));
         }
         let mapped =
-            evaluate_diff_expression_from(diff, value_expression, bindings, budget, input)?;
+            evaluate_diff_expression_from(diff, value_expression, bindings, budget, input, strict)?;
         entries.insert(key, diff_value_to_json(diff, mapped)?);
         budget.check_items(entries.len())?;
     }
@@ -1677,6 +1708,7 @@ fn graph_diff_operations(
     value: DiffCliValue,
     stage: &str,
     budget: &mut DiffQueryBudget,
+    strict: bool,
 ) -> Result<DiffCliValue, String> {
     let DiffCliValue::Operations(side, operations) = value else {
         return Err(format!(
@@ -1698,7 +1730,9 @@ fn graph_diff_operations(
             max_work: budget.remaining,
             max_items: budget.max_items,
         },
-        zirium::query::EvaluationOptions::default(),
+        zirium::query::EvaluationOptions {
+            strict_unknown_references: strict,
+        },
     )
     .map_err(|error| error.to_string())?;
     budget.charge(used)?;

@@ -360,3 +360,39 @@ fn projected_diff_graph_traversal_reaches_unchanged_definitions() {
         );
     }
 }
+
+#[test]
+fn strict_diff_reachable_rejects_unknown_reference_semantics() {
+    let before = fixture(
+        "strict-before",
+        "module { %x = arith.constant 1 : i32 \"test.use\"(%x) : (i32) -> () }\n",
+    );
+    let after = fixture(
+        "strict-after",
+        "module { %x = arith.constant 2 : i32 \"test.use\"(%x) : (i32) -> () }\n",
+    );
+    let query = "filter(changed(\"attributes\")) | after | users | reachable";
+    let permissive = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg(query)
+        .output()
+        .unwrap();
+    assert!(permissive.status.success());
+
+    let strict = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--strict", "--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg(query)
+        .output()
+        .unwrap();
+    assert!(!strict.status.success());
+    assert!(strict.stdout.is_empty());
+    assert!(
+        String::from_utf8(strict.stderr)
+            .unwrap()
+            .contains("cannot determine reference semantics")
+    );
+}

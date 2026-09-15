@@ -122,7 +122,9 @@ impl Diff {
         max_items: Option<&Bound<'_, PyAny>>,
         strict: bool,
     ) -> PyResult<Py<PyAny>> {
-        let _ = strict;
+        let options = core_query::EvaluationOptions {
+            strict_unknown_references: strict,
+        };
         let defaults = core_query::EvaluationLimits::default();
         let limits = core_query::EvaluationLimits {
             max_work: positive_limit(max_work, "max_work")?.unwrap_or(defaults.max_work),
@@ -143,7 +145,7 @@ impl Diff {
         if let Ok(query) = expression.extract::<PyRef<'_, ChangeQuery>>() {
             let ids = query
                 .inner
-                .evaluate(&comparison, limits)
+                .evaluate_with_options(&comparison, limits, options)
                 .map_err(py_error)?;
             let values = ids
                 .into_iter()
@@ -154,7 +156,7 @@ impl Diff {
         if let Ok(query) = expression.extract::<PyRef<'_, DiffOpQuery>>() {
             let selection = query
                 .inner
-                .evaluate(&comparison, limits)
+                .evaluate_with_options(&comparison, limits, options)
                 .map_err(py_error)?;
             let state = if selection.side() == DiffSide::Before {
                 &self.before_state
@@ -176,14 +178,14 @@ impl Diff {
         if let Ok(query) = expression.extract::<PyRef<'_, DiffStringQuery>>() {
             let values = query
                 .inner
-                .evaluate(&comparison, limits)
+                .evaluate_with_options(&comparison, limits, options)
                 .map_err(py_error)?;
             return Ok(PyList::new(py, values)?.into_any().unbind());
         }
         if let Ok(query) = expression.extract::<PyRef<'_, DiffCountQuery>>() {
             let value = query
                 .inner
-                .evaluate(&comparison, limits)
+                .evaluate_with_options(&comparison, limits, options)
                 .map_err(py_error)?;
             return Ok(value.into_pyobject(py)?.into_any().unbind());
         }

@@ -306,13 +306,25 @@ impl<T> DiffQueryExpr<T> {
     where
         T: DiffQueryResult,
     {
+        self.evaluate_with_options(diff, limits, EvaluationOptions::default())
+    }
+
+    pub fn evaluate_with_options(
+        &self,
+        diff: &Diff<'_>,
+        limits: EvaluationLimits,
+        options: EvaluationOptions,
+    ) -> Result<T, EvaluationError>
+    where
+        T: DiffQueryResult,
+    {
         if self.stages.len() > limits.max_work {
             return Err(EvaluationError::new("query work limit exceeded"));
         }
         let mut work = self.stages.len();
         let mut value = Runtime::Changes(diff.change_ids().collect());
         for stage in &self.stages {
-            value = evaluate_stage(diff, value, stage, &mut work, limits)?;
+            value = evaluate_stage(diff, value, stage, &mut work, limits, options)?;
         }
         T::from_runtime(value)
     }
@@ -377,6 +389,7 @@ fn evaluate_stage(
     stage: &Stage,
     work: &mut usize,
     limits: EvaluationLimits,
+    options: EvaluationOptions,
 ) -> Result<Runtime, EvaluationError> {
     match stage {
         Stage::ChangeFilter(predicate) => {
@@ -482,11 +495,30 @@ fn evaluate_stage(
             }
             result
         }),
-        Stage::Reachable => {
-            graph_traversal(diff, value, work, limits, OperationTraversal::Reachable)
-        }
-        Stage::Closure => graph_traversal(diff, value, work, limits, OperationTraversal::Closure),
-        Stage::Slice => graph_traversal(diff, value, work, limits, OperationTraversal::Slice),
+        Stage::Reachable => graph_traversal(
+            diff,
+            value,
+            work,
+            limits,
+            options,
+            OperationTraversal::Reachable,
+        ),
+        Stage::Closure => graph_traversal(
+            diff,
+            value,
+            work,
+            limits,
+            options,
+            OperationTraversal::Closure,
+        ),
+        Stage::Slice => graph_traversal(
+            diff,
+            value,
+            work,
+            limits,
+            options,
+            OperationTraversal::Slice,
+        ),
         Stage::Unique => match value {
             Runtime::Changes(v) => Ok(Runtime::Changes(dedup(v))),
             Runtime::Operations(s, v) => Ok(Runtime::Operations(s, dedup(v))),
@@ -722,6 +754,7 @@ fn graph_traversal(
     value: Runtime,
     work: &mut usize,
     limits: EvaluationLimits,
+    options: EvaluationOptions,
     traversal: OperationTraversal,
 ) -> Result<Runtime, EvaluationError> {
     let Runtime::Operations(side, items) = value else {
@@ -749,7 +782,7 @@ fn graph_traversal(
             max_work: remaining,
             max_items: limits.max_items,
         },
-        EvaluationOptions::default(),
+        options,
     )?;
     *work += used;
     Ok(Runtime::Operations(

@@ -38,6 +38,12 @@ def test_diff_owns_immutable_snapshots_and_exposes_changes():
     assert comparison.query(constants.after().users().operand_types()) == ["i32"]
     assert comparison.query(changes().names().sort().min()) == ["arith.constant"]
     assert [
+        operation.name
+        for operation in comparison.query(constants.after().users().reachable())
+    ] == ["test.use"]
+    with pytest.raises(ValueError, match="cannot determine reference semantics"):
+        comparison.query(constants.after().users().reachable(), strict=True)
+    assert [
         operation.name for operation in comparison.query(constants.after().parent())
     ] == ["builtin.module"]
     assert [
