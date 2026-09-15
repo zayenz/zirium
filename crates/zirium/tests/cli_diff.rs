@@ -396,3 +396,35 @@ fn strict_diff_reachable_rejects_unknown_reference_semantics() {
             .contains("cannot determine reference semantics")
     );
 }
+
+#[test]
+fn diff_records_can_be_ordered_by_relative_keys() {
+    let before = fixture(
+        "order-before",
+        "module { \"test.z\"() {value = 1 : i64} : () -> () \"test.a\"() {value = 1 : i64} : () -> () }\n",
+    );
+    let after = fixture(
+        "order-after",
+        "module { \"test.z\"() {value = 2 : i64} : () -> () \"test.a\"() {value = 2 : i64} : () -> () }\n",
+    );
+    for (stage, expected) in [
+        ("sort_by(names)", "test.a\ntest.z\n"),
+        ("min_by(names)", "test.a\n"),
+        ("max_all_by(names)", "test.z\n"),
+    ] {
+        let query = format!("filter(changed(\"attributes\")) | {stage} | names");
+        let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args(["--diff"])
+            .arg(&before)
+            .arg(&after)
+            .arg(query)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{stage}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+}

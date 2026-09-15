@@ -1176,6 +1176,17 @@ fn evaluate_diff_pipeline(
                 DiffCliValue::Names(items) => items.len(),
                 _ => return Err("count requires a stream".into()),
             })
+        } else if [
+            "sort_by(",
+            "min_by(",
+            "max_by(",
+            "min_all_by(",
+            "max_all_by(",
+        ]
+        .iter()
+        .any(|prefix| stage.starts_with(prefix))
+        {
+            order_diff_value(diff, value, stage, bindings, budget, strict)?
         } else if stage == "sort" {
             let DiffCliValue::Names(mut items) = value else {
                 return Err("sort requires a value stream".into());
@@ -1481,6 +1492,106 @@ fn map_diff_value(
         budget.check_items(entries.len())?;
     }
     Ok(DiffCliValue::Map(entries))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum DiffSortKey {
+    Count(usize),
+    Text(String),
+}
+
+fn order_diff_value(
+    diff: &zirium::diff::Diff<'_>,
+    value: DiffCliValue,
+    stage: &str,
+    bindings: &std::collections::HashMap<String, DiffCliValue>,
+    budget: &mut DiffQueryBudget,
+    strict: bool,
+) -> Result<DiffCliValue, String> {
+    let name = stage.split_once('(').map(|(name, _)| name).unwrap_or(stage);
+    let arguments = split_diff_call_arguments(stage, name)?;
+    if arguments.len() != 1 || arguments[0].is_empty() {
+        return Err(format!("{name} requires one key expression"));
+    }
+    match value {
+        DiffCliValue::Changes(items) => Ok(DiffCliValue::Changes(order_diff_items(
+            diff,
+            items,
+            |item| DiffCliValue::Changes(vec![item]),
+            arguments[0],
+            name,
+            bindings,
+            budget,
+            strict,
+        )?)),
+        DiffCliValue::Operations(side, items) => Ok(DiffCliValue::Operations(
+            side,
+            order_diff_items(
+                diff,
+                items,
+                |item| DiffCliValue::Operations(side, vec![item]),
+                arguments[0],
+                name,
+                bindings,
+                budget,
+                strict,
+            )?,
+        )),
+        _ => Err(format!("{name} requires a change or operation stream")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn order_diff_items<T: Copy>(
+    diff: &zirium::diff::Diff<'_>,
+    items: Vec<T>,
+    singleton: impl Fn(T) -> DiffCliValue,
+    key_expression: &str,
+    stage: &str,
+    bindings: &std::collections::HashMap<String, DiffCliValue>,
+    budget: &mut DiffQueryBudget,
+    strict: bool,
+) -> Result<Vec<T>, String> {
+    let mut keyed = Vec::with_capacity(items.len());
+    for (index, item) in items.into_iter().enumerate() {
+        let key = evaluate_diff_expression_from(
+            diff,
+            key_expression,
+            bindings,
+            budget,
+            singleton(item),
+            strict,
+        )?;
+        let key = match key {
+            DiffCliValue::Names(mut values) if values.len() == 1 => {
+                DiffSortKey::Text(values.pop().unwrap())
+            }
+            DiffCliValue::Count(value) => DiffSortKey::Count(value),
+            _ => return Err(format!("{stage} key must produce exactly one scalar")),
+        };
+        keyed.push((key, index, item));
+    }
+    keyed.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    if keyed.is_empty() || stage == "sort_by" {
+        return Ok(keyed.into_iter().map(|(_, _, item)| item).collect());
+    }
+    let maximum = stage.starts_with("max");
+    let all = stage.contains("_all_");
+    let selected_key = if maximum {
+        keyed.last().unwrap().0.clone()
+    } else {
+        keyed.first().unwrap().0.clone()
+    };
+    let mut selected = keyed
+        .into_iter()
+        .filter(|(key, _, _)| key == &selected_key)
+        .map(|(_, index, item)| (index, item))
+        .collect::<Vec<_>>();
+    selected.sort_by_key(|(index, _)| *index);
+    if !all {
+        selected.truncate(1);
+    }
+    Ok(selected.into_iter().map(|(_, item)| item).collect())
 }
 
 fn diff_value_to_json(
