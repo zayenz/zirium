@@ -59,6 +59,37 @@ Output also records `python`, `platform`, and `build_profile`. Set
 `ZIRIUM_BUILD_PROFILE=debug` or `release` when invoking the matching extension
 build; otherwise the profile is reported as `unknown` rather than inferred.
 
+For process memory, generate a fixture or supply a representative input and run
+the RSS mode. Each row uses a fresh subprocess and reports timing alongside RSS:
+
+```sh
+uv run python python/benchmarks/processing_benchmark.py \
+  --size-mib 10 --shape long-operands --write-fixture /tmp/long-operands.mlir
+uv run python python/benchmarks/processing_benchmark.py \
+  --rss-input /tmp/long-operands.mlir
+uv run python python/benchmarks/processing_benchmark.py \
+  --rss-input /path/to/representative.mlir
+```
+
+The stages separate source loading, parsing, lowering while syntax and semantic
+representations coexist, retained semantic memory after releasing the parsed
+file, wrapper traversal, and consumer-style report construction. `ru_maxrss` is
+a process high-water mark and cannot be reset, so rows also report the current
+RSS before traversal or adaptation and the high-water mark already reached. The
+retained-semantic field is current RSS after `gc.collect()`, not a claim about
+Rust heap ownership. Traversal and adaptation include Python wrapper costs;
+adaptation constructs and serializes a simple JSON-shaped report.
+
+Synthetic fixture families cover flat operations (`primary`), nested regions,
+captured outer values and blocks (`block-rich`), long operand lists, repeated
+types and attributes, and one large opaque attribute payload. Output includes
+input bytes, operation and operand counts, regions, blocks, and semantic nesting
+depth. Use representative files to account for the consumer's real shape and
+keep the same Python, Zirium build profile, platform, and fixture when comparing
+commits. This harness establishes measurement boundaries; it has no memory
+regression threshold until a repeatable baseline and variance policy are
+recorded.
+
 The Rust harness generates exact-size fixtures in temporary storage with seed
 `0x5a495249554d0028`. Select stages to isolate parsing, traversal, payload
 construction, lowering, printing, indexes, or editing:

@@ -52,33 +52,139 @@ def current_rss_bytes() -> int:
     raise RuntimeError(f"RSS benchmark does not read current RSS on {sys.platform}")
 
 
+def semantic_nesting_depth(document) -> int:
+    table = document.operation_table()
+    stack = [
+        (table.operation(index), 1)
+        for index, is_root in enumerate(table.root_flags)
+        if is_root
+    ]
+    maximum = 0
+    while stack:
+        operation, depth = stack.pop()
+        maximum = max(maximum, depth)
+        for region_index in range(operation.region_count()):
+            region = operation.region(region_index)
+            for block_index in range(region.block_count()):
+                block = region.block(block_index)
+                stack.extend(
+                    (block.operation(index), depth + 1)
+                    for index in range(block.operation_count())
+                )
+    return maximum
+
+
 def rss_child(stage: str, source_path: Path, max_delimiter_depth: int | None) -> None:
     imported_baseline = current_rss_bytes()
     input_bytes = source_path.stat().st_size
     source = source_path.read_text(encoding="utf-8")
     source_resident = current_rss_bytes()
     parsed = None
-    if stage in {"parse", "lower"}:
+    document = None
+    parse_started = time.perf_counter_ns()
+    if stage != "source":
         parsed = zirium.parse_text(
             source,
             registry=zirium.DialectRegistry.baseline(),
             max_delimiter_depth=max_delimiter_depth,
         )
+    parse_ns = time.perf_counter_ns() - parse_started if parsed is not None else 0
     parse_peak = peak_rss_bytes()
-    if stage == "lower":
+    lowering_ns = 0
+    stage_ns = 0
+    stage_baseline = current_rss_bytes()
+    stage_peak_before = peak_rss_bytes()
+    retained_semantic_bytes = 0
+    report_bytes = 0
+    checksum = 0
+    if stage in {"lower", "semantic-retained", "traverse", "adapt"}:
         assert parsed is not None
-        lowered = parsed.lower_best_effort("hybrid")
+        lowering_started = time.perf_counter_ns()
+        lowered = parsed.lower_best_effort("semantic")
+        lowering_ns = time.perf_counter_ns() - lowering_started
         assert lowered.document is not None
+        document = lowered.document
+    lower_peak = peak_rss_bytes()
+    if stage in {"semantic-retained", "traverse", "adapt"}:
+        del lowered
+        parsed = None
+        source = ""
+        gc.collect()
+        retained_semantic_bytes = current_rss_bytes()
+        stage_baseline = retained_semantic_bytes
+        stage_peak_before = peak_rss_bytes()
+    if stage == "traverse":
+        assert document is not None
+        stage_baseline = current_rss_bytes()
+        stage_peak_before = peak_rss_bytes()
+        started = time.perf_counter_ns()
+        table = document.operation_table()
+        for index in range(table.count):
+            operation = table.operation(index)
+            checksum += (
+                len(operation.name)
+                + operation.operand_count()
+                + operation.result_count()
+                + sum(
+                    len(name) + len(spelling)
+                    for name, spelling in operation.attribute_snapshot()
+                )
+            )
+        stage_ns = time.perf_counter_ns() - started
+    elif stage == "adapt":
+        assert document is not None
+        stage_baseline = current_rss_bytes()
+        stage_peak_before = peak_rss_bytes()
+        started = time.perf_counter_ns()
+        table = document.operation_table()
+        report = [
+            {
+                "name": operation.name,
+                "operands": operation.operand_count(),
+                "results": operation.result_count(),
+                "attributes": operation.attribute_snapshot(),
+            }
+            for operation in (table.operation(index) for index in range(table.count))
+        ]
+        report_bytes = len(json.dumps(report, separators=(",", ":")))
+        stage_ns = time.perf_counter_ns() - started
     stage_peak = peak_rss_bytes()
+    operation_count = parsed.operation_count if parsed is not None else 0
+    operand_count = 0
+    if parsed is not None:
+        offsets = memoryview(parsed.operation_table().operand_offsets).cast("I")
+        operand_count = offsets[-1] if offsets else 0
+    elif document is not None:
+        table = document.operation_table()
+        operation_count = table.count
+        operand_count = sum(
+            table.operation(index).operand_count() for index in range(table.count)
+        )
+    stats = document.statistics() if document is not None else None
+    nesting_depth = semantic_nesting_depth(document) if document is not None else 0
     print(
         json.dumps(
             {
                 "stage": stage,
                 "input_bytes": input_bytes,
+                "operations": operation_count,
+                "operands": operand_count,
+                "regions": stats.regions if stats is not None else 0,
+                "blocks": stats.blocks if stats is not None else 0,
+                "nesting_depth": nesting_depth,
                 "imported_process_baseline_bytes": imported_baseline,
                 "source_resident_baseline_bytes": source_resident,
                 "parse_peak_bytes": parse_peak,
+                "lower_peak_bytes": lower_peak,
+                "retained_semantic_resident_bytes": retained_semantic_bytes,
+                "stage_baseline_bytes": stage_baseline,
+                "stage_peak_before_bytes": stage_peak_before,
                 "stage_peak_bytes": stage_peak,
+                "parse_ns": parse_ns,
+                "lower_ns": lowering_ns,
+                "stage_ns": stage_ns,
+                "report_bytes": report_bytes,
+                "checksum": checksum,
             },
             sort_keys=True,
         )
@@ -93,9 +199,16 @@ def rss_measurements(source_path: Path, max_delimiter_depth: int | None) -> None
     print(
         "benchmark=python-processing-rss "
         f"python={platform.python_version()} platform={platform.platform()} "
-        f"source_path={source_path.resolve()} gate=additional_peak_from_imported_per_input<=6"
+        f"source_path={source_path.resolve()} threshold=none"
     )
-    for stage in ("source", "parse", "lower"):
+    for stage in (
+        "source",
+        "parse",
+        "lower",
+        "semantic-retained",
+        "traverse",
+        "adapt",
+    ):
         command = [
             sys.executable,
             str(Path(__file__).resolve()),
@@ -116,14 +229,24 @@ def rss_measurements(source_path: Path, max_delimiter_depth: int | None) -> None
         )
         print(
             f"rss_measurement stage={stage} input_bytes={size} "
+            f"operations={result['operations']} operands={result['operands']} "
+            f"regions={result['regions']} blocks={result['blocks']} "
+            f"nesting_depth={result['nesting_depth']} "
             f"imported_process_baseline_bytes={result['imported_process_baseline_bytes']} "
             f"source_resident_baseline_bytes={result['source_resident_baseline_bytes']} "
             f"parse_peak_bytes={result['parse_peak_bytes']} "
+            f"lower_peak_bytes={result['lower_peak_bytes']} "
+            f"retained_semantic_resident_bytes={result['retained_semantic_resident_bytes']} "
+            f"stage_baseline_bytes={result['stage_baseline_bytes']} "
+            f"stage_peak_before_bytes={result['stage_peak_before_bytes']} "
             f"stage_peak_bytes={result['stage_peak_bytes']} "
             f"additional_peak_from_imported_bytes={imported_delta} "
             f"additional_peak_from_source_resident_bytes={source_delta} "
             f"additional_peak_from_imported_per_input={imported_delta / size:.3f} "
-            f"additional_peak_from_source_resident_per_input={source_delta / size:.3f}"
+            f"additional_peak_from_source_resident_per_input={source_delta / size:.3f} "
+            f"parse_ns={result['parse_ns']} lower_ns={result['lower_ns']} "
+            f"stage_ns={result['stage_ns']} report_bytes={result['report_bytes']} "
+            f"checksum={result['checksum']}"
         )
 
 
@@ -174,6 +297,53 @@ def nested_fixture(size: int, depth: int) -> bytes:
     return bytes(result)
 
 
+def repeated_values_fixture(size: int) -> bytes:
+    prefix = b"builtin.module {\n"
+    line = b'"bench.op"() {enabled = true, tag = "same"} : () -> tensor<4x8xf32>\n'
+    suffix = b"}\n"
+    result = bytearray(prefix)
+    while len(result) + len(line) + len(suffix) <= size:
+        result += line
+    result += b" " * (size - len(result) - len(suffix)) + suffix
+    return bytes(result)
+
+
+def long_operands_fixture(size: int) -> bytes:
+    prefix = b'"bench.container"() ({\n%seed = "bench.source"() : () -> i32\n'
+    operands = b", ".join([b"%seed"] * 64)
+    types = b", ".join([b"i32"] * 64)
+    line = b'"bench.use"(' + operands + b") : (" + types + b") -> ()\n"
+    suffix = b"}) : () -> ()\n"
+    result = bytearray(prefix)
+    while len(result) + len(line) + len(suffix) <= size:
+        result += line
+    result += b" " * (size - len(result) - len(suffix)) + suffix
+    return bytes(result)
+
+
+def opaque_payload_fixture(size: int) -> bytes:
+    prefix = b'"bench.payload"() {value = #vendor.attr<"'
+    suffix = b'">} : () -> ()\n'
+    if len(prefix) + len(suffix) > size:
+        raise ValueError("fixture is too small for an opaque payload")
+    return prefix + b"x" * (size - len(prefix) - len(suffix)) + suffix
+
+
+def build_fixture(shape: str, size: int, depth: int | None) -> bytes:
+    if shape == "nested":
+        assert depth is not None
+        return nested_fixture(size, depth)
+    if shape == "block-rich":
+        return block_rich_fixture(size)
+    if shape == "repeated-values":
+        return repeated_values_fixture(size)
+    if shape == "long-operands":
+        return long_operands_fixture(size)
+    if shape == "opaque-payload":
+        return opaque_payload_fixture(size)
+    return fixture(size)
+
+
 def timed(runs: int, action):
     samples = []
     result = None
@@ -190,7 +360,16 @@ def main() -> None:
     parser.add_argument("--size-mib", type=int, default=10)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument(
-        "--shape", choices=("primary", "block-rich", "nested"), default="primary"
+        "--shape",
+        choices=(
+            "primary",
+            "block-rich",
+            "nested",
+            "long-operands",
+            "repeated-values",
+            "opaque-payload",
+        ),
+        default="primary",
     )
     parser.add_argument("--depth", type=int)
     parser.add_argument(
@@ -205,7 +384,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--rss-child-stage",
-        choices=("source", "parse", "lower"),
+        choices=(
+            "source",
+            "parse",
+            "lower",
+            "semantic-retained",
+            "traverse",
+            "adapt",
+        ),
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
@@ -235,21 +421,15 @@ def main() -> None:
     if args.shape != "nested" and args.depth is not None:
         parser.error("--depth requires --shape nested")
     if args.write_fixture is not None:
-        contents = (
-            nested_fixture(size, args.depth)
-            if args.shape == "nested"
-            else block_rich_fixture(size)
-            if args.shape == "block-rich"
-            else fixture(size)
-        )
+        contents = build_fixture(args.shape, size, args.depth)
         args.write_fixture.write_bytes(contents)
         print(
             f"fixture_path={args.write_fixture.resolve()} shape={args.shape} "
             f"depth={args.depth} input_bytes={len(contents)} seed=0x{SEED:016x}"
         )
         return
-    if args.shape == "nested":
-        parser.error("--shape nested is available only with --write-fixture")
+    if args.shape not in {"primary", "block-rich"}:
+        parser.error(f"--shape {args.shape} is available only with --write-fixture")
     print(
         f"benchmark=python-processing python={platform.python_version()} platform={platform.platform()} seed=0x{SEED:016x} input_bytes={size} warmups=1 measured_runs={runs}"
     )
