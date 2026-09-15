@@ -844,10 +844,13 @@ fn lower_with_registry(
                         &mut doc,
                         SemanticDiagnosticCode::DuplicateDefinition,
                         range,
-                        format!(
-                            "captured {}attribute `{name}` conflicts with the explicit attribute dictionary",
-                            if is_inherent { "inherent " } else { "" }
-                        ),
+                        if is_inherent {
+                            format!("duplicate inherent attribute `{name}`")
+                        } else {
+                            format!(
+                                "captured attribute `{name}` conflicts with the explicit attribute dictionary"
+                            )
+                        },
                     );
                     doc.complete = false;
                     continue;
