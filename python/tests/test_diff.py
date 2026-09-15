@@ -59,9 +59,7 @@ def test_diff_projected_traversal_and_strict_reference_policy():
     before = lower(
         'module { %x = arith.constant 4 : i32 "test.use"(%x) : (i32) -> () }'
     )
-    after = lower(
-        'module { %x = arith.constant 8 : i32 "test.use"(%x) : (i32) -> () }'
-    )
+    after = lower('module { %x = arith.constant 8 : i32 "test.use"(%x) : (i32) -> () }')
     comparison = zirium.diff(before, after)
     constants = changes().filter(changed("attributes") & dialect("arith"))
 
