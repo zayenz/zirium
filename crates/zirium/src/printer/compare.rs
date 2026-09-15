@@ -147,6 +147,41 @@ impl Correspondence {
         )
     }
 
+    pub(crate) fn equal_value_references(
+        &self,
+        left: ValueReference,
+        right: ValueReference,
+    ) -> bool {
+        equal_value(left, right, self)
+    }
+
+    pub(crate) fn equal_type_ids(
+        &self,
+        left_doc: &Document,
+        right_doc: &Document,
+        left: Option<crate::semantic::TypeId>,
+        right: Option<crate::semantic::TypeId>,
+    ) -> bool {
+        equal_types_by_id(left_doc, right_doc, left, right, self)
+    }
+
+    pub(crate) fn equal_attribute_ids(
+        &self,
+        left_doc: &Document,
+        right_doc: &Document,
+        left: Option<crate::semantic::AttributeId>,
+        right: Option<crate::semantic::AttributeId>,
+    ) -> bool {
+        match (
+            left.and_then(|id| left_doc.attribute_value(id)),
+            right.and_then(|id| right_doc.attribute_value(id)),
+        ) {
+            (Some(left), Some(right)) => equal_attributes(left_doc, right_doc, left, right, self),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     fn build(left_doc: &Document, right_doc: &Document) -> Option<Self> {
         let mut maps = Self {
             operations: HashMap::new(),

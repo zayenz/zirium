@@ -185,7 +185,7 @@ where
 pub struct FieldValue {
     pub present: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -304,11 +304,13 @@ pub fn compare<'a>(
     let identity = NEXT_DIFF_ID.fetch_add(1, Ordering::Relaxed).max(1);
     let mut builder = Matcher::new(before, after, registry, limits.max_work);
     builder.match_list(before.root_operations(), after.root_operations())?;
-    let (operations, regions, blocks, work, ambiguous_groups, bounded_fallback_groups, diagnostics) =
-        builder.finish();
-    let correspondence = Correspondence::from_maps(operations, regions, blocks);
+    let matched = builder.finish();
+    let correspondence =
+        Correspondence::from_maps(matched.operations, matched.regions, matched.blocks);
     let before_paths = operation_paths(before);
     let after_paths = operation_paths(after);
+    let opaque_before = opaque_values(before).len();
+    let opaque_after = opaque_values(after).len();
     let mut diff = Diff {
         before,
         after,
@@ -323,12 +325,13 @@ pub fn compare<'a>(
             before_operations: before.operations().count(),
             after_operations: after.operations().count(),
             matched_operations: 0,
-            ambiguous_groups,
-            bounded_fallback_groups,
-            work_units: work,
-            ..DiffStatistics::default()
+            ambiguous_groups: matched.ambiguous_groups,
+            bounded_fallback_groups: matched.bounded_fallback_groups,
+            opaque_before,
+            opaque_after,
+            work_units: matched.work_units,
         },
-        diagnostics,
+        diagnostics: matched.diagnostics,
     };
     diff.statistics.matched_operations = diff.correspondence.operations.len();
     diff.construct_changes(limits.max_changes)?;
@@ -639,9 +642,9 @@ impl Diff<'_> {
                         .as_str(),
                 );
                 output.push_str(": ");
-                output.push_str(detail.before.value.as_deref().unwrap_or("<absent>"));
+                output.push_str(&display_field_value(&detail.before));
                 output.push_str(" -> ");
-                output.push_str(detail.after.value.as_deref().unwrap_or("<absent>"));
+                output.push_str(&display_field_value(&detail.after));
                 output.push('\n');
             }
         }
@@ -680,9 +683,9 @@ impl Diff<'_> {
                 records.push_str("  ");
                 records.push_str(detail.path.trim_start_matches('/'));
                 records.push_str(": ");
-                records.push_str(detail.before.value.as_deref().unwrap_or("<absent>"));
+                records.push_str(&display_field_value(&detail.before));
                 records.push_str(" -> ");
-                records.push_str(detail.after.value.as_deref().unwrap_or("<absent>"));
+                records.push_str(&display_field_value(&detail.after));
                 records.push('\n');
             }
         }
@@ -765,7 +768,7 @@ impl Diff<'_> {
                 };
                 let details = fields
                     .iter()
-                    .map(|field| self.field_detail(*field, before, after))
+                    .flat_map(|field| self.field_details(*field, before, after))
                     .collect();
                 (kind, fields, details, did_move)
             } else {
@@ -775,8 +778,7 @@ impl Diff<'_> {
                 max_changes,
                 kind,
                 did_move,
-                before,
-                Some(after),
+                (before, Some(after)),
                 fields,
                 details,
             )?;
@@ -787,8 +789,7 @@ impl Diff<'_> {
                     max_changes,
                     ChangeKind::Removed,
                     false,
-                    Some(before),
-                    None,
+                    (Some(before), None),
                     Vec::new(),
                     Vec::new(),
                 )?;
@@ -802,8 +803,7 @@ impl Diff<'_> {
         max: usize,
         kind: ChangeKind,
         moved: bool,
-        before: Option<OperationId>,
-        after: Option<OperationId>,
+        endpoints: (Option<OperationId>, Option<OperationId>),
         fields: Vec<ChangeField>,
         details: Vec<FieldDifference>,
     ) -> Result<(), DiffError> {
@@ -818,72 +818,183 @@ impl Diff<'_> {
             id,
             kind,
             moved,
-            before,
-            after,
+            before: endpoints.0,
+            after: endpoints.1,
             fields,
             details,
         });
         Ok(())
     }
 
-    fn field_detail(
+    fn field_details(
         &self,
         field: ChangeField,
         before: OperationId,
         after: OperationId,
-    ) -> FieldDifference {
-        let display = |document: &Document, operation: OperationId, field| -> String {
-            match field {
-                ChangeField::Name => document
-                    .operation_name(operation)
-                    .unwrap_or("<invalid>")
-                    .to_owned(),
-                ChangeField::Operands => {
-                    format!("{:?}", document.operands(operation).unwrap_or(&[]))
-                }
-                ChangeField::ResultTypes => document
-                    .result_types(operation)
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter_map(|id| document.type_spelling(*id))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                ChangeField::FunctionType => document
+    ) -> Vec<FieldDifference> {
+        match field {
+            ChangeField::Operands => self.sequence_details(
+                "/operands",
+                self.before.operands(before).unwrap_or(&[]),
+                self.after.operands(after).unwrap_or(&[]),
+                |left, right| self.correspondence.equal_value_references(*left, *right),
+                |value| value_reference_json(self.before, *value, &self.before_paths),
+                |value| value_reference_json(self.after, *value, &self.after_paths),
+            ),
+            ChangeField::ResultTypes => self.sequence_details(
+                "/result_types",
+                self.before.result_types(before).unwrap_or(&[]),
+                self.after.result_types(after).unwrap_or(&[]),
+                |left, right| {
+                    self.correspondence.equal_type_ids(
+                        self.before,
+                        self.after,
+                        Some(*left),
+                        Some(*right),
+                    )
+                },
+                |value| serde_json::json!(self.before.type_spelling(*value)),
+                |value| serde_json::json!(self.after.type_spelling(*value)),
+            ),
+            ChangeField::Attributes => self.entry_details(
+                "/attributes",
+                self.before.operation_attributes(before),
+                self.after.operation_attributes(after),
+            ),
+            ChangeField::Properties => self.entry_details(
+                "/properties",
+                self.before.operation_properties(before),
+                self.after.operation_properties(after),
+            ),
+            _ => vec![FieldDifference {
+                path: format!("/{}", field.as_str()),
+                before: self.field_value(self.before, before, field),
+                after: self.field_value(self.after, after, field),
+                comparison: "represented_value",
+            }],
+        }
+    }
+
+    fn sequence_details<T>(
+        &self,
+        path: &str,
+        before: &[T],
+        after: &[T],
+        equal: impl Fn(&T, &T) -> bool,
+        before_value: impl Fn(&T) -> serde_json::Value,
+        after_value: impl Fn(&T) -> serde_json::Value,
+    ) -> Vec<FieldDifference> {
+        if before.len() != after.len() {
+            return vec![FieldDifference {
+                path: path.to_owned(),
+                before: present(serde_json::Value::Array(
+                    before.iter().map(before_value).collect(),
+                )),
+                after: present(serde_json::Value::Array(
+                    after.iter().map(after_value).collect(),
+                )),
+                comparison: "represented_value",
+            }];
+        }
+        before
+            .iter()
+            .zip(after)
+            .enumerate()
+            .filter(|(_, (left, right))| !equal(left, right))
+            .map(|(index, (left, right))| FieldDifference {
+                path: format!("{path}/{index}"),
+                before: present(before_value(left)),
+                after: present(after_value(right)),
+                comparison: "represented_value",
+            })
+            .collect()
+    }
+
+    fn entry_details(
+        &self,
+        path: &str,
+        before: Option<&[(u32, crate::semantic::AttributeId)]>,
+        after: Option<&[(u32, crate::semantic::AttributeId)]>,
+    ) -> Vec<FieldDifference> {
+        let before: BTreeMap<_, _> = before
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|(name, value)| Some((self.before.string(*name)?.to_owned(), *value)))
+            .collect();
+        let after: BTreeMap<_, _> = after
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|(name, value)| Some((self.after.string(*name)?.to_owned(), *value)))
+            .collect();
+        before
+            .keys()
+            .chain(after.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|name| {
+                let left = before.get(name).copied();
+                let right = after.get(name).copied();
+                (!self
+                    .correspondence
+                    .equal_attribute_ids(self.before, self.after, left, right))
+                .then(|| FieldDifference {
+                    path: format!("{path}/{}", json_pointer_escape(name)),
+                    before: left.map_or_else(absent, |id| {
+                        present(serde_json::json!(self.before.attribute_spelling_value(id)))
+                    }),
+                    after: right.map_or_else(absent, |id| {
+                        present(serde_json::json!(self.after.attribute_spelling_value(id)))
+                    }),
+                    comparison: if left
+                        .and_then(|id| self.before.attribute_value(id))
+                        .is_some_and(attribute_contains_opaque)
+                        || right
+                            .and_then(|id| self.after.attribute_value(id))
+                            .is_some_and(attribute_contains_opaque)
+                    {
+                        "opaque_bytes"
+                    } else {
+                        "represented_value"
+                    },
+                })
+            })
+            .collect()
+    }
+
+    fn field_value(
+        &self,
+        document: &Document,
+        operation: OperationId,
+        field: ChangeField,
+    ) -> FieldValue {
+        let value = match field {
+            ChangeField::Name => serde_json::json!(document.operation_name(operation)),
+            ChangeField::FunctionType => serde_json::json!(
+                document
                     .function_type(operation)
                     .and_then(|id| document.type_spelling(id))
-                    .unwrap_or("")
-                    .to_owned(),
-                ChangeField::Attributes => format_entries(document.attributes(operation)),
-                ChangeField::Properties => format_entries(document.properties(operation)),
-                ChangeField::Successors => {
-                    format!("{:?}", document.successors(operation).unwrap_or(&[]))
-                }
-                ChangeField::Regions => format!(
-                    "{} region(s)",
-                    document.operation_regions(operation).map_or(0, <[_]>::len)
-                ),
-                ChangeField::Location => document
-                    .operation_location(operation)
-                    .flatten()
-                    .unwrap_or("<none>")
-                    .to_owned(),
-                ChangeField::Position => {
-                    format!("{}", sibling_position(document, operation).unwrap_or(0))
-                }
+            ),
+            ChangeField::Successors => serde_json::json!(format!(
+                "{} successor(s)",
+                document.successors(operation).map_or(0, <[_]>::len)
+            )),
+            ChangeField::Regions => serde_json::json!(format!(
+                "{} region(s)",
+                document.operation_regions(operation).map_or(0, <[_]>::len)
+            )),
+            ChangeField::Location => {
+                serde_json::json!(document.operation_location(operation).flatten())
             }
+            ChangeField::Position => serde_json::json!({
+                "container": containing_list_path(document, operation),
+                "ordinal": sibling_position(document, operation).unwrap_or(0),
+            }),
+            ChangeField::Operands
+            | ChangeField::ResultTypes
+            | ChangeField::Attributes
+            | ChangeField::Properties => unreachable!("handled separately"),
         };
-        FieldDifference {
-            path: format!("/{}", field.as_str()),
-            before: FieldValue {
-                present: true,
-                value: Some(display(self.before, before, field)),
-            },
-            after: FieldValue {
-                present: true,
-                value: Some(display(self.after, after, field)),
-            },
-            comparison: "represented_value",
-        }
+        present(value)
     }
 
     fn endpoint(&self, document: &Document, operation: OperationId, side: DiffSide) -> Endpoint {
@@ -914,6 +1025,263 @@ struct SerializableChange {
     after: Option<Endpoint>,
     fields: Vec<ChangeField>,
     details: Vec<FieldDifference>,
+}
+
+fn present(value: serde_json::Value) -> FieldValue {
+    FieldValue {
+        present: true,
+        value: Some(value),
+    }
+}
+
+fn absent() -> FieldValue {
+    FieldValue {
+        present: false,
+        value: None,
+    }
+}
+
+fn display_field_value(value: &FieldValue) -> String {
+    if !value.present {
+        return "<absent>".to_owned();
+    }
+    match value.value.as_ref() {
+        Some(serde_json::Value::String(value)) => value.clone(),
+        Some(value) => value.to_string(),
+        None => "<absent>".to_owned(),
+    }
+}
+
+fn json_pointer_escape(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
+fn value_reference_json(
+    document: &Document,
+    value: crate::semantic::ValueReference,
+    operation_paths: &HashMap<OperationId, String>,
+) -> serde_json::Value {
+    use crate::semantic::{ValueId, ValueReference};
+    match value {
+        ValueReference::Resolved(ValueId::OperationResult { operation, result }) => {
+            serde_json::json!({
+                "definition": operation_paths.get(&operation),
+                "result": result,
+            })
+        }
+        ValueReference::Resolved(ValueId::BlockArgument { block, argument }) => {
+            serde_json::json!({
+                "block": block_path(document, block, operation_paths),
+                "argument": argument,
+            })
+        }
+        ValueReference::Invalid(_) => serde_json::json!({"invalid": true}),
+    }
+}
+
+fn block_path(
+    document: &Document,
+    target: BlockId,
+    operation_paths: &HashMap<OperationId, String>,
+) -> Option<String> {
+    for (&operation, path) in operation_paths {
+        for (region_index, &region) in document
+            .operation_regions(operation)
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
+            for (block_index, &block) in document
+                .region(region)
+                .and_then(|region| region.blocks(document))
+                .unwrap_or(&[])
+                .iter()
+                .enumerate()
+            {
+                if block == target {
+                    return Some(format!(
+                        "{path}/regions/{region_index}/blocks/{block_index}"
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn containing_list_path(document: &Document, operation: OperationId) -> String {
+    let paths = operation_paths(document);
+    document
+        .operation(operation)
+        .and_then(|operation| operation.parent_block())
+        .and_then(|block| block_path(document, block, &paths))
+        .map_or_else(
+            || "/operations".to_owned(),
+            |path| format!("{path}/operations"),
+        )
+}
+
+fn attribute_contains_opaque(value: &crate::semantic::AttributeValue) -> bool {
+    use crate::semantic::{AttributeValue, LargeAttributeValue};
+    match value {
+        AttributeValue::Type(value) => type_contains_opaque(value),
+        AttributeValue::Array(values)
+        | AttributeValue::DenseArray {
+            elements: values, ..
+        } => values.iter().any(attribute_contains_opaque),
+        AttributeValue::Dictionary(values) => values
+            .iter()
+            .any(|(_, value)| attribute_contains_opaque(value)),
+        AttributeValue::Large(LargeAttributeValue::Dense(_) | LargeAttributeValue::Sparse(_))
+        | AttributeValue::WideNumber(_)
+        | AttributeValue::Opaque(_) => true,
+        _ => false,
+    }
+}
+
+fn type_contains_opaque(value: &crate::semantic::TypeValue) -> bool {
+    use crate::semantic::{MemRefLayout, TypeValue};
+    match value {
+        TypeValue::Opaque(_) => true,
+        TypeValue::Complex(value) => type_contains_opaque(value),
+        TypeValue::Tuple(values) => values.iter().any(type_contains_opaque),
+        TypeValue::Tensor {
+            element, encoding, ..
+        } => {
+            type_contains_opaque(element)
+                || encoding.as_deref().is_some_and(attribute_contains_opaque)
+        }
+        TypeValue::Vector { element, .. } => type_contains_opaque(element),
+        TypeValue::MemRef {
+            element,
+            layout,
+            memory_space,
+            ..
+        } => {
+            type_contains_opaque(element)
+                || memory_space
+                    .as_deref()
+                    .is_some_and(attribute_contains_opaque)
+                || layout.as_ref().is_some_and(|layout| match layout {
+                    MemRefLayout::Opaque { .. } => true,
+                    MemRefLayout::Attribute(value) => attribute_contains_opaque(value),
+                    _ => false,
+                })
+        }
+        TypeValue::Function { inputs, results } => {
+            inputs.iter().chain(results).any(type_contains_opaque)
+        }
+        _ => false,
+    }
+}
+
+fn opaque_values(document: &Document) -> HashSet<Vec<u8>> {
+    use crate::semantic::{AttributeValue, LargeAttributeValue, MemRefLayout, TypeValue};
+    fn collect_type(value: &TypeValue, values: &mut HashSet<Vec<u8>>) {
+        match value {
+            TypeValue::Opaque(value) => {
+                let mut key = b"type:".to_vec();
+                key.extend_from_slice(value);
+                values.insert(key);
+            }
+            TypeValue::Complex(value) => collect_type(value, values),
+            TypeValue::Tuple(items) => items.iter().for_each(|item| collect_type(item, values)),
+            TypeValue::Tensor {
+                element, encoding, ..
+            } => {
+                collect_type(element, values);
+                if let Some(value) = encoding.as_deref() {
+                    collect_attribute(value, values);
+                }
+            }
+            TypeValue::Vector { element, .. } => collect_type(element, values),
+            TypeValue::MemRef {
+                element,
+                layout,
+                memory_space,
+                ..
+            } => {
+                collect_type(element, values);
+                if let Some(value) = memory_space.as_deref() {
+                    collect_attribute(value, values);
+                }
+                if let Some(layout) = layout {
+                    match layout {
+                        MemRefLayout::Opaque {
+                            spelling,
+                            parameters,
+                        } => {
+                            let mut key = b"layout:".to_vec();
+                            key.extend_from_slice(spelling.as_bytes());
+                            values.insert(key);
+                            parameters
+                                .iter()
+                                .for_each(|value| collect_attribute(value, values));
+                        }
+                        MemRefLayout::Attribute(value) => collect_attribute(value, values),
+                        _ => {}
+                    }
+                }
+            }
+            TypeValue::Function { inputs, results } => inputs
+                .iter()
+                .chain(results)
+                .for_each(|item| collect_type(item, values)),
+            _ => {}
+        }
+    }
+    fn collect_attribute(value: &AttributeValue, values: &mut HashSet<Vec<u8>>) {
+        match value {
+            AttributeValue::Type(value) => collect_type(value, values),
+            AttributeValue::Array(items)
+            | AttributeValue::DenseArray {
+                elements: items, ..
+            } => items
+                .iter()
+                .for_each(|item| collect_attribute(item, values)),
+            AttributeValue::Dictionary(items) => items
+                .iter()
+                .for_each(|(_, item)| collect_attribute(item, values)),
+            AttributeValue::Large(
+                LargeAttributeValue::Dense(value) | LargeAttributeValue::Sparse(value),
+            )
+            | AttributeValue::WideNumber(value)
+            | AttributeValue::Opaque(value) => {
+                values.insert(value.to_vec());
+            }
+            _ => {}
+        }
+    }
+
+    let mut values = HashSet::new();
+    for operation in document.operations() {
+        for (_, value) in document.attribute_entries(operation).into_iter().flatten() {
+            if let Some(value) = document.attribute_value(value) {
+                collect_attribute(value, &mut values);
+            }
+        }
+        for (_, value) in document
+            .operation_properties(operation)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(value) = document.attribute_value(*value) {
+                collect_attribute(value, &mut values);
+            }
+        }
+        for value in document.result_types(operation).into_iter().flatten() {
+            if let Some(value) = document.type_value(*value) {
+                collect_type(value, &mut values);
+            }
+        }
+        if let Some(value) = document
+            .function_type(operation)
+            .and_then(|value| document.type_value(value))
+        {
+            collect_type(value, &mut values);
+        }
+    }
+    values
 }
 
 fn format_entries<'a>(entries: Option<impl Iterator<Item = (&'a str, &'a str)>>) -> String {
@@ -999,7 +1367,7 @@ fn operation_paths(document: &Document) -> HashMap<OperationId, String> {
 fn structural_preorder(document: &Document) -> Vec<OperationId> {
     let paths = operation_paths(document);
     let mut entries: Vec<_> = paths.into_iter().collect();
-    entries.sort_by(|a, b| path_indices(&a.1).cmp(&path_indices(&b.1)));
+    entries.sort_by_key(|entry| path_indices(&entry.1));
     entries
         .into_iter()
         .map(|(operation, _)| operation)
@@ -1081,6 +1449,16 @@ struct Matcher<'a> {
     diagnostics: Vec<String>,
 }
 
+struct MatcherResult {
+    operations: HashMap<OperationId, OperationId>,
+    regions: HashMap<RegionId, RegionId>,
+    blocks: HashMap<BlockId, BlockId>,
+    work_units: usize,
+    ambiguous_groups: usize,
+    bounded_fallback_groups: usize,
+    diagnostics: Vec<String>,
+}
+
 impl<'a> Matcher<'a> {
     fn new(
         before: &'a Document,
@@ -1109,26 +1487,16 @@ impl<'a> Matcher<'a> {
             .ok_or(DiffError::WorkLimitExceeded)?;
         Ok(())
     }
-    fn finish(
-        self,
-    ) -> (
-        HashMap<OperationId, OperationId>,
-        HashMap<RegionId, RegionId>,
-        HashMap<BlockId, BlockId>,
-        usize,
-        usize,
-        usize,
-        Vec<String>,
-    ) {
-        (
-            self.operations,
-            self.regions,
-            self.blocks,
-            self.initial - self.remaining,
-            self.ambiguous,
-            self.bounded_fallback,
-            self.diagnostics,
-        )
+    fn finish(self) -> MatcherResult {
+        MatcherResult {
+            operations: self.operations,
+            regions: self.regions,
+            blocks: self.blocks,
+            work_units: self.initial - self.remaining,
+            ambiguous_groups: self.ambiguous,
+            bounded_fallback_groups: self.bounded_fallback,
+            diagnostics: self.diagnostics,
+        }
     }
 
     fn match_list(

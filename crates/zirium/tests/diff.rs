@@ -210,6 +210,17 @@ fn operand_swap_changes_only_the_consumer_edges() {
     let diff = compare_documents(&before, &after);
     assert_eq!(diff.len(), 1, "{}", diff.to_text());
     assert_eq!(diff.changes()[0].fields(), [ChangeField::Operands]);
+    assert_eq!(
+        diff.changes()[0]
+            .details()
+            .iter()
+            .map(|detail| detail.path.as_str())
+            .collect::<Vec<_>>(),
+        ["/operands/0", "/operands/1"]
+    );
+    let json: serde_json::Value = serde_json::from_str(&diff.to_json().unwrap()).unwrap();
+    assert_eq!(json[0]["details"][0]["before"]["value"]["result"], 0);
+    assert!(json[0]["details"][0]["before"]["value"]["definition"].is_string());
 }
 
 #[test]
@@ -282,4 +293,33 @@ fn locations_are_optional_comparison_data() {
     .unwrap();
     assert_eq!(diff.len(), 1);
     assert_eq!(diff.changes()[0].fields(), [ChangeField::Location]);
+}
+
+#[test]
+fn attribute_details_use_json_pointer_paths_and_explicit_absence() {
+    let before = document(r#""test.op"() {"path/name" = 1 : i32} : () -> ()"#);
+    let after = document(r#""test.op"() {added = true} : () -> ()"#);
+    let diff = compare_documents(&before, &after);
+    let details = diff.changes()[0].details();
+    assert_eq!(
+        details
+            .iter()
+            .map(|detail| detail.path.as_str())
+            .collect::<Vec<_>>(),
+        ["/attributes/added", "/attributes/path~1name"]
+    );
+    assert!(!details[0].before.present);
+    assert!(!details[1].after.present);
+}
+
+#[test]
+fn opaque_value_statistics_count_distinct_payloads() {
+    let source =
+        r#""test.op"() {first = #vendor.data<abc>, second = #vendor.data<abc>} : () -> ()"#;
+    let before = document(source);
+    let after = document(source);
+    let diff = compare_documents(&before, &after);
+    assert!(diff.is_empty());
+    assert_eq!(diff.statistics().opaque_before, 1);
+    assert_eq!(diff.statistics().opaque_after, 1);
 }

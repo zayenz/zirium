@@ -32,10 +32,7 @@ fn adjacent_diff_paths_support_default_and_filtered_json_reports() {
     );
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("1 modified"), "{text}");
-    assert!(
-        text.contains("attributes: value = 4 -> value = 8"),
-        "{text}"
-    );
+    assert!(text.contains("attributes.value: 4 -> 8"), "{text}");
 
     let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
         .args(["--diff"])
