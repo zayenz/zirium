@@ -609,7 +609,7 @@ pub(super) struct SemanticOperation {
 }
 
 impl SemanticOperation {
-    fn new(state: SharedDocument, id: OperationId) -> Self {
+    pub(super) fn new(state: SharedDocument, id: OperationId) -> Self {
         Self { state, id }
     }
 }

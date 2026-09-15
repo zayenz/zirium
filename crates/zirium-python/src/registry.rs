@@ -23,6 +23,16 @@ impl RegistryKind {
             Self::Declarative(registry) => registry,
         }
     }
+
+    pub(super) fn same_context(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Empty, Self::Empty)
+            | (Self::Core, Self::Core)
+            | (Self::Baseline, Self::Baseline) => true,
+            (Self::Declarative(left), Self::Declarative(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
 }
 
 #[pyclass(name = "DialectRegistry", frozen, module = "zirium._zirium")]

@@ -8,7 +8,12 @@ from typing import Generic, Never, TypeVar
 
 from ._zirium import (  # ty: ignore[unresolved-import]
     AttributeQuery,
+    ChangePredicate,
+    ChangeQuery,
     CountQuery,
+    DiffCountQuery,
+    DiffOpQuery,
+    DiffStringQuery,
     MapQuery,
     OpQuery,
     Predicate,
@@ -16,6 +21,9 @@ from ._zirium import (  # ty: ignore[unresolved-import]
     StringQuery,
     TypeQuery,
     always,
+    change,
+    changed,
+    changes,
     dialect,
     has_attr,
     input,
@@ -27,7 +35,12 @@ from ._zirium import (  # ty: ignore[unresolved-import]
 
 __all__ = [
     "AttributeQuery",
+    "ChangePredicate",
+    "ChangeQuery",
     "CountQuery",
+    "DiffCountQuery",
+    "DiffOpQuery",
+    "DiffStringQuery",
     "MapQuery",
     "OpQuery",
     "Predicate",
@@ -36,6 +49,9 @@ __all__ = [
     "StringQuery",
     "TypeQuery",
     "always",
+    "change",
+    "changed",
+    "changes",
     "dialect",
     "has_attr",
     "input",
@@ -64,5 +80,9 @@ for _query_type in (
     TypeQuery,
     AttributeQuery,
     MapQuery,
+    ChangeQuery,
+    DiffOpQuery,
+    DiffStringQuery,
+    DiffCountQuery,
 ):
     QueryExpr.register(_query_type)

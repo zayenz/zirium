@@ -4,8 +4,10 @@ from importlib.metadata import version as _distribution_version
 
 from ._zirium import (  # ty: ignore[unresolved-import]
     AttributeSpecHandle,
+    Change,
     Diagnostic,
     DialectRegistry,
+    Diff,
     Document,
     File,
     ForeignHandleError,
@@ -33,6 +35,7 @@ from ._zirium import (  # ty: ignore[unresolved-import]
     SyntaxOperationTable,
     SyntaxTable,
     Token,
+    diff,
     parse_bytes,
     parse_file,
     parse_text,
@@ -49,8 +52,10 @@ __version__ = _distribution_version("zirium")
 
 __all__ = [
     "AttributeSpecHandle",
+    "Change",
     "Diagnostic",
     "DialectRegistry",
+    "Diff",
     "Document",
     "File",
     "ForeignHandleError",
@@ -84,6 +89,7 @@ __all__ = [
     "SyntaxTable",
     "Token",
     "__version__",
+    "diff",
     "parse_bytes",
     "parse_file",
     "parse_text",

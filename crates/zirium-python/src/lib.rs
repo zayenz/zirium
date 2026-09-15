@@ -56,6 +56,7 @@ fn range_tuple(range: Option<TextRange>) -> Option<(u32, u32)> {
     range.map(|range| (range.start(), range.end()))
 }
 
+mod diff;
 mod editing;
 mod query;
 mod registry;
@@ -260,6 +261,7 @@ fn _zirium(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<OperationShape>()?;
     query::register(module)?;
     module.add_class::<Document>()?;
+    diff::register(module)?;
     module.add_class::<OperationTable>()?;
     module.add_class::<LoweringResult>()?;
     module.add_class::<SemanticDiagnostic>()?;

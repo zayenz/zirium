@@ -51,7 +51,7 @@ pub(super) struct MapQuery {
 #[pyclass(frozen, module = "zirium.query")]
 #[derive(Clone)]
 pub(super) struct Predicate {
-    inner: core::Predicate,
+    pub(super) inner: core::Predicate,
 }
 
 #[pymethods]

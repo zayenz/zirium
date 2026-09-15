@@ -243,6 +243,7 @@ name = "zirium-python"
 version = "0.2.0"
 dependencies = [
  "pyo3",
+ "serde_json",
  "zirium",
 ]
 
