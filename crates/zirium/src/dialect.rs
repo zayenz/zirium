@@ -710,11 +710,20 @@ impl DialectRegistry {
             .find_map(|(candidate, shape)| (candidate == name).then_some(*shape))
     }
 
-    pub(crate) fn operation_format(&self, name: &str) -> Option<&OperationFormat> {
+    pub(crate) fn compiled_operation_format(&self, name: &str) -> Option<&OperationFormat> {
         self.operation_formats
             .as_deref()?
             .iter()
             .find_map(|(candidate, format)| (candidate == name).then_some(format))
+    }
+
+    /// Returns the exact declarative format registered for one operation.
+    ///
+    /// Operations registered by shape, alternatives, callbacks, or the built-in
+    /// catalog return `None`.
+    pub fn operation_format(&self, name: &str) -> Option<&str> {
+        self.compiled_operation_format(name)
+            .map(OperationFormat::description)
     }
 
     pub(crate) fn operation_grammars(&self, name: &str) -> Option<&[OperationGrammar]> {
@@ -759,7 +768,7 @@ impl DialectRegistry {
         }
         if self.operation_shape(name) == Some(OperationShape::CallLike)
             || self
-                .operation_format(name)
+                .compiled_operation_format(name)
                 .is_some_and(OperationFormat::captures_callee)
             || self
                 .operation_grammars(name)
@@ -846,7 +855,7 @@ impl DialectRegistry {
                     name.to_owned(),
                 ));
             }
-            if self.operation_format(name).is_some()
+            if self.compiled_operation_format(name).is_some()
                 || self.operation_grammars(name).is_some()
                 || shapes.iter().any(|(candidate, _)| candidate == name)
             {
@@ -921,7 +930,7 @@ impl DialectRegistry {
             validate_custom_operation_name(self, name)?;
             if descriptions.len() < 2
                 || self.operation_shape(name).is_some()
-                || self.operation_format(name).is_some()
+                || self.compiled_operation_format(name).is_some()
                 || alternatives.iter().any(|(candidate, _)| candidate == name)
             {
                 return Err(if descriptions.len() < 2 {

@@ -496,7 +496,7 @@ fn lower_with_registry(
                     lowering,
                 });
             }
-            if let Some(format) = registry.operation_format(mnemonic) {
+            if let Some(format) = registry.compiled_operation_format(mnemonic) {
                 return lower_operation_format(
                     format,
                     &context,

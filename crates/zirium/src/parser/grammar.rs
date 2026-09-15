@@ -231,7 +231,7 @@ impl Parser<'_> {
                 let name = name.to_owned();
                 return shaped_operation(self, marker, shape, &name);
             }
-            if let Some(format) = self.registry.operation_format(name) {
+            if let Some(format) = self.registry.compiled_operation_format(name) {
                 return formatted_operation(self, marker, format);
             }
             return self.unparsed_custom_operation(Some(marker));

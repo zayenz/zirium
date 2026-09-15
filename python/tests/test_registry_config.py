@@ -210,6 +210,11 @@ def test_registry_contents_are_introspectable():
     assert registry.operation_shape("vendor.shaped") == "literal_attribute"
     assert registry.operation_shape("vendor.formatted") is None
     assert registry.operation_shape("vendor.missing") is None
+    assert registry.operation_format("vendor.formatted") == (
+        "$operands attr-dict `:` type($operands) `to` type($results)"
+    )
+    assert registry.operation_format("vendor.shaped") is None
+    assert registry.operation_format("vendor.missing") is None
 
 
 def test_call_target_attribute_is_configurable_and_introspectable():
@@ -532,6 +537,9 @@ def test_filesystem_bundle_matches_direct_composition_and_moves(tmp_path: Path):
     )
     assert bundled.operation_names() == direct.operation_names()
     assert bundled.operation_shape("vendor.function") == "func_like"
+    assert bundled.operation_format("vendor.widen") == direct.operation_format(
+        "vendor.widen"
+    )
     assert_bundle_behavior(bundled)
     assert_bundle_behavior(direct)
 
@@ -591,6 +599,9 @@ def test_import_models_stay_io_free_and_zip_resources_remain_supported(
         "resource_bundle", "registries/bundle.json"
     )
     assert resource.operation_names() == filesystem.operation_names()
+    assert resource.operation_format("vendor.add") == filesystem.operation_format(
+        "vendor.add"
+    )
     assert resource.operation_shape("vendor.function") == "func_like"
     assert resource.operation_shape("vendor.add") == "binary_operands"
     sys.modules.pop("resource_bundle", None)

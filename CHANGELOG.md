@@ -10,6 +10,8 @@
   calls while retaining normalized strings and original attribute spellings.
 - Load imported registry graphs directly from Python package resources,
   including zip packages, through the same bounded native graph traversal.
+- Expose exact declarative format text through Rust and Python registry
+  inspection alongside the existing shapes, alternatives, and call metadata.
 
 ## 0.2.0
 

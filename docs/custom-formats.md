@@ -73,16 +73,26 @@ names = registry.operation_names()
 assert "vendor.function" in names
 assert registry.operation_shape("vendor.function") == "func_like"
 assert registry.operation_shape("missing.operation") is None
+assert registry.operation_format("vendor.widen") == "$operands attr-dict `:` type($operands) `to` type($results)"
 assert registry.call_target_attribute("func.call") == "callee"
 ```
 
 `operation_names()` returns all registered names as a sorted tuple.
 `operation_shape()` returns a shape's configuration spelling, or `None` for
 formats and unregistered names. Check `operation_names()` to distinguish them.
+`operation_format()` returns the exact configured format text only for a
+single-format registration. It returns `None` for shapes, alternatives,
+built-ins, and unknown names.
 
 `operation_alternatives(name)` returns the locally ordered alternatives as
 `("shape", value)` or `("format", value)` pairs, and returns `None` for a
 single-grammar or unregistered operation.
+
+Together, `operation_shape`, `operation_format`, `operation_alternatives`, and
+`call_target_attribute` expose the effective grammar and direct-call metadata.
+They are diagnostic inspection APIs, not a serialized registry format; rebuild
+registries from the JSON configuration. Imported and direct configurations
+produce the same inspection values after loading completes.
 
 ## Configure a registry with JSON
 

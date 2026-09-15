@@ -65,6 +65,11 @@ fn assert_bundle_behavior(registry: &DialectRegistry) {
         Some("target")
     );
     assert_eq!(
+        registry.operation_format("vendor.widen"),
+        Some("$operands attr-dict `:` type($operands) `to` type($results)")
+    );
+    assert_eq!(registry.operation_format("vendor.function"), None);
+    assert_eq!(
         registry.operation_alternatives("vendor.choice"),
         Some(vec![
             OperationAlternative::Format("$value `:` type($value) attr-dict `:` type($result)"),

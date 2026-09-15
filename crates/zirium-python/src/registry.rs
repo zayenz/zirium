@@ -109,6 +109,10 @@ impl DialectRegistryHandle {
             .map(CoreOperationShape::name)
     }
 
+    fn operation_format<'a>(&'a self, name: &str) -> Option<&'a str> {
+        self.kind.registry().operation_format(name)
+    }
+
     fn call_target_attribute<'a>(&'a self, name: &str) -> Option<&'a str> {
         self.kind.registry().call_target_attribute(name)
     }
