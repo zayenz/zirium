@@ -4,6 +4,8 @@
 
 - Add independently named literal captures to exact operation formats, with
   per-capture type bindings and explicit attribute-dictionary collision errors.
+- Allow exact formats and ordered alternatives to declare a custom direct-call
+  target attribute shared by custom and generic spellings.
 
 ## 0.2.0
 

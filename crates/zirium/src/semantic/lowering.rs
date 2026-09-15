@@ -460,38 +460,52 @@ fn lower_with_registry(
             }
             if let Some(alternatives) = registry.operation_grammars(mnemonic) {
                 return match alternatives.get(context.format_alternative())? {
-                    crate::dialect::OperationGrammar::Shape(shape) => {
-                        lower_operation_shape(*shape, mnemonic, &context).map(|lowering| {
-                            MatchedLowering {
-                                name: mnemonic.to_owned(),
-                                shape: Some(*shape),
-                                lowering: lowering.into(),
-                            }
-                        })
-                    }
-                    crate::dialect::OperationGrammar::Format(format) => {
-                        lower_operation_format(format, &context).map(|lowering| MatchedLowering {
-                            name: mnemonic.to_owned(),
-                            shape: None,
-                            lowering,
-                        })
-                    }
+                    crate::dialect::OperationGrammar::Shape(shape) => lower_operation_shape(
+                        *shape,
+                        mnemonic,
+                        &context,
+                        registry.call_target_attribute(mnemonic),
+                    )
+                    .map(|lowering| MatchedLowering {
+                        name: mnemonic.to_owned(),
+                        shape: Some(*shape),
+                        lowering,
+                    }),
+                    crate::dialect::OperationGrammar::Format(format) => lower_operation_format(
+                        format,
+                        &context,
+                        registry.call_target_attribute(mnemonic),
+                    )
+                    .map(|lowering| MatchedLowering {
+                        name: mnemonic.to_owned(),
+                        shape: None,
+                        lowering,
+                    }),
                 };
             }
             if let Some(shape) = registry.operation_shape(mnemonic) {
-                return lower_operation_shape(shape, mnemonic, &context).map(|lowering| {
-                    MatchedLowering {
-                        name: mnemonic.to_owned(),
-                        shape: Some(shape),
-                        lowering: lowering.into(),
-                    }
+                return lower_operation_shape(
+                    shape,
+                    mnemonic,
+                    &context,
+                    registry.call_target_attribute(mnemonic),
+                )
+                .map(|lowering| MatchedLowering {
+                    name: mnemonic.to_owned(),
+                    shape: Some(shape),
+                    lowering,
                 });
             }
             if let Some(format) = registry.operation_format(mnemonic) {
-                return lower_operation_format(format, &context).map(|lowering| MatchedLowering {
+                return lower_operation_format(
+                    format,
+                    &context,
+                    registry.call_target_attribute(mnemonic),
+                )
+                .map(|lowering| MatchedLowering {
                     name: mnemonic.to_owned(),
                     shape: None,
-                    lowering: lowering.into(),
+                    lowering,
                 });
             }
             let descriptor = registry.custom_operation(mnemonic)?;

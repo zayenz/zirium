@@ -216,6 +216,13 @@ Format descriptions do not support optional groups, repetition, regions, or
 ODS/TableGen constructs. Use a matching shape or built-in implementation for
 those forms. Unknown directives are rejected during registry construction.
 
+`callee_attribute` is operation metadata and is accepted on `call_like` shapes,
+exact formats containing `$callee`, and alternatives whose every grammar is a
+direct call. For an exact format, `$callee` is stored under the configured name;
+the equivalent generic operation reads the same named attribute. One
+`callee_attribute` on an alternatives record applies to every alternative.
+Composition rejects different target names for the same operation.
+
 ### Operation alternatives
 
 Use `operation_alternatives` when one operation has two or more complete

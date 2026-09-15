@@ -42,6 +42,9 @@ class OperationFormatConfig(BaseModel):
 
     name: str
     format: str
+    callee_attribute: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class OperationGrammarConfig(BaseModel):
@@ -80,6 +83,9 @@ class OperationAlternativesConfig(BaseModel):
 
     name: str
     alternatives: list[OperationGrammarConfig]
+    callee_attribute: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def require_multiple_grammars(self):

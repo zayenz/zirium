@@ -359,7 +359,7 @@ impl std::fmt::Display for DeclarativeRegistryError {
             }
             Self::InvalidCallTargetAttribute(name) => write!(
                 formatter,
-                "callee_attribute requires a call_like shape and a dotted ASCII attribute name: {name}"
+                "callee_attribute requires direct-call grammar and a dotted ASCII attribute name: {name}"
             ),
             Self::InvalidOperationAlternatives(name) => {
                 write!(
@@ -1511,8 +1511,9 @@ pub(crate) fn lower_operation_shape(
     shape: OperationShape,
     operation: &str,
     context: &RegisteredLoweringContext<'_>,
-) -> Option<RegisteredLowering> {
-    match shape {
+    callee_attribute: Option<&str>,
+) -> Option<DeclarativeLowering> {
+    let lowering = match shape {
         OperationShape::FuncLike => lower_func_like(operation, context),
         OperationShape::CallLike => lower_call_like(operation, context),
         OperationShape::BinaryOperands => lower_binary_operands(operation, context),
@@ -1525,7 +1526,17 @@ pub(crate) fn lower_operation_shape(
         OperationShape::LiteralAttribute => lower_literal_attribute(operation, context),
         OperationShape::OperandClauses => lower_operand_clauses(operation, context),
         OperationShape::RegionClauses => lower_region_clauses(operation, context),
+    }?;
+    let mut lowering: DeclarativeLowering = lowering.into();
+    if shape == OperationShape::CallLike
+        && let Some((name, _)) = lowering
+            .attributes
+            .iter_mut()
+            .find(|(name, _)| name == "callee")
+    {
+        *name = callee_attribute.unwrap_or("callee").to_owned();
     }
+    Some(lowering)
 }
 
 pub(crate) struct DeclarativeLowering {
@@ -1551,6 +1562,7 @@ impl From<RegisteredLowering> for DeclarativeLowering {
 pub(crate) fn lower_operation_format(
     format: &OperationFormat,
     context: &RegisteredLoweringContext<'_>,
+    callee_attribute: Option<&str>,
 ) -> Option<DeclarativeLowering> {
     if format.types().len() != context.format_types().len() {
         return None;
@@ -1653,7 +1665,10 @@ pub(crate) fn lower_operation_format(
         attributes.push((name.to_owned(), value.to_owned()));
     }
     if format.captures_callee() {
-        attributes.push(("callee".into(), context.leading_symbol()?.trim().to_owned()));
+        attributes.push((
+            callee_attribute.unwrap_or("callee").to_owned(),
+            context.leading_symbol()?.trim().to_owned(),
+        ));
     }
     Some(DeclarativeLowering {
         result_types: results,

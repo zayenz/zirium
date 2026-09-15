@@ -530,6 +530,13 @@ fn configured_call_target_attribute_drives_dependency_queries() {
     let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     let mut document = lowered.document.unwrap();
+    for operation in document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("vendor.invoke"))
+    {
+        assert!(document.attribute_id(operation, "target").is_some());
+        assert!(document.attribute_id(operation, "callee").is_none());
+    }
 
     for (source, expected) in [
         (
@@ -564,6 +571,100 @@ fn configured_call_target_attribute_drives_dependency_queries() {
 }
 
 #[test]
+fn exact_format_call_metadata_matches_generic_calls() {
+    let registry = RegistryConfig::from_json(
+        r#"{
+          "builtins": ["builtin.module"],
+          "operation_shapes": [
+            {"name":"vendor.function","shape":"func_like"},
+            {"name":"vendor.body","shape":"variadic_operands"}
+          ],
+          "operation_formats": [{
+            "name":"vendor.invoke",
+            "format":"$callee attr-dict",
+            "callee_attribute":"target"
+          }]
+        }"#,
+    )
+    .unwrap()
+    .build()
+    .unwrap();
+    assert_eq!(
+        registry.call_target_attribute("vendor.invoke"),
+        Some("target")
+    );
+    let source = br#"module {
+  "vendor.function"() ({
+  ^bb0:
+    "vendor.body"() : () -> ()
+  }) {sym_name = "worker", type = () -> ()} : () -> ()
+  vendor.invoke @worker
+  "vendor.invoke"() {target = @worker} : () -> ()
+}"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let mut document = lowered.document.unwrap();
+    for operation in document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("vendor.invoke"))
+    {
+        assert_eq!(
+            document
+                .attributes(operation)
+                .unwrap()
+                .find(|(name, _)| *name == "target"),
+            Some(("target", "@worker"))
+        );
+    }
+    let query = Query::parse(r#"filter(op("vendor.invoke")) | reachable | names"#).unwrap();
+    let mut outputs = Vec::new();
+    query
+        .evaluate(&mut document, &registry, |_, output| {
+            outputs.push(output);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        outputs,
+        [QueryOutput::Values(vec![
+            "vendor.body".into(),
+            "vendor.invoke".into(),
+            "vendor.invoke".into(),
+        ])]
+    );
+}
+
+#[test]
+fn alternatives_share_call_target_metadata() {
+    let registry = RegistryConfig::from_json(
+        r#"{"builtins":[],"operation_shapes":[],"operation_alternatives":[{
+          "name":"vendor.invoke",
+          "callee_attribute":"target",
+          "alternatives":[
+            {"format":"$callee attr-dict"},
+            {"format":"$callee `as` attr-dict"}
+          ]
+        }]}"#,
+    )
+    .unwrap()
+    .build()
+    .unwrap();
+    assert_eq!(
+        registry.call_target_attribute("vendor.invoke"),
+        Some("target")
+    );
+    assert_eq!(
+        registry
+            .operation_alternatives("vendor.invoke")
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn call_target_attribute_requires_a_valid_call_like_registration() {
     for json in [
         r#"{"builtins":[],"operation_shapes":[
@@ -572,6 +673,14 @@ fn call_target_attribute_requires_a_valid_call_like_registration() {
         r#"{"builtins":[],"operation_shapes":[
           {"name":"vendor.invoke","shape":"call_like","callee_attribute":"bad-name"}
         ]}"#,
+        r#"{"builtins":[],"operation_shapes":[],"operation_formats":[
+          {"name":"vendor.invoke","format":"attr-dict","callee_attribute":"target"}
+        ]}"#,
+        r#"{"builtins":[],"operation_shapes":[],"operation_alternatives":[{
+          "name":"vendor.invoke","callee_attribute":"target","alternatives":[
+            {"format":"$callee attr-dict"},{"format":"attr-dict"}
+          ]
+        }]}"#,
     ] {
         let error = match RegistryConfig::from_json(json).unwrap().build() {
             Ok(_) => panic!("invalid call-target registration was accepted"),

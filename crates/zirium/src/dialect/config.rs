@@ -79,6 +79,8 @@ pub struct OperationShapeConfig {
 pub struct OperationFormatConfig {
     pub name: String,
     pub format: String,
+    #[serde(default)]
+    pub callee_attribute: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, PartialEq, Eq)]
@@ -86,6 +88,8 @@ pub struct OperationFormatConfig {
 pub struct OperationAlternativesConfig {
     pub name: String,
     pub alternatives: Vec<OperationGrammarConfig>,
+    #[serde(default)]
+    pub callee_attribute: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, PartialEq, Eq)]
@@ -420,6 +424,23 @@ impl RegistryConfig {
                     operation.name.clone(),
                 ));
             }
+            if let Some(attribute) = operation.callee_attribute.as_deref() {
+                let direct_call = super::OperationFormat::parse(&operation.format)
+                    .is_ok_and(|format| format.captures_callee());
+                if !valid_attribute_name(attribute) || !direct_call {
+                    return Err(DeclarativeRegistryError::InvalidCallTargetAttribute(
+                        operation.name.clone(),
+                    ));
+                }
+                if let Some(previous) =
+                    call_target_attributes.insert(operation.name.clone(), attribute.to_owned())
+                    && previous != attribute
+                {
+                    return Err(DeclarativeRegistryError::ConflictingCallTargetAttribute(
+                        operation.name.clone(),
+                    ));
+                }
+            }
         }
         let mut explicit_alternatives = BTreeSet::new();
         for operation in &self.operation_alternatives {
@@ -450,6 +471,28 @@ impl RegistryConfig {
                 return Err(DeclarativeRegistryError::ConflictingAlternatives(
                     operation.name.clone(),
                 ));
+            }
+            if let Some(attribute) = operation.callee_attribute.as_deref() {
+                let direct_calls = operation.alternatives.iter().all(|grammar| {
+                    grammar.shape == Some(OperationShape::CallLike)
+                        || grammar.format.as_deref().is_some_and(|description| {
+                            super::OperationFormat::parse(description)
+                                .is_ok_and(|format| format.captures_callee())
+                        })
+                });
+                if !valid_attribute_name(attribute) || !direct_calls {
+                    return Err(DeclarativeRegistryError::InvalidCallTargetAttribute(
+                        operation.name.clone(),
+                    ));
+                }
+                if let Some(previous) =
+                    call_target_attributes.insert(operation.name.clone(), attribute.to_owned())
+                    && previous != attribute
+                {
+                    return Err(DeclarativeRegistryError::ConflictingCallTargetAttribute(
+                        operation.name.clone(),
+                    ));
+                }
             }
         }
         Ok((

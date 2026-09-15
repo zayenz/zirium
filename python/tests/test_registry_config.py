@@ -224,6 +224,30 @@ def test_call_target_attribute_is_configurable_and_introspectable():
     )
     assert registry.call_target_attribute("vendor.missing") is None
 
+    formatted = zirium.DialectRegistry.from_config(
+        zirium.RegistryConfig(
+            builtins=[],
+            operation_shapes=[],
+            operation_formats=[
+                zirium.OperationFormatConfig(
+                    name="vendor.formatted_invoke",
+                    format="$callee attr-dict",
+                    callee_attribute="target",
+                )
+            ],
+        )
+    )
+    assert formatted.call_target_attribute("vendor.formatted_invoke") == "target"
+    parsed = zirium.parse_text(
+        "vendor.formatted_invoke @worker", registry=formatted
+    )
+    document = parsed.lower_strict().document
+    assert document is not None
+    operation = document.operation_table("vendor.formatted_invoke").operation(0)
+    target = operation.attribute_by_name("target")
+    assert target is not None and target.symbol_value == "worker"
+    assert operation.attribute_by_name("callee") is None
+
     with pytest.raises(ValueError, match="requires a call_like shape"):
         zirium.OperationShapeConfig(
             name="vendor.function",
@@ -348,6 +372,23 @@ def test_operation_alternatives_are_validated_inspectable_and_lowered():
             name="a.Bad",
             alternatives=[zirium.OperationGrammarConfig(shape="operand_clauses")],
         )
+
+    call_alternatives = zirium.OperationAlternativesConfig(
+        name="a.Invoke",
+        callee_attribute="target",
+        alternatives=[
+            zirium.OperationGrammarConfig(format="$callee attr-dict"),
+            zirium.OperationGrammarConfig(format="$callee `as` attr-dict"),
+        ],
+    )
+    call_registry = zirium.DialectRegistry.from_config(
+        zirium.RegistryConfig(
+            builtins=[],
+            operation_shapes=[],
+            operation_alternatives=[call_alternatives],
+        )
+    )
+    assert call_registry.call_target_attribute("a.Invoke") == "target"
 
 
 def test_invalid_operation_format_names_its_entry():
