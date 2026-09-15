@@ -10,6 +10,14 @@ LLVM. The parser preserves the original bytes, including comments, whitespace,
 malformed syntax, and invalid UTF-8. A separate semantic representation supports
 verification and structural edits.
 
+Compare structural and SSA changes between two MLIR documents:
+
+```sh
+zirium --diff before.mlir after.mlir 'filter(dialect("arith")) | json'
+```
+
+See [semantic diff](docs/semantic-diff.md) for the comparison and query contract.
+
 Version 0.2.0 is experimental. It targets MLIR 22.1 textual syntax and supports
 selected custom dialect forms. The API may change without a migration path;
 bytecode and ODS/TableGen loading are unsupported.

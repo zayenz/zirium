@@ -67,6 +67,11 @@ The optional `zirium-custom-format` companion skill supports registry research
 when explicitly invoked. For command-line queries, consult `zirium --help` or
 the `zirium-cli` companion skill when installed.
 
+Use `zirium::diff::compare` for structural/dataflow comparison of two complete
+documents. It borrows both documents and requires the registry semantics used
+during lowering. Diff operation handles retain their side and comparison
+identity. See [the semantic-diff reference](../../docs/semantic-diff.md).
+
 ## Verify proportionately
 
 Run an existing focused test or example first. In a Zirium checkout,

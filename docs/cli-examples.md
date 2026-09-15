@@ -330,3 +330,14 @@ zirium --preset stablehlo --strict \
 
 The [literal syntax](query-language.md#building-json-structures) preserves numeric
 counts and nested maps while allowing interpolated report labels.
+
+## Compare two documents
+
+```sh
+zirium --diff examples/cli/diff-before.mlir examples/cli/diff-after.mlir
+zirium --diff examples/cli/diff-before.mlir examples/cli/diff-after.mlir \
+  -f examples/cli/diff-report.zirium
+```
+
+The first command prints a human summary. The second emits the changed arith
+attribute records as `zirium.diff.v1` JSON.

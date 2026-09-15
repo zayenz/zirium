@@ -499,3 +499,8 @@ leave unsupported.
 - [Processing benchmarks](architecture/processing-benchmarks.md) describes how to measure parsing, semantic processing, and Python access.
 - [`python/zirium/__init__.pyi`](../python/zirium/__init__.pyi) is the compact reference for the typed Python API.
 - [`crates/zirium/src/lib.rs`](../crates/zirium/src/lib.rs) links the public Rust modules and contains a minimal doctest.
+
+To compare two strict semantic documents, call `zirium::diff::compare` in Rust
+or `zirium.diff(before, after)` in Python. Python comparison snapshots both
+documents and requires the same retained registry context. See
+[semantic diff](semantic-diff.md).

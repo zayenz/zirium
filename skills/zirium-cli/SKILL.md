@@ -28,6 +28,12 @@ The CLI reads stdin when no input path is given and treats supplied files as
 independent documents. It buffers output and never overwrites inputs. Use `--`
 before an input path beginning with `-`.
 
+For structural/dataflow comparison, keep paths adjacent and ordered:
+`zirium --diff BEFORE AFTER [QUERY]`. Diff queries begin with change records;
+use `change(...)`/`changed(...)`, then `before` or `after` before operation
+navigation. Read [the semantic-diff reference](../../docs/semantic-diff.md) for
+comparison limits and unsupported resource cases.
+
 ## Choose dialect support deliberately
 
 Without registry flags, Zirium uses its baseline registry. If stderr warns

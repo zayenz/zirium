@@ -379,3 +379,6 @@ First public experimental release of Zirium.
   platform and interpreter matrix.
 
 The API is experimental and may change before 1.0.
+
+- Added structural and dataflow diff APIs for Rust and Python, paired `--diff`
+  CLI input, change predicates, side projections, and `zirium.diff.v1` reports.

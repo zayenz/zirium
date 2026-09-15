@@ -249,3 +249,9 @@ Evaluation returns `EvaluationError` in Rust and raises `ValueError` in Python.
 Python rejects invalid argument types with `TypeError`. Evaluation runs in Rust
 with shared document access and without holding the Python interpreter lock;
 queries cannot contain Python callbacks, edits, or emitters.
+
+Typed diff builders start with `changes()`. A `ChangeQuery` accepts ordinary and
+change predicates; `.before()` and `.after()` return side-scoped operation
+queries. Rust returns `DiffOperationSelection` rather than bare operation IDs.
+Python resolves those selections to wrappers backed by immutable snapshots.
+See [semantic diff](semantic-diff.md) for examples.

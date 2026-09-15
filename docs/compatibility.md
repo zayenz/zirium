@@ -122,3 +122,8 @@ one only if its structure remains valid. The alias expansion limit defaults to
 shared budget. Exceeding the limit produces an invalid semantic value and the
 diagnostic `alias expansion depth exceeds limit of 64`, with the effective limit
 substituted.
+
+Semantic diff covers Zirium's represented operation, type, attribute, region,
+CFG, and SSA structure. It rejects incomplete documents, resource-backed
+attributes, and unrepresented trailing file metadata. Opaque retained values
+are compared byte-for-byte; see [semantic diff](semantic-diff.md).

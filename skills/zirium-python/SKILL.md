@@ -70,6 +70,11 @@ The optional `zirium-custom-format` companion skill supports registry research
 when explicitly invoked. For command-line queries, consult `zirium --help` or
 the `zirium-cli` companion skill when installed.
 
+Use `zirium.diff(before, after)` for structural/dataflow comparison. Parse both
+documents with the same registry instance. The result owns immutable semantic
+snapshots, so returned operations remain valid after originals change. See
+[the semantic-diff reference](../../docs/semantic-diff.md).
+
 ## Verify proportionately
 
 Run an existing focused test or example. In a Zirium checkout, use

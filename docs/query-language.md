@@ -777,3 +777,12 @@ caret. Program-file positions include leading whitespace and comments.
 
 For implementation timing and scaling measurements, see
 [query profiling](architecture/query-profiling.md).
+
+## Semantic diff input
+
+`--diff BEFORE AFTER` changes the initial stream from operations to change
+records. `change("added")` selects a primary kind and `changed("operands")`
+selects a direct changed field. Ordinary predicates inspect the after endpoint,
+or the before endpoint for removals. Use `before` or `after` before operation
+navigation. The two sides remain distinct even for an empty selection, and diff
+programs reject edits. See [semantic diff](semantic-diff.md) for the full policy.
