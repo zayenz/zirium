@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.0
+
+Zirium 0.2.0 adds portable registry bundles, richer Python semantic values,
+and stricter structural-editing contracts. It also improves bounded processing
+for large inputs and outputs. The API remains experimental.
+
 - Add a stage-separated Python memory benchmark covering source loading,
   parsing, lowering coexistence, retained semantic storage, traversal, and
   consumer report construction across controlled synthetic workload shapes.
@@ -15,13 +21,6 @@
   including zip packages, through the same bounded native graph traversal.
 - Expose exact declarative format text through Rust and Python registry
   inspection alongside the existing shapes, alternatives, and call metadata.
-
-## 0.2.0
-
-Zirium 0.2.0 adds portable registry bundles, richer Python semantic values,
-and stricter structural-editing contracts. It also improves bounded processing
-for large inputs and outputs. The API remains experimental.
-
 - Add relative `imports` to registry JSON files, with deterministic graph
   composition, cycle and conflict diagnostics, and configurable depth, file,
   edge, and aggregate-byte limits. Rust, Python, and the CLI can load the same

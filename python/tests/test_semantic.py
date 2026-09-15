@@ -634,13 +634,17 @@ def test_attributes_and_values_expose_scalar_and_document_identity():
     assert target.symbol_segments == ["a::b"]
     assert b'@"a::b"' in quoted_separator.canonical_bytes()
 
-    structured = zirium.parse_text(
-        r'''"quoted"() {
+    structured = (
+        zirium.parse_text(
+            r""""quoted"() {
           quoted = @library::@"part::name",
           nested = @library::@part::@name,
           escaped = @"quote\22slash\5C"
-        } : () -> ()'''
-    ).lower_strict().document
+        } : () -> ()"""
+        )
+        .lower_strict()
+        .document
+    )
     assert structured is not None
     operation = structured.operation_table().operation(0)
     quoted_path = operation.attribute_by_name("quoted")
@@ -655,12 +659,14 @@ def test_attributes_and_values_expose_scalar_and_document_identity():
     assert quoted_path.spelling == '@library::@"part::name"'
 
     invalid_unicode = zirium.parse_text(
-        r'''"quoted"() {target = @"\FF"} : () -> ()'''
+        r""""quoted"() {target = @"\FF"} : () -> ()"""
     ).lower_best_effort()
     assert invalid_unicode.diagnostics
     assert invalid_unicode.document is not None
     invalid_target = (
-        invalid_unicode.document.operation_table().operation(0).attribute_by_name("target")
+        invalid_unicode.document.operation_table()
+        .operation(0)
+        .attribute_by_name("target")
     )
     assert invalid_target is not None
     assert invalid_target.symbol_segments is None

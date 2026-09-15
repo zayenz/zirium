@@ -186,6 +186,7 @@ impl DialectRegistryHandle {
 
     #[staticmethod]
     #[pyo3(signature = (package, resource, *additional_resources, max_depth=None, max_files=None, max_edges=None, max_bytes=None))]
+    #[allow(clippy::too_many_arguments)]
     fn from_package_resources(
         package: &str,
         resource: String,
