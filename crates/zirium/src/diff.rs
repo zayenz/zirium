@@ -646,6 +646,50 @@ impl Diff<'_> {
         output
     }
 
+    pub fn selection_to_text(&self, ids: &[ChangeId]) -> Result<String, DiffError> {
+        if ids.is_empty() {
+            return Ok(if self.is_empty() {
+                "No structural changes.\n".to_owned()
+            } else {
+                "No selected changes.\n".to_owned()
+            });
+        }
+        let mut counts = [0usize; 4];
+        let mut records = String::new();
+        for &id in ids {
+            let change = self.change(id)?;
+            counts[match change.kind {
+                ChangeKind::Added => 0,
+                ChangeKind::Removed => 1,
+                ChangeKind::Modified => 2,
+                ChangeKind::Moved => 3,
+            }] += 1;
+            let operation = change.after.or(change.before).expect("change endpoint");
+            let document = if change.after.is_some() {
+                self.after
+            } else {
+                self.before
+            };
+            records.push_str(change.kind.as_str());
+            records.push(' ');
+            records.push_str(document.operation_name(operation).unwrap_or("<invalid>"));
+            records.push('\n');
+            for detail in &change.details {
+                records.push_str("  ");
+                records.push_str(detail.path.trim_start_matches('/'));
+                records.push_str(": ");
+                records.push_str(detail.before.value.as_deref().unwrap_or("<absent>"));
+                records.push_str(" -> ");
+                records.push_str(detail.after.value.as_deref().unwrap_or("<absent>"));
+                records.push('\n');
+            }
+        }
+        Ok(format!(
+            "{} modified, {} added, {} removed, {} moved\n\n{records}",
+            counts[2], counts[0], counts[1], counts[3]
+        ))
+    }
+
     fn serializable_changes(&self) -> Vec<SerializableChange> {
         self.changes
             .iter()

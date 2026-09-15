@@ -91,3 +91,31 @@ fn side_projection_prints_from_the_selected_document() {
     assert!(text.contains("constant 4"), "{text}");
     assert!(!text.contains("constant 8"), "{text}");
 }
+
+#[test]
+fn projected_navigation_and_explicit_json_keep_diff_attribution() {
+    let before = fixture(
+        "navigation-before",
+        "module { %x = arith.constant 4 : i32 \"test.use\"(%x) : (i32) -> () }\n",
+    );
+    let after = fixture(
+        "navigation-after",
+        "module { %x = arith.constant 8 : i32 \"test.use\"(%x) : (i32) -> () }\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--jsonl", "--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg(r#"filter(changed("attributes")) | after | users | unique | json"#)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["schema"], "zirium.diff.v1");
+    assert_eq!(envelope["result_side"], "after");
+    assert_eq!(envelope["result"][0]["name"], "test.use");
+}
