@@ -6,6 +6,8 @@
   per-capture type bindings and explicit attribute-dictionary collision errors.
 - Allow exact formats and ordered alternatives to declare a custom direct-call
   target attribute shared by custom and generic spellings.
+- Expose decoded symbol-reference path segments on Python attributes and direct
+  calls while retaining normalized strings and original attribute spellings.
 
 ## 0.2.0
 

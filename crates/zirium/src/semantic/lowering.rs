@@ -918,6 +918,9 @@ fn lower_with_registry(
             result_types: doc.types_lists.push(&result_types),
             function_type,
             attributes: doc.attribute_lists.push(&attributes),
+            callee_attribute: registry
+                .call_target_attribute(name)
+                .map(|attribute| strings.intern(attribute)),
             properties: doc.attribute_lists.push(&properties),
             successors: List::default(),
             regions: doc.region_lists.push(&owned_regions),

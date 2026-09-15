@@ -98,6 +98,10 @@ impl DocumentEditor<'_> {
             .collect::<Vec<_>>();
         let function_type = self.intern_type_spec(&spec.function_type);
         let attributes = self.intern_attributes(&spec.attributes);
+        let callee_attribute = self
+            .registry
+            .call_target_attribute(&spec.name)
+            .map(|attribute| self.intern_string(attribute));
         let properties = self.intern_attributes(&spec.properties);
         let operands = spec
             .operands
@@ -126,6 +130,7 @@ impl DocumentEditor<'_> {
             result_types: self.working.types_lists.push(&result_types),
             function_type,
             attributes: self.working.attribute_lists.push(&attributes),
+            callee_attribute,
             properties: self.working.attribute_lists.push(&properties),
             successors: self.working.successor_lists.push(&[]),
             regions: self.working.region_lists.push(&[]),

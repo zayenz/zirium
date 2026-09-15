@@ -360,6 +360,14 @@ pub struct DecodedInteger {
 }
 
 impl AttributeValue {
+    /// Returns decoded path segments for a symbol-reference attribute.
+    pub fn symbol_segments(&self) -> Option<&[String]> {
+        match self {
+            Self::Symbol(path) => Some(path),
+            _ => None,
+        }
+    }
+
     /// Decodes the scalar value represented by a string attribute.
     ///
     /// `AttributeValue::String` stores serialized MLIR spelling so canonical
@@ -866,6 +874,7 @@ pub struct Operation {
     result_types: List<TypeId>,
     function_type: TypeId,
     attributes: List<(u32, AttributeId)>,
+    callee_attribute: Option<u32>,
     properties: List<(u32, AttributeId)>,
     successors: List<Successor>,
     regions: List<RegionId>,
@@ -1324,7 +1333,31 @@ impl Document {
     }
     /// Returns a decoded callee from either generic or custom-form attributes.
     pub fn operation_callee(&self, id: OperationId) -> Option<String> {
-        self.operation_role_symbol(id, &["callee", "kCallee"])
+        Some(self.operation_callee_segments(id)?.join("::"))
+    }
+    /// Returns decoded symbol-reference segments for a direct call target.
+    pub fn operation_callee_segments(&self, id: OperationId) -> Option<Vec<String>> {
+        let attribute = self.operation_callee_attribute(id)?;
+        match self.attribute_value(attribute)? {
+            AttributeValue::String(spelling) => Some(vec![decode_mlir_string(spelling)?]),
+            AttributeValue::Symbol(path) => Some(path.clone()),
+            _ => None,
+        }
+    }
+    /// Returns the retained source spelling of a direct call target attribute.
+    pub fn operation_callee_spelling(&self, id: OperationId) -> Option<&str> {
+        self.attribute_spelling_value(self.operation_callee_attribute(id)?)
+    }
+    fn operation_callee_attribute(&self, id: OperationId) -> Option<AttributeId> {
+        let operation = self.operation(id)?;
+        operation
+            .callee_attribute
+            .and_then(|name| self.attribute_id(id, self.string_at(name)?))
+            .or_else(|| {
+                ["callee", "kCallee"]
+                    .iter()
+                    .find_map(|name| self.attribute_id(id, name))
+            })
     }
     fn operation_role_symbol(&self, id: OperationId, names: &[&str]) -> Option<String> {
         let attribute = names.iter().find_map(|name| self.attribute_id(id, name))?;
@@ -1790,6 +1823,9 @@ impl Document {
         for operation in self.operations() {
             let record = &self.operations[operation.index()];
             strings.insert(record.name);
+            if let Some(name) = record.callee_attribute {
+                strings.insert(name);
+            }
             types.insert(record.function_type.index());
             if let Some(result_types) = self.types_lists.get(record.result_types) {
                 types.extend(result_types.iter().map(|id| id.index()));
@@ -2672,6 +2708,16 @@ mod tests {
             AttributeValue::Float("0x3E00 : f16".to_owned()).decoded_float(),
             Some(1.5)
         );
+    }
+
+    #[test]
+    fn symbol_attributes_expose_decoded_segments() {
+        let value = AttributeValue::Symbol(vec!["library".into(), "part::name".into()]);
+        assert_eq!(
+            value.symbol_segments(),
+            Some(["library".to_owned(), "part::name".to_owned()].as_slice())
+        );
+        assert_eq!(AttributeValue::Boolean(true).symbol_segments(), None);
     }
 
     #[test]

@@ -528,6 +528,10 @@ def test_func_like_generic_and_custom_forms_have_the_same_normalized_identity():
     assert custom_call is not None
     assert generic_call.operation_table().operation(0).callee == "a.b"
     assert custom_call.operation_table().operation(0).callee == "a.b"
+    assert generic_call.operation_table().operation(0).callee_segments == ["a.b"]
+    assert custom_call.operation_table().operation(0).callee_segments == ["a.b"]
+    assert generic_call.operation_table().operation(0).callee_spelling == '@"a.b"'
+    assert custom_call.operation_table().operation(0).callee_spelling == '@"a.b"'
 
 
 def test_stablehlo_operation_survives_equivalent_generic_and_custom_functions():
@@ -627,7 +631,39 @@ def test_attributes_and_values_expose_scalar_and_document_identity():
     target = quoted_separator.operation_table().operation(0).attribute_by_name("target")
     assert target is not None
     assert target.symbol_value == "a::b"
+    assert target.symbol_segments == ["a::b"]
     assert b'@"a::b"' in quoted_separator.canonical_bytes()
+
+    structured = zirium.parse_text(
+        r'''"quoted"() {
+          quoted = @library::@"part::name",
+          nested = @library::@part::@name,
+          escaped = @"quote\22slash\5C"
+        } : () -> ()'''
+    ).lower_strict().document
+    assert structured is not None
+    operation = structured.operation_table().operation(0)
+    quoted_path = operation.attribute_by_name("quoted")
+    nested_path = operation.attribute_by_name("nested")
+    escaped_path = operation.attribute_by_name("escaped")
+    assert quoted_path is not None
+    assert nested_path is not None
+    assert escaped_path is not None
+    assert quoted_path.symbol_segments == ["library", "part::name"]
+    assert nested_path.symbol_segments == ["library", "part", "name"]
+    assert escaped_path.symbol_segments == ['quote"slash\\']
+    assert quoted_path.spelling == '@library::@"part::name"'
+
+    invalid_unicode = zirium.parse_text(
+        r'''"quoted"() {target = @"\FF"} : () -> ()'''
+    ).lower_best_effort()
+    assert invalid_unicode.diagnostics
+    assert invalid_unicode.document is not None
+    invalid_target = (
+        invalid_unicode.document.operation_table().operation(0).attribute_by_name("target")
+    )
+    assert invalid_target is not None
+    assert invalid_target.symbol_segments is None
 
     result = producer.result(0)
     argument = consumer.operand(1)

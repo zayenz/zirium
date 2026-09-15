@@ -98,7 +98,11 @@ pub(super) fn parse_symbol_path(spelling: &str) -> Option<Vec<String>> {
         }
         if expected == TokenKind::AtIdentifier {
             let component = text(source.bytes(), token.range()).strip_prefix('@')?;
-            path.push(decode_mlir_string(component).unwrap_or_else(|| component.to_owned()));
+            path.push(if component.starts_with('"') {
+                decode_mlir_string(component)?
+            } else {
+                component.to_owned()
+            });
         }
     }
     (!path.is_empty()).then_some(path)

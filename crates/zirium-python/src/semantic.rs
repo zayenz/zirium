@@ -660,6 +660,24 @@ impl SemanticOperation {
         Ok(document.operation_callee(self.id))
     }
     #[getter]
+    fn callee_segments(&self) -> PyResult<Option<Vec<String>>> {
+        let document = read_document(&self.state)?;
+        document
+            .operation(self.id)
+            .ok_or_else(|| stale("operation"))?;
+        Ok(document.operation_callee_segments(self.id))
+    }
+    #[getter]
+    fn callee_spelling(&self) -> PyResult<Option<String>> {
+        let document = read_document(&self.state)?;
+        document
+            .operation(self.id)
+            .ok_or_else(|| stale("operation"))?;
+        Ok(document
+            .operation_callee_spelling(self.id)
+            .map(str::to_owned))
+    }
+    #[getter]
     fn source_range(&self) -> PyResult<Option<(u32, u32)>> {
         let document = read_document(&self.state)?;
         document
@@ -1315,6 +1333,10 @@ impl SemanticAttribute {
             AttributeValue::Symbol(path) => Some(path.join("::")),
             _ => None,
         })
+    }
+    #[getter]
+    fn symbol_segments(&self) -> PyResult<Option<Vec<String>>> {
+        self.with_value(|value| value.symbol_segments().map(<[String]>::to_vec))
     }
     #[getter]
     fn element_count(&self) -> PyResult<Option<usize>> {

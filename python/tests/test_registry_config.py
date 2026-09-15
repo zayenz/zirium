@@ -246,6 +246,9 @@ def test_call_target_attribute_is_configurable_and_introspectable():
     operation = document.operation_table("vendor.formatted_invoke").operation(0)
     target = operation.attribute_by_name("target")
     assert target is not None and target.symbol_value == "worker"
+    assert operation.callee == "worker"
+    assert operation.callee_segments == ["worker"]
+    assert operation.callee_spelling == "@worker"
     assert operation.attribute_by_name("callee") is None
 
     with pytest.raises(ValueError, match="requires a call_like shape"):

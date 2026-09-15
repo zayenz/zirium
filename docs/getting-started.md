@@ -448,6 +448,16 @@ or hexadecimal spellings, including signed, unsigned, and wider-than-128-bit
 values. It returns `None` for float attributes and non-integral wide-number
 spellings.
 
+Symbol-reference attributes expose `symbol_segments` as decoded Unicode path
+components. This preserves the difference between `@library::@"part::name"`
+and `@library::@part::@name`; `symbol_value` remains the compatibility string
+formed by joining segments with `::`. Direct-call operations provide the same
+view through `callee_segments`, plus the normalized `callee` string and the
+retained attribute spelling in `callee_spelling`. Quoted escapes are decoded as
+UTF-8. A malformed escape or escaped byte sequence that is not valid UTF-8
+produces the normal malformed-attribute semantic diagnostic; best-effort
+lowering exposes no decoded segments for that invalid value.
+
 Preserving output copies unchanged source and regenerates edited operations or
 blocks, as in the attribute replacement above. Inserting or erasing an operation
 invalidates source mappings and makes the document semantic-only, so preserving

@@ -138,6 +138,12 @@ impl Document {
             if self.strings.get(op.name as usize).is_none() {
                 return Err(ValidationError::InvalidString);
             }
+            if op
+                .callee_attribute
+                .is_some_and(|name| self.strings.get(name as usize).is_none())
+            {
+                return Err(ValidationError::InvalidString);
+            }
             if let Some(parent) = op.parent {
                 if !valid_block(parent) {
                     return Err(ValidationError::StaleBlock(parent));

@@ -118,8 +118,8 @@ the caller's default registry; include every preset and built-in you need.
 | `presets` | Bundled registry names. Defaults to an empty list. |
 | `builtins` | Operation names selected from the baseline catalog. Required; may be empty. |
 | `operation_shapes` | Exact operation names paired with reusable grammars. A `call_like` entry may set `callee_attribute`. Required; may be empty. |
-| `operation_formats` | Exact operation names paired with validated format descriptions. Defaults to an empty list. |
-| `operation_alternatives` | Exact operation names paired with two or more ordered shape or format alternatives. Defaults to an empty list. |
+| `operation_formats` | Exact operation names paired with validated format descriptions. A direct-call format may set `callee_attribute`. Defaults to an empty list. |
+| `operation_alternatives` | Exact operation names paired with two or more ordered shape or format alternatives. Direct-call alternatives share an optional `callee_attribute`. Defaults to an empty list. |
 
 The built-in catalog contains the eight operations listed under core and baseline
 above. Selecting a built-in uses its existing implementation.
