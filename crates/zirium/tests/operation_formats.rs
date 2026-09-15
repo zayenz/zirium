@@ -120,6 +120,97 @@ fn into_and_to_are_distinct_format_literals() {
 }
 
 #[test]
+fn named_literal_captures_match_generic_attributes() {
+    let registry = registry(
+        "$attr(label) `,` $attr(default_value) `:` type($attr(default_value)) `:` type($result)",
+    )
+    .build()
+    .unwrap();
+    let source = br#"%custom = test.widen "threshold", 0.0 : f64 : f32
+%generic = "test.widen"() {label = "threshold", default_value = 0.0 : f64} : () -> f32"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(
+        parsed.syntax().diagnostics().is_empty(),
+        "{:?}",
+        parsed.syntax().diagnostics()
+    );
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operations = document
+        .operations()
+        .filter(|operation| document.operation_name(*operation) == Some("test.widen"))
+        .collect::<Vec<_>>();
+    assert_eq!(operations.len(), 2);
+    for operation in operations {
+        let attributes = document.attributes(operation).unwrap().collect::<Vec<_>>();
+        assert!(attributes.contains(&("label", "\"threshold\"")));
+        assert!(attributes.contains(&("default_value", "0.0 : f64")));
+        assert_eq!(
+            document
+                .result_types(operation)
+                .unwrap()
+                .iter()
+                .map(|ty| document.type_spelling(*ty).unwrap())
+                .collect::<Vec<_>>(),
+            ["f32"]
+        );
+    }
+}
+
+#[test]
+fn named_literal_captures_accept_boolean_and_opaque_values() {
+    let registry = registry("$attr(label) `,` $attr(default_value) `:` type($result)")
+        .build()
+        .unwrap();
+    let source = br#"%boolean = test.widen "enabled", true : i1
+%opaque = test.widen "extent", #test.dimension<3> : i32"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let document = lowered.document.unwrap();
+    let operations = document.operations().collect::<Vec<_>>();
+    assert_eq!(
+        document
+            .attributes(operations[0])
+            .unwrap()
+            .collect::<Vec<_>>(),
+        [("default_value", "true"), ("label", "\"enabled\"")]
+    );
+    assert_eq!(
+        document
+            .attributes(operations[1])
+            .unwrap()
+            .collect::<Vec<_>>(),
+        [
+            ("default_value", "#test.dimension<3>"),
+            ("label", "\"extent\"")
+        ]
+    );
+}
+
+#[test]
+fn named_literal_capture_conflicts_with_explicit_dictionary() {
+    let registry = registry(
+        "$attr(label) `,` $attr(default_value) `:` type($attr(default_value)) attr-dict `:` type($result)",
+    )
+    .build()
+    .unwrap();
+    let source = br#"%result = test.widen "threshold", 0.0 : f64 {label = "other"} : f32"#;
+    let parsed = ParsedFile::parse_with_registry(source.as_slice(), &registry).unwrap();
+    assert!(parsed.syntax().diagnostics().is_empty());
+    let lowered = lower_with_dialect_registry(&parsed, LoweringMode::Strict, &registry);
+    assert!(lowered.document.is_none());
+    assert!(
+        lowered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("conflicts"))
+    );
+}
+
+#[test]
 fn trailing_synthetic_format_steps_preserve_a_newline_boundary() {
     let registry = RegistryConfig::from_json(
         r#"{

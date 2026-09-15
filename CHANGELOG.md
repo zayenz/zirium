@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add independently named literal captures to exact operation formats, with
+  per-capture type bindings and explicit attribute-dictionary collision errors.
+
 ## 0.2.0
 
 Zirium 0.2.0 adds portable registry bundles, richer Python semantic values,

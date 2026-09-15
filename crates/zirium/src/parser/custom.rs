@@ -1046,7 +1046,7 @@ pub(super) fn formatted_operation_attempt(
                 good &= shaped_operand(parser)?;
                 operand_count += 1;
             }
-            FormatStep::Capture(FormatCapture::Value) => good &= parser.constant_value()?,
+            FormatStep::Capture(FormatCapture::Attribute(_)) => good &= parser.constant_value()?,
             FormatStep::Capture(FormatCapture::Callee) => good &= parser.symbol_reference()?,
             FormatStep::AttributeDictionary => {
                 if parser.at(TokenKind::LBrace) {

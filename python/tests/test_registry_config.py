@@ -273,6 +273,37 @@ def test_operation_formats_round_trip_and_parse_captured_roles():
     assert key is not None and key.spelling == "2 : i64"
 
 
+def test_operation_format_preserves_independently_named_literals():
+    registry = zirium.DialectRegistry.from_config(
+        zirium.RegistryConfig(
+            builtins=[],
+            operation_shapes=[],
+            operation_formats=[
+                zirium.OperationFormatConfig(
+                    name="a.Parameter",
+                    format=(
+                        "$attr(label) `,` $attr(default_value) `:` "
+                        "type($attr(default_value)) `:` type($result)"
+                    ),
+                )
+            ],
+        )
+    )
+    parsed = zirium.parse_text(
+        '%result = a.Parameter "threshold", 0.0 : f64 : f32', registry=registry
+    )
+    assert parsed.diagnostics == []
+    lowered = parsed.lower_strict()
+    assert lowered.diagnostics == []
+    assert lowered.document is not None
+    operation = lowered.document.operation_table("a.Parameter").operation(0)
+    label = operation.attribute_by_name("label")
+    default = operation.attribute_by_name("default_value")
+    assert label is not None and label.string_value == "threshold"
+    assert default is not None and default.spelling == "0.0 : f64"
+    assert operation.result_type(0).spelling == "f32"
+
+
 def test_operation_alternatives_are_validated_inspectable_and_lowered():
     alternatives = zirium.OperationAlternativesConfig(
         name="a.Choice",

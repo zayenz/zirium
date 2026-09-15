@@ -161,6 +161,7 @@ attribute dictionary, and type assignments. The supported elements are:
 | `$operands` | Zero or more comma-separated SSA operands. |
 | `$operands[0]`, `$operands[1]`, ... | A fixed number of SSA operands. Indices must occur once, in order from zero. Put a `` `,` `` literal between them. |
 | `$value` | An inline literal attribute stored as `value`. |
+| `$attr(name)` | An inline literal attribute stored under `name`. Names must be unique dotted ASCII identifiers. `$value` remains shorthand for `$attr(value)`. |
 | `$callee` | A symbol reference stored as `callee` and recognized by direct-call dependency traversal. |
 | `attr-dict` | An attribute dictionary when one is present. The directive may occur at most once and may be omitted from the description. |
 | `` `token` `` | One exact MLIR lexer token, such as `` `:` ``, `` `->` ``, `` `to` ``, or `` `as` ``. |
@@ -176,6 +177,7 @@ Combine these elements to describe an operation's syntax. Common recipes are:
 | Fixed operands with different sharing groups | <code>$operands[0] `,` $operands[1] `,` $operands[2] `:` type($operands[0]) `,` type($operands[1], $operands[2]) `->` type($results)</code> | Indexed operands are captured once in order; each printed type binds to its listed operands or results. |
 | One type shared by operands and results | <code>$operands attr-dict `:` type($operands, $results)</code> | The printed type binds to every operand and every result. |
 | Typed literal result | <code>$value `:` type($value) attr-dict `:` type($result)</code> | The first type belongs to the literal attribute; the second binds the single result. |
+| Named literals | <code>$attr(label) `,` $attr(default_value) `:` type($attr(default_value)) `:` type($result)</code> | Captures a string label and a separately typed default value. |
 | Direct call | <code>$callee `(` $operands `)` attr-dict `:` type($operands) `->` type($results)</code> | The callee is stored as a symbol reference; operand and result types follow the aggregate rules. |
 
 Conversion and typed-literal forms can also be written as:
@@ -205,6 +207,10 @@ Every SSA operand and result needs a type assignment. Registry construction
 checks directive structure; lowering checks list sizes against each operation.
 Mixing aggregate and indexed operands, assigning a target twice, or referring
 to an uncaptured target produces an error naming the operation and rule.
+Literal capture names must be unique. A type binding for a named literal must
+immediately follow that capture, apart from exact literal tokens. If a captured
+name is also present in `attr-dict`, lowering reports a duplicate-definition
+diagnostic instead of overwriting either value.
 
 Format descriptions do not support optional groups, repetition, regions, or
 ODS/TableGen constructs. Use a matching shape or built-in implementation for

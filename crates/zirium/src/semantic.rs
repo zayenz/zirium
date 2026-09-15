@@ -578,7 +578,7 @@ pub struct RegisteredLoweringContext<'a> {
     function_results: Option<&'a str>,
     function_type: Option<&'a str>,
     format_types: Vec<&'a str>,
-    literal_value: Option<&'a str>,
+    literal_values: Vec<&'a str>,
     operand_count: usize,
     result_count: usize,
     format_alternative: usize,
@@ -621,7 +621,10 @@ impl<'a> RegisteredLoweringContext<'a> {
         &self.format_types
     }
     pub(crate) fn literal_value(&self) -> Option<&'a str> {
-        self.literal_value
+        self.literal_values.first().copied()
+    }
+    pub(crate) fn literal_values(&self) -> &[&'a str] {
+        &self.literal_values
     }
     pub(crate) const fn operand_count(&self) -> usize {
         self.operand_count

@@ -4,7 +4,7 @@ use crate::{SyntaxKind, lexer, source::Source};
 pub(crate) enum FormatCapture {
     Operands,
     Operand(usize),
-    Value,
+    Attribute(String),
     Callee,
 }
 
@@ -14,7 +14,7 @@ pub(crate) enum FormatTarget {
     Operand(usize),
     Results,
     Result,
-    Value,
+    Attribute(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,25 +69,33 @@ impl OperationFormat {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        let typed_value = types
+        let typed_attributes = types
             .iter()
-            .any(|capture| capture.targets().contains(&FormatTarget::Value));
+            .flat_map(|capture| capture.targets())
+            .filter_map(|target| match target {
+                FormatTarget::Attribute(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         let mut steps = Vec::with_capacity(raw.len() + types.len() * 2 + 2);
         for step in raw {
             match step {
-                FormatStep::Capture(FormatCapture::Value) => {
+                FormatStep::Capture(FormatCapture::Attribute(name)) => {
                     steps.push(FormatStep::Begin(SyntaxKind::ArithConstantValue));
-                    steps.push(FormatStep::Capture(FormatCapture::Value));
-                    if !typed_value {
+                    steps.push(FormatStep::Capture(FormatCapture::Attribute(name.clone())));
+                    if !typed_attributes.contains(&name) {
                         steps.push(FormatStep::End(SyntaxKind::ArithConstantValue));
                     }
                 }
                 FormatStep::Type(capture) => {
-                    let closes_value = capture.targets().contains(&FormatTarget::Value);
+                    let closes_attribute = capture
+                        .targets()
+                        .iter()
+                        .any(|target| matches!(target, FormatTarget::Attribute(_)));
                     steps.push(FormatStep::Begin(SyntaxKind::FunctionType));
                     steps.push(FormatStep::Type(capture));
                     steps.push(FormatStep::End(SyntaxKind::FunctionType));
-                    if closes_value {
+                    if closes_attribute {
                         steps.push(FormatStep::End(SyntaxKind::ArithConstantValue));
                     }
                 }
@@ -110,10 +118,11 @@ impl OperationFormat {
     pub(crate) fn types(&self) -> &[FormatTypeCapture] {
         &self.types
     }
-    pub(crate) fn captures_value(&self) -> bool {
-        self.steps
-            .iter()
-            .any(|step| matches!(step, FormatStep::Capture(FormatCapture::Value)))
+    pub(crate) fn captured_attributes(&self) -> impl Iterator<Item = &str> {
+        self.steps.iter().filter_map(|step| match step {
+            FormatStep::Capture(FormatCapture::Attribute(name)) => Some(name.as_str()),
+            _ => None,
+        })
     }
     pub(crate) fn captures_callee(&self) -> bool {
         self.steps
@@ -152,9 +161,7 @@ fn scan(description: &str) -> Result<Vec<FormatStep>, String> {
         if rest.starts_with("type(") || rest.starts_with("types(") {
             let per_operand_list = rest.starts_with("types(");
             let open = if per_operand_list { 5 } else { 4 };
-            let close = rest[open + 1..]
-                .find(')')
-                .map(|i| open + 1 + i)
+            let close = matching_parenthesis(rest, open)
                 .ok_or_else(|| format!("unterminated type directive at byte {offset}"))?;
             let targets = parse_targets(&rest[open + 1..close], offset + open + 1)?;
             if per_operand_list && targets.as_slice() != [FormatTarget::Operands] {
@@ -177,10 +184,13 @@ fn scan(description: &str) -> Result<Vec<FormatStep>, String> {
             FormatStep::Capture(FormatCapture::Operand(index))
         } else {
             match word {
-                "$value" => FormatStep::Capture(FormatCapture::Value),
+                "$value" => FormatStep::Capture(FormatCapture::Attribute("value".to_owned())),
                 "$callee" => FormatStep::Capture(FormatCapture::Callee),
                 "attr-dict" => FormatStep::AttributeDictionary,
-                _ => return Err(format!("unknown directive {word:?} at byte {offset}")),
+                _ => parse_attribute_capture(word)
+                    .map(FormatCapture::Attribute)
+                    .map(FormatStep::Capture)
+                    .ok_or_else(|| format!("unknown directive {word:?} at byte {offset}"))?,
             }
         };
         elements.push(step);
@@ -190,6 +200,23 @@ fn scan(description: &str) -> Result<Vec<FormatStep>, String> {
         return Err("operation format must not be empty".into());
     }
     Ok(elements)
+}
+
+fn matching_parenthesis(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, character) in text.char_indices().skip_while(|(offset, _)| *offset < open) {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn directive_end(text: &str) -> usize {
@@ -230,9 +257,10 @@ fn parse_targets(text: &str, offset: usize) -> Result<Vec<FormatTarget>, String>
             "$operands" => FormatTarget::Operands,
             "$results" => FormatTarget::Results,
             "$result" => FormatTarget::Result,
-            "$value" => FormatTarget::Value,
+            "$value" => FormatTarget::Attribute("value".to_owned()),
             _ => parse_operand(target)
                 .map(FormatTarget::Operand)
+                .or_else(|| parse_attribute_capture(target).map(FormatTarget::Attribute))
                 .ok_or_else(|| format!("unknown type target {target:?} at byte {offset}"))?,
         });
     }
@@ -255,21 +283,35 @@ fn parse_operand(text: &str) -> Option<usize> {
         .ok()
 }
 
+fn parse_attribute_capture(text: &str) -> Option<String> {
+    let name = text.strip_prefix("$attr(")?.strip_suffix(')')?;
+    valid_attribute_name(name).then(|| name.to_owned())
+}
+
+fn valid_attribute_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.split('.').all(|component| {
+            let mut chars = component.chars();
+            chars
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+                && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+}
+
 fn validate(steps: &[FormatStep]) -> Result<(), String> {
     let mut variadic_operands = false;
     let mut indexed_operands = Vec::new();
-    let mut value = false;
+    let mut captured_attributes = Vec::new();
     let mut callee = false;
-    let mut value_count = 0;
     let mut callee_count = 0;
     let mut attributes = 0;
     for step in steps {
         match step {
             FormatStep::Capture(FormatCapture::Operands) => variadic_operands = true,
             FormatStep::Capture(FormatCapture::Operand(index)) => indexed_operands.push(*index),
-            FormatStep::Capture(FormatCapture::Value) => {
-                value = true;
-                value_count += 1;
+            FormatStep::Capture(FormatCapture::Attribute(name)) => {
+                captured_attributes.push(name.clone())
             }
             FormatStep::Capture(FormatCapture::Callee) => {
                 callee = true;
@@ -282,8 +324,16 @@ fn validate(steps: &[FormatStep]) -> Result<(), String> {
     if attributes > 1 {
         return Err("attr-dict may appear at most once".into());
     }
-    if value_count > 1 || callee_count > 1 {
-        return Err("$value and $callee may each appear at most once".into());
+    if captured_attributes
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != captured_attributes.len()
+    {
+        return Err("literal attribute capture names must be unique".into());
+    }
+    if callee_count > 1 {
+        return Err("$callee may appear at most once".into());
     }
     if variadic_operands && !indexed_operands.is_empty() {
         return Err("$operands cannot be mixed with indexed operands".into());
@@ -302,22 +352,25 @@ fn validate(steps: &[FormatStep]) -> Result<(), String> {
     {
         return Err("indexed operands must appear once in order starting at zero".into());
     }
-    if value && (variadic_operands || !indexed_operands.is_empty() || callee) {
-        return Err("$value cannot be combined with SSA operands or $callee".into());
+    if !captured_attributes.is_empty()
+        && (variadic_operands || !indexed_operands.is_empty() || callee)
+    {
+        return Err("literal attributes cannot be combined with SSA operands or $callee".into());
     }
-    if value {
-        let value_position = steps
-            .iter()
-            .position(|step| matches!(step, FormatStep::Capture(FormatCapture::Value)))
-            .expect("value capture was observed");
+    for name in &captured_attributes {
+        let value_position = steps.iter().position(|step| {
+            matches!(step, FormatStep::Capture(FormatCapture::Attribute(captured)) if captured == name)
+        }).expect("captured attribute came from steps");
         if let Some(type_position) = steps.iter().position(|step| {
-            matches!(step, FormatStep::Type(capture) if capture.targets().contains(&FormatTarget::Value))
+            matches!(step, FormatStep::Type(capture) if capture.targets().contains(&FormatTarget::Attribute(name.clone())))
         }) && (type_position <= value_position
             || steps[value_position + 1..type_position]
                 .iter()
                 .any(|step| !matches!(step, FormatStep::Literal(_))))
         {
-            return Err("type($value) must follow $value with only literals between them".into());
+            return Err(format!(
+                "type($attr({name})) must follow its capture with only literals between them"
+            ));
         }
     }
     let has_operands = variadic_operands || !indexed_operands.is_empty();
@@ -336,8 +389,8 @@ fn validate(steps: &[FormatStep]) -> Result<(), String> {
                 {
                     return Err(format!("type target $operands[{index}] is not captured"));
                 }
-                FormatTarget::Value if !value => {
-                    return Err("type($value) requires a $value capture".into());
+                FormatTarget::Attribute(name) if !captured_attributes.contains(name) => {
+                    return Err(format!("type target $attr({name}) is not captured"));
                 }
                 _ => {}
             }
@@ -349,7 +402,7 @@ fn validate(steps: &[FormatStep]) -> Result<(), String> {
                 FormatTarget::Results | FormatTarget::Result => assigned
                     .iter()
                     .any(|target| matches!(target, FormatTarget::Results | FormatTarget::Result)),
-                FormatTarget::Value => assigned.contains(&FormatTarget::Value),
+                FormatTarget::Attribute(_) => assigned.contains(target),
             };
             if overlaps {
                 return Err(format!(
@@ -382,6 +435,7 @@ mod tests {
             "$operands attr-dict `:` type($operands) `into` type($results)",
             "$operands attr-dict `:` type($operands) `->` type($results)",
             "$value `:` type($value) attr-dict `:` type($result)",
+            "$attr(label) `,` $attr(default_value) `:` type($attr(default_value)) `:` type($result)",
             "$operands[0] `,` $operands[1] `:` type($operands) `->` type($results)",
             "$callee attr-dict",
             "$operands attr-dict `:` types($operands) `->` type($results)",
@@ -404,6 +458,9 @@ mod tests {
             "$operands attr-dict `:` type($results)",
             "$operands attr-dict `:` type($result)",
             "$operands type($operands[0])",
+            "$attr(value) $attr(value)",
+            "$attr(9bad)",
+            "$attr(value) type($attr(missing))",
         ] {
             assert!(OperationFormat::parse(format).is_err(), "accepted {format}");
         }

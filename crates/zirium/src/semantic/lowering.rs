@@ -366,7 +366,7 @@ fn lower_with_registry(
     struct MatchedLowering {
         name: String,
         shape: Option<OperationShape>,
-        lowering: RegisteredLowering,
+        lowering: crate::dialect::DeclarativeLowering,
     }
     let registered = ops
         .iter()
@@ -421,14 +421,15 @@ fn lower_with_registry(
                     .filter_map(|child| op.tree().text_range(child))
                     .map(|range| text(source.bytes(), range))
                     .collect(),
-                literal_value: op
+                literal_values: op
                     .tree()
                     .children(op.id())
                     .into_iter()
                     .flatten()
-                    .find(|child| op.tree().kind(*child) == Some(SyntaxKind::ArithConstantValue))
-                    .and_then(|child| op.tree().text_range(child))
-                    .map(|range| text(source.bytes(), range)),
+                    .filter(|child| op.tree().kind(*child) == Some(SyntaxKind::ArithConstantValue))
+                    .filter_map(|child| op.tree().text_range(child))
+                    .map(|range| text(source.bytes(), range))
+                    .collect(),
                 operand_count: op.operands().count(),
                 result_count: op
                     .results()
@@ -464,7 +465,7 @@ fn lower_with_registry(
                             MatchedLowering {
                                 name: mnemonic.to_owned(),
                                 shape: Some(*shape),
-                                lowering,
+                                lowering: lowering.into(),
                             }
                         })
                     }
@@ -482,7 +483,7 @@ fn lower_with_registry(
                     MatchedLowering {
                         name: mnemonic.to_owned(),
                         shape: Some(shape),
-                        lowering,
+                        lowering: lowering.into(),
                     }
                 });
             }
@@ -490,7 +491,7 @@ fn lower_with_registry(
                 return lower_operation_format(format, &context).map(|lowering| MatchedLowering {
                     name: mnemonic.to_owned(),
                     shape: None,
-                    lowering,
+                    lowering: lowering.into(),
                 });
             }
             let descriptor = registry.custom_operation(mnemonic)?;
@@ -501,7 +502,7 @@ fn lower_with_registry(
                 .map(|lowering| MatchedLowering {
                     name: descriptor.name.to_owned(),
                     shape: None,
-                    lowering,
+                    lowering: lowering.into(),
                 })
         })
         .collect::<Vec<_>>();
@@ -816,21 +817,23 @@ fn lower_with_registry(
         if let Some(matched) = &registered[i] {
             let lowered = &matched.lowering;
             for (name, spelling) in &lowered.attributes {
+                let conflicts = attributes
+                    .iter()
+                    .any(|(existing, _)| strings.values[*existing as usize] == *name);
                 let is_inherent = registry
                     .operation(&matched.name)
                     .and_then(|descriptor| descriptor.assembly)
                     .and_then(|program| program.inherent_attribute())
-                    == Some(*name);
-                if is_inherent
-                    && attributes
-                        .iter()
-                        .any(|(existing, _)| strings.values[*existing as usize] == *name)
-                {
+                    == Some(name.as_str());
+                if conflicts {
                     push_diagnostic(
                         &mut doc,
                         SemanticDiagnosticCode::DuplicateDefinition,
                         range,
-                        format!("duplicate inherent attribute `{name}`"),
+                        format!(
+                            "captured {}attribute `{name}` conflicts with the explicit attribute dictionary",
+                            if is_inherent { "inherent " } else { "" }
+                        ),
                     );
                     doc.complete = false;
                     continue;

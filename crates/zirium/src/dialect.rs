@@ -1528,10 +1528,30 @@ pub(crate) fn lower_operation_shape(
     }
 }
 
+pub(crate) struct DeclarativeLowering {
+    pub(crate) result_types: Vec<String>,
+    pub(crate) function_type: String,
+    pub(crate) attributes: Vec<(String, String)>,
+}
+
+impl From<RegisteredLowering> for DeclarativeLowering {
+    fn from(lowering: RegisteredLowering) -> Self {
+        Self {
+            result_types: lowering.result_types,
+            function_type: lowering.function_type,
+            attributes: lowering
+                .attributes
+                .into_iter()
+                .map(|(name, spelling)| (name.to_owned(), spelling))
+                .collect(),
+        }
+    }
+}
+
 pub(crate) fn lower_operation_format(
     format: &OperationFormat,
     context: &RegisteredLoweringContext<'_>,
-) -> Option<RegisteredLowering> {
+) -> Option<DeclarativeLowering> {
     if format.types().len() != context.format_types().len() {
         return None;
     }
@@ -1612,7 +1632,7 @@ pub(crate) fn lower_operation_format(
                         return None;
                     }
                 }
-                FormatTarget::Value => {}
+                FormatTarget::Attribute(_) => {}
             }
         }
     }
@@ -1620,15 +1640,22 @@ pub(crate) fn lower_operation_format(
     let results = results.into_iter().collect::<Option<Vec<_>>>()?;
     let result_text = type_list_text(&results);
     let mut attributes = Vec::new();
-    if format.captures_value() {
-        let value = context.literal_value()?.trim();
+    let captured_attributes = format.captured_attributes().collect::<Vec<_>>();
+    if captured_attributes.len() != context.literal_values().len() {
+        return None;
+    }
+    for (name, value) in captured_attributes
+        .into_iter()
+        .zip(context.literal_values())
+    {
+        let value = value.trim();
         let value = strip_top_level_attribute(value).trim();
-        attributes.push(("value", value.to_owned()));
+        attributes.push((name.to_owned(), value.to_owned()));
     }
     if format.captures_callee() {
-        attributes.push(("callee", context.leading_symbol()?.trim().to_owned()));
+        attributes.push(("callee".into(), context.leading_symbol()?.trim().to_owned()));
     }
-    Some(RegisteredLowering {
+    Some(DeclarativeLowering {
         result_types: results,
         function_type: format!("({}) -> {result_text}", inputs.join(", ")),
         attributes,
