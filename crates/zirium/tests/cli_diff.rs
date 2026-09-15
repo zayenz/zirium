@@ -1,8 +1,17 @@
-use std::{fs, process::Command};
+use std::{
+    fs,
+    process::Command,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
 fn fixture(name: &str, source: &str) -> std::path::PathBuf {
-    let directory =
-        std::env::temp_dir().join(format!("zirium-diff-test-{}-{}", std::process::id(), name));
+    let fixture_id = FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "zirium-diff-test-{}-{fixture_id}-{name}",
+        std::process::id()
+    ));
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join(format!("{name}.mlir"));
     fs::write(&path, source).unwrap();
