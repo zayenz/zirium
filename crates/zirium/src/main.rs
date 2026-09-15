@@ -1042,12 +1042,28 @@ fn evaluate_diff_expression(
     bindings: &std::collections::HashMap<String, DiffCliValue>,
     budget: &mut DiffQueryBudget,
 ) -> Result<DiffCliValue, String> {
+    evaluate_diff_expression_from(
+        diff,
+        source,
+        bindings,
+        budget,
+        DiffCliValue::Changes(diff.change_ids().collect()),
+    )
+}
+
+fn evaluate_diff_expression_from(
+    diff: &zirium::diff::Diff<'_>,
+    source: &str,
+    bindings: &std::collections::HashMap<String, DiffCliValue>,
+    budget: &mut DiffQueryBudget,
+    input: DiffCliValue,
+) -> Result<DiffCliValue, String> {
     let parts = split_diff_sets(source)?;
     let mut parts = parts.into_iter();
     let (_, first) = parts.next().ok_or("empty diff expression")?;
-    let mut value = evaluate_diff_pipeline(diff, first, bindings, budget)?;
+    let mut value = evaluate_diff_pipeline(diff, first, bindings, budget, input.clone())?;
     for (operator, pipeline) in parts {
-        let right = evaluate_diff_pipeline(diff, pipeline, bindings, budget)?;
+        let right = evaluate_diff_pipeline(diff, pipeline, bindings, budget, input.clone())?;
         value = combine_diff_selections(diff, value, right, operator.expect("later set part"))?;
         budget.check_items(diff_value_len(&value))?;
     }
@@ -1059,9 +1075,10 @@ fn evaluate_diff_pipeline(
     source: &str,
     bindings: &std::collections::HashMap<String, DiffCliValue>,
     budget: &mut DiffQueryBudget,
+    input: DiffCliValue,
 ) -> Result<DiffCliValue, String> {
     let stages = split_diff_pipeline(source)?;
-    let mut value = DiffCliValue::Changes(diff.change_ids().collect());
+    let mut value = input;
     for stage in stages {
         let stage = stage.trim();
         budget.charge(diff_value_len(&value).max(1))?;
@@ -1069,7 +1086,7 @@ fn evaluate_diff_pipeline(
             .strip_prefix('(')
             .and_then(|stage| stage.strip_suffix(')'))
         {
-            evaluate_diff_expression(diff, expression, bindings, budget)?
+            evaluate_diff_expression_from(diff, expression, bindings, budget, value.clone())?
         } else if stage == "input" {
             DiffCliValue::Changes(diff.change_ids().collect())
         } else if let Some(value) = bindings.get(stage) {
@@ -1163,6 +1180,12 @@ fn evaluate_diff_pipeline(
                     .map(|(name, count)| (name, serde_json::json!(count)))
                     .collect(),
             )
+        } else if stage.starts_with("map_by(") {
+            let arguments = split_diff_call_arguments(stage, "map_by")?;
+            if arguments.len() != 2 {
+                return Err("map_by requires a key and value expression".into());
+            }
+            map_diff_value(diff, value, arguments[0], arguments[1], bindings, budget)?
         } else if stage == "reverse" {
             reverse_diff_value(value)?
         } else if stage.starts_with("head(") || stage.starts_with("tail(") {
@@ -1337,6 +1360,119 @@ fn split_diff_sets(source: &str) -> Result<Vec<(Option<DiffSetOperator>, &str)>,
     }
     result.push((operator, pipeline));
     Ok(result)
+}
+
+fn split_diff_call_arguments<'a>(stage: &'a str, name: &str) -> Result<Vec<&'a str>, String> {
+    let prefix = format!("{name}(");
+    let inner = stage
+        .strip_prefix(&prefix)
+        .and_then(|value| value.strip_suffix(')'))
+        .ok_or_else(|| format!("invalid {name} stage"))?;
+    let bytes = inner.as_bytes();
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut start = 0usize;
+    let mut arguments = Vec::new();
+    for (cursor, byte) in bytes.iter().copied().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| format!("unmatched delimiter in {name}"))?;
+            }
+            b',' if depth == 0 => {
+                arguments.push(inner[start..cursor].trim());
+                start = cursor + 1;
+            }
+            _ => {}
+        }
+    }
+    if quoted || depth != 0 {
+        return Err(format!("unterminated string or group in {name}"));
+    }
+    arguments.push(inner[start..].trim());
+    Ok(arguments)
+}
+
+fn map_diff_value(
+    diff: &zirium::diff::Diff<'_>,
+    value: DiffCliValue,
+    key_expression: &str,
+    value_expression: &str,
+    bindings: &std::collections::HashMap<String, DiffCliValue>,
+    budget: &mut DiffQueryBudget,
+) -> Result<DiffCliValue, String> {
+    let inputs = match value {
+        DiffCliValue::Changes(items) => items
+            .into_iter()
+            .map(|item| DiffCliValue::Changes(vec![item]))
+            .collect::<Vec<_>>(),
+        DiffCliValue::Operations(side, items) => items
+            .into_iter()
+            .map(|item| DiffCliValue::Operations(side, vec![item]))
+            .collect(),
+        _ => return Err("map_by requires a change or operation stream".into()),
+    };
+    let mut entries = serde_json::Map::new();
+    for input in inputs {
+        let key =
+            evaluate_diff_expression_from(diff, key_expression, bindings, budget, input.clone())?;
+        let DiffCliValue::Names(mut keys) = key else {
+            return Err("map_by key must produce exactly one string".into());
+        };
+        if keys.len() != 1 {
+            return Err("map_by key must produce exactly one string".into());
+        }
+        let key = keys.pop().unwrap();
+        if entries.contains_key(&key) {
+            return Err(format!(
+                "map_by encountered duplicate key `{key}`; select unique keys"
+            ));
+        }
+        let mapped =
+            evaluate_diff_expression_from(diff, value_expression, bindings, budget, input)?;
+        entries.insert(key, diff_value_to_json(diff, mapped)?);
+        budget.check_items(entries.len())?;
+    }
+    Ok(DiffCliValue::Map(entries))
+}
+
+fn diff_value_to_json(
+    diff: &zirium::diff::Diff<'_>,
+    value: DiffCliValue,
+) -> Result<serde_json::Value, String> {
+    Ok(match value {
+        DiffCliValue::Changes(items) => serde_json::from_str(
+            &diff
+                .selection_to_json(&items)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?,
+        DiffCliValue::Operations(side, items) => {
+            serde_json::from_str(&operation_json(diff.document(side), &items))
+                .map_err(|error| error.to_string())?
+        }
+        DiffCliValue::Names(items) => serde_json::json!(items),
+        DiffCliValue::Count(count) => serde_json::json!(count),
+        DiffCliValue::Map(map) => serde_json::Value::Object(map),
+        DiffCliValue::Json(json, _) => {
+            serde_json::from_str(&json).map_err(|error| error.to_string())?
+        }
+        DiffCliValue::Text(text) => serde_json::Value::String(text),
+    })
 }
 
 fn combine_diff_selections(

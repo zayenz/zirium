@@ -294,3 +294,38 @@ fn diff_scalar_projections_support_ordering_aggregation_and_markdown() {
         "| Key | Value |\n| --- | --- |\n| arith.constant | 1 |\n"
     );
 }
+
+#[test]
+fn nested_diff_queries_keep_relative_input_and_map_across_sides() {
+    let (before, after) = pair();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg(r#"filter(changed("attributes")) | map_by(names, before | attr("value")) | json"#)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({"arith.constant": ["4"]})
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg("filter(false) | (count); filter(false) | (input | count)")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"0\n1\n");
+}
