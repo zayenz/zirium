@@ -6,7 +6,7 @@ LLVM. The parser preserves the original bytes, including comments, whitespace,
 malformed syntax, and invalid UTF-8. A separate semantic representation supports
 verification and structural edits.
 
-Version 0.1.0 is experimental. It targets MLIR 22.1 textual syntax and supports
+Version 0.2.0 is experimental. It targets MLIR 22.1 textual syntax and supports
 selected custom dialect forms. The API may change without a migration path;
 bytecode and ODS/TableGen loading are unsupported.
 
@@ -174,7 +174,7 @@ comments or aliases. Use original output to reproduce the input, or hybrid
 retention when edits should preserve unrelated source text.
 
 For the exact structural-editing limits of Rust, Python, and the CLI, see the
-[structural editing capability matrix](docs/structural-editing.md).
+[structural editing capability matrix](https://github.com/zayenz/zirium/blob/main/docs/structural-editing.md).
 
 ## Dialect support
 
@@ -194,7 +194,7 @@ links to their exact registry definitions.
 The [corpus notes](https://github.com/zayenz/zirium/blob/main/tests/corpus/mlir-22.1/README.md)
 describe how syntax compatibility is checked against `llvmorg-22.1.0`.
 
-The [cross-interface capability reference](docs/capabilities.md) compares
+The [cross-interface capability reference](https://github.com/zayenz/zirium/blob/main/docs/capabilities.md) compares
 parsing, verification, queries, construction, mutation, output, callbacks,
 registries, and resource limits across Rust, Python, and the CLI.
 

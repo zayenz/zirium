@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## 0.2.0
+
+Zirium 0.2.0 adds portable registry bundles, richer Python semantic values,
+and stricter structural-editing contracts. It also improves bounded processing
+for large inputs and outputs. The API remains experimental.
+
+- Add relative `imports` to registry JSON files, with deterministic graph
+  composition, cycle and conflict diagnostics, and configurable depth, file,
+  edge, and aggregate-byte limits. Rust, Python, and the CLI can load the same
+  multi-file registry bundles.
+- Expose structured Python type information for integers, floats, shaped,
+  tuple, complex, and function types. Expose arbitrary-precision integer
+  attributes and complete operation function types without requiring callers
+  to parse MLIR spellings.
+- Give Python operation, region, block, and value wrappers stable equality and
+  hashing within a document. Rust type and attribute handles now reject use
+  across documents and after failed or abandoned edits, matching operation
+  handle safety.
+- Validate Rust `TypeSpec`, `AttributeSpec`, and operation specifications before
+  applying edits. Add `AttributeSpec::string` for correctly escaped string
+  attributes, and keep an operation's function type consistent when changing
+  its result types.
+- Correct Python's documented `replace_all_uses(from_=..., to=...)` keyword
+  call and reject foreign types when constructing Python operation specs.
+- Remove the legacy verification exception for malformed `func.func`
+  operations, so registered function structure is checked consistently.
+- Add source excerpts, line and column locations, and carets to CLI query,
+  syntax, and semantic diagnostics. Accept both `--option VALUE` and
+  `--option=VALUE`, and reject repeated standard-input operands.
+- Enforce input byte limits while reading files and streams instead of after a
+  full allocation. Keep atomic CLI output while spilling staged output beyond
+  1 MiB to a temporary file, and stream JSON Lines operation fragments.
+- Reduce repeated work in Python attribute traversal and semantic decoding,
+  edit-time type and attribute interning, dominance verification, selection
+  printing, and CLI JSON Lines serialization.
+- Document the cross-interface capability matrix, structural-edit preservation
+  limits, Rust registry requirements, semantic retention profiles, and measured
+  processing benchmarks.
+
 ## 0.1.0
 
 Zirium 0.1.0 adds typed query builders for Rust and Python, ordered reports,
