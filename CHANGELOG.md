@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the Zirium logo and GitHub social preview. Thanks to
+  [@pgerell](https://github.com/pgerell) for designing the logo.
 - Add `check` and `check(n)` query stages for structural MLIR tests that require
   a non-empty result or an exact cardinality; use them in `do` statements for
   individual silent checks. Add `--silent` to suppress all successful query
