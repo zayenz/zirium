@@ -302,9 +302,10 @@ pub fn compare<'a>(
     validate_input(after, DiffSide::After)?;
 
     let identity = NEXT_DIFF_ID.fetch_add(1, Ordering::Relaxed).max(1);
-    let mut builder = Matcher::new(before, after, limits.max_work);
+    let mut builder = Matcher::new(before, after, registry, limits.max_work);
     builder.match_list(before.root_operations(), after.root_operations())?;
-    let (operations, regions, blocks, work, ambiguous_groups) = builder.finish();
+    let (operations, regions, blocks, work, ambiguous_groups, bounded_fallback_groups, diagnostics) =
+        builder.finish();
     let correspondence = Correspondence::from_maps(operations, regions, blocks);
     let before_paths = operation_paths(before);
     let after_paths = operation_paths(after);
@@ -323,10 +324,11 @@ pub fn compare<'a>(
             after_operations: after.operations().count(),
             matched_operations: 0,
             ambiguous_groups,
+            bounded_fallback_groups,
             work_units: work,
             ..DiffStatistics::default()
         },
-        diagnostics: Vec::new(),
+        diagnostics,
     };
     diff.statistics.matched_operations = diff.correspondence.operations.len();
     diff.construct_changes(limits.max_changes)?;
@@ -720,7 +722,12 @@ impl Diff<'_> {
             .iter()
             .map(|(&a, &b)| (b, a))
             .collect();
-        let moved = moved_operations(self.before, self.after, &self.correspondence.operations);
+        let moved = moved_operations(
+            self.before,
+            self.after,
+            &self.correspondence.operations,
+            &self.correspondence.blocks,
+        );
         for after in structural_preorder(self.after) {
             let before = reverse.get(&after).copied();
             let (kind, fields, details, did_move) = if let Some(before) = before {
@@ -1017,6 +1024,7 @@ fn moved_operations(
     before: &Document,
     after: &Document,
     map: &HashMap<OperationId, OperationId>,
+    block_map: &HashMap<BlockId, BlockId>,
 ) -> HashSet<OperationId> {
     let mut moved = HashSet::new();
     fn check(
@@ -1048,33 +1056,13 @@ fn moved_operations(
         map,
         &mut moved,
     );
-    for (&before_op, &after_op) in map {
-        for (&before_region, &after_region) in before
-            .operation_regions(before_op)
-            .unwrap_or(&[])
-            .iter()
-            .zip(after.operation_regions(after_op).unwrap_or(&[]))
-        {
-            for (&before_block, &after_block) in before
-                .region(before_region)
-                .and_then(|r| r.blocks(before))
-                .unwrap_or(&[])
-                .iter()
-                .zip(
-                    after
-                        .region(after_region)
-                        .and_then(|r| r.blocks(after))
-                        .unwrap_or(&[]),
-                )
-            {
-                check(
-                    before.block_operations(before_block).unwrap_or(&[]),
-                    after.block_operations(after_block).unwrap_or(&[]),
-                    map,
-                    &mut moved,
-                );
-            }
-        }
+    for (&before_block, &after_block) in block_map {
+        check(
+            before.block_operations(before_block).unwrap_or(&[]),
+            after.block_operations(after_block).unwrap_or(&[]),
+            map,
+            &mut moved,
+        );
     }
     moved
 }
@@ -1082,25 +1070,36 @@ fn moved_operations(
 struct Matcher<'a> {
     before: &'a Document,
     after: &'a Document,
+    registry: &'a DialectRegistry,
     operations: HashMap<OperationId, OperationId>,
     regions: HashMap<RegionId, RegionId>,
     blocks: HashMap<BlockId, BlockId>,
     remaining: usize,
     initial: usize,
     ambiguous: usize,
+    bounded_fallback: usize,
+    diagnostics: Vec<String>,
 }
 
 impl<'a> Matcher<'a> {
-    fn new(before: &'a Document, after: &'a Document, work: usize) -> Self {
+    fn new(
+        before: &'a Document,
+        after: &'a Document,
+        registry: &'a DialectRegistry,
+        work: usize,
+    ) -> Self {
         Self {
             before,
             after,
+            registry,
             operations: HashMap::new(),
             regions: HashMap::new(),
             blocks: HashMap::new(),
             remaining: work,
             initial: work,
             ambiguous: 0,
+            bounded_fallback: 0,
+            diagnostics: Vec::new(),
         }
     }
     fn charge(&mut self, amount: usize) -> Result<(), DiffError> {
@@ -1118,6 +1117,8 @@ impl<'a> Matcher<'a> {
         HashMap<BlockId, BlockId>,
         usize,
         usize,
+        usize,
+        Vec<String>,
     ) {
         (
             self.operations,
@@ -1125,6 +1126,8 @@ impl<'a> Matcher<'a> {
             self.blocks,
             self.initial - self.remaining,
             self.ambiguous,
+            self.bounded_fallback,
+            self.diagnostics,
         )
     }
 
@@ -1136,6 +1139,9 @@ impl<'a> Matcher<'a> {
         self.charge(before.len() + after.len())?;
         let mut before_left: HashSet<_> = before.iter().copied().collect();
         let mut after_left: HashSet<_> = after.iter().copied().collect();
+
+        self.match_symbol_anchors(before, after, &mut before_left, &mut after_left)?;
+
         let before_keys = grouped(before.iter().copied(), |op| exact_key(self.before, op));
         let after_keys = grouped(after.iter().copied(), |op| exact_key(self.after, op));
         for (key, left) in &before_keys {
@@ -1178,6 +1184,12 @@ impl<'a> Matcher<'a> {
                 let Some(right) = after_shapes.get(&key) else {
                     continue;
                 };
+                let candidates = left.len().saturating_mul(right.len());
+                if candidates > 65_536 {
+                    self.bounded_fallback += 1;
+                    continue;
+                }
+                self.charge(candidates)?;
                 if left.len() == 1 && right.len() == 1 {
                     self.pair(left[0], right[0]);
                     before_left.remove(&left[0]);
@@ -1200,6 +1212,47 @@ impl<'a> Matcher<'a> {
     fn pair(&mut self, before: OperationId, after: OperationId) {
         self.operations.insert(before, after);
     }
+
+    fn match_symbol_anchors(
+        &mut self,
+        before: &[OperationId],
+        after: &[OperationId],
+        before_left: &mut HashSet<OperationId>,
+        after_left: &mut HashSet<OperationId>,
+    ) -> Result<(), DiffError> {
+        let symbols = |document: &Document, operations: &[OperationId]| {
+            let mut result: BTreeMap<String, Vec<OperationId>> = BTreeMap::new();
+            for &operation in operations {
+                let name = document.operation_name(operation).unwrap_or("");
+                if !self.registry.symbols(name).defines_symbol {
+                    continue;
+                }
+                if let Some(symbol) = document.operation_symbol_name(operation) {
+                    result.entry(symbol).or_default().push(operation);
+                }
+            }
+            result
+        };
+        let before_symbols = symbols(self.before, before);
+        let after_symbols = symbols(self.after, after);
+        for (name, left) in &before_symbols {
+            let Some(right) = after_symbols.get(name) else {
+                continue;
+            };
+            if left.len() == 1 && right.len() == 1 {
+                self.charge(1)?;
+                self.pair(left[0], right[0]);
+                before_left.remove(&left[0]);
+                after_left.remove(&right[0]);
+            } else {
+                self.ambiguous += 1;
+                self.diagnostics.push(format!(
+                    "duplicate registered symbol `{name}` disabled a diff anchor"
+                ));
+            }
+        }
+        Ok(())
+    }
     fn match_children(
         &mut self,
         before_op: OperationId,
@@ -1219,13 +1272,56 @@ impl<'a> Matcher<'a> {
                 .region(after_region)
                 .and_then(|r| r.blocks(self.after))
                 .unwrap_or(&[]);
-            for (&before_block, &after_block) in before_blocks.iter().zip(after_blocks) {
-                self.blocks.insert(before_block, after_block);
-                self.match_list(
-                    self.before.block_operations(before_block).unwrap_or(&[]),
-                    self.after.block_operations(after_block).unwrap_or(&[]),
-                )?;
+            self.match_blocks(before_blocks, after_blocks)?;
+        }
+        Ok(())
+    }
+
+    fn match_blocks(&mut self, before: &[BlockId], after: &[BlockId]) -> Result<(), DiffError> {
+        self.charge(before.len() + after.len())?;
+        let mut pairs = Vec::new();
+        let mut before_left: HashSet<_> = before.iter().copied().collect();
+        let mut after_left: HashSet<_> = after.iter().copied().collect();
+
+        // Entry blocks are defined by their role in CFG regions, and sole blocks
+        // are the natural anchor for graph and single-block regions.
+        if let (Some(&left), Some(&right)) = (before.first(), after.first()) {
+            pairs.push((left, right));
+            before_left.remove(&left);
+            after_left.remove(&right);
+        }
+
+        let before_keys = grouped(before_left.iter().copied(), |block| {
+            block_key(self.before, block)
+        });
+        let after_keys = grouped(after_left.iter().copied(), |block| {
+            block_key(self.after, block)
+        });
+        for (key, left) in before_keys {
+            let Some(right) = after_keys.get(&key) else {
+                continue;
+            };
+            let candidates = left.len().saturating_mul(right.len());
+            if candidates > 65_536 {
+                self.bounded_fallback += 1;
+                continue;
             }
+            self.charge(candidates)?;
+            if left.len() == 1 && right.len() == 1 {
+                pairs.push((left[0], right[0]));
+                before_left.remove(&left[0]);
+                after_left.remove(&right[0]);
+            } else {
+                self.ambiguous += 1;
+            }
+        }
+
+        for (left, right) in pairs {
+            self.blocks.insert(left, right);
+            self.match_list(
+                self.before.block_operations(left).unwrap_or(&[]),
+                self.after.block_operations(right).unwrap_or(&[]),
+            )?;
         }
         Ok(())
     }
@@ -1268,5 +1364,19 @@ fn exact_key(document: &Document, operation: OperationId) -> String {
         shape_key(document, operation),
         format_entries(document.attributes(operation)),
         format_entries(document.properties(operation))
+    )
+}
+
+fn block_key(document: &Document, block: BlockId) -> String {
+    let operations = document
+        .block_operations(block)
+        .unwrap_or(&[])
+        .iter()
+        .map(|&operation| exact_key(document, operation))
+        .collect::<Vec<_>>()
+        .join("\u{1f}");
+    format!(
+        "{}|{operations}",
+        document.block_argument_types(block).map_or(0, <[_]>::len)
     )
 }
