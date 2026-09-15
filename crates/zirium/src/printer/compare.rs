@@ -182,6 +182,23 @@ impl Correspondence {
         }
     }
 
+    pub(crate) fn equal_successors(
+        &self,
+        left_doc: &Document,
+        right_doc: &Document,
+        left: crate::semantic::Successor,
+        right: crate::semantic::Successor,
+    ) -> bool {
+        self.blocks.get(&left.block) == Some(&right.block)
+            && equal_values(
+                left_doc,
+                right_doc,
+                left_doc.successor_arguments(left),
+                right_doc.successor_arguments(right),
+                self,
+            )
+    }
+
     fn build(left_doc: &Document, right_doc: &Document) -> Option<Self> {
         let mut maps = Self {
             operations: HashMap::new(),

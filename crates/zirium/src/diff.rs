@@ -911,6 +911,23 @@ impl Diff<'_> {
                 self.before.operation_properties(before),
                 self.after.operation_properties(after),
             ),
+            ChangeField::Successors => self.sequence_details(
+                "/successors",
+                self.before.successors(before).unwrap_or(&[]),
+                self.after.successors(after).unwrap_or(&[]),
+                |left, right| {
+                    self.correspondence
+                        .equal_successors(self.before, self.after, *left, *right)
+                },
+                |value| successor_json(self.before, *value, &self.before_paths),
+                |value| successor_json(self.after, *value, &self.after_paths),
+            ),
+            ChangeField::Regions => vec![FieldDifference {
+                path: "/regions".to_owned(),
+                before: present(region_shell_json(self.before, before, &self.before_paths)),
+                after: present(region_shell_json(self.after, after, &self.after_paths)),
+                comparison: "represented_value",
+            }],
             _ => vec![FieldDifference {
                 path: format!("/{}", field.as_str()),
                 before: self.field_value(self.before, before, field),
@@ -1019,14 +1036,6 @@ impl Diff<'_> {
                     .function_type(operation)
                     .and_then(|id| document.type_spelling(id))
             ),
-            ChangeField::Successors => serde_json::json!(format!(
-                "{} successor(s)",
-                document.successors(operation).map_or(0, <[_]>::len)
-            )),
-            ChangeField::Regions => serde_json::json!(format!(
-                "{} region(s)",
-                document.operation_regions(operation).map_or(0, <[_]>::len)
-            )),
             ChangeField::Location => {
                 serde_json::json!(document.operation_location(operation).flatten())
             }
@@ -1037,7 +1046,9 @@ impl Diff<'_> {
             ChangeField::Operands
             | ChangeField::ResultTypes
             | ChangeField::Attributes
-            | ChangeField::Properties => unreachable!("handled separately"),
+            | ChangeField::Properties
+            | ChangeField::Successors
+            | ChangeField::Regions => unreachable!("handled separately"),
         };
         present(value)
     }
@@ -1122,6 +1133,55 @@ fn value_reference_json(
         }
         ValueReference::Invalid(_) => serde_json::json!({"invalid": true}),
     }
+}
+
+fn successor_json(
+    document: &Document,
+    successor: crate::semantic::Successor,
+    operation_paths: &HashMap<OperationId, String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "block": block_path(document, successor.block, operation_paths),
+        "arguments": document
+            .successor_arguments(successor)
+            .unwrap_or(&[])
+            .iter()
+            .map(|value| value_reference_json(document, *value, operation_paths))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn region_shell_json(
+    document: &Document,
+    operation: OperationId,
+    operation_paths: &HashMap<OperationId, String>,
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        document
+            .operation_regions(operation)
+            .unwrap_or(&[])
+            .iter()
+            .map(|region| {
+                serde_json::json!({
+                    "blocks": document
+                        .region(*region)
+                        .and_then(|region| region.blocks(document))
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|block| serde_json::json!({
+                            "path": block_path(document, *block, operation_paths),
+                            "argument_types": document
+                                .block_argument_types(*block)
+                                .unwrap_or(&[])
+                                .iter()
+                                .map(|value| document.type_spelling(*value))
+                                .collect::<Vec<_>>(),
+                        }))
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn block_path(

@@ -346,3 +346,39 @@ fn matched_consumer_slots_disambiguate_changed_producers() {
         change.kind() == ChangeKind::Modified && change.fields() == [ChangeField::Attributes]
     }));
 }
+
+#[test]
+fn changed_successor_reports_structural_block_endpoints() {
+    let before = document(
+        r#"module { func.func @main() {
+        ^entry:
+          cf.br ^left
+        ^left:
+          "test.left"() : () -> ()
+          func.return
+        ^right:
+          "test.right"() : () -> ()
+          func.return
+        } }"#,
+    );
+    let after = document(
+        r#"module { func.func @main() {
+        ^entry:
+          cf.br ^right
+        ^left:
+          "test.left"() : () -> ()
+          func.return
+        ^right:
+          "test.right"() : () -> ()
+          func.return
+        } }"#,
+    );
+    let diff = compare_documents(&before, &after);
+    assert_eq!(diff.len(), 1, "{}", diff.to_text());
+    let change = &diff.changes()[0];
+    assert_eq!(change.fields(), [ChangeField::Successors]);
+    assert_eq!(change.details()[0].path, "/successors/0");
+    let before = &change.details()[0].before.value;
+    let after = &change.details()[0].after.value;
+    assert_ne!(before, after);
+}
