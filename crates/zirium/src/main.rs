@@ -583,6 +583,7 @@ fn run() -> Result<(), String> {
             parse_limits,
             diff_options,
             diff_limits,
+            evaluation_limits,
             fragment_scope,
             ndjson,
             silent,
@@ -817,6 +818,7 @@ fn run_diff(
     parse_limits: ParseLimits,
     options: DiffOptions,
     limits: DiffLimits,
+    evaluation_limits: EvaluationLimits,
     fragment_scope: FragmentScope,
     ndjson: bool,
     silent: bool,
@@ -824,6 +826,7 @@ fn run_diff(
     if before_path == "-" && after_path == "-" {
         return Err("both diff inputs cannot read from stdin".into());
     }
+    reject_diff_mutations(query_text)?;
     let (before_name, before) = load_diff_input(before_path, registry, parse_limits, "before")?;
     let (after_name, after) = load_diff_input(after_path, registry, parse_limits, "after")?;
     let diff = compare(&before, &after, registry, options, limits)
@@ -835,6 +838,7 @@ fn run_diff(
             query_text,
             &before_name,
             &after_name,
+            evaluation_limits,
             fragment_scope,
             ndjson,
             &mut output,
@@ -918,68 +922,131 @@ fn load_diff_input(
     Ok((name, document))
 }
 
+#[derive(Clone)]
 enum DiffCliValue {
     Changes(Vec<zirium::diff::ChangeId>),
     Operations(DiffSide, Vec<zirium::semantic::OperationId>),
     Count(usize),
     Names(Vec<String>),
     Json(String, Option<DiffSide>),
+    Text(String),
 }
 
+struct DiffQueryBudget {
+    remaining: usize,
+    max_items: usize,
+}
+
+impl DiffQueryBudget {
+    fn new(limits: EvaluationLimits) -> Self {
+        Self {
+            remaining: limits.max_work,
+            max_items: limits.max_items,
+        }
+    }
+
+    fn charge(&mut self, amount: usize) -> Result<(), String> {
+        self.remaining = self
+            .remaining
+            .checked_sub(amount)
+            .ok_or("query work limit exceeded")?;
+        Ok(())
+    }
+
+    fn check_items(&self, count: usize) -> Result<(), String> {
+        if count > self.max_items {
+            Err("query stream size limit exceeded".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn evaluate_diff_cli(
     diff: &zirium::diff::Diff<'_>,
     source: &str,
     before_name: &str,
     after_name: &str,
+    limits: EvaluationLimits,
     fragment_scope: FragmentScope,
     ndjson: bool,
     output: &mut StagedOutput,
 ) -> Result<(), String> {
     if source.trim().is_empty() {
+        let value = DiffCliValue::Changes(diff.change_ids().collect());
         if ndjson {
-            let result: serde_json::Value =
-                serde_json::from_str(&diff.to_json().map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?;
-            serde_json::to_writer(
-                &mut *output,
-                &serde_json::json!({
-                    "schema": "zirium.diff.v1",
-                    "before_document": before_name,
-                    "after_document": after_name,
-                    "result_side": serde_json::Value::Null,
-                    "comparison": {
-                        "locations": if diff.options().compare_locations { "compare" } else { "ignore" },
-                        "opaque_values": "bytes",
-                        "opaque_before": diff.statistics().opaque_before,
-                        "opaque_after": diff.statistics().opaque_after,
-                        "ambiguous_groups": diff.statistics().ambiguous_groups,
-                        "bounded_fallback_groups": diff.statistics().bounded_fallback_groups,
-                    },
-                    "result": result,
-                }),
-            ).map_err(|e| e.to_string())?;
-            output.write_all(b"\n").map_err(|e| e.to_string())?;
-        } else {
-            output
-                .write_all(format!("{before_name} -> {after_name}\n{}", diff.to_text()).as_bytes())
-                .map_err(|e| e.to_string())?;
+            return write_diff_value(
+                diff,
+                value,
+                before_name,
+                after_name,
+                fragment_scope,
+                true,
+                output,
+            );
         }
+        output
+            .write_all(format!("{before_name} -> {after_name}\n{}", diff.to_text()).as_bytes())
+            .map_err(|error| error.to_string())?;
         return Ok(());
     }
-    if source.contains(';') {
-        return Err(
-            "diff query statements and bindings are not yet supported by this build".into(),
-        );
+
+    let statements = split_diff_statements(source)?;
+    let mut bindings = std::collections::HashMap::new();
+    let mut budget = DiffQueryBudget::new(limits);
+    for statement in statements {
+        let statement = statement.trim();
+        if statement.is_empty() {
+            continue;
+        }
+        if let Some(expression) = statement.strip_prefix("do ") {
+            evaluate_diff_expression(diff, expression, &bindings, &mut budget)?;
+            continue;
+        }
+        if let Some((name, expression)) = split_diff_binding(statement) {
+            if matches!(
+                name,
+                "before" | "after" | "before_document" | "after_document"
+            ) {
+                return Err(format!("binding name `{name}` is reserved in diff mode"));
+            }
+            if bindings.contains_key(name) {
+                return Err(format!("binding `{name}` is already defined"));
+            }
+            let value = evaluate_diff_expression(diff, expression, &bindings, &mut budget)?;
+            bindings.insert(name.to_owned(), value);
+            continue;
+        }
+        let value = evaluate_diff_expression(diff, statement, &bindings, &mut budget)?;
+        write_diff_value(
+            diff,
+            value,
+            before_name,
+            after_name,
+            fragment_scope,
+            ndjson,
+            output,
+        )?;
     }
+    Ok(())
+}
+
+fn evaluate_diff_expression(
+    diff: &zirium::diff::Diff<'_>,
+    source: &str,
+    bindings: &std::collections::HashMap<String, DiffCliValue>,
+    budget: &mut DiffQueryBudget,
+) -> Result<DiffCliValue, String> {
     let stages = split_diff_pipeline(source)?;
     let mut value = DiffCliValue::Changes(diff.change_ids().collect());
     for stage in stages {
         let stage = stage.trim();
-        if stage.starts_with("set_attr(") || stage.starts_with("remove_attr(") {
-            return Err("diff queries are read-only".into());
-        }
+        budget.charge(diff_value_len(&value).max(1))?;
         value = if stage == "input" {
             DiffCliValue::Changes(diff.change_ids().collect())
+        } else if let Some(value) = bindings.get(stage) {
+            value.clone()
         } else if stage.starts_with("filter(") {
             filter_diff_value(diff, value, stage)?
         } else if stage == "before" || stage == "after" {
@@ -1047,6 +1114,12 @@ fn evaluate_diff_cli(
                 DiffCliValue::Names(items) => items.len(),
                 _ => return Err("count requires a stream".into()),
             })
+        } else if stage == "reverse" {
+            reverse_diff_value(value)?
+        } else if stage.starts_with("head(") || stage.starts_with("tail(") {
+            limit_diff_value(value, stage)?
+        } else if stage == "check" || stage.starts_with("check(") {
+            check_diff_value(value, stage)?
         } else if stage == "names" {
             match value {
                 DiffCliValue::Changes(items) => DiffCliValue::Names(
@@ -1066,6 +1139,14 @@ fn evaluate_diff_cli(
                 ),
                 _ => return Err("names requires a change or operation stream".into()),
             }
+        } else if stage == "markdown" {
+            let DiffCliValue::Changes(items) = value else {
+                return Err("markdown on a diff requires a change stream".into());
+            };
+            DiffCliValue::Text(
+                diff.selection_to_markdown(&items)
+                    .map_err(|error| error.to_string())?,
+            )
         } else if stage == "json" {
             let (json, side) = match value {
                 DiffCliValue::Changes(items) => (
@@ -1080,19 +1161,37 @@ fn evaluate_diff_cli(
                     None,
                 ),
                 DiffCliValue::Count(count) => (serde_json::to_string(&count).unwrap(), None),
+                DiffCliValue::Text(text) => (
+                    serde_json::to_string_pretty(&text).map_err(|e| e.to_string())?,
+                    None,
+                ),
                 DiffCliValue::Json(_, _) => return Err("json cannot be applied twice".into()),
             };
             DiffCliValue::Json(json, side)
         } else {
             return Err(format!("unknown or unsupported diff query stage `{stage}`"));
         };
+        budget.check_items(diff_value_len(&value))?;
     }
+    Ok(value)
+}
+
+fn write_diff_value(
+    diff: &zirium::diff::Diff<'_>,
+    value: DiffCliValue,
+    before_name: &str,
+    after_name: &str,
+    fragment_scope: FragmentScope,
+    ndjson: bool,
+    output: &mut StagedOutput,
+) -> Result<(), String> {
     match value {
         DiffCliValue::Changes(items) => {
             if ndjson {
                 let json = diff.selection_to_json(&items).map_err(|e| e.to_string())?;
                 write_diff_envelope(
                     output,
+                    diff,
                     before_name,
                     after_name,
                     None,
@@ -1112,6 +1211,7 @@ fn evaluate_diff_cli(
             if ndjson {
                 write_diff_envelope(
                     output,
+                    diff,
                     before_name,
                     after_name,
                     Some(side),
@@ -1136,6 +1236,7 @@ fn evaluate_diff_cli(
         }
         DiffCliValue::Count(count) if ndjson => write_diff_envelope(
             output,
+            diff,
             before_name,
             after_name,
             None,
@@ -1144,6 +1245,7 @@ fn evaluate_diff_cli(
         DiffCliValue::Count(count) => writeln!(output, "{count}").map_err(|e| e.to_string())?,
         DiffCliValue::Names(items) if ndjson => write_diff_envelope(
             output,
+            diff,
             before_name,
             after_name,
             None,
@@ -1158,6 +1260,7 @@ fn evaluate_diff_cli(
             if ndjson {
                 write_diff_envelope(
                     output,
+                    diff,
                     before_name,
                     after_name,
                     side,
@@ -1168,6 +1271,22 @@ fn evaluate_diff_cli(
                     .write_all(json.as_bytes())
                     .map_err(|e| e.to_string())?;
                 output.write_all(b"\n").map_err(|e| e.to_string())?;
+            }
+        }
+        DiffCliValue::Text(text) => {
+            if ndjson {
+                write_diff_envelope(
+                    output,
+                    diff,
+                    before_name,
+                    after_name,
+                    None,
+                    serde_json::Value::String(text),
+                )?;
+            } else {
+                output
+                    .write_all(text.as_bytes())
+                    .map_err(|error| error.to_string())?;
             }
         }
     }
@@ -1273,17 +1392,93 @@ fn navigate_diff_operations(
     })
 }
 
-fn split_diff_pipeline(source: &str) -> Result<Vec<&str>, String> {
+fn reject_diff_mutations(source: &str) -> Result<(), String> {
+    let mut quoted = false;
+    let mut escaped = false;
+    let bytes = source.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'"' {
+            quoted = true;
+            cursor += 1;
+            continue;
+        }
+        if byte.is_ascii_alphabetic() || byte == b'_' {
+            let start = cursor;
+            cursor += 1;
+            while cursor < bytes.len()
+                && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+            {
+                cursor += 1;
+            }
+            if matches!(&source[start..cursor], "set_attr" | "remove_attr") {
+                return Err("diff queries are read-only".into());
+            }
+        } else {
+            cursor += 1;
+        }
+    }
+    Ok(())
+}
+
+fn split_diff_statements(source: &str) -> Result<Vec<&str>, String> {
+    split_diff_top_level(source, b';')
+}
+
+fn split_diff_binding(source: &str) -> Option<(&str, &str)> {
+    let parts = split_diff_top_level(source, b'=').ok()?;
+    if parts.len() != 2 {
+        return None;
+    }
+    let name = parts[0].trim();
+    if name.is_empty()
+        || !name.bytes().enumerate().all(|(index, byte)| {
+            byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
+        })
+    {
+        return None;
+    }
+    Some((name, parts[1].trim()))
+}
+
+fn split_diff_top_level(source: &str, delimiter: u8) -> Result<Vec<&str>, String> {
     let mut depth = 0usize;
     let mut quoted = false;
+    let mut escaped = false;
     let mut start = 0usize;
     let mut result = Vec::new();
     for (index, byte) in source.bytes().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            continue;
+        }
         match byte {
-            b'"' => quoted = !quoted,
-            b'(' if !quoted => depth += 1,
-            b')' if !quoted => depth = depth.checked_sub(1).ok_or("unmatched `)` in diff query")?,
-            b'|' if !quoted && depth == 0 => {
+            b'"' => quoted = true,
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or("unmatched closing delimiter in diff query")?;
+            }
+            byte if byte == delimiter && depth == 0 => {
                 result.push(&source[start..index]);
                 start = index + 1;
             }
@@ -1297,67 +1492,404 @@ fn split_diff_pipeline(source: &str) -> Result<Vec<&str>, String> {
     Ok(result)
 }
 
+fn diff_value_len(value: &DiffCliValue) -> usize {
+    match value {
+        DiffCliValue::Changes(items) => items.len(),
+        DiffCliValue::Operations(_, items) => items.len(),
+        DiffCliValue::Names(items) => items.len(),
+        DiffCliValue::Count(_) | DiffCliValue::Json(_, _) | DiffCliValue::Text(_) => 1,
+    }
+}
+
+fn reverse_diff_value(value: DiffCliValue) -> Result<DiffCliValue, String> {
+    Ok(match value {
+        DiffCliValue::Changes(mut items) => {
+            items.reverse();
+            DiffCliValue::Changes(items)
+        }
+        DiffCliValue::Operations(side, mut items) => {
+            items.reverse();
+            DiffCliValue::Operations(side, items)
+        }
+        DiffCliValue::Names(mut items) => {
+            items.reverse();
+            DiffCliValue::Names(items)
+        }
+        _ => return Err("reverse requires a stream".into()),
+    })
+}
+
+fn limit_diff_value(value: DiffCliValue, stage: &str) -> Result<DiffCliValue, String> {
+    let (head, argument) = stage
+        .strip_prefix("head(")
+        .map(|value| (true, value))
+        .or_else(|| stage.strip_prefix("tail(").map(|value| (false, value)))
+        .ok_or("invalid stream bound")?;
+    let count = argument
+        .strip_suffix(')')
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .ok_or("head and tail require a non-negative item count")?;
+    fn bounds<T>(mut items: Vec<T>, count: usize, head: bool) -> Vec<T> {
+        if head {
+            items.truncate(count);
+        } else if items.len() > count {
+            items.drain(..items.len() - count);
+        }
+        items
+    }
+    Ok(match value {
+        DiffCliValue::Changes(items) => DiffCliValue::Changes(bounds(items, count, head)),
+        DiffCliValue::Operations(side, items) => {
+            DiffCliValue::Operations(side, bounds(items, count, head))
+        }
+        DiffCliValue::Names(items) => DiffCliValue::Names(bounds(items, count, head)),
+        _ => return Err("head and tail require a stream".into()),
+    })
+}
+
+fn check_diff_value(value: DiffCliValue, stage: &str) -> Result<DiffCliValue, String> {
+    let actual = diff_value_len(&value);
+    let expected = stage
+        .strip_prefix("check(")
+        .and_then(|value| value.strip_suffix(')'))
+        .and_then(|value| value.trim().parse::<usize>().ok());
+    let failed = expected.map_or(actual == 0, |expected| actual != expected);
+    if failed {
+        return Err(match expected {
+            Some(expected) => format!("check failed: expected {expected} items, got {actual}"),
+            None => format!("check failed: expected at least one item, got {actual}"),
+        });
+    }
+    Ok(value)
+}
+
+fn split_diff_pipeline(source: &str) -> Result<Vec<&str>, String> {
+    split_diff_top_level(source, b'|')
+}
+
 fn filter_diff_value(
     diff: &zirium::diff::Diff<'_>,
     value: DiffCliValue,
     stage: &str,
 ) -> Result<DiffCliValue, String> {
-    let DiffCliValue::Changes(items) = value else {
-        return Err("change predicates require a change stream".into());
-    };
-    let calls = ["change", "changed", "op", "dialect"]
-        .into_iter()
-        .flat_map(|name| {
-            extract_string_calls(stage, name)
+    let source = stage
+        .strip_prefix("filter(")
+        .and_then(|value| value.strip_suffix(')'))
+        .ok_or("malformed diff filter")?;
+    let predicate = DiffPredicateParser::parse(source)?;
+    Ok(match value {
+        DiffCliValue::Changes(items) => DiffCliValue::Changes(
+            items
                 .into_iter()
-                .map(move |value| (name, value))
-        })
-        .collect::<Vec<_>>();
-    if calls.is_empty() {
-        return Err("unsupported diff filter predicate".into());
+                .filter_map(|id| match matches_diff_change(diff, id, &predicate) {
+                    Ok(true) => Some(Ok(id)),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error)),
+                })
+                .collect::<Result<_, _>>()?,
+        ),
+        DiffCliValue::Operations(side, items) => {
+            if predicate.has_change_test() {
+                return Err("change predicates require a change stream".into());
+            }
+            DiffCliValue::Operations(
+                side,
+                items
+                    .into_iter()
+                    .filter_map(|operation| {
+                        match matches_diff_operation(diff.document(side), operation, &predicate) {
+                            Ok(true) => Some(Ok(operation)),
+                            Ok(false) => None,
+                            Err(error) => Some(Err(error)),
+                        }
+                    })
+                    .collect::<Result<_, _>>()?,
+            )
+        }
+        _ => return Err("filter requires a change or operation stream".into()),
+    })
+}
+
+#[derive(Clone, Debug)]
+enum DiffPredicate {
+    Bool(bool),
+    Change(ChangeKind),
+    Changed(ChangeField),
+    Op(String),
+    Dialect(String),
+    ResultType(String),
+    HasAttr(String),
+    Attr(String, String),
+    Not(Box<Self>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+}
+
+impl DiffPredicate {
+    fn has_change_test(&self) -> bool {
+        match self {
+            Self::Change(_) | Self::Changed(_) => true,
+            Self::Not(value) => value.has_change_test(),
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.has_change_test() || right.has_change_test()
+            }
+            _ => false,
+        }
     }
-    let mut result = Vec::new();
-    'item: for id in items {
-        let change = diff.change(id).map_err(|e| e.to_string())?;
-        for (name, argument) in &calls {
-            let matches = match *name {
-                "change" => {
-                    let kind: ChangeKind = argument
-                        .parse()
-                        .map_err(|e: zirium::diff::DiffError| e.to_string())?;
-                    if kind == ChangeKind::Moved {
-                        change.moved()
-                    } else {
-                        change.kind() == kind
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DiffPredicateToken {
+    Identifier(String),
+    String(String),
+    Left,
+    Right,
+    Comma,
+}
+
+struct DiffPredicateParser {
+    tokens: Vec<DiffPredicateToken>,
+    cursor: usize,
+}
+
+impl DiffPredicateParser {
+    fn parse(source: &str) -> Result<DiffPredicate, String> {
+        let mut parser = Self {
+            tokens: lex_diff_predicate(source)?,
+            cursor: 0,
+        };
+        let value = parser.or()?;
+        if parser.cursor != parser.tokens.len() {
+            return Err("unexpected token in diff predicate".into());
+        }
+        Ok(value)
+    }
+
+    fn or(&mut self) -> Result<DiffPredicate, String> {
+        let mut value = self.and()?;
+        while self.take_identifier("or") {
+            value = DiffPredicate::Or(Box::new(value), Box::new(self.and()?));
+        }
+        Ok(value)
+    }
+
+    fn and(&mut self) -> Result<DiffPredicate, String> {
+        let mut value = self.unary()?;
+        while self.take_identifier("and") {
+            value = DiffPredicate::And(Box::new(value), Box::new(self.unary()?));
+        }
+        Ok(value)
+    }
+
+    fn unary(&mut self) -> Result<DiffPredicate, String> {
+        if self.take_identifier("not") {
+            return Ok(DiffPredicate::Not(Box::new(self.unary()?)));
+        }
+        if self.take(&DiffPredicateToken::Left) {
+            let value = self.or()?;
+            self.expect(DiffPredicateToken::Right)?;
+            return Ok(value);
+        }
+        let name = match self.tokens.get(self.cursor).cloned() {
+            Some(DiffPredicateToken::Identifier(name)) => name,
+            _ => return Err("expected a diff predicate".into()),
+        };
+        self.cursor += 1;
+        if name == "true" || name == "false" {
+            return Ok(DiffPredicate::Bool(name == "true"));
+        }
+        self.expect(DiffPredicateToken::Left)?;
+        let first = self.string()?;
+        let second = if self.take(&DiffPredicateToken::Comma) {
+            Some(self.string()?)
+        } else {
+            None
+        };
+        self.expect(DiffPredicateToken::Right)?;
+        match (name.as_str(), second) {
+            ("change", None) => {
+                Ok(DiffPredicate::Change(first.parse().map_err(
+                    |error: zirium::diff::DiffError| error.to_string(),
+                )?))
+            }
+            ("changed", None) => {
+                Ok(DiffPredicate::Changed(first.parse().map_err(
+                    |error: zirium::diff::DiffError| error.to_string(),
+                )?))
+            }
+            ("op", None) => Ok(DiffPredicate::Op(first)),
+            ("dialect", None) => Ok(DiffPredicate::Dialect(first)),
+            ("result_type", None) => Ok(DiffPredicate::ResultType(first)),
+            ("has_attr", None) => Ok(DiffPredicate::HasAttr(first)),
+            ("attr", Some(second)) => Ok(DiffPredicate::Attr(first, second)),
+            _ => Err(format!("unsupported diff predicate `{name}`")),
+        }
+    }
+
+    fn string(&mut self) -> Result<String, String> {
+        match self.tokens.get(self.cursor).cloned() {
+            Some(DiffPredicateToken::String(value)) => {
+                self.cursor += 1;
+                Ok(value)
+            }
+            _ => Err("expected a string argument in diff predicate".into()),
+        }
+    }
+
+    fn take_identifier(&mut self, expected: &str) -> bool {
+        if matches!(self.tokens.get(self.cursor), Some(DiffPredicateToken::Identifier(value)) if value == expected)
+        {
+            self.cursor += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn take(&mut self, expected: &DiffPredicateToken) -> bool {
+        if self.tokens.get(self.cursor) == Some(expected) {
+            self.cursor += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect(&mut self, expected: DiffPredicateToken) -> Result<(), String> {
+        self.take(&expected)
+            .then_some(())
+            .ok_or("malformed diff predicate".into())
+    }
+}
+
+fn lex_diff_predicate(source: &str) -> Result<Vec<DiffPredicateToken>, String> {
+    let bytes = source.as_bytes();
+    let mut cursor = 0;
+    let mut tokens = Vec::new();
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            byte if byte.is_ascii_whitespace() => cursor += 1,
+            b'(' => {
+                tokens.push(DiffPredicateToken::Left);
+                cursor += 1;
+            }
+            b')' => {
+                tokens.push(DiffPredicateToken::Right);
+                cursor += 1;
+            }
+            b',' => {
+                tokens.push(DiffPredicateToken::Comma);
+                cursor += 1;
+            }
+            b'"' => {
+                let start = cursor;
+                cursor += 1;
+                let mut escaped = false;
+                while cursor < bytes.len() {
+                    let byte = bytes[cursor];
+                    cursor += 1;
+                    if escaped {
+                        escaped = false;
+                    } else if byte == b'\\' {
+                        escaped = true;
+                    } else if byte == b'"' {
+                        break;
                     }
                 }
-                "changed" => {
-                    let field: ChangeField = argument
-                        .parse()
-                        .map_err(|e: zirium::diff::DiffError| e.to_string())?;
-                    change.fields().contains(&field)
+                if cursor > bytes.len() || bytes.get(cursor.saturating_sub(1)) != Some(&b'"') {
+                    return Err("unterminated string in diff predicate".into());
                 }
-                "op" | "dialect" => {
-                    let (side, op) = diff.representative_id(id).map_err(|e| e.to_string())?;
-                    let op_name = diff.document(side).operation_name(op).unwrap_or("");
-                    if *name == "op" {
-                        op_name == argument
-                    } else {
-                        op_name
-                            .split_once('.')
-                            .map_or(op_name, |(dialect, _)| dialect)
-                            == argument
-                    }
+                let value: String = serde_json::from_str(&source[start..cursor])
+                    .map_err(|_| "invalid string in diff predicate")?;
+                tokens.push(DiffPredicateToken::String(value));
+            }
+            byte if byte.is_ascii_alphabetic() || byte == b'_' => {
+                let start = cursor;
+                cursor += 1;
+                while cursor < bytes.len()
+                    && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+                {
+                    cursor += 1;
                 }
-                _ => unreachable!(),
-            };
-            if !matches {
-                continue 'item;
+                tokens.push(DiffPredicateToken::Identifier(
+                    source[start..cursor].to_owned(),
+                ));
+            }
+            _ => return Err("invalid token in diff predicate".into()),
+        }
+    }
+    Ok(tokens)
+}
+
+fn matches_diff_change(
+    diff: &zirium::diff::Diff<'_>,
+    id: zirium::diff::ChangeId,
+    predicate: &DiffPredicate,
+) -> Result<bool, String> {
+    let change = diff.change(id).map_err(|error| error.to_string())?;
+    Ok(match predicate {
+        DiffPredicate::Bool(value) => *value,
+        DiffPredicate::Change(kind) => {
+            if *kind == ChangeKind::Moved {
+                change.moved()
+            } else {
+                change.kind() == *kind
             }
         }
-        result.push(id);
-    }
-    Ok(DiffCliValue::Changes(result))
+        DiffPredicate::Changed(field) => change.fields().contains(field),
+        DiffPredicate::Not(value) => !matches_diff_change(diff, id, value)?,
+        DiffPredicate::And(left, right) => {
+            matches_diff_change(diff, id, left)? && matches_diff_change(diff, id, right)?
+        }
+        DiffPredicate::Or(left, right) => {
+            matches_diff_change(diff, id, left)? || matches_diff_change(diff, id, right)?
+        }
+        _ => {
+            let (side, operation) = diff.representative_id(id).map_err(|e| e.to_string())?;
+            matches_diff_operation(diff.document(side), operation, predicate)?
+        }
+    })
+}
+
+fn matches_diff_operation(
+    document: &zirium::semantic::Document,
+    operation: zirium::semantic::OperationId,
+    predicate: &DiffPredicate,
+) -> Result<bool, String> {
+    Ok(match predicate {
+        DiffPredicate::Bool(value) => *value,
+        DiffPredicate::Op(name) => document.operation_name(operation) == Some(name),
+        DiffPredicate::Dialect(name) => document
+            .operation_name(operation)
+            .and_then(|name| name.split_once('.'))
+            .is_some_and(|(dialect, _)| dialect == name),
+        DiffPredicate::ResultType(spelling) => document
+            .result_types(operation)
+            .unwrap_or(&[])
+            .iter()
+            .any(|value| document.type_spelling(*value) == Some(spelling)),
+        DiffPredicate::HasAttr(name) => document.attribute_id(operation, name).is_some(),
+        DiffPredicate::Attr(name, value) => {
+            document
+                .attribute_id(operation, name)
+                .and_then(|id| document.attribute_value(id))
+                .and_then(zirium::semantic::AttributeValue::decoded_string)
+                .as_deref()
+                == Some(value)
+        }
+        DiffPredicate::Not(value) => !matches_diff_operation(document, operation, value)?,
+        DiffPredicate::And(left, right) => {
+            matches_diff_operation(document, operation, left)?
+                && matches_diff_operation(document, operation, right)?
+        }
+        DiffPredicate::Or(left, right) => {
+            matches_diff_operation(document, operation, left)?
+                || matches_diff_operation(document, operation, right)?
+        }
+        DiffPredicate::Change(_) | DiffPredicate::Changed(_) => {
+            return Err("change predicates require a change stream".into());
+        }
+    })
 }
 
 fn extract_string_calls(source: &str, name: &str) -> Vec<String> {
@@ -1409,6 +1941,7 @@ fn selection_text(
 
 fn write_diff_envelope(
     output: &mut StagedOutput,
+    diff: &zirium::diff::Diff<'_>,
     before: &str,
     after: &str,
     side: Option<DiffSide>,
@@ -1416,7 +1949,16 @@ fn write_diff_envelope(
 ) -> Result<(), String> {
     serde_json::to_writer(&mut *output, &serde_json::json!({
         "schema": "zirium.diff.v1", "before_document": before, "after_document": after,
-        "result_side": side.map(|side| if side == DiffSide::Before { "before" } else { "after" }), "result": result,
+        "result_side": side.map(|side| if side == DiffSide::Before { "before" } else { "after" }),
+        "comparison": {
+            "locations": if diff.options().compare_locations { "compare" } else { "ignore" },
+            "opaque_values": "bytes",
+            "opaque_before": diff.statistics().opaque_before,
+            "opaque_after": diff.statistics().opaque_after,
+            "ambiguous_groups": diff.statistics().ambiguous_groups,
+            "bounded_fallback_groups": diff.statistics().bounded_fallback_groups,
+        },
+        "result": result,
     })).map_err(|e| e.to_string())?;
     output.write_all(b"\n").map_err(|e| e.to_string())
 }

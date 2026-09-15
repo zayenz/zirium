@@ -695,6 +695,51 @@ impl Diff<'_> {
         ))
     }
 
+    pub fn selection_to_markdown(&self, ids: &[ChangeId]) -> Result<String, DiffError> {
+        fn cell(value: &str) -> String {
+            value
+                .replace('\\', "\\\\")
+                .replace('|', "\\|")
+                .replace('\n', "<br>")
+        }
+        let mut output = String::from(
+            "| Kind | Before context | After context | Changed fields |\n| --- | --- | --- | --- |\n",
+        );
+        for &id in ids {
+            let change = self.change(id)?;
+            let context = |document: &Document, operation: OperationId, side| {
+                let endpoint = self.endpoint(document, operation, side);
+                let symbols = endpoint.symbol_path.join("::");
+                let value = if symbols.is_empty() {
+                    format!("{} `{}`", endpoint.name, endpoint.path)
+                } else {
+                    format!("{symbols}: {} `{}`", endpoint.name, endpoint.path)
+                };
+                cell(&value)
+            };
+            let before = change
+                .before
+                .map(|operation| context(self.before, operation, DiffSide::Before))
+                .unwrap_or_default();
+            let after = change
+                .after
+                .map(|operation| context(self.after, operation, DiffSide::After))
+                .unwrap_or_default();
+            let fields = change
+                .fields
+                .iter()
+                .map(|field| field.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            output.push_str(&format!(
+                "| {} | {before} | {after} | {} |\n",
+                change.kind.as_str(),
+                cell(&fields)
+            ));
+        }
+        Ok(output)
+    }
+
     fn serializable_changes(&self) -> Vec<SerializableChange> {
         self.changes
             .iter()
