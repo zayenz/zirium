@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a stage-separated Python memory benchmark covering source loading,
+  parsing, lowering coexistence, retained semantic storage, traversal, and
+  consumer report construction across controlled synthetic workload shapes.
 - Add independently named literal captures to exact operation formats, with
   per-capture type bindings and explicit attribute-dictionary collision errors.
 - Allow exact formats and ordered alternatives to declare a custom direct-call
