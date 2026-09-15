@@ -404,3 +404,15 @@ fn work_limit_charges_opaque_payload_chunks() {
         Err(zirium::diff::DiffError::WorkLimitExceeded)
     ));
 }
+
+#[test]
+fn duplicate_registered_symbols_disable_anchors_with_a_diagnostic() {
+    let source = "module { func.func @same() { func.return } func.func @same() { func.return } }";
+    let before = document(source);
+    let after = document(source);
+    let diff = compare_documents(&before, &after);
+    assert!(diff.is_empty());
+    assert_eq!(diff.statistics().ambiguous_groups, 1);
+    assert_eq!(diff.diagnostics().len(), 1);
+    assert!(diff.diagnostics()[0].contains("duplicate registered symbol `same`"));
+}

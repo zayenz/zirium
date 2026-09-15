@@ -240,9 +240,17 @@ pub struct DiffStatistics {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffError {
     InvalidLimits,
-    IncompleteInput { side: DiffSide },
-    InvalidStructure { side: DiffSide, message: String },
-    UnsupportedResource { side: DiffSide },
+    IncompleteInput {
+        side: DiffSide,
+    },
+    InvalidStructure {
+        side: DiffSide,
+        message: String,
+    },
+    UnsupportedResource {
+        side: DiffSide,
+        range: Option<TextRange>,
+    },
     WorkLimitExceeded,
     ChangeLimitExceeded,
     InvalidHandle,
@@ -260,8 +268,12 @@ impl fmt::Display for DiffError {
             Self::InvalidStructure { side, message } => {
                 write!(f, "{side:?} input has invalid structure: {message}")
             }
-            Self::UnsupportedResource { side } => {
-                write!(f, "{side:?} input contains a resource-backed attribute")
+            Self::UnsupportedResource { side, range } => {
+                write!(f, "{side:?} input contains unsupported resource data")?;
+                if let Some(range) = range {
+                    write!(f, " at bytes {}..{}", range.start(), range.end())?;
+                }
+                Ok(())
             }
             Self::WorkLimitExceeded => f.write_str("semantic diff work limit exceeded"),
             Self::ChangeLimitExceeded => f.write_str("semantic diff change limit exceeded"),
@@ -349,22 +361,21 @@ fn validate_input(document: &Document, side: DiffSide) -> Result<(), DiffError> 
             side,
             message: error.to_string(),
         })?;
-    if document
-        .comparison_coverage()
-        .unrepresented_file_metadata
-        .is_some()
-    {
-        return Err(DiffError::UnsupportedResource { side });
+    if let Some(range) = document.comparison_coverage().unrepresented_file_metadata {
+        return Err(DiffError::UnsupportedResource {
+            side,
+            range: Some(range),
+        });
     }
-    if document_has_resource(document) {
-        return Err(DiffError::UnsupportedResource { side });
+    if let Some(range) = document_resource_range(document) {
+        return Err(DiffError::UnsupportedResource { side, range });
     }
     Ok(())
 }
 
-fn document_has_resource(document: &Document) -> bool {
-    document.operations().any(|operation| {
-        document
+fn document_resource_range(document: &Document) -> Option<Option<TextRange>> {
+    document.operations().find_map(|operation| {
+        let found = document
             .attribute_entries(operation)
             .into_iter()
             .flatten()
@@ -381,7 +392,8 @@ fn document_has_resource(document: &Document) -> bool {
                 .any(|id| type_has_resource(document.type_value(*id)))
             || document
                 .function_type(operation)
-                .is_some_and(|id| type_has_resource(document.type_value(id)))
+                .is_some_and(|id| type_has_resource(document.type_value(id)));
+        found.then(|| document.operation_source_range(operation))
     })
 }
 

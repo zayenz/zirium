@@ -831,6 +831,9 @@ fn run_diff(
     let (after_name, after) = load_diff_input(after_path, registry, parse_limits, "after")?;
     let diff = compare(&before, &after, registry, options, limits)
         .map_err(|error| format!("could not compare {before_name} and {after_name}: {error}"))?;
+    for diagnostic in diff.diagnostics() {
+        eprintln!("zirium: warning: {diagnostic}");
+    }
     let mut output = StagedOutput::new(OUTPUT_STAGING_MEMORY_LIMIT, env::temp_dir());
     if !silent {
         evaluate_diff_cli(
