@@ -323,3 +323,26 @@ fn opaque_value_statistics_count_distinct_payloads() {
     assert_eq!(diff.statistics().opaque_before, 1);
     assert_eq!(diff.statistics().opaque_after, 1);
 }
+
+#[test]
+fn matched_consumer_slots_disambiguate_changed_producers() {
+    let before = document(
+        r#"module {
+          %a = arith.constant 1 : i32
+          %b = arith.constant 2 : i32
+          %r = "test.combine"(%a, %b) : (i32, i32) -> i32
+        }"#,
+    );
+    let after = document(
+        r#"module {
+          %a = arith.constant 3 : i32
+          %b = arith.constant 4 : i32
+          %r = "test.combine"(%a, %b) : (i32, i32) -> i32
+        }"#,
+    );
+    let diff = compare_documents(&before, &after);
+    assert_eq!(diff.len(), 2, "{}", diff.to_text());
+    assert!(diff.changes().iter().all(|change| {
+        change.kind() == ChangeKind::Modified && change.fields() == [ChangeField::Attributes]
+    }));
+}

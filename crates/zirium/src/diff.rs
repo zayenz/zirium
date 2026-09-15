@@ -1612,6 +1612,7 @@ impl<'a> Matcher<'a> {
                 }
             }
         }
+        self.refine_by_connections(&mut before_left, &mut after_left)?;
         let pairs: Vec<_> = self
             .operations
             .iter()
@@ -1619,6 +1620,91 @@ impl<'a> Matcher<'a> {
             .collect();
         for (before_op, after_op) in pairs {
             self.match_children(before_op, after_op)?;
+        }
+        Ok(())
+    }
+
+    fn refine_by_connections(
+        &mut self,
+        before_left: &mut HashSet<OperationId>,
+        after_left: &mut HashSet<OperationId>,
+    ) -> Result<(), DiffError> {
+        for _ in 0..4 {
+            let candidates = before_left.len().saturating_mul(after_left.len());
+            if candidates > 65_536 {
+                self.bounded_fallback += 1;
+                return Ok(());
+            }
+            self.charge(candidates)?;
+            let mut scores = Vec::new();
+            for &before in before_left.iter() {
+                for &after in after_left.iter() {
+                    if !candidate_shapes_compatible(self.before, before, self.after, after)
+                        || registered_symbol_names_differ(
+                            self.registry,
+                            self.before,
+                            before,
+                            self.after,
+                            after,
+                        )
+                    {
+                        continue;
+                    }
+                    let score = connection_evidence(
+                        self.before,
+                        before,
+                        self.after,
+                        after,
+                        &self.operations,
+                        &self.blocks,
+                    );
+                    if score > 0 {
+                        scores.push((before, after, score));
+                    }
+                }
+            }
+            let mut accepted = Vec::new();
+            for &(before, after, score) in &scores {
+                let left_best = scores
+                    .iter()
+                    .filter(|(candidate, _, _)| *candidate == before)
+                    .map(|(_, _, score)| *score)
+                    .max();
+                let right_best = scores
+                    .iter()
+                    .filter(|(_, candidate, _)| *candidate == after)
+                    .map(|(_, _, score)| *score)
+                    .max();
+                let left_unique = scores
+                    .iter()
+                    .filter(|(candidate, _, candidate_score)| {
+                        *candidate == before && *candidate_score == score
+                    })
+                    .count()
+                    == 1;
+                let right_unique = scores
+                    .iter()
+                    .filter(|(_, candidate, candidate_score)| {
+                        *candidate == after && *candidate_score == score
+                    })
+                    .count()
+                    == 1;
+                if left_best == Some(score)
+                    && right_best == Some(score)
+                    && left_unique
+                    && right_unique
+                {
+                    accepted.push((before, after));
+                }
+            }
+            if accepted.is_empty() {
+                break;
+            }
+            for (before, after) in accepted {
+                if before_left.remove(&before) && after_left.remove(&after) {
+                    self.pair(before, after);
+                }
+            }
         }
         Ok(())
     }
@@ -1778,6 +1864,128 @@ fn exact_key(document: &Document, operation: OperationId) -> String {
         format_entries(document.attributes(operation)),
         format_entries(document.properties(operation))
     )
+}
+
+fn candidate_shapes_compatible(
+    before: &Document,
+    before_op: OperationId,
+    after: &Document,
+    after_op: OperationId,
+) -> bool {
+    before.operands(before_op).map_or(0, <[_]>::len)
+        == after.operands(after_op).map_or(0, <[_]>::len)
+        && before.result_types(before_op).map_or(0, <[_]>::len)
+            == after.result_types(after_op).map_or(0, <[_]>::len)
+        && before.operation_regions(before_op).map_or(0, <[_]>::len)
+            == after.operation_regions(after_op).map_or(0, <[_]>::len)
+}
+
+fn registered_symbol_names_differ(
+    registry: &DialectRegistry,
+    before: &Document,
+    before_op: OperationId,
+    after: &Document,
+    after_op: OperationId,
+) -> bool {
+    let before_name = before.operation_name(before_op).unwrap_or("");
+    let after_name = after.operation_name(after_op).unwrap_or("");
+    (registry.symbols(before_name).defines_symbol || registry.symbols(after_name).defines_symbol)
+        && before.operation_symbol_name(before_op) != after.operation_symbol_name(after_op)
+}
+
+fn connection_evidence(
+    before: &Document,
+    before_op: OperationId,
+    after: &Document,
+    after_op: OperationId,
+    operations: &HashMap<OperationId, OperationId>,
+    blocks: &HashMap<BlockId, BlockId>,
+) -> usize {
+    use crate::semantic::{UseSite, ValueId, ValueReference};
+
+    fn mapped_reference(
+        before: ValueReference,
+        after: ValueReference,
+        operations: &HashMap<OperationId, OperationId>,
+        blocks: &HashMap<BlockId, BlockId>,
+    ) -> bool {
+        match (before, after) {
+            (
+                ValueReference::Resolved(ValueId::OperationResult {
+                    operation: left,
+                    result: left_result,
+                }),
+                ValueReference::Resolved(ValueId::OperationResult {
+                    operation: right,
+                    result: right_result,
+                }),
+            ) => operations.get(&left) == Some(&right) && left_result == right_result,
+            (
+                ValueReference::Resolved(ValueId::BlockArgument {
+                    block: left,
+                    argument: left_argument,
+                }),
+                ValueReference::Resolved(ValueId::BlockArgument {
+                    block: right,
+                    argument: right_argument,
+                }),
+            ) => blocks.get(&left) == Some(&right) && left_argument == right_argument,
+            _ => false,
+        }
+    }
+
+    let mut score = before
+        .operands(before_op)
+        .unwrap_or(&[])
+        .iter()
+        .zip(after.operands(after_op).unwrap_or(&[]))
+        .filter(|(left, right)| mapped_reference(**left, **right, operations, blocks))
+        .count();
+
+    let result_count = before.result_types(before_op).map_or(0, <[_]>::len);
+    for result in 0..result_count {
+        let before_uses = before.uses(ValueId::OperationResult {
+            operation: before_op,
+            result: result as u32,
+        });
+        let after_uses = after.uses(ValueId::OperationResult {
+            operation: after_op,
+            result: result as u32,
+        });
+        for left in before_uses {
+            let matches = after_uses.iter().any(|right| match (left, *right) {
+                (
+                    UseSite::Operand {
+                        operation: left_op,
+                        index: left_index,
+                    },
+                    UseSite::Operand {
+                        operation: right_op,
+                        index: right_index,
+                    },
+                ) => operations.get(&left_op) == Some(&right_op) && left_index == right_index,
+                (
+                    UseSite::SuccessorArgument {
+                        operation: left_op,
+                        successor: left_successor,
+                        argument: left_argument,
+                    },
+                    UseSite::SuccessorArgument {
+                        operation: right_op,
+                        successor: right_successor,
+                        argument: right_argument,
+                    },
+                ) => {
+                    operations.get(&left_op) == Some(&right_op)
+                        && left_successor == right_successor
+                        && left_argument == right_argument
+                }
+                _ => false,
+            });
+            score += usize::from(matches);
+        }
+    }
+    score
 }
 
 fn block_key(document: &Document, block: BlockId) -> String {
