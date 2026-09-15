@@ -1038,12 +1038,35 @@ fn evaluate_diff_expression(
     bindings: &std::collections::HashMap<String, DiffCliValue>,
     budget: &mut DiffQueryBudget,
 ) -> Result<DiffCliValue, String> {
+    let parts = split_diff_sets(source)?;
+    let mut parts = parts.into_iter();
+    let (_, first) = parts.next().ok_or("empty diff expression")?;
+    let mut value = evaluate_diff_pipeline(diff, first, bindings, budget)?;
+    for (operator, pipeline) in parts {
+        let right = evaluate_diff_pipeline(diff, pipeline, bindings, budget)?;
+        value = combine_diff_selections(diff, value, right, operator.expect("later set part"))?;
+        budget.check_items(diff_value_len(&value))?;
+    }
+    Ok(value)
+}
+
+fn evaluate_diff_pipeline(
+    diff: &zirium::diff::Diff<'_>,
+    source: &str,
+    bindings: &std::collections::HashMap<String, DiffCliValue>,
+    budget: &mut DiffQueryBudget,
+) -> Result<DiffCliValue, String> {
     let stages = split_diff_pipeline(source)?;
     let mut value = DiffCliValue::Changes(diff.change_ids().collect());
     for stage in stages {
         let stage = stage.trim();
         budget.charge(diff_value_len(&value).max(1))?;
-        value = if stage == "input" {
+        value = if let Some(expression) = stage
+            .strip_prefix('(')
+            .and_then(|stage| stage.strip_suffix(')'))
+        {
+            evaluate_diff_expression(diff, expression, bindings, budget)?
+        } else if stage == "input" {
             DiffCliValue::Changes(diff.change_ids().collect())
         } else if let Some(value) = bindings.get(stage) {
             value.clone()
@@ -1174,6 +1197,130 @@ fn evaluate_diff_expression(
         budget.check_items(diff_value_len(&value))?;
     }
     Ok(value)
+}
+
+#[derive(Clone, Copy)]
+enum DiffSetOperator {
+    Union,
+    Intersect,
+    Except,
+}
+
+fn split_diff_sets(source: &str) -> Result<Vec<(Option<DiffSetOperator>, &str)>, String> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut start = 0usize;
+    let mut operator = None;
+    let mut result = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            cursor += 1;
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or("unmatched delimiter in diff query")?;
+            }
+            byte if depth == 0 && (byte.is_ascii_alphabetic() || byte == b'_') => {
+                let word_start = cursor;
+                cursor += 1;
+                while cursor < bytes.len()
+                    && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+                {
+                    cursor += 1;
+                }
+                let next = match &source[word_start..cursor] {
+                    "union" => Some(DiffSetOperator::Union),
+                    "intersect" => Some(DiffSetOperator::Intersect),
+                    "except" => Some(DiffSetOperator::Except),
+                    _ => None,
+                };
+                if let Some(next) = next {
+                    let pipeline = source[start..word_start].trim();
+                    if pipeline.is_empty() {
+                        return Err("set operator requires a left selection".into());
+                    }
+                    result.push((operator, pipeline));
+                    operator = Some(next);
+                    start = cursor;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    if quoted || depth != 0 {
+        return Err("unterminated string or group in diff query".into());
+    }
+    let pipeline = source[start..].trim();
+    if pipeline.is_empty() {
+        return Err("set operator requires a right selection".into());
+    }
+    result.push((operator, pipeline));
+    Ok(result)
+}
+
+fn combine_diff_selections(
+    diff: &zirium::diff::Diff<'_>,
+    left: DiffCliValue,
+    right: DiffCliValue,
+    operator: DiffSetOperator,
+) -> Result<DiffCliValue, String> {
+    fn combine<T: Copy + Eq + std::hash::Hash>(
+        canonical: impl Iterator<Item = T>,
+        left: Vec<T>,
+        right: Vec<T>,
+        operator: DiffSetOperator,
+    ) -> Vec<T> {
+        let left: std::collections::HashSet<_> = left.into_iter().collect();
+        let right: std::collections::HashSet<_> = right.into_iter().collect();
+        canonical
+            .filter(|item| match operator {
+                DiffSetOperator::Union => left.contains(item) || right.contains(item),
+                DiffSetOperator::Intersect => left.contains(item) && right.contains(item),
+                DiffSetOperator::Except => left.contains(item) && !right.contains(item),
+            })
+            .collect()
+    }
+    Ok(match (left, right) {
+        (DiffCliValue::Changes(left), DiffCliValue::Changes(right)) => {
+            DiffCliValue::Changes(combine(diff.change_ids(), left, right, operator))
+        }
+        (
+            DiffCliValue::Operations(left_side, left),
+            DiffCliValue::Operations(right_side, right),
+        ) if left_side == right_side => {
+            let mut canonical = Vec::new();
+            canonical.extend(left.iter().copied());
+            canonical.extend(right.iter().copied());
+            DiffCliValue::Operations(
+                left_side,
+                combine(canonical.into_iter(), left, right, operator),
+            )
+        }
+        (DiffCliValue::Operations(_, _), DiffCliValue::Operations(_, _)) => {
+            return Err(
+                "set operations require operation selections from the same diff side".into(),
+            );
+        }
+        _ => return Err("set operations require selections of the same kind".into()),
+    })
 }
 
 fn write_diff_value(

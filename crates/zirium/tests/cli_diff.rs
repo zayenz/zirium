@@ -221,3 +221,38 @@ fn diff_query_work_limit_is_independent_from_matching_work() {
             .contains("query work limit exceeded")
     );
 }
+
+#[test]
+fn diff_sets_preserve_kind_and_reject_cross_side_empty_selections() {
+    let (before, after) = pair();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg(
+            "(filter(change(\"modified\")) | before union filter(change(\"added\")) | before) | count",
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"1\n");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg("filter(false) | before union filter(false) | after")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("same diff side")
+    );
+}
