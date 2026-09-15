@@ -33,6 +33,10 @@ def test_diff_owns_immutable_snapshots_and_exposes_changes():
         "arith.constant"
     ]
     assert comparison.query(constants.count()) == 1
+    assert comparison.query(constants.attr("value")) == ["8"]
+    assert comparison.query(constants.result_types()) == ["i32"]
+    assert comparison.query(constants.after().users().operand_types()) == ["i32"]
+    assert comparison.query(changes().names().sort().min()) == ["arith.constant"]
     assert [
         operation.name for operation in comparison.query(constants.after().parent())
     ] == ["builtin.module"]

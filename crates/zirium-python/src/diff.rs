@@ -326,6 +326,21 @@ impl ChangeQuery {
             inner: self.inner.names(),
         }
     }
+    fn attr(&self, name: &str) -> DiffStringQuery {
+        DiffStringQuery {
+            inner: self.inner.attr(name),
+        }
+    }
+    fn result_types(&self) -> DiffStringQuery {
+        DiffStringQuery {
+            inner: self.inner.result_types(),
+        }
+    }
+    fn operand_types(&self) -> DiffStringQuery {
+        DiffStringQuery {
+            inner: self.inner.operand_types(),
+        }
+    }
     fn count(&self) -> DiffCountQuery {
         DiffCountQuery {
             inner: self.inner.count(),
@@ -402,6 +417,21 @@ impl DiffOpQuery {
             inner: self.inner.names(),
         }
     }
+    fn attr(&self, name: &str) -> DiffStringQuery {
+        DiffStringQuery {
+            inner: self.inner.attr(name),
+        }
+    }
+    fn result_types(&self) -> DiffStringQuery {
+        DiffStringQuery {
+            inner: self.inner.result_types(),
+        }
+    }
+    fn operand_types(&self) -> DiffStringQuery {
+        DiffStringQuery {
+            inner: self.inner.operand_types(),
+        }
+    }
     fn count(&self) -> DiffCountQuery {
         DiffCountQuery {
             inner: self.inner.count(),
@@ -416,6 +446,31 @@ impl DiffOpQuery {
 
 #[pymethods]
 impl DiffStringQuery {
+    fn sort(&self) -> Self {
+        Self {
+            inner: self.inner.sort(),
+        }
+    }
+    fn min(&self) -> Self {
+        Self {
+            inner: self.inner.min(),
+        }
+    }
+    fn min_all(&self) -> Self {
+        Self {
+            inner: self.inner.min_all(),
+        }
+    }
+    fn max(&self) -> Self {
+        Self {
+            inner: self.inner.max(),
+        }
+    }
+    fn max_all(&self) -> Self {
+        Self {
+            inner: self.inner.max_all(),
+        }
+    }
     fn unique(&self) -> Self {
         Self {
             inner: self.inner.unique(),

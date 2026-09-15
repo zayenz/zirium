@@ -36,6 +36,18 @@ fn typed_change_filters_project_and_navigate_on_the_after_document() {
     let consumers = rewired.after().users().unique().names();
     assert_eq!(comparison.query(&consumers).unwrap(), ["test.use"]);
     assert_eq!(comparison.query(&rewired.before().count()).unwrap(), 1);
+    assert_eq!(comparison.query(&rewired.attr("value")).unwrap(), ["8"]);
+    assert_eq!(comparison.query(&rewired.result_types()).unwrap(), ["i32"]);
+    assert_eq!(
+        comparison
+            .query(&rewired.after().users().operand_types())
+            .unwrap(),
+        ["i32"]
+    );
+    assert_eq!(
+        comparison.query(&changes().names().sort().min()).unwrap(),
+        ["arith.constant"]
+    );
 
     let roots = rewired.after().root(op("builtin.module")).unique();
     assert_eq!(comparison.query(&roots).unwrap().len(), 1);

@@ -1196,8 +1196,16 @@ fn evaluate_diff_pipeline(
             project_diff_strings(diff, value, |document, operation| {
                 document
                     .attribute_id(operation, &names[0])
-                    .and_then(|id| document.attribute_value(id))
-                    .and_then(zirium::semantic::AttributeValue::decoded_string)
+                    .and_then(|id| {
+                        let value = document.attribute_value(id)?;
+                        Some(match value {
+                            zirium::semantic::AttributeValue::String(_) => {
+                                value.decoded_string()?
+                            }
+                            zirium::semantic::AttributeValue::Symbol(path) => path.join("::"),
+                            _ => document.attribute_spelling_value(id)?.to_owned(),
+                        })
+                    })
                     .into_iter()
                     .collect()
             })?

@@ -4,7 +4,7 @@ use std::{collections::HashSet, marker::PhantomData};
 
 use crate::{
     diff::{ChangeField, ChangeId, ChangeKind, Diff, DiffOperation, DiffSide},
-    semantic::{OperationId, UseSite, ValueId, ValueReference},
+    semantic::{AttributeValue, OperationId, UseSite, ValueId, ValueReference},
 };
 
 use super::{EvaluationError, EvaluationLimits, Predicate, model};
@@ -25,6 +25,12 @@ enum Stage {
     Head(usize),
     Tail(usize),
     Names,
+    Attr(String),
+    ResultTypes,
+    OperandTypes,
+    Sort,
+    Min(bool),
+    Max(bool),
     Count,
 }
 
@@ -162,6 +168,15 @@ impl ChangeQuery {
     pub fn names(&self) -> DiffStringQuery {
         self.append(Stage::Names)
     }
+    pub fn attr(&self, name: impl Into<String>) -> DiffStringQuery {
+        self.append(Stage::Attr(name.into()))
+    }
+    pub fn result_types(&self) -> DiffStringQuery {
+        self.append(Stage::ResultTypes)
+    }
+    pub fn operand_types(&self) -> DiffStringQuery {
+        self.append(Stage::OperandTypes)
+    }
     pub fn count(&self) -> DiffCountQuery {
         self.append(Stage::Count)
     }
@@ -210,12 +225,36 @@ impl DiffOpQuery {
     pub fn names(&self) -> DiffStringQuery {
         self.append(Stage::Names)
     }
+    pub fn attr(&self, name: impl Into<String>) -> DiffStringQuery {
+        self.append(Stage::Attr(name.into()))
+    }
+    pub fn result_types(&self) -> DiffStringQuery {
+        self.append(Stage::ResultTypes)
+    }
+    pub fn operand_types(&self) -> DiffStringQuery {
+        self.append(Stage::OperandTypes)
+    }
     pub fn count(&self) -> DiffCountQuery {
         self.append(Stage::Count)
     }
 }
 
 impl DiffStringQuery {
+    pub fn sort(&self) -> Self {
+        self.append(Stage::Sort)
+    }
+    pub fn min(&self) -> Self {
+        self.append(Stage::Min(false))
+    }
+    pub fn min_all(&self) -> Self {
+        self.append(Stage::Min(true))
+    }
+    pub fn max(&self) -> Self {
+        self.append(Stage::Max(false))
+    }
+    pub fn max_all(&self) -> Self {
+        self.append(Stage::Max(true))
+    }
     pub fn unique(&self) -> Self {
         self.append(Stage::Unique)
     }
@@ -471,6 +510,41 @@ fn evaluate_stage(
             )),
             _ => Err(EvaluationError::new("names requires changes or operations")),
         },
+        Stage::Attr(name) => project_strings(diff, value, |document, operation| {
+            document.attribute_id(operation, name).and_then(|id| {
+                let value = document.attribute_value(id)?;
+                Some(match value {
+                    AttributeValue::String(_) => value.decoded_string()?,
+                    AttributeValue::Symbol(path) => path.join("::"),
+                    _ => document.attribute_spelling_value(id)?.to_owned(),
+                })
+            })
+        }),
+        Stage::ResultTypes => project_many_strings(diff, value, |document, operation| {
+            document
+                .result_types(operation)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|id| document.type_spelling(*id).map(str::to_owned))
+                .collect()
+        }),
+        Stage::OperandTypes => project_many_strings(diff, value, |document, operation| {
+            document
+                .operands(operation)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|value| document.value_type(*value).map(str::to_owned))
+                .collect()
+        }),
+        Stage::Sort => {
+            let Runtime::Strings(mut values) = value else {
+                return Err(EvaluationError::new("sort requires strings"));
+            };
+            values.sort();
+            Ok(Runtime::Strings(values))
+        }
+        Stage::Min(all) => extreme(value, false, *all),
+        Stage::Max(all) => extreme(value, true, *all),
         Stage::Count => match value {
             Runtime::Changes(v) => Ok(Runtime::Count(v.len())),
             Runtime::Operations(_, v) => Ok(Runtime::Count(v.len())),
@@ -495,6 +569,71 @@ fn bound(value: Runtime, count: usize, head: bool) -> Result<Runtime, Evaluation
         Runtime::Strings(items) => Runtime::Strings(values(items, count, head)),
         Runtime::Count(_) => return Err(EvaluationError::new("head and tail require a stream")),
     })
+}
+
+fn project_strings(
+    diff: &Diff<'_>,
+    value: Runtime,
+    project: impl Fn(&crate::semantic::Document, OperationId) -> Option<String>,
+) -> Result<Runtime, EvaluationError> {
+    project_many_strings(diff, value, |document, operation| {
+        project(document, operation).into_iter().collect()
+    })
+}
+
+fn project_many_strings(
+    diff: &Diff<'_>,
+    value: Runtime,
+    project: impl Fn(&crate::semantic::Document, OperationId) -> Vec<String>,
+) -> Result<Runtime, EvaluationError> {
+    let values = match value {
+        Runtime::Changes(items) => items
+            .into_iter()
+            .flat_map(|id| {
+                diff.representative_id(id)
+                    .ok()
+                    .into_iter()
+                    .flat_map(|(side, operation)| project(diff.document(side), operation))
+            })
+            .collect(),
+        Runtime::Operations(side, items) => items
+            .into_iter()
+            .flat_map(|item| {
+                diff.operation_id(item)
+                    .ok()
+                    .into_iter()
+                    .flat_map(|operation| project(diff.document(side), operation))
+            })
+            .collect(),
+        _ => {
+            return Err(EvaluationError::new(
+                "projection requires changes or operations",
+            ));
+        }
+    };
+    Ok(Runtime::Strings(values))
+}
+
+fn extreme(value: Runtime, maximum: bool, all: bool) -> Result<Runtime, EvaluationError> {
+    let Runtime::Strings(values) = value else {
+        return Err(EvaluationError::new("extrema require strings"));
+    };
+    let Some(selected) = (if maximum {
+        values.iter().max()
+    } else {
+        values.iter().min()
+    })
+    .cloned() else {
+        return Ok(Runtime::Strings(Vec::new()));
+    };
+    Ok(Runtime::Strings(if all {
+        values
+            .into_iter()
+            .filter(|value| value == &selected)
+            .collect()
+    } else {
+        vec![selected]
+    }))
 }
 
 fn parent_operation(
