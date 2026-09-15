@@ -329,3 +329,34 @@ fn nested_diff_queries_keep_relative_input_and_map_across_sides() {
     );
     assert_eq!(output.stdout, b"0\n1\n");
 }
+
+#[test]
+fn projected_diff_graph_traversal_reaches_unchanged_definitions() {
+    let before = fixture(
+        "graph-before",
+        "module { %x = arith.constant 1 : i32 %y = arith.constant 2 : i32 %z = arith.addi %x, %y : i32 }\n",
+    );
+    let after = fixture(
+        "graph-after",
+        "module { %x = arith.constant 1 : i32 %y = arith.constant 2 : i32 %z = arith.addi %y, %x : i32 }\n",
+    );
+    for traversal in ["slice", "closure", "reachable"] {
+        let query = format!("filter(changed(\"operands\")) | after | {traversal} | names");
+        let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args(["--diff"])
+            .arg(&before)
+            .arg(&after)
+            .arg(query)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{traversal}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "arith.constant\narith.constant\narith.addi\n"
+        );
+    }
+}

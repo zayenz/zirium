@@ -392,6 +392,21 @@ impl DiffOpQuery {
             inner: self.inner.subtree(),
         }
     }
+    fn reachable(&self) -> Self {
+        Self {
+            inner: self.inner.reachable(),
+        }
+    }
+    fn closure(&self) -> Self {
+        Self {
+            inner: self.inner.closure(),
+        }
+    }
+    fn slice(&self) -> Self {
+        Self {
+            inner: self.inner.slice(),
+        }
+    }
     fn unique(&self) -> Self {
         Self {
             inner: self.inner.unique(),

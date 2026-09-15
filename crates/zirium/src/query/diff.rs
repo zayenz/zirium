@@ -7,7 +7,10 @@ use crate::{
     semantic::{AttributeValue, OperationId, UseSite, ValueId, ValueReference},
 };
 
-use super::{EvaluationError, EvaluationLimits, Predicate, model};
+use super::{
+    EvaluationError, EvaluationLimits, EvaluationOptions, OperationTraversal, Predicate,
+    evaluate_operation_traversal, model,
+};
 
 #[derive(Clone, Debug)]
 enum Stage {
@@ -20,6 +23,9 @@ enum Stage {
     Children,
     Root(model::Predicate),
     Subtree,
+    Reachable,
+    Closure,
+    Slice,
     Unique,
     Reverse,
     Head(usize),
@@ -209,6 +215,15 @@ impl DiffOpQuery {
     }
     pub fn subtree(&self) -> Self {
         self.append(Stage::Subtree)
+    }
+    pub fn reachable(&self) -> Self {
+        self.append(Stage::Reachable)
+    }
+    pub fn closure(&self) -> Self {
+        self.append(Stage::Closure)
+    }
+    pub fn slice(&self) -> Self {
+        self.append(Stage::Slice)
     }
     pub fn unique(&self) -> Self {
         self.append(Stage::Unique)
@@ -467,6 +482,11 @@ fn evaluate_stage(
             }
             result
         }),
+        Stage::Reachable => {
+            graph_traversal(diff, value, work, limits, OperationTraversal::Reachable)
+        }
+        Stage::Closure => graph_traversal(diff, value, work, limits, OperationTraversal::Closure),
+        Stage::Slice => graph_traversal(diff, value, work, limits, OperationTraversal::Slice),
         Stage::Unique => match value {
             Runtime::Changes(v) => Ok(Runtime::Changes(dedup(v))),
             Runtime::Operations(s, v) => Ok(Runtime::Operations(s, dedup(v))),
@@ -695,6 +715,53 @@ fn navigate(
         return Err(EvaluationError::new("query stream size limit exceeded"));
     }
     Ok(Runtime::Operations(side, result))
+}
+
+fn graph_traversal(
+    diff: &Diff<'_>,
+    value: Runtime,
+    work: &mut usize,
+    limits: EvaluationLimits,
+    traversal: OperationTraversal,
+) -> Result<Runtime, EvaluationError> {
+    let Runtime::Operations(side, items) = value else {
+        return Err(EvaluationError::new(
+            "graph traversal requires projected operations",
+        ));
+    };
+    let operations = items
+        .into_iter()
+        .map(|item| {
+            diff.operation_id(item)
+                .map_err(|error| EvaluationError::new(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let remaining = limits
+        .max_work
+        .checked_sub(*work)
+        .ok_or_else(|| EvaluationError::new("query work limit exceeded"))?;
+    let (operations, used) = evaluate_operation_traversal(
+        diff.document(side),
+        operations,
+        diff.registry(),
+        traversal,
+        EvaluationLimits {
+            max_work: remaining,
+            max_items: limits.max_items,
+        },
+        EvaluationOptions::default(),
+    )?;
+    *work += used;
+    Ok(Runtime::Operations(
+        side,
+        operations
+            .into_iter()
+            .map(|operation| {
+                diff.scoped_operation(side, operation)
+                    .map_err(|error| EvaluationError::new(error.to_string()))
+            })
+            .collect::<Result<_, _>>()?,
+    ))
 }
 
 fn matches_change(

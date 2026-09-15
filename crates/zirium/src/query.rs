@@ -62,6 +62,43 @@ struct EvaluationState {
     options: EvaluationOptions,
 }
 
+/// Graph traversal shared by ordinary and diff query evaluation.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationTraversal {
+    Reachable,
+    Closure,
+    Slice,
+}
+
+/// Runs one graph traversal from an explicit operation selection.
+#[doc(hidden)]
+pub fn evaluate_operation_traversal(
+    document: &Document,
+    operations: Vec<OperationId>,
+    registry: &DialectRegistry,
+    traversal: OperationTraversal,
+    limits: EvaluationLimits,
+    options: EvaluationOptions,
+) -> Result<(Vec<OperationId>, usize), EvaluationError> {
+    let mut state = EvaluationState {
+        bindings: BTreeMap::new(),
+        remaining: limits.max_work,
+        max_items: limits.max_items,
+        options,
+    };
+    let result = match traversal {
+        OperationTraversal::Reachable => {
+            evaluate_reachable(document, operations, registry, &mut state)
+        }
+        OperationTraversal::Closure => {
+            evaluate_closure(document, operations, registry, false, &mut state)
+        }
+        OperationTraversal::Slice => evaluate_slice(document, operations, &mut state),
+    }?;
+    Ok((result, limits.max_work - state.remaining))
+}
+
 impl EvaluationState {
     fn charge(&mut self, work: usize) -> Result<(), EvaluationError> {
         self.remaining = self.remaining.checked_sub(work).ok_or_else(|| {

@@ -1127,6 +1127,8 @@ fn evaluate_diff_pipeline(
                 }
                 result
             })?
+        } else if matches!(stage, "reachable" | "closure" | "slice") {
+            graph_diff_operations(diff, value, stage, budget)?
         } else if stage.starts_with("root(") {
             let names = extract_string_calls(stage, "op");
             if names.len() != 1 {
@@ -1668,6 +1670,39 @@ fn transform_diff_operations(
             .flat_map(|operation| transform(document, operation))
             .collect(),
     ))
+}
+
+fn graph_diff_operations(
+    diff: &zirium::diff::Diff<'_>,
+    value: DiffCliValue,
+    stage: &str,
+    budget: &mut DiffQueryBudget,
+) -> Result<DiffCliValue, String> {
+    let DiffCliValue::Operations(side, operations) = value else {
+        return Err(format!(
+            "{stage} requires operations projected with `before` or `after`"
+        ));
+    };
+    let traversal = match stage {
+        "reachable" => zirium::query::OperationTraversal::Reachable,
+        "closure" => zirium::query::OperationTraversal::Closure,
+        "slice" => zirium::query::OperationTraversal::Slice,
+        _ => unreachable!(),
+    };
+    let (operations, used) = zirium::query::evaluate_operation_traversal(
+        diff.document(side),
+        operations,
+        diff.registry(),
+        traversal,
+        EvaluationLimits {
+            max_work: budget.remaining,
+            max_items: budget.max_items,
+        },
+        zirium::query::EvaluationOptions::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    budget.charge(used)?;
+    Ok(DiffCliValue::Operations(side, operations))
 }
 
 fn project_diff_strings(

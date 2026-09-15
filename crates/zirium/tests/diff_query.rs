@@ -71,3 +71,35 @@ fn typed_change_filters_project_and_navigate_on_the_after_document() {
         1
     );
 }
+
+#[test]
+fn typed_projected_graph_traversals_use_the_selected_document() {
+    let before = document(
+        "module { %x = arith.constant 1 : i32 %y = arith.constant 2 : i32 %z = arith.addi %x, %y : i32 }",
+    );
+    let after = document(
+        "module { %x = arith.constant 1 : i32 %y = arith.constant 2 : i32 %z = arith.addi %y, %x : i32 }",
+    );
+    let comparison = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits::default(),
+    )
+    .unwrap();
+    let changed_add = changes().filter(changed(ChangeField::Operands)).after();
+    let expected = ["arith.constant", "arith.constant", "arith.addi"];
+    assert_eq!(
+        comparison.query(&changed_add.slice().names()).unwrap(),
+        expected
+    );
+    assert_eq!(
+        comparison.query(&changed_add.closure().names()).unwrap(),
+        expected
+    );
+    assert_eq!(
+        comparison.query(&changed_add.reachable().names()).unwrap(),
+        expected
+    );
+}
