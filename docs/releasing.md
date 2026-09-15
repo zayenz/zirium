@@ -61,12 +61,12 @@ on that commit. The release maintainer then tags it and approves publication.
 
 ## Publish a version
 
-Tag the checked commit and push only that tag. The commands below use 0.2.0
+Tag the checked commit and push only that tag. The commands below use 0.3.0
 as an example; substitute the version being released throughout.
 
 ```sh
-git tag -a v0.2.0 -m "Zirium 0.2.0"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "Zirium 0.3.0"
+git push origin v0.3.0
 ```
 
 Do not use `git push --tags`. This repository may contain local tags that are
@@ -86,8 +86,8 @@ After approving the deployment, query the Rust package and install the Python
 package from their registries:
 
 ```sh
-cargo info zirium@0.2.0
-uv run --no-project --isolated --with zirium==0.2.0 python -c \
+cargo info zirium@0.3.0
+uv run --no-project --isolated --with zirium==0.3.0 python -c \
   'import zirium; assert zirium.parse_text("\"test\"() : () -> ()")'
 ```
 
@@ -123,7 +123,7 @@ commit it to `main`, then run the updated workflow against the existing tag.
 Select only the distribution whose upload has not succeeded:
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v0.2.0 -f registry=pypi
+gh workflow run release.yml --ref main -f tag=v0.3.0 -f registry=pypi
 ```
 
 Use `registry=crates-io` for a Rust-only retry, `registry=pypi` for Python,

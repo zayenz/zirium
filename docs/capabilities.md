@@ -1,6 +1,6 @@
 # Capability reference
 
-This reference describes Zirium 0.2.0. Its textual syntax target is MLIR
+This reference describes Zirium 0.3.0. Its textual syntax target is MLIR
 22.1; bundled presets were checked against LLVM 22.1.0, except StableHLO,
 which was checked against StableHLO 1.20.1. Preset names and coverage track
 Zirium releases, not every form in an upstream release.

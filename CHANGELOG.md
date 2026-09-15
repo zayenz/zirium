@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.3.0
+
+Zirium 0.3.0 adds semantic diff for structural and SSA-aware comparison. It
+also adds query assertions, silent evaluation, and the Zirium logo. The API
+remains experimental.
+
 - Add the Zirium logo and GitHub social preview. Thanks to
   [@pgerell](https://github.com/pgerell) for designing the logo.
 - Add `check` and `check(n)` query stages for structural MLIR tests that require
@@ -12,7 +18,11 @@
   status.
 - Add structural and dataflow diff APIs for Rust and Python, paired `--diff`
   CLI input, change predicates, side projections, and `zirium.diff.v1` reports.
-  Thanks to [@pgerell](https://github.com/pgerell) for the idea.
+  Matching ignores formatting and consistent SSA renaming while reporting
+  additions, removals, field changes, rewiring, and movement. Diff queries can
+  inspect either immutable document snapshot. Comparison work is bounded and
+  covered by deterministic scaling tests. Thanks to
+  [@pgerell](https://github.com/pgerell) for the idea.
 
 ## 0.2.0
 
