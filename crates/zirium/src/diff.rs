@@ -303,6 +303,7 @@ pub fn compare<'a>(
 
     let identity = NEXT_DIFF_ID.fetch_add(1, Ordering::Relaxed).max(1);
     let mut builder = Matcher::new(before, after, registry, limits.max_work);
+    builder.charge(comparison_input_work(before).saturating_add(comparison_input_work(after)))?;
     builder.match_list(before.root_operations(), after.root_operations())?;
     let matched = builder.finish();
     let correspondence =
@@ -1387,6 +1388,108 @@ fn opaque_values(document: &Document) -> HashSet<Vec<u8>> {
         }
     }
     values
+}
+
+fn comparison_input_work(document: &Document) -> usize {
+    fn chunks(bytes: usize) -> usize {
+        bytes.saturating_add(63) / 64
+    }
+    fn type_work(value: &crate::semantic::TypeValue) -> usize {
+        use crate::semantic::{MemRefLayout, TypeValue};
+        1 + match value {
+            TypeValue::Opaque(value) => chunks(value.len()),
+            TypeValue::Complex(value) => type_work(value),
+            TypeValue::Tuple(values) => values.iter().map(type_work).sum(),
+            TypeValue::Tensor {
+                element, encoding, ..
+            } => type_work(element) + encoding.as_deref().map_or(0, attribute_work),
+            TypeValue::Vector { element, .. } => type_work(element),
+            TypeValue::MemRef {
+                element,
+                layout,
+                memory_space,
+                ..
+            } => {
+                type_work(element)
+                    + memory_space.as_deref().map_or(0, attribute_work)
+                    + layout.as_ref().map_or(0, |layout| match layout {
+                        MemRefLayout::Opaque {
+                            spelling,
+                            parameters,
+                        } => {
+                            chunks(spelling.len())
+                                + parameters.iter().map(attribute_work).sum::<usize>()
+                        }
+                        MemRefLayout::Attribute(value) => attribute_work(value),
+                        _ => 1,
+                    })
+            }
+            TypeValue::Function { inputs, results } => {
+                inputs.iter().chain(results).map(type_work).sum()
+            }
+            _ => 0,
+        }
+    }
+    fn attribute_work(value: &crate::semantic::AttributeValue) -> usize {
+        use crate::semantic::{AttributeValue, LargeAttributeValue};
+        1 + match value {
+            AttributeValue::Type(value) => type_work(value),
+            AttributeValue::Array(values)
+            | AttributeValue::DenseArray {
+                elements: values, ..
+            } => values.iter().map(attribute_work).sum(),
+            AttributeValue::Dictionary(values) => {
+                values.iter().map(|(_, value)| attribute_work(value)).sum()
+            }
+            AttributeValue::Large(
+                LargeAttributeValue::Dense(value)
+                | LargeAttributeValue::Sparse(value)
+                | LargeAttributeValue::Resource(value),
+            )
+            | AttributeValue::WideNumber(value)
+            | AttributeValue::Opaque(value) => chunks(value.len()),
+            _ => 0,
+        }
+    }
+
+    document
+        .operations()
+        .map(|operation| {
+            1 + document.operands(operation).map_or(0, <[_]>::len)
+                + document.successors(operation).map_or(0, <[_]>::len)
+                + document
+                    .successors(operation)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|successor| {
+                        document
+                            .successor_arguments(*successor)
+                            .map_or(0, <[_]>::len)
+                    })
+                    .sum::<usize>()
+                + document
+                    .attribute_entries(operation)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(_, id)| document.attribute_value(id))
+                    .map(attribute_work)
+                    .sum::<usize>()
+                + document
+                    .operation_properties(operation)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(_, id)| document.attribute_value(*id))
+                    .map(attribute_work)
+                    .sum::<usize>()
+                + document
+                    .result_types(operation)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|id| document.type_value(*id))
+                    .map(type_work)
+                    .sum::<usize>()
+        })
+        .sum()
 }
 
 fn format_entries<'a>(entries: Option<impl Iterator<Item = (&'a str, &'a str)>>) -> String {

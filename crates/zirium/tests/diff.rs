@@ -382,3 +382,25 @@ fn changed_successor_reports_structural_block_endpoints() {
     let after = &change.details()[0].after.value;
     assert_ne!(before, after);
 }
+
+#[test]
+fn work_limit_charges_opaque_payload_chunks() {
+    let payload = "x".repeat(512);
+    let source = format!(r#""test.op"() {{data = #vendor.data<{payload}>}} : () -> ()"#);
+    let before = document(&source);
+    let after = document(&source);
+    let result = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits {
+            max_work: 10,
+            max_changes: 100,
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(zirium::diff::DiffError::WorkLimitExceeded)
+    ));
+}
