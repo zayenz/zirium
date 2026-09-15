@@ -381,6 +381,7 @@ fn run() -> Result<(), String> {
     let mut diff_paths: Option<(OsString, OsString)> = None;
     let mut diff_options = DiffOptions::default();
     let mut diff_limits = DiffLimits::default();
+    let mut max_diff_work_supplied = false;
     while let Some(argument) = arguments.next() {
         let option_text = argument.to_str().unwrap_or("");
         let (option, inline_value) = option_text
@@ -485,7 +486,10 @@ fn run() -> Result<(), String> {
                 match option {
                     "--max-file-bytes" => parse_limits.max_file_bytes = value,
                     "--max-work" => evaluation_limits.max_work = value,
-                    "--max-diff-work" => diff_limits.max_work = value,
+                    "--max-diff-work" => {
+                        diff_limits.max_work = value;
+                        max_diff_work_supplied = true;
+                    }
                     "--max-items" => evaluation_limits.max_items = value,
                     "--max-registry-depth" => registry_limits.max_depth = value,
                     "--max-registry-files" => registry_limits.max_files = value,
@@ -562,7 +566,7 @@ fn run() -> Result<(), String> {
     if diff_paths.is_none() && diff_options.compare_locations {
         return Err("--diff-locations requires --diff".into());
     }
-    if diff_paths.is_none() && diff_limits.max_work != DiffLimits::default().max_work {
+    if diff_paths.is_none() && max_diff_work_supplied {
         return Err("--max-diff-work requires --diff".into());
     }
     if let Some((before, after)) = diff_paths {
@@ -573,7 +577,6 @@ fn run() -> Result<(), String> {
         return run_diff(
             before,
             after,
-            &query_name,
             &query_text,
             registry,
             parse_limits,
@@ -808,7 +811,6 @@ fn output_staging_error(error: io::Error) -> EvaluationError {
 fn run_diff(
     before_path: OsString,
     after_path: OsString,
-    query_name: &str,
     query_text: &str,
     registry: &DialectRegistry,
     parse_limits: ParseLimits,
@@ -820,11 +822,6 @@ fn run_diff(
 ) -> Result<(), String> {
     if before_path == "-" && after_path == "-" {
         return Err("both diff inputs cannot read from stdin".into());
-    }
-    if query_text.contains("set_attr(") || query_text.contains("remove_attr(") {
-        return Err(format!(
-            "could not evaluate {query_name}: diff queries are read-only"
-        ));
     }
     let (before_name, before) = load_diff_input(before_path, registry, parse_limits, "before")?;
     let (after_name, after) = load_diff_input(after_path, registry, parse_limits, "after")?;
@@ -977,6 +974,9 @@ fn evaluate_diff_cli(
     let mut value = DiffCliValue::Changes(diff.change_ids().collect());
     for stage in stages {
         let stage = stage.trim();
+        if stage.starts_with("set_attr(") || stage.starts_with("remove_attr(") {
+            return Err("diff queries are read-only".into());
+        }
         value = if stage == "input" {
             DiffCliValue::Changes(diff.change_ids().collect())
         } else if stage.starts_with("filter(") {

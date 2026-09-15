@@ -72,7 +72,10 @@ pub fn changes() -> ChangeQuery {
 pub fn change_input() -> ChangeQuery {
     DiffQueryExpr::new()
 }
-pub fn diff_op_input(side: DiffSide) -> DiffOpQuery {
+pub fn diff_op_input() -> DiffOpQuery {
+    DiffQueryExpr::new()
+}
+pub fn diff_op_input_for_side(side: DiffSide) -> DiffOpQuery {
     DiffQueryExpr::<Vec<ChangeId>>::new().append(Stage::Project(side))
 }
 pub fn change(kind: ChangeKind) -> ChangePredicate {

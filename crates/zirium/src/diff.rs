@@ -368,6 +368,54 @@ fn document_has_resource(document: &Document) -> bool {
                 .into_iter()
                 .flatten()
                 .any(|(_, id)| attribute_has_resource(document.attribute_value(*id)))
+            || document
+                .result_types(operation)
+                .into_iter()
+                .flatten()
+                .any(|id| type_has_resource(document.type_value(*id)))
+            || document
+                .function_type(operation)
+                .is_some_and(|id| type_has_resource(document.type_value(id)))
+    })
+}
+
+fn type_has_resource(value: Option<&crate::semantic::TypeValue>) -> bool {
+    use crate::semantic::{MemRefLayout, TypeValue};
+    value.is_some_and(|value| match value {
+        TypeValue::Complex(value) => type_has_resource(Some(value)),
+        TypeValue::Tuple(values) => values.iter().any(|value| type_has_resource(Some(value))),
+        TypeValue::Tensor {
+            element, encoding, ..
+        } => {
+            type_has_resource(Some(element))
+                || encoding
+                    .as_deref()
+                    .is_some_and(|value| attribute_has_resource(Some(value)))
+        }
+        TypeValue::Vector { element, .. } => type_has_resource(Some(element)),
+        TypeValue::MemRef {
+            element,
+            layout,
+            memory_space,
+            ..
+        } => {
+            type_has_resource(Some(element))
+                || memory_space
+                    .as_deref()
+                    .is_some_and(|value| attribute_has_resource(Some(value)))
+                || layout.as_ref().is_some_and(|layout| match layout {
+                    MemRefLayout::Opaque { parameters, .. } => parameters
+                        .iter()
+                        .any(|value| attribute_has_resource(Some(value))),
+                    MemRefLayout::Attribute(value) => attribute_has_resource(Some(value)),
+                    _ => false,
+                })
+        }
+        TypeValue::Function { inputs, results } => inputs
+            .iter()
+            .chain(results)
+            .any(|value| type_has_resource(Some(value))),
+        _ => false,
     })
 }
 
