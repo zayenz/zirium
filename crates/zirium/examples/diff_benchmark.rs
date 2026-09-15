@@ -15,7 +15,7 @@ fn lower(source: &str) -> Document {
         .expect("generated workload must lower strictly")
 }
 
-fn run(name: &str, before: String, after: String) {
+fn run(size: usize, name: &str, before: String, after: String) {
     let before_bytes = before.len();
     let after_bytes = after.len();
     let before = lower(&before);
@@ -35,7 +35,7 @@ fn run(name: &str, before: String, after: String) {
     let elapsed = started.elapsed();
     let statistics = diff.statistics();
     println!(
-        "{name}: before_bytes={before_bytes} after_bytes={after_bytes} changes={} \
+        "size={size} case={name} before_bytes={before_bytes} after_bytes={after_bytes} changes={} \
          matched={} work={} ambiguous={} bounded_fallback={} elapsed_ms={:.3}",
         diff.len(),
         statistics.matched_operations,
@@ -90,28 +90,36 @@ fn cfg_cycle(blocks: usize) -> String {
 }
 
 fn main() {
-    let size = std::env::args()
-        .nth(1)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(1_000);
+    let mut sizes = std::env::args()
+        .skip(1)
+        .map(|value| value.parse().expect("sizes must be positive integers"))
+        .collect::<Vec<usize>>();
+    if sizes.is_empty() {
+        sizes.push(1_000);
+    }
+    assert!(sizes.iter().all(|size| *size > 0), "sizes must be positive");
 
-    let unchanged = operations(size, false, None);
-    run("unchanged", unchanged.clone(), unchanged);
-    run(
-        "one_insertion",
-        operations(size, false, None),
-        operations(size, false, Some(size / 2)),
-    );
-    run(
-        "repeated",
-        operations(size, true, None),
-        operations(size, true, Some(size / 2)),
-    );
-    let nested = nested_functions(size / 10 + 1);
-    run("nested_functions", nested.clone(), nested);
-    let cfg = cfg_cycle(size / 20 + 2);
-    run("cfg_cycle", cfg.clone(), cfg);
-    let opaque = "x".repeat(size.saturating_mul(64));
-    let opaque = format!(r#""test.opaque"() {{data = #vendor.data<{opaque}>}} : () -> ()"#);
-    run("large_opaque", opaque.clone(), opaque);
+    for size in sizes {
+        let unchanged = operations(size, false, None);
+        run(size, "unchanged", unchanged.clone(), unchanged);
+        run(
+            size,
+            "one_insertion",
+            operations(size, false, None),
+            operations(size, false, Some(size / 2)),
+        );
+        run(
+            size,
+            "repeated",
+            operations(size, true, None),
+            operations(size, true, Some(size / 2)),
+        );
+        let nested = nested_functions(size / 10 + 1);
+        run(size, "nested_functions", nested.clone(), nested);
+        let cfg = cfg_cycle(size / 20 + 2);
+        run(size, "cfg_cycle", cfg.clone(), cfg);
+        let opaque = "x".repeat(size.saturating_mul(64));
+        let opaque = format!(r#""test.opaque"() {{data = #vendor.data<{opaque}>}} : () -> ()"#);
+        run(size, "large_opaque", opaque.clone(), opaque);
+    }
 }

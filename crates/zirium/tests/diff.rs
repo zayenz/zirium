@@ -79,6 +79,83 @@ fn compare_documents<'a>(before: &'a Document, after: &'a Document) -> zirium::d
     .unwrap()
 }
 
+fn flat_operations(count: usize, repeated: bool, insertion: Option<usize>) -> String {
+    let mut source = String::from("module {\n");
+    for index in 0..=count {
+        if insertion == Some(index) {
+            source.push_str("  \"test.inserted\"() : () -> ()\n");
+        }
+        if index == count {
+            break;
+        }
+        let name = if repeated {
+            "test.repeated".to_owned()
+        } else {
+            format!("test.op{index}")
+        };
+        source.push_str(&format!("  \"{name}\"() : () -> ()\n"));
+    }
+    source.push_str("}\n");
+    source
+}
+
+fn diff_work(before: &str, after: &str) -> (usize, usize, usize) {
+    let before = document(before);
+    let after = document(after);
+    let diff = compare_documents(&before, &after);
+    (
+        diff.statistics().work_units,
+        diff.statistics().bounded_fallback_groups,
+        diff.len(),
+    )
+}
+
+#[test]
+fn unique_chain_diff_work_stays_linear_under_doubling() {
+    let mut unchanged = Vec::new();
+    let mut inserted = Vec::new();
+    for size in [64, 128, 256, 512] {
+        let before = flat_operations(size, false, None);
+        unchanged.push(diff_work(&before, &before).0);
+        inserted.push(diff_work(&before, &flat_operations(size, false, Some(size / 2))).0);
+    }
+    for measurements in [&unchanged, &inserted] {
+        for pair in measurements.windows(2) {
+            assert!(
+                pair[1] <= pair[0] * 2 + 16,
+                "diff work grew faster than linearly: {measurements:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn repeated_operation_groups_switch_to_bounded_fallback() {
+    let size = 512;
+    let (work, fallback_groups, changes) = diff_work(
+        &flat_operations(size, true, None),
+        &flat_operations(size, true, Some(size / 2)),
+    );
+    assert!(fallback_groups > 0);
+    assert_eq!(changes, size * 2 + 1);
+    assert!(work <= size * 32, "bounded fallback used {work} work units");
+}
+
+#[test]
+fn opaque_payload_diff_work_stays_linear_under_doubling() {
+    let work = [1_024, 2_048, 4_096, 8_192].map(|size| {
+        let payload = "x".repeat(size);
+        let source = format!(r#""test.opaque"() {{data = #vendor.data<{payload}>}} : () -> ()"#);
+        diff_work(&source, &source).0
+    });
+    for pair in work.windows(2) {
+        assert!(
+            pair[1] <= pair[0] * 2 + 8,
+            "opaque comparison work grew faster than linearly: {work:?}"
+        );
+    }
+}
+
 #[test]
 fn ignores_formatting_comments_and_ssa_names() {
     let before = document(

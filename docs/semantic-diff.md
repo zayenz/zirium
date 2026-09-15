@@ -98,3 +98,18 @@ retaining semantic storage for both inputs.
 
 Use `change_input()` and `diff_op_input()` for relative typed expressions such
 as fixed-point bodies. They do not reset to the full comparison.
+
+## Scaling checks
+
+The deterministic test suite checks that comparison work stays linear when a
+unique-operation chain or opaque payload doubles, and that oversized ambiguous
+groups switch to the bounded fallback. Wall time is intentionally not a CI
+assertion. Run the release driver at several adjacent sizes for local timing:
+
+```sh
+cargo run --release -p zirium --example diff_benchmark -- 64 128 256 512 1024
+```
+
+Each row reports its size, workload case, input bytes, changes, matches,
+comparison work, fallback counters, and elapsed milliseconds. Lowering happens
+before the timer.
