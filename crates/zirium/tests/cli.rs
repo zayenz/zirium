@@ -100,9 +100,9 @@ fn scalar_count_and_source_aware_selection_remain_byte_exact() {
 #[test]
 fn check_supports_presence_absence_and_exact_cardinality() {
     let passing = run_stdin(
-        r#"do filter(op("arith.addi")) | check;
+        r#"do filter(op("arith.addi")) | check("addition is required");
            do filter(op("missing")) | check(0);
-           filter(op("arith.constant")) | check(1) | count"#,
+           filter(op("arith.constant")) | check(1, "expected one constant") | count"#,
         INPUT,
     );
     assert!(
@@ -111,6 +111,7 @@ fn check_supports_presence_absence_and_exact_cardinality() {
         String::from_utf8_lossy(&passing.stderr)
     );
     assert_eq!(passing.stdout, b"1\n");
+    assert!(passing.stderr.is_empty());
 
     for (query, diagnostic) in [
         (
@@ -124,6 +125,14 @@ fn check_supports_presence_absence_and_exact_cardinality() {
         (
             r#"filter(op("arith.addi")) | check(0)"#,
             "expected 0 items, got 1",
+        ),
+        (
+            r#"filter(op("missing")) | check("the lowering must produce an addition")"#,
+            "expected at least one item, got 0: the lowering must produce an addition",
+        ),
+        (
+            r#"filter(op("arith.addi")) | check(2, "expected fused pair")"#,
+            "expected 2 items, got 1: expected fused pair",
         ),
     ] {
         let failed = run_stdin(query, INPUT);

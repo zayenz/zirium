@@ -343,6 +343,7 @@ pub enum Stage {
     },
     Check {
         expected: Option<usize>,
+        message: Option<String>,
         range: TextRange,
     },
     Count {

@@ -284,13 +284,16 @@ still emit; `do` suppresses only the implicit result.
 ## Checking query results
 
 `check` fails evaluation when the current stream is empty. `check(n)` instead
-requires exactly `n` items, including zero. A successful check leaves the
+requires exactly `n` items, including zero. Either form accepts a message as
+`check("message")` or `check(n, "message")`; a failure includes that message
+after the expected and actual cardinalities. A successful check leaves the
 stream unchanged, so it can appear anywhere in a pipeline. Prefix a check
 statement with `do` when only the exit status matters:
 
 ```zirium
-do filter(op("linalg.matmul")) | check;
-do filter(op("bufferization.alloc_tensor")) | check(0);
+do filter(op("linalg.matmul")) | check("expected a lowered matmul");
+do filter(op("bufferization.alloc_tensor"))
+   | check(0, "tensor allocations must be eliminated");
 ```
 
 This makes a Zirium program usable as a structural MLIR test: the first check

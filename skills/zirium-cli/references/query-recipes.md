@@ -95,14 +95,16 @@ unless it consumes an incoming selection inside a nested query.
 Require at least one matrix multiplication and no remaining tensor allocations:
 
 ```zirium
-do filter(op("linalg.matmul")) | check;
-do filter(op("bufferization.alloc_tensor")) | check(0);
+do filter(op("linalg.matmul")) | check("expected a lowered matmul");
+do filter(op("bufferization.alloc_tensor"))
+   | check(0, "tensor allocations must be eliminated");
 ```
 
-Use `check(n)` for an exact cardinality. A failed check gives the CLI a nonzero
-exit status. `do` keeps individual successful checks silent; invoke a complete
-check program with `zirium --silent -f checks.zirium input.mlir` to suppress
-all results.
+Use `check(n)` for an exact cardinality. Both forms accept an optional message,
+which is included in the failure diagnostic. A failed check gives the CLI a
+nonzero exit status. `do` keeps individual successful checks silent; invoke a
+complete check program with `zirium --silent -f checks.zirium input.mlir` to
+suppress all results.
 
 ## Combine selections
 

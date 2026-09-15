@@ -340,25 +340,39 @@ impl Parser<'_> {
             "max_all" => Stage::MaxAll { range },
             "check" => {
                 self.skip_trivia();
-                let expected = if self.at(TokenKind::LParen) {
+                let (expected, message) = if self.at(TokenKind::LParen) {
                     self.bump();
                     self.skip_trivia();
-                    if !self.at(TokenKind::Integer) {
-                        self.error("expected a non-negative item count");
-                        return None;
+                    if self.at(TokenKind::String) {
+                        let (message, _) = self.string("expected a check message")?;
+                        self.expect(TokenKind::RParen, "expected `)` after check message")?;
+                        (None, Some(message))
+                    } else {
+                        if !self.at(TokenKind::Integer) {
+                            self.error("expected a non-negative item count or check message");
+                            return None;
+                        }
+                        let Ok(expected) = self.current_text().parse::<usize>() else {
+                            self.error("item count is too large");
+                            return None;
+                        };
+                        self.bump();
+                        self.skip_trivia();
+                        let message = if self.at(TokenKind::Comma) {
+                            self.bump();
+                            Some(self.string("expected a check message after `,`")?.0)
+                        } else {
+                            None
+                        };
+                        self.expect(TokenKind::RParen, "expected `)` after check arguments")?;
+                        (Some(expected), message)
                     }
-                    let Ok(expected) = self.current_text().parse::<usize>() else {
-                        self.error("item count is too large");
-                        return None;
-                    };
-                    self.bump();
-                    self.expect(TokenKind::RParen, "expected `)` after expected item count")?;
-                    Some(expected)
                 } else {
-                    None
+                    (None, None)
                 };
                 Stage::Check {
                     expected,
+                    message,
                     range: self.span(start),
                 }
             }

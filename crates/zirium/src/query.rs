@@ -771,20 +771,23 @@ fn evaluate_pipeline(
                     editor.commit().map_err(edit_error)?;
                 }
             }
-            model::Stage::Check { expected, .. } => {
+            model::Stage::Check {
+                expected, message, ..
+            } => {
                 let actual = countable_len(&current, "check")?;
-                match expected {
+                let failure = match expected {
                     Some(expected) if actual != *expected => {
-                        return Err(EvaluationError::new(format!(
-                            "check failed: expected {expected} items, got {actual}"
-                        )));
+                        Some(format!("expected {expected} items, got {actual}"))
                     }
-                    None if actual == 0 => {
-                        return Err(EvaluationError::new(
-                            "check failed: expected at least one item, got 0",
-                        ));
-                    }
-                    _ => {}
+                    None if actual == 0 => Some("expected at least one item, got 0".to_owned()),
+                    _ => None,
+                };
+                if let Some(failure) = failure {
+                    let message = match message {
+                        Some(message) => format!("{failure}: {message}"),
+                        None => failure,
+                    };
+                    return Err(EvaluationError::new(format!("check failed: {message}")));
                 }
             }
             model::Stage::Count { .. } => {
