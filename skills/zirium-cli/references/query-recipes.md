@@ -90,6 +90,20 @@ Bindings restore saved results; they are not macros relative to the current
 selection. Each binding and query statement starts from the full document
 unless it consumes an incoming selection inside a nested query.
 
+## Check a transformation
+
+Require at least one matrix multiplication and no remaining tensor allocations:
+
+```zirium
+do filter(op("linalg.matmul")) | check;
+do filter(op("bufferization.alloc_tensor")) | check(0);
+```
+
+Use `check(n)` for an exact cardinality. A failed check gives the CLI a nonzero
+exit status. `do` keeps individual successful checks silent; invoke a complete
+check program with `zirium --silent -f checks.zirium input.mlir` to suppress
+all results.
+
 ## Combine selections
 
 Combine operation kinds with a predicate when both traverse identically:

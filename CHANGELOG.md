@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `check` and `check(n)` query stages for structural MLIR tests that require
+  a non-empty result or an exact cardinality; use them in `do` statements for
+  individual silent checks. Add `--silent` to suppress all successful query
+  output while preserving diagnostics and exit status.
+
 ## 0.2.0
 
 Zirium 0.2.0 adds portable registry bundles, richer Python semantic values,

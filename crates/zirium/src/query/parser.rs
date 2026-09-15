@@ -338,6 +338,30 @@ impl Parser<'_> {
             "min_all" => Stage::MinAll { range },
             "max" => Stage::Max { range },
             "max_all" => Stage::MaxAll { range },
+            "check" => {
+                self.skip_trivia();
+                let expected = if self.at(TokenKind::LParen) {
+                    self.bump();
+                    self.skip_trivia();
+                    if !self.at(TokenKind::Integer) {
+                        self.error("expected a non-negative item count");
+                        return None;
+                    }
+                    let Ok(expected) = self.current_text().parse::<usize>() else {
+                        self.error("item count is too large");
+                        return None;
+                    };
+                    self.bump();
+                    self.expect(TokenKind::RParen, "expected `)` after expected item count")?;
+                    Some(expected)
+                } else {
+                    None
+                };
+                Stage::Check {
+                    expected,
+                    range: self.span(start),
+                }
+            }
             "count" => Stage::Count { range },
             "emit" => Stage::Emit { range },
             "json" => Stage::Json { range },
@@ -393,7 +417,7 @@ impl Parser<'_> {
             "attr" => return self.attr(start, depth + 1),
             _ if self.bindings.contains(&name) => Stage::Binding { name, range },
             _ => {
-                self.error_at_previous("unknown query stage; expected input, filter, navigation, projection, fixpoint, an edit, count, emit, or json");
+                self.error_at_previous("unknown query stage; expected input, filter, navigation, projection, fixpoint, an edit, check, count, emit, or json");
                 return None;
             }
         })
@@ -958,6 +982,7 @@ fn is_reserved(name: &str) -> bool {
             | "fixpoint"
             | "set_attr"
             | "remove_attr"
+            | "check"
             | "count"
             | "emit"
             | "json"

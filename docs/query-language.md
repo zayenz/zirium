@@ -46,6 +46,9 @@ Use `zirium --help` for CLI usage and `zirium --list-presets` for bundled dialec
 `--preset NAME` and `--registry FILE` are repeatable and combine their registries.
 Options can appear before or after the query; `--` ends option processing.
 `-f` replaces the inline query rather than adding another program.
+`--silent` evaluates the complete program but suppresses all query results on
+stdout; warnings and errors still appear on stderr, and failures still return a
+nonzero exit status.
 Value-taking long options accept both separated and equals forms, such as
 `--preset stablehlo` and `--preset=stablehlo`. `-f -` is a literal query
 filename, and standard input may be supplied as an MLIR input only once.
@@ -277,6 +280,32 @@ The edit remains visible to later statements, and the final `emit` prints the
 complete edited document once. A `do` statement requires its trailing
 semicolon, including at the end of a program. Explicit emitters inside its query
 still emit; `do` suppresses only the implicit result.
+
+## Checking query results
+
+`check` fails evaluation when the current stream is empty. `check(n)` instead
+requires exactly `n` items, including zero. A successful check leaves the
+stream unchanged, so it can appear anywhere in a pipeline. Prefix a check
+statement with `do` when only the exit status matters:
+
+```zirium
+do filter(op("linalg.matmul")) | check;
+do filter(op("bufferization.alloc_tensor")) | check(0);
+```
+
+This makes a Zirium program usable as a structural MLIR test: the first check
+requires a matmul, the second rejects any remaining tensor allocation, and the
+CLI exits unsuccessfully if either condition is false. As with other evaluation
+errors, output is buffered and stdout stays empty when any check fails. Use
+`check(n)` after `unique` when duplicate navigation paths should not count as
+separate matches.
+
+For a check program whose statements need not use `do`, suppress every result
+at the CLI boundary:
+
+```sh
+zirium --silent --strict -f checks.zirium input.mlir
+```
 
 `print` appends a newline. It leaves the current stream unchanged, so it also
 works inside a pipeline. A final `print` suppresses implicit output, just like

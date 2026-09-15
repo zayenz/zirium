@@ -341,6 +341,10 @@ pub enum Stage {
         name: String,
         range: TextRange,
     },
+    Check {
+        expected: Option<usize>,
+        range: TextRange,
+    },
     Count {
         range: TextRange,
     },
@@ -396,6 +400,7 @@ impl Stage {
             | Self::Fixpoint { range, .. }
             | Self::SetAttr { range, .. }
             | Self::RemoveAttr { range, .. }
+            | Self::Check { range, .. }
             | Self::Count { range }
             | Self::Emit { range }
             | Self::Json { range } => *range,

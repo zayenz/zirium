@@ -769,8 +769,24 @@ fn evaluate_pipeline(
                     editor.commit().map_err(edit_error)?;
                 }
             }
+            model::Stage::Check { expected, .. } => {
+                let actual = countable_len(&current, "check")?;
+                match expected {
+                    Some(expected) if actual != *expected => {
+                        return Err(EvaluationError::new(format!(
+                            "check failed: expected {expected} items, got {actual}"
+                        )));
+                    }
+                    None if actual == 0 => {
+                        return Err(EvaluationError::new(
+                            "check failed: expected at least one item, got 0",
+                        ));
+                    }
+                    _ => {}
+                }
+            }
             model::Stage::Count { .. } => {
-                return Ok(QueryOutput::Count(countable_len(&current)?));
+                return Ok(QueryOutput::Count(countable_len(&current, "count")?));
             }
             model::Stage::Emit { .. } => emit(document, current.clone())?,
             model::Stage::Markdown { .. } => {
@@ -827,7 +843,7 @@ fn take_operations(output: QueryOutput, stage: &str) -> Result<Vec<OperationId>,
     }
 }
 
-fn countable_len(output: &QueryOutput) -> Result<usize, EvaluationError> {
+fn countable_len(output: &QueryOutput, stage: &str) -> Result<usize, EvaluationError> {
     match output {
         QueryOutput::Operations(selected) => Ok(selected.len()),
         QueryOutput::Values(values) => Ok(values.len()),
@@ -840,9 +856,9 @@ fn countable_len(output: &QueryOutput) -> Result<usize, EvaluationError> {
         QueryOutput::Native(NativeValue::String(_))
         | QueryOutput::Count(_)
         | QueryOutput::Json(_)
-        | QueryOutput::Text(_) => Err(EvaluationError::new(
-            "count requires a stream, map, or array",
-        )),
+        | QueryOutput::Text(_) => Err(EvaluationError::new(format!(
+            "{stage} requires a stream, map, or array"
+        ))),
     }
 }
 

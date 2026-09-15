@@ -98,6 +98,69 @@ fn scalar_count_and_source_aware_selection_remain_byte_exact() {
 }
 
 #[test]
+fn check_supports_presence_absence_and_exact_cardinality() {
+    let passing = run_stdin(
+        r#"do filter(op("arith.addi")) | check;
+           do filter(op("missing")) | check(0);
+           filter(op("arith.constant")) | check(1) | count"#,
+        INPUT,
+    );
+    assert!(
+        passing.status.success(),
+        "{}",
+        String::from_utf8_lossy(&passing.stderr)
+    );
+    assert_eq!(passing.stdout, b"1\n");
+
+    for (query, diagnostic) in [
+        (
+            r#"filter(op("missing")) | check"#,
+            "expected at least one item, got 0",
+        ),
+        (
+            r#"filter(op("arith.addi")) | check(2)"#,
+            "expected 2 items, got 1",
+        ),
+        (
+            r#"filter(op("arith.addi")) | check(0)"#,
+            "expected 0 items, got 1",
+        ),
+    ] {
+        let failed = run_stdin(query, INPUT);
+        assert!(!failed.status.success(), "{query}");
+        assert!(failed.stdout.is_empty(), "{query}");
+        assert!(
+            String::from_utf8_lossy(&failed.stderr).contains(diagnostic),
+            "{query}: {}",
+            String::from_utf8_lossy(&failed.stderr)
+        );
+    }
+}
+
+#[test]
+fn silent_suppresses_results_without_suppressing_failures() {
+    for query in [
+        "count",
+        r#"filter(op("arith.addi"))"#,
+        r#"print("report")"#,
+        r#"names | tally | json"#,
+    ] {
+        let output = run_stdin_with_options(&["--silent"], query, INPUT);
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty(), "{query}");
+    }
+
+    let failed = run_stdin_with_options(&["--silent"], r#"filter(op("missing")) | check"#, INPUT);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("check failed"));
+}
+
+#[test]
 fn jsonl_operation_selection_uses_serde_compatible_escaping() {
     let source = "module {\n  // quote \" and slash \\\n  \"vendor.test\"() {text = \"say \\22hi\\22\"} : () -> ()\n}\n";
     let output = run_stdin_with_options(&["--jsonl"], r#"filter(op("vendor.test"))"#, source);

@@ -44,6 +44,7 @@ Options:
   --max-registry-bytes N  Maximum aggregate registry bytes (default 16777216)
   -f, --program-file FILE Read the query from a file instead of an argument
   --strict                Reject incomplete parsing and unknown reachable references
+  --silent                Evaluate without writing query results to stdout
   --jsonl                 Emit one attributable JSON record per line
   --ndjson                Alias for --jsonl
   --fragment-scope MODE   Selection shells: full (default) or minimal
@@ -64,7 +65,7 @@ unique, attr("name"), names, result_types, operand_types, tally,
 map_by(key, value), sort, sort_by(query), reverse, head(n), tail(n), min,
 min_all, min_by(query), min_all_by(query), max, max_all, max_by(query),
 max_all_by(query), set_attr("name", "value"),
-remove_attr("name"), emit, json, markdown, print("text"), count.
+remove_attr("name"), check, check(n), emit, json, markdown, print("text"), count.
 Statements: prefix a query with `do` and end it with `;` to keep edits while
 suppressing that statement's implicit result.
 Combine selections with union, intersect, except. Group them before counting.
@@ -361,6 +362,7 @@ fn run() -> Result<(), String> {
     let mut registry_paths = Vec::new();
     let mut presets = Vec::new();
     let mut strict = false;
+    let mut silent = false;
     let mut ndjson = false;
     let mut fragment_scope = FragmentScope::Full;
     let mut evaluation_limits = EvaluationLimits::default();
@@ -418,6 +420,7 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "preset name must be UTF-8")?,
             ),
             "--strict" => strict = true,
+            "--silent" => silent = true,
             "--jsonl" | "--ndjson" => ndjson = true,
             "--fragment-scope" => {
                 fragment_scope = match inline_value
@@ -654,6 +657,9 @@ fn run() -> Result<(), String> {
                 },
                 evaluation_limits,
                 |document, output| {
+                    if silent {
+                        return Ok(());
+                    }
                     if ndjson {
                         write_ndjson_record(
                             &mut staged_output,
