@@ -203,7 +203,9 @@ fn duplicate_stdin_rejects_without_waiting_for_stdin_eof() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(b"not consumed").unwrap();
+    if let Err(error) = stdin.write_all(b"not consumed") {
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe, "{error}");
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
