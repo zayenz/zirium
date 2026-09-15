@@ -931,6 +931,7 @@ enum DiffCliValue {
     Operations(DiffSide, Vec<zirium::semantic::OperationId>),
     Count(usize),
     Names(Vec<String>),
+    Map(serde_json::Map<String, serde_json::Value>),
     Json(String, Option<DiffSide>),
     Text(String),
 }
@@ -1140,6 +1141,28 @@ fn evaluate_diff_pipeline(
                 DiffCliValue::Names(items) => items.len(),
                 _ => return Err("count requires a stream".into()),
             })
+        } else if stage == "sort" {
+            let DiffCliValue::Names(mut items) = value else {
+                return Err("sort requires a value stream".into());
+            };
+            items.sort();
+            DiffCliValue::Names(items)
+        } else if matches!(stage, "min" | "max" | "min_all" | "max_all") {
+            extreme_diff_values(value, stage)?
+        } else if stage == "tally" {
+            let DiffCliValue::Names(items) = value else {
+                return Err("tally requires a value stream".into());
+            };
+            let mut counts = std::collections::BTreeMap::<String, usize>::new();
+            for item in items {
+                *counts.entry(item).or_default() += 1;
+            }
+            DiffCliValue::Map(
+                counts
+                    .into_iter()
+                    .map(|(name, count)| (name, serde_json::json!(count)))
+                    .collect(),
+            )
         } else if stage == "reverse" {
             reverse_diff_value(value)?
         } else if stage.starts_with("head(") || stage.starts_with("tail(") {
@@ -1165,14 +1188,39 @@ fn evaluate_diff_pipeline(
                 ),
                 _ => return Err("names requires a change or operation stream".into()),
             }
+        } else if stage.starts_with("attr(") {
+            let names = extract_string_calls(stage, "attr");
+            if names.len() != 1 {
+                return Err("attr requires one string argument".into());
+            }
+            project_diff_strings(diff, value, |document, operation| {
+                document
+                    .attribute_id(operation, &names[0])
+                    .and_then(|id| document.attribute_value(id))
+                    .and_then(zirium::semantic::AttributeValue::decoded_string)
+                    .into_iter()
+                    .collect()
+            })?
+        } else if stage == "result_types" {
+            project_diff_strings(diff, value, |document, operation| {
+                document
+                    .result_types(operation)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(|id| document.type_spelling(*id).map(str::to_owned))
+                    .collect()
+            })?
+        } else if stage == "operand_types" {
+            project_diff_strings(diff, value, |document, operation| {
+                document
+                    .operands(operation)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(|value| document.value_type(*value).map(str::to_owned))
+                    .collect()
+            })?
         } else if stage == "markdown" {
-            let DiffCliValue::Changes(items) = value else {
-                return Err("markdown on a diff requires a change stream".into());
-            };
-            DiffCliValue::Text(
-                diff.selection_to_markdown(&items)
-                    .map_err(|error| error.to_string())?,
-            )
+            DiffCliValue::Text(markdown_diff_value(diff, value)?)
         } else if stage == "json" {
             let (json, side) = match value {
                 DiffCliValue::Changes(items) => (
@@ -1187,6 +1235,10 @@ fn evaluate_diff_pipeline(
                     None,
                 ),
                 DiffCliValue::Count(count) => (serde_json::to_string(&count).unwrap(), None),
+                DiffCliValue::Map(map) => (
+                    serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?,
+                    None,
+                ),
                 DiffCliValue::Text(text) => (
                     serde_json::to_string_pretty(&text).map_err(|e| e.to_string())?,
                     None,
@@ -1406,6 +1458,16 @@ fn write_diff_value(
                 writeln!(output, "{item}").map_err(|e| e.to_string())?;
             }
         }
+        DiffCliValue::Map(map) => {
+            let json = serde_json::Value::Object(map);
+            if ndjson {
+                write_diff_envelope(output, diff, before_name, after_name, None, json)?;
+            } else {
+                serde_json::to_writer_pretty(&mut *output, &json)
+                    .map_err(|error| error.to_string())?;
+                output.write_all(b"\n").map_err(|error| error.to_string())?;
+            }
+        }
         DiffCliValue::Json(json, side) => {
             if ndjson {
                 write_diff_envelope(
@@ -1462,6 +1524,88 @@ fn transform_diff_operations(
             .flat_map(|operation| transform(document, operation))
             .collect(),
     ))
+}
+
+fn project_diff_strings(
+    diff: &zirium::diff::Diff<'_>,
+    value: DiffCliValue,
+    project: impl Fn(&zirium::semantic::Document, zirium::semantic::OperationId) -> Vec<String>,
+) -> Result<DiffCliValue, String> {
+    let values = match value {
+        DiffCliValue::Changes(changes) => changes
+            .into_iter()
+            .flat_map(|id| {
+                diff.representative_id(id)
+                    .ok()
+                    .into_iter()
+                    .flat_map(|(side, operation)| project(diff.document(side), operation))
+            })
+            .collect(),
+        DiffCliValue::Operations(side, operations) => operations
+            .into_iter()
+            .flat_map(|operation| project(diff.document(side), operation))
+            .collect(),
+        _ => return Err("projection requires a change or operation stream".into()),
+    };
+    Ok(DiffCliValue::Names(values))
+}
+
+fn extreme_diff_values(value: DiffCliValue, stage: &str) -> Result<DiffCliValue, String> {
+    let DiffCliValue::Names(items) = value else {
+        return Err(format!("{stage} requires a value stream"));
+    };
+    let maximum = stage.starts_with("max");
+    let all = stage.ends_with("_all");
+    let Some(extreme) = (if maximum {
+        items.iter().max()
+    } else {
+        items.iter().min()
+    })
+    .cloned() else {
+        return Ok(DiffCliValue::Names(Vec::new()));
+    };
+    let values = if all {
+        items.into_iter().filter(|item| item == &extreme).collect()
+    } else {
+        vec![extreme]
+    };
+    Ok(DiffCliValue::Names(values))
+}
+
+fn markdown_diff_value(
+    diff: &zirium::diff::Diff<'_>,
+    value: DiffCliValue,
+) -> Result<String, String> {
+    fn cell(value: &str) -> String {
+        value
+            .replace('\\', "\\\\")
+            .replace('|', "\\|")
+            .replace('\n', "<br>")
+    }
+    Ok(match value {
+        DiffCliValue::Changes(items) => diff
+            .selection_to_markdown(&items)
+            .map_err(|error| error.to_string())?,
+        DiffCliValue::Names(items) => {
+            let mut output = String::from("| Value |\n| --- |\n");
+            for item in items {
+                output.push_str(&format!("| {} |\n", cell(&item)));
+            }
+            output
+        }
+        DiffCliValue::Map(items) => {
+            let mut output = String::from("| Key | Value |\n| --- | --- |\n");
+            for (key, value) in items {
+                output.push_str(&format!(
+                    "| {} | {} |\n",
+                    cell(&key),
+                    cell(&value.to_string())
+                ));
+            }
+            output
+        }
+        _ => return Err("markdown requires changes, values, or a map".into()),
+    })
 }
 
 fn parent_operation(
@@ -1647,6 +1791,7 @@ fn diff_value_len(value: &DiffCliValue) -> usize {
         DiffCliValue::Changes(items) => items.len(),
         DiffCliValue::Operations(_, items) => items.len(),
         DiffCliValue::Names(items) => items.len(),
+        DiffCliValue::Map(items) => items.len(),
         DiffCliValue::Count(_) | DiffCliValue::Json(_, _) | DiffCliValue::Text(_) => 1,
     }
 }

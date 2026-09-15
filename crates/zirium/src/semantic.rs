@@ -1535,7 +1535,7 @@ impl Document {
             ValueReference::Invalid(_) => None,
         }
     }
-    pub(crate) fn value_type(&self, reference: ValueReference) -> Option<&str> {
+    pub fn value_type(&self, reference: ValueReference) -> Option<&str> {
         self.type_spelling(self.value_type_id(reference)?)
     }
     fn value_type_value(&self, reference: ValueReference) -> Option<&TypeValue> {

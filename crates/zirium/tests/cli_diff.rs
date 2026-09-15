@@ -256,3 +256,41 @@ fn diff_sets_preserve_kind_and_reject_cross_side_empty_selections() {
             .contains("same diff side")
     );
 }
+
+#[test]
+fn diff_scalar_projections_support_ordering_aggregation_and_markdown() {
+    let (before, after) = pair();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg(r#"filter(changed("attributes")) | result_types | sort | json"#)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!(["i32"])
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg(r#"names | tally | markdown"#)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "| Key | Value |\n| --- | --- |\n| arith.constant | 1 |\n"
+    );
+}
