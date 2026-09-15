@@ -10,6 +10,7 @@ use std::{
 
 use zirium::{
     dialect::{DialectRegistry, RegistryLoadOptions},
+    diff::{ChangeField, ChangeKind, DiffLimits, DiffOptions, DiffSide, compare},
     parser::{ParseDiagnosticKind, ParseLimits, ParsedFile},
     printer::{FragmentScope, PrintLayout},
     query::{EvaluationError, EvaluationLimits, EvaluationOptions, Query, QueryOutput},
@@ -25,6 +26,8 @@ fn main() {
 
 const HELP: &str = r#"Usage: zirium [OPTIONS] [QUERY] [INPUT ...]
        zirium [OPTIONS] -f PROGRAM [INPUT ...]
+       zirium [OPTIONS] --diff BEFORE AFTER [QUERY]
+       zirium [OPTIONS] --diff BEFORE AFTER -f PROGRAM
 
 Read MLIR from stdin when INPUT is omitted or is -. An empty query prints the document.
 Input files are independent; files are never overwritten. Options may appear
@@ -44,6 +47,9 @@ Options:
   --max-registry-bytes N  Maximum aggregate registry bytes (default 16777216)
   -f, --program-file FILE Read the query from a file instead of an argument
   --strict                Reject incomplete parsing and unknown reachable references
+  --diff BEFORE AFTER     Compare two complete semantic MLIR documents
+  --diff-locations        Include operation-attached locations in a diff
+  --max-diff-work N       Semantic comparison work limit (default 10000000)
   --silent                Evaluate without writing query results to stdout
   --jsonl                 Emit one attributable JSON record per line
   --ndjson                Alias for --jsonl
@@ -58,6 +64,7 @@ Examples:
   zirium 'filter(op("arith.addi")) | users | unique | count' input.mlir
   zirium --preset stablehlo --strict 'filter(op("stablehlo.dot_general")) | json' model.mlir
   zirium -f analysis.zirium model.mlir
+  zirium --diff before.mlir after.mlir 'filter(changed("operands")) | json'
 
 Stages: input, filter(predicate), defs, defs(index), users, users(index), parent,
 children, root(predicate), subtree, closure, slice, reachable, fixpoint(query),
@@ -371,6 +378,9 @@ fn run() -> Result<(), String> {
     let mut program_path = None;
     let mut inline_query = None;
     let mut paths = Vec::new();
+    let mut diff_paths: Option<(OsString, OsString)> = None;
+    let mut diff_options = DiffOptions::default();
+    let mut diff_limits = DiffLimits::default();
     while let Some(argument) = arguments.next() {
         let option_text = argument.to_str().unwrap_or("");
         let (option, inline_value) = option_text
@@ -384,6 +394,7 @@ fn run() -> Result<(), String> {
                         | "--fragment-scope"
                         | "--max-file-bytes"
                         | "--max-work"
+                        | "--max-diff-work"
                         | "--max-items"
                         | "--max-registry-depth"
                         | "--max-registry-files"
@@ -420,6 +431,20 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "preset name must be UTF-8")?,
             ),
             "--strict" => strict = true,
+            "--diff" => {
+                if diff_paths.is_some() {
+                    return Err("--diff may be supplied only once".into());
+                }
+                let before = arguments.next().ok_or("missing BEFORE path after --diff")?;
+                let after = arguments.next().ok_or_else(|| {
+                    format!(
+                        "missing AFTER path after --diff (BEFORE was {})",
+                        before.to_string_lossy()
+                    )
+                })?;
+                diff_paths = Some((before, after));
+            }
+            "--diff-locations" => diff_options.compare_locations = true,
             "--silent" => silent = true,
             "--jsonl" | "--ndjson" => ndjson = true,
             "--fragment-scope" => {
@@ -437,6 +462,7 @@ fn run() -> Result<(), String> {
             }
             "--max-file-bytes"
             | "--max-work"
+            | "--max-diff-work"
             | "--max-items"
             | "--max-registry-depth"
             | "--max-registry-files"
@@ -452,12 +478,14 @@ fn run() -> Result<(), String> {
                     .to_str()
                     .and_then(|value| value.parse::<usize>().ok())
                     .ok_or_else(|| format!("{option} requires {requirement}"))?;
-                if value == 0 && matches!(option, "--max-work" | "--max-items") {
+                if value == 0 && matches!(option, "--max-work" | "--max-diff-work" | "--max-items")
+                {
                     return Err(format!("{option} requires a positive integer"));
                 }
                 match option {
                     "--max-file-bytes" => parse_limits.max_file_bytes = value,
                     "--max-work" => evaluation_limits.max_work = value,
+                    "--max-diff-work" => diff_limits.max_work = value,
                     "--max-items" => evaluation_limits.max_items = value,
                     "--max-registry-depth" => registry_limits.max_depth = value,
                     "--max-registry-files" => registry_limits.max_files = value,
@@ -505,6 +533,11 @@ fn run() -> Result<(), String> {
         }
     }
     let (query_name, query_text) = if let Some(path) = program_path {
+        if diff_paths.is_some() && path == "-" {
+            return Err(
+                "-f - is unavailable in diff mode because stdin is reserved for MLIR".into(),
+            );
+        }
         let text = fs::read_to_string(&path).map_err(|error| {
             format!(
                 "could not read program file {}: {error}",
@@ -515,15 +548,6 @@ fn run() -> Result<(), String> {
     } else {
         ("<query>".to_owned(), inline_query.unwrap_or_default())
     };
-    let query = Query::parse_with_document_context(&query_text).map_err(|error| {
-        let message = format!("query error: {}", error.message);
-        source_diagnostic(
-            &query_name,
-            query_text.as_bytes(),
-            error.position..error.position,
-            &message,
-        )
-    })?;
     let registry = if registry_paths.is_empty() && presets.is_empty() {
         DialectRegistry::baseline().clone()
     } else {
@@ -535,6 +559,40 @@ fn run() -> Result<(), String> {
         .map_err(|error| format!("could not load registry: {error}"))?
     };
     let registry = &registry;
+    if diff_paths.is_none() && diff_options.compare_locations {
+        return Err("--diff-locations requires --diff".into());
+    }
+    if diff_paths.is_none() && diff_limits.max_work != DiffLimits::default().max_work {
+        return Err("--max-diff-work requires --diff".into());
+    }
+    if let Some((before, after)) = diff_paths {
+        if !paths.is_empty() {
+            return Err("diff mode accepts only BEFORE, AFTER, and one optional query".into());
+        }
+        diff_limits.max_changes = evaluation_limits.max_items;
+        return run_diff(
+            before,
+            after,
+            &query_name,
+            &query_text,
+            registry,
+            parse_limits,
+            diff_options,
+            diff_limits,
+            fragment_scope,
+            ndjson,
+            silent,
+        );
+    }
+    let query = Query::parse_with_document_context(&query_text).map_err(|error| {
+        let message = format!("query error: {}", error.message);
+        source_diagnostic(
+            &query_name,
+            query_text.as_bytes(),
+            error.position..error.position,
+            &message,
+        )
+    })?;
     let inputs = if paths.is_empty() {
         vec![None]
     } else {
@@ -744,6 +802,457 @@ fn run() -> Result<(), String> {
 
 fn output_staging_error(error: io::Error) -> EvaluationError {
     EvaluationError::new(format!("could not stage output: {error}"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_diff(
+    before_path: OsString,
+    after_path: OsString,
+    query_name: &str,
+    query_text: &str,
+    registry: &DialectRegistry,
+    parse_limits: ParseLimits,
+    options: DiffOptions,
+    limits: DiffLimits,
+    fragment_scope: FragmentScope,
+    ndjson: bool,
+    silent: bool,
+) -> Result<(), String> {
+    if before_path == "-" && after_path == "-" {
+        return Err("both diff inputs cannot read from stdin".into());
+    }
+    if query_text.contains("set_attr(") || query_text.contains("remove_attr(") {
+        return Err(format!(
+            "could not evaluate {query_name}: diff queries are read-only"
+        ));
+    }
+    let (before_name, before) = load_diff_input(before_path, registry, parse_limits, "before")?;
+    let (after_name, after) = load_diff_input(after_path, registry, parse_limits, "after")?;
+    let diff = compare(&before, &after, registry, options, limits)
+        .map_err(|error| format!("could not compare {before_name} and {after_name}: {error}"))?;
+    let mut output = StagedOutput::new(OUTPUT_STAGING_MEMORY_LIMIT, env::temp_dir());
+    if !silent {
+        evaluate_diff_cli(
+            &diff,
+            query_text,
+            &before_name,
+            &after_name,
+            fragment_scope,
+            ndjson,
+            &mut output,
+        )?;
+    }
+    output.deliver_stdout()
+}
+
+fn load_diff_input(
+    path: OsString,
+    registry: &DialectRegistry,
+    limits: ParseLimits,
+    side: &str,
+) -> Result<(String, zirium::semantic::Document), String> {
+    let (name, bytes) = if path == "-" {
+        (
+            "stdin".to_owned(),
+            read_bounded(io::stdin().lock(), limits.max_file_bytes)
+                .map_err(|error| format!("could not read {side} input stdin: {error}"))?,
+        )
+    } else {
+        let name = path.to_string_lossy().into_owned();
+        let file = File::open(&path)
+            .map_err(|error| format!("could not read {side} input {name}: {error}"))?;
+        let bytes = read_bounded(file, limits.max_file_bytes)
+            .map_err(|error| format!("could not read {side} input {name}: {error}"))?;
+        (name, bytes)
+    };
+    let parsed = ParsedFile::parse_with_limits_and_registry(bytes, limits, registry)
+        .map_err(|error| format!("could not parse {side} input {name}: {error}"))?;
+    if let Some(diagnostic) = parsed
+        .lexer_diagnostics()
+        .first()
+        .map(|diagnostic| {
+            let range = diagnostic.range();
+            source_diagnostic(
+                &name,
+                parsed.original_bytes(),
+                range.start() as usize..range.end() as usize,
+                lexer_diagnostic_message(diagnostic.kind()),
+            )
+        })
+        .or_else(|| {
+            parsed.syntax().diagnostics().first().map(|diagnostic| {
+                let range = diagnostic.range();
+                source_diagnostic(
+                    &name,
+                    parsed.original_bytes(),
+                    range.start() as usize..range.end() as usize,
+                    &parser_diagnostic_message(diagnostic.kind()),
+                )
+            })
+        })
+    {
+        return Err(format!(
+            "could not parse {side} input {name}:\n{diagnostic}"
+        ));
+    }
+    let lowered = lower_with_dialect_registry_and_retention(
+        &parsed,
+        LoweringMode::Strict,
+        RetentionProfile::SemanticOnly,
+        registry,
+    );
+    let document = lowered.document.ok_or_else(|| {
+        let details = lowered
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                source_diagnostic(
+                    &name,
+                    parsed.original_bytes(),
+                    diagnostic.range.start() as usize..diagnostic.range.end() as usize,
+                    &diagnostic.message,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("could not lower {side} input {name}:\n{details}")
+    })?;
+    Ok((name, document))
+}
+
+enum DiffCliValue {
+    Changes(Vec<zirium::diff::ChangeId>),
+    Operations(DiffSide, Vec<zirium::semantic::OperationId>),
+    Count(usize),
+    Names(Vec<String>),
+    Json(String),
+}
+
+fn evaluate_diff_cli(
+    diff: &zirium::diff::Diff<'_>,
+    source: &str,
+    before_name: &str,
+    after_name: &str,
+    fragment_scope: FragmentScope,
+    ndjson: bool,
+    output: &mut StagedOutput,
+) -> Result<(), String> {
+    if source.trim().is_empty() {
+        if ndjson {
+            let result: serde_json::Value =
+                serde_json::from_str(&diff.to_json().map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            serde_json::to_writer(
+                &mut *output,
+                &serde_json::json!({
+                    "schema": "zirium.diff.v1",
+                    "before_document": before_name,
+                    "after_document": after_name,
+                    "result_side": serde_json::Value::Null,
+                    "comparison": {
+                        "locations": if diff.options().compare_locations { "compare" } else { "ignore" },
+                        "opaque_values": "bytes",
+                        "opaque_before": diff.statistics().opaque_before,
+                        "opaque_after": diff.statistics().opaque_after,
+                        "ambiguous_groups": diff.statistics().ambiguous_groups,
+                        "bounded_fallback_groups": diff.statistics().bounded_fallback_groups,
+                    },
+                    "result": result,
+                }),
+            ).map_err(|e| e.to_string())?;
+            output.write_all(b"\n").map_err(|e| e.to_string())?;
+        } else {
+            output
+                .write_all(format!("{before_name} -> {after_name}\n{}", diff.to_text()).as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    if source.contains(';') || source.contains('=') {
+        return Err(
+            "diff query statements and bindings are not yet supported by this build".into(),
+        );
+    }
+    let stages = split_diff_pipeline(source)?;
+    let mut value = DiffCliValue::Changes(diff.change_ids().collect());
+    for stage in stages {
+        let stage = stage.trim();
+        value = if stage == "input" {
+            DiffCliValue::Changes(diff.change_ids().collect())
+        } else if stage.starts_with("filter(") {
+            filter_diff_value(diff, value, stage)?
+        } else if stage == "before" || stage == "after" {
+            let DiffCliValue::Changes(changes) = value else {
+                return Err(format!("`{stage}` requires a change stream"));
+            };
+            let side = if stage == "before" {
+                DiffSide::Before
+            } else {
+                DiffSide::After
+            };
+            let operations = changes
+                .into_iter()
+                .filter_map(|id| diff.endpoint_id(id, side).ok().flatten())
+                .collect();
+            DiffCliValue::Operations(side, operations)
+        } else if stage == "unique" {
+            match value {
+                DiffCliValue::Changes(items) => DiffCliValue::Changes(unique(items)),
+                DiffCliValue::Operations(side, items) => {
+                    DiffCliValue::Operations(side, unique(items))
+                }
+                _ => return Err("unique requires a change or operation stream".into()),
+            }
+        } else if stage == "count" {
+            DiffCliValue::Count(match value {
+                DiffCliValue::Changes(items) => items.len(),
+                DiffCliValue::Operations(_, items) => items.len(),
+                DiffCliValue::Names(items) => items.len(),
+                _ => return Err("count requires a stream".into()),
+            })
+        } else if stage == "names" {
+            match value {
+                DiffCliValue::Changes(items) => DiffCliValue::Names(
+                    items
+                        .into_iter()
+                        .filter_map(|id| {
+                            let (side, op) = diff.representative_id(id).ok()?;
+                            diff.document(side).operation_name(op).map(str::to_owned)
+                        })
+                        .collect(),
+                ),
+                DiffCliValue::Operations(side, items) => DiffCliValue::Names(
+                    items
+                        .into_iter()
+                        .filter_map(|op| diff.document(side).operation_name(op).map(str::to_owned))
+                        .collect(),
+                ),
+                _ => return Err("names requires a change or operation stream".into()),
+            }
+        } else if stage == "json" {
+            DiffCliValue::Json(match value {
+                DiffCliValue::Changes(items) => {
+                    diff.selection_to_json(&items).map_err(|e| e.to_string())?
+                }
+                DiffCliValue::Operations(side, items) => {
+                    operation_json(diff.document(side), &items)
+                }
+                DiffCliValue::Names(items) => {
+                    serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?
+                }
+                DiffCliValue::Count(count) => serde_json::to_string(&count).unwrap(),
+                DiffCliValue::Json(_) => return Err("json cannot be applied twice".into()),
+            })
+        } else {
+            return Err(format!("unknown or unsupported diff query stage `{stage}`"));
+        };
+    }
+    match value {
+        DiffCliValue::Changes(items) => {
+            let json = diff.selection_to_json(&items).map_err(|e| e.to_string())?;
+            if ndjson {
+                write_diff_envelope(
+                    output,
+                    before_name,
+                    after_name,
+                    None,
+                    serde_json::from_str(&json).unwrap(),
+                )?;
+            } else {
+                output
+                    .write_all(json.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                output.write_all(b"\n").map_err(|e| e.to_string())?;
+            }
+        }
+        DiffCliValue::Operations(side, items) => {
+            if ndjson {
+                write_diff_envelope(
+                    output,
+                    before_name,
+                    after_name,
+                    Some(side),
+                    serde_json::Value::String(selection_text(
+                        diff.document(side),
+                        &items,
+                        diff.registry(),
+                        fragment_scope,
+                    )?),
+                )?;
+            } else {
+                diff.document(side)
+                    .write_selection_with_scope(
+                        output,
+                        &items,
+                        PrintLayout::Pretty,
+                        diff.registry(),
+                        fragment_scope,
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        DiffCliValue::Count(count) => writeln!(output, "{count}").map_err(|e| e.to_string())?,
+        DiffCliValue::Names(items) => {
+            for item in items {
+                writeln!(output, "{item}").map_err(|e| e.to_string())?;
+            }
+        }
+        DiffCliValue::Json(json) => {
+            output
+                .write_all(json.as_bytes())
+                .map_err(|e| e.to_string())?;
+            output.write_all(b"\n").map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn split_diff_pipeline(source: &str) -> Result<Vec<&str>, String> {
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut start = 0usize;
+    let mut result = Vec::new();
+    for (index, byte) in source.bytes().enumerate() {
+        match byte {
+            b'"' => quoted = !quoted,
+            b'(' if !quoted => depth += 1,
+            b')' if !quoted => depth = depth.checked_sub(1).ok_or("unmatched `)` in diff query")?,
+            b'|' if !quoted && depth == 0 => {
+                result.push(&source[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if quoted || depth != 0 {
+        return Err("unterminated string or group in diff query".into());
+    }
+    result.push(&source[start..]);
+    Ok(result)
+}
+
+fn filter_diff_value(
+    diff: &zirium::diff::Diff<'_>,
+    value: DiffCliValue,
+    stage: &str,
+) -> Result<DiffCliValue, String> {
+    let DiffCliValue::Changes(items) = value else {
+        return Err("change predicates require a change stream".into());
+    };
+    let calls = ["change", "changed", "op", "dialect"]
+        .into_iter()
+        .flat_map(|name| {
+            extract_string_calls(stage, name)
+                .into_iter()
+                .map(move |value| (name, value))
+        })
+        .collect::<Vec<_>>();
+    if calls.is_empty() {
+        return Err("unsupported diff filter predicate".into());
+    }
+    let mut result = Vec::new();
+    'item: for id in items {
+        let change = diff.change(id).map_err(|e| e.to_string())?;
+        for (name, argument) in &calls {
+            let matches = match *name {
+                "change" => {
+                    let kind: ChangeKind = argument
+                        .parse()
+                        .map_err(|e: zirium::diff::DiffError| e.to_string())?;
+                    if kind == ChangeKind::Moved {
+                        change.moved()
+                    } else {
+                        change.kind() == kind
+                    }
+                }
+                "changed" => {
+                    let field: ChangeField = argument
+                        .parse()
+                        .map_err(|e: zirium::diff::DiffError| e.to_string())?;
+                    change.fields().contains(&field)
+                }
+                "op" | "dialect" => {
+                    let (side, op) = diff.representative_id(id).map_err(|e| e.to_string())?;
+                    let op_name = diff.document(side).operation_name(op).unwrap_or("");
+                    if *name == "op" {
+                        op_name == argument
+                    } else {
+                        op_name
+                            .split_once('.')
+                            .map_or(op_name, |(dialect, _)| dialect)
+                            == argument
+                    }
+                }
+                _ => unreachable!(),
+            };
+            if !matches {
+                continue 'item;
+            }
+        }
+        result.push(id);
+    }
+    Ok(DiffCliValue::Changes(result))
+}
+
+fn extract_string_calls(source: &str, name: &str) -> Vec<String> {
+    let prefix = format!("{name}(\"");
+    let mut rest = source;
+    let mut values = Vec::new();
+    while let Some(start) = rest.find(&prefix) {
+        rest = &rest[start + prefix.len()..];
+        let Some(end) = rest.find("\")") else {
+            break;
+        };
+        values.push(rest[..end].to_owned());
+        rest = &rest[end + 2..];
+    }
+    values
+}
+
+fn unique<T: Copy + Eq + std::hash::Hash>(items: Vec<T>) -> Vec<T> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(*item))
+        .collect()
+}
+
+fn operation_json(
+    document: &zirium::semantic::Document,
+    operations: &[zirium::semantic::OperationId],
+) -> String {
+    let values = operations.iter().map(|operation| serde_json::json!({
+        "name": document.operation_name(*operation),
+        "range": document.operation_source_range(*operation).map(|range| [range.start(), range.end()]),
+    })).collect::<Vec<_>>();
+    serde_json::to_string_pretty(&values).unwrap()
+}
+
+fn selection_text(
+    document: &zirium::semantic::Document,
+    operations: &[zirium::semantic::OperationId],
+    registry: &DialectRegistry,
+    scope: FragmentScope,
+) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    document
+        .write_selection_with_scope(&mut bytes, operations, PrintLayout::Pretty, registry, scope)
+        .map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+fn write_diff_envelope(
+    output: &mut StagedOutput,
+    before: &str,
+    after: &str,
+    side: Option<DiffSide>,
+    result: serde_json::Value,
+) -> Result<(), String> {
+    serde_json::to_writer(&mut *output, &serde_json::json!({
+        "schema": "zirium.diff.v1", "before_document": before, "after_document": after,
+        "result_side": side.map(|side| if side == DiffSide::Before { "before" } else { "after" }), "result": result,
+    })).map_err(|e| e.to_string())?;
+    output.write_all(b"\n").map_err(|e| e.to_string())
 }
 
 fn write_ndjson_record(

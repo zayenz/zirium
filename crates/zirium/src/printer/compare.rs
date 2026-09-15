@@ -16,13 +16,137 @@ impl Document {
     }
 }
 
-struct Correspondence {
-    operations: HashMap<OperationId, OperationId>,
-    regions: HashMap<RegionId, RegionId>,
-    blocks: HashMap<BlockId, BlockId>,
+pub(crate) struct Correspondence {
+    pub(crate) operations: HashMap<OperationId, OperationId>,
+    pub(crate) regions: HashMap<RegionId, RegionId>,
+    pub(crate) blocks: HashMap<BlockId, BlockId>,
 }
 
 impl Correspondence {
+    pub(crate) fn from_maps(
+        operations: HashMap<OperationId, OperationId>,
+        regions: HashMap<RegionId, RegionId>,
+        blocks: HashMap<BlockId, BlockId>,
+    ) -> Self {
+        Self {
+            operations,
+            regions,
+            blocks,
+        }
+    }
+
+    pub(crate) fn equal_operation_fields(
+        &self,
+        left_id: OperationId,
+        right_id: OperationId,
+        left: &Document,
+        right: &Document,
+    ) -> [bool; 8] {
+        let successors_equal = match (left.successors(left_id), right.successors(right_id)) {
+            (Some(left_successors), Some(right_successors)) => {
+                left_successors.len() == right_successors.len()
+                    && left_successors.iter().zip(right_successors).all(|(l, r)| {
+                        self.blocks.get(&l.block) == Some(&r.block)
+                            && equal_values(
+                                left,
+                                right,
+                                left.successor_arguments(*l),
+                                right.successor_arguments(*r),
+                                self,
+                            )
+                    })
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        let regions_equal = match (
+            left.operation_regions(left_id),
+            right.operation_regions(right_id),
+        ) {
+            (Some(l), Some(r)) => {
+                l.len() == r.len()
+                    && l.iter().zip(r).all(|(&lr, &rr)| {
+                        let lb = left.region(lr).and_then(|region| region.blocks(left));
+                        let rb = right.region(rr).and_then(|region| region.blocks(right));
+                        match (lb, rb) {
+                            (Some(lb), Some(rb)) => {
+                                lb.len() == rb.len()
+                                    && lb.iter().zip(rb).all(|(&lb, &rb)| {
+                                        self.blocks.get(&lb) == Some(&rb)
+                                            && equal_type_lists(
+                                                left,
+                                                right,
+                                                left.block_argument_types(lb),
+                                                right.block_argument_types(rb),
+                                                self,
+                                            )
+                                    })
+                            }
+                            (None, None) => true,
+                            _ => false,
+                        }
+                    })
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        [
+            left.operation_name(left_id) == right.operation_name(right_id),
+            equal_values(
+                left,
+                right,
+                left.operands(left_id),
+                right.operands(right_id),
+                self,
+            ),
+            equal_type_lists(
+                left,
+                right,
+                left.result_types(left_id),
+                right.result_types(right_id),
+                self,
+            ),
+            equal_types_by_id(
+                left,
+                right,
+                left.function_type(left_id),
+                right.function_type(right_id),
+                self,
+            ),
+            equal_entries(
+                left,
+                right,
+                left.operation_attributes(left_id),
+                right.operation_attributes(right_id),
+                self,
+            ),
+            equal_entries(
+                left,
+                right,
+                left.operation_properties(left_id),
+                right.operation_properties(right_id),
+                self,
+            ),
+            successors_equal,
+            regions_equal,
+        ]
+    }
+
+    pub(crate) fn equal_locations(
+        &self,
+        left_id: OperationId,
+        right_id: OperationId,
+        left: &Document,
+        right: &Document,
+    ) -> bool {
+        equal_locations_by_id(
+            left,
+            right,
+            left.operation_location_id(left_id),
+            right.operation_location_id(right_id),
+        )
+    }
+
     fn build(left_doc: &Document, right_doc: &Document) -> Option<Self> {
         let mut maps = Self {
             operations: HashMap::new(),
@@ -511,6 +635,7 @@ fn equal_attributes(
     maps: &Correspondence,
 ) -> bool {
     match (left, right) {
+        (AttributeValue::Boolean(l), AttributeValue::Boolean(r)) => l == r,
         (AttributeValue::Integer(l), AttributeValue::Integer(r))
         | (AttributeValue::Float(l), AttributeValue::Float(r))
         | (AttributeValue::String(l), AttributeValue::String(r)) => l == r,

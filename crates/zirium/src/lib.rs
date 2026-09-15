@@ -68,6 +68,7 @@
 #[cfg(test)]
 mod benchmark_allocator;
 pub mod dialect;
+pub mod diff;
 pub mod lexer;
 pub mod parser;
 pub mod printer;

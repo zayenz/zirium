@@ -14,9 +14,11 @@ use crate::{
 };
 
 mod builder;
+mod diff;
 pub mod lexer;
 mod model;
 pub use builder::*;
+pub use diff::*;
 mod literal;
 pub mod parser;
 mod render;

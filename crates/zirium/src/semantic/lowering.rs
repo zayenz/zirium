@@ -287,6 +287,15 @@ fn lower_with_registry(
         } else {
             Arc::from([])
         },
+        comparison_coverage: ComparisonCoverage {
+            unrepresented_file_metadata: syntax
+                .tree()
+                .subtree(syntax.tree().root())
+                .into_iter()
+                .flatten()
+                .find(|node| syntax.tree().kind(*node) == Some(SyntaxKind::FileMetadata))
+                .and_then(|node| syntax.tree().text_range(node)),
+        },
         dirty_operations: HashSet::new(),
         dirty_blocks: HashSet::new(),
         revision: 0,

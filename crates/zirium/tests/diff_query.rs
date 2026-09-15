@@ -1,0 +1,39 @@
+use zirium::{
+    dialect::DialectRegistry,
+    diff::{ChangeField, DiffLimits, DiffOptions, compare},
+    parser::ParsedFile,
+    query::{changed, changes, dialect},
+    semantic::{Document, LoweringMode, lower_with_dialect_registry},
+};
+
+fn document(source: &str) -> Document {
+    let registry = DialectRegistry::baseline();
+    let parsed = ParsedFile::parse_with_registry(source.as_bytes(), registry).unwrap();
+    lower_with_dialect_registry(&parsed, LoweringMode::Strict, registry)
+        .document
+        .unwrap()
+}
+
+#[test]
+fn typed_change_filters_project_and_navigate_on_the_after_document() {
+    let before =
+        document("module { %value = arith.constant 4 : i32 \"test.use\"(%value) : (i32) -> () }");
+    let after = document(
+        "module { %renamed = arith.constant 8 : i32 \"test.use\"(%renamed) : (i32) -> () }",
+    );
+    let comparison = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits::default(),
+    )
+    .unwrap();
+
+    let rewired = changes().filter(changed(ChangeField::Attributes) & dialect("arith"));
+    assert_eq!(comparison.query(&rewired).unwrap().len(), 1);
+
+    let consumers = rewired.after().users().unique().names();
+    assert_eq!(comparison.query(&consumers).unwrap(), ["test.use"]);
+    assert_eq!(comparison.query(&rewired.before().count()).unwrap(), 1);
+}

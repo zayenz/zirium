@@ -1,6 +1,6 @@
 //! Deterministic generic MLIR output from semantic documents.
 
-mod compare;
+pub(crate) mod compare;
 
 use std::{
     collections::{HashMap, HashSet},

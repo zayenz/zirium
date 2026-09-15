@@ -691,6 +691,14 @@ pub struct DocumentStatistics {
     pub dominance_index_entries: usize,
 }
 
+/// Semantic comparison coverage retained even when source syntax is discarded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ComparisonCoverage {
+    /// First trailing file-metadata range whose external payload is not part of
+    /// the semantic document.
+    pub unrepresented_file_metadata: Option<TextRange>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct List<T> {
     start: u32,
@@ -945,6 +953,7 @@ pub struct Document {
     retained_syntax: Option<Arc<crate::representation::SyntaxTree>>,
     syntax_map: Arc<[(OperationId, TextRange)]>,
     blob_ranges: Arc<[TextRange]>,
+    comparison_coverage: ComparisonCoverage,
     dirty_operations: HashSet<OperationId>,
     dirty_blocks: HashSet<BlockId>,
     revision: u64,
@@ -1149,6 +1158,7 @@ impl Document {
             retained_syntax: self.retained_syntax.clone(),
             syntax_map: self.syntax_map.clone(),
             blob_ranges: self.blob_ranges.clone(),
+            comparison_coverage: self.comparison_coverage,
             dirty_operations: self.dirty_operations.clone(),
             dirty_blocks: self.dirty_blocks.clone(),
             revision: self.revision,
@@ -1861,6 +1871,9 @@ impl Document {
     }
     pub fn retention_profile(&self) -> RetentionProfile {
         self.retention_profile
+    }
+    pub fn comparison_coverage(&self) -> ComparisonCoverage {
+        self.comparison_coverage
     }
     /// Returns retained source bytes, or `None` when the retention profile did
     /// not retain source storage (for example, `SemanticOnly`).

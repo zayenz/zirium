@@ -468,6 +468,10 @@ pub struct Predicate {
     invalid: Option<&'static str>,
 }
 impl Predicate {
+    pub(crate) fn model(&self) -> model::Predicate {
+        self.inner.clone()
+    }
+
     fn new(inner: model::Predicate) -> Self {
         Self {
             inner,
