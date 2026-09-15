@@ -409,6 +409,11 @@ impl DiffOpQuery {
             inner: self.inner.slice(),
         }
     }
+    fn fixpoint(&self, body: &DiffOpQuery) -> Self {
+        Self {
+            inner: self.inner.fixpoint(&body.inner),
+        }
+    }
     fn unique(&self) -> Self {
         Self {
             inner: self.inner.unique(),
@@ -533,6 +538,18 @@ impl DiffCountQuery {
 fn changes() -> ChangeQuery {
     ChangeQuery {
         inner: core_query::changes(),
+    }
+}
+#[pyfunction]
+fn change_input() -> ChangeQuery {
+    ChangeQuery {
+        inner: core_query::change_input(),
+    }
+}
+#[pyfunction]
+fn diff_op_input() -> DiffOpQuery {
+    DiffOpQuery {
+        inner: core_query::diff_op_input(),
     }
 }
 #[pyfunction]
@@ -693,6 +710,8 @@ pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<DiffStringQuery>()?;
     module.add_class::<DiffCountQuery>()?;
     module.add_function(wrap_pyfunction!(changes, module)?)?;
+    module.add_function(wrap_pyfunction!(change_input, module)?)?;
+    module.add_function(wrap_pyfunction!(diff_op_input, module)?)?;
     module.add_function(wrap_pyfunction!(change, module)?)?;
     module.add_function(wrap_pyfunction!(changed, module)?)?;
     Ok(())

@@ -1154,6 +1154,11 @@ fn evaluate_diff_pipeline(
             })?
         } else if matches!(stage, "reachable" | "closure" | "slice") {
             graph_diff_operations(diff, value, stage, budget, strict)?
+        } else if let Some(body) = stage
+            .strip_prefix("fixpoint(")
+            .and_then(|stage| stage.strip_suffix(')'))
+        {
+            fixpoint_diff_operations(diff, value, body, bindings, budget, strict)?
         } else if stage.starts_with("root(") {
             let names = extract_string_calls(stage, "op");
             if names.len() != 1 {
@@ -1907,6 +1912,52 @@ fn graph_diff_operations(
     .map_err(|error| error.to_string())?;
     budget.charge(used)?;
     Ok(DiffCliValue::Operations(side, operations))
+}
+
+fn fixpoint_diff_operations(
+    diff: &zirium::diff::Diff<'_>,
+    value: DiffCliValue,
+    body: &str,
+    bindings: &std::collections::HashMap<String, DiffCliValue>,
+    budget: &mut DiffQueryBudget,
+    strict: bool,
+) -> Result<DiffCliValue, String> {
+    let DiffCliValue::Operations(side, mut current) = value else {
+        return Err("fixpoint requires operations projected with `before` or `after`".into());
+    };
+    let mut checkpoint = current.clone();
+    let mut power = 1usize;
+    let mut distance = 0usize;
+    loop {
+        let next = evaluate_diff_expression_from(
+            diff,
+            body,
+            bindings,
+            budget,
+            DiffCliValue::Operations(side, current.clone()),
+            strict,
+        )?;
+        let DiffCliValue::Operations(next_side, next) = next else {
+            return Err("fixpoint body must return operations".into());
+        };
+        if next_side != side {
+            return Err("fixpoint body must preserve the projected diff side".into());
+        }
+        budget.charge(1)?;
+        if next == current {
+            return Ok(DiffCliValue::Operations(side, current));
+        }
+        if next == checkpoint {
+            return Err("fixpoint query cycles without reaching an unchanged selection".into());
+        }
+        current = next;
+        distance += 1;
+        if distance == power {
+            checkpoint = current.clone();
+            power = power.saturating_mul(2);
+            distance = 0;
+        }
+    }
 }
 
 fn project_diff_strings(

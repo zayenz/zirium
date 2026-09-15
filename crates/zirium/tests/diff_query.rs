@@ -2,7 +2,7 @@ use zirium::{
     dialect::DialectRegistry,
     diff::{ChangeField, DiffLimits, DiffOptions, compare},
     parser::ParsedFile,
-    query::{changed, changes, dialect, op},
+    query::{changed, changes, dialect, diff_op_input, op},
     semantic::{Document, LoweringMode, lower_with_dialect_registry},
 };
 
@@ -100,6 +100,12 @@ fn typed_projected_graph_traversals_use_the_selected_document() {
     );
     assert_eq!(
         comparison.query(&changed_add.reachable().names()).unwrap(),
+        expected
+    );
+    assert_eq!(
+        comparison
+            .query(&changed_add.fixpoint(&diff_op_input().closure()).names())
+            .unwrap(),
         expected
     );
 }

@@ -340,7 +340,7 @@ fn projected_diff_graph_traversal_reaches_unchanged_definitions() {
         "graph-after",
         "module { %x = arith.constant 1 : i32 %y = arith.constant 2 : i32 %z = arith.addi %y, %x : i32 }\n",
     );
-    for traversal in ["slice", "closure", "reachable"] {
+    for traversal in ["slice", "closure", "reachable", "fixpoint(closure)"] {
         let query = format!("filter(changed(\"operands\")) | after | {traversal} | names");
         let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
             .args(["--diff"])

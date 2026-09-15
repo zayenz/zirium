@@ -26,6 +26,7 @@ enum Stage {
     Reachable,
     Closure,
     Slice,
+    Fixpoint(Vec<Stage>),
     Unique,
     Reverse,
     Head(usize),
@@ -224,6 +225,9 @@ impl DiffOpQuery {
     }
     pub fn slice(&self) -> Self {
         self.append(Stage::Slice)
+    }
+    pub fn fixpoint(&self, body: &DiffOpQuery) -> Self {
+        self.append(Stage::Fixpoint(body.stages.clone()))
     }
     pub fn unique(&self) -> Self {
         self.append(Stage::Unique)
@@ -519,6 +523,47 @@ fn evaluate_stage(
             options,
             OperationTraversal::Slice,
         ),
+        Stage::Fixpoint(stages) => {
+            let Runtime::Operations(side, mut current) = value else {
+                return Err(EvaluationError::new(
+                    "fixpoint requires projected operations",
+                ));
+            };
+            let mut checkpoint = current.clone();
+            let mut power = 1usize;
+            let mut distance = 0usize;
+            loop {
+                let mut next = Runtime::Operations(side, current.clone());
+                for stage in stages {
+                    next = evaluate_stage(diff, next, stage, work, limits, options)?;
+                }
+                let Runtime::Operations(next_side, next) = next else {
+                    return Err(EvaluationError::new("fixpoint body must return operations"));
+                };
+                if next_side != side {
+                    return Err(EvaluationError::new(
+                        "fixpoint body must preserve the projected diff side",
+                    ));
+                }
+                charge(work, 1, limits)?;
+                if next == current {
+                    break;
+                }
+                if next == checkpoint {
+                    return Err(EvaluationError::new(
+                        "fixpoint query cycles without reaching an unchanged selection",
+                    ));
+                }
+                current = next;
+                distance += 1;
+                if distance == power {
+                    checkpoint = current.clone();
+                    power = power.saturating_mul(2);
+                    distance = 0;
+                }
+            }
+            Ok(Runtime::Operations(side, current))
+        }
         Stage::Unique => match value {
             Runtime::Changes(v) => Ok(Runtime::Changes(dedup(v))),
             Runtime::Operations(s, v) => Ok(Runtime::Operations(s, dedup(v))),

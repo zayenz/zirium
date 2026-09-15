@@ -2,7 +2,7 @@ import json
 
 import pytest
 import zirium
-from zirium.query import changed, changes, dialect, op
+from zirium.query import changed, changes, dialect, diff_op_input, op
 
 
 def lower(source: str) -> zirium.Document:
@@ -43,6 +43,12 @@ def test_diff_owns_immutable_snapshots_and_exposes_changes():
     ] == ["test.use"]
     with pytest.raises(ValueError, match="cannot determine reference semantics"):
         comparison.query(constants.after().users().reachable(), strict=True)
+    assert [
+        operation.name
+        for operation in comparison.query(
+            constants.after().users().fixpoint(diff_op_input().slice())
+        )
+    ] == ["arith.constant", "test.use"]
     assert [
         operation.name for operation in comparison.query(constants.after().parent())
     ] == ["builtin.module"]
