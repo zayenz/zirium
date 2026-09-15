@@ -2,7 +2,7 @@ use zirium::{
     dialect::DialectRegistry,
     diff::{ChangeField, DiffLimits, DiffOptions, compare},
     parser::ParsedFile,
-    query::{changed, changes, dialect},
+    query::{changed, changes, dialect, op},
     semantic::{Document, LoweringMode, lower_with_dialect_registry},
 };
 
@@ -36,4 +36,26 @@ fn typed_change_filters_project_and_navigate_on_the_after_document() {
     let consumers = rewired.after().users().unique().names();
     assert_eq!(comparison.query(&consumers).unwrap(), ["test.use"]);
     assert_eq!(comparison.query(&rewired.before().count()).unwrap(), 1);
+
+    let roots = rewired.after().root(op("builtin.module")).unique();
+    assert_eq!(comparison.query(&roots).unwrap().len(), 1);
+    assert_eq!(
+        comparison
+            .query(
+                &rewired
+                    .after()
+                    .root(op("builtin.module"))
+                    .subtree()
+                    .filter(op("test.use"))
+                    .names(),
+            )
+            .unwrap(),
+        ["test.use"]
+    );
+    assert_eq!(
+        comparison
+            .query(&changes().reverse().head(1).tail(1).count())
+            .unwrap(),
+        1
+    );
 }

@@ -306,6 +306,21 @@ impl ChangeQuery {
             inner: self.inner.unique(),
         }
     }
+    fn reverse(&self) -> Self {
+        Self {
+            inner: self.inner.reverse(),
+        }
+    }
+    fn head(&self, count: usize) -> Self {
+        Self {
+            inner: self.inner.head(count),
+        }
+    }
+    fn tail(&self, count: usize) -> Self {
+        Self {
+            inner: self.inner.tail(count),
+        }
+    }
     fn names(&self) -> DiffStringQuery {
         DiffStringQuery {
             inner: self.inner.names(),
@@ -342,9 +357,44 @@ impl DiffOpQuery {
             inner: index.map_or_else(|| self.inner.defs(), |i| self.inner.defs_at(i)),
         }
     }
+    fn parent(&self) -> Self {
+        Self {
+            inner: self.inner.parent(),
+        }
+    }
+    fn children(&self) -> Self {
+        Self {
+            inner: self.inner.children(),
+        }
+    }
+    fn root(&self, predicate: &super::query::Predicate) -> Self {
+        Self {
+            inner: self.inner.root(predicate.inner.clone()),
+        }
+    }
+    fn subtree(&self) -> Self {
+        Self {
+            inner: self.inner.subtree(),
+        }
+    }
     fn unique(&self) -> Self {
         Self {
             inner: self.inner.unique(),
+        }
+    }
+    fn reverse(&self) -> Self {
+        Self {
+            inner: self.inner.reverse(),
+        }
+    }
+    fn head(&self, count: usize) -> Self {
+        Self {
+            inner: self.inner.head(count),
+        }
+    }
+    fn tail(&self, count: usize) -> Self {
+        Self {
+            inner: self.inner.tail(count),
         }
     }
     fn names(&self) -> DiffStringQuery {
@@ -374,6 +424,21 @@ impl DiffStringQuery {
     fn count(&self) -> DiffCountQuery {
         DiffCountQuery {
             inner: self.inner.count(),
+        }
+    }
+    fn reverse(&self) -> Self {
+        Self {
+            inner: self.inner.reverse(),
+        }
+    }
+    fn head(&self, count: usize) -> Self {
+        Self {
+            inner: self.inner.head(count),
+        }
+    }
+    fn tail(&self, count: usize) -> Self {
+        Self {
+            inner: self.inner.tail(count),
         }
     }
     fn __bool__(&self) -> PyResult<bool> {

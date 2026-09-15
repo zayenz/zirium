@@ -2,7 +2,7 @@ import json
 
 import pytest
 import zirium
-from zirium.query import changed, changes, dialect
+from zirium.query import changed, changes, dialect, op
 
 
 def lower(source: str) -> zirium.Document:
@@ -33,6 +33,19 @@ def test_diff_owns_immutable_snapshots_and_exposes_changes():
         "arith.constant"
     ]
     assert comparison.query(constants.count()) == 1
+    assert [
+        operation.name for operation in comparison.query(constants.after().parent())
+    ] == ["builtin.module"]
+    assert [
+        operation.name
+        for operation in comparison.query(
+            constants.after()
+            .root(op("builtin.module"))
+            .subtree()
+            .filter(op("arith.constant"))
+        )
+    ] == ["arith.constant"]
+    assert len(comparison.query(changes().reverse().head(1).tail(1))) == 1
 
     with after.edit() as edit:
         edit.erase(after.operation_table("arith.constant").operation(0))

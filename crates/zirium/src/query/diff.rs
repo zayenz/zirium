@@ -16,7 +16,14 @@ enum Stage {
     OperationFilter(model::Predicate),
     Users(Option<usize>),
     Defs(Option<usize>),
+    Parent,
+    Children,
+    Root(model::Predicate),
+    Subtree,
     Unique,
+    Reverse,
+    Head(usize),
+    Tail(usize),
     Names,
     Count,
 }
@@ -143,6 +150,15 @@ impl ChangeQuery {
     pub fn unique(&self) -> Self {
         self.append(Stage::Unique)
     }
+    pub fn reverse(&self) -> Self {
+        self.append(Stage::Reverse)
+    }
+    pub fn head(&self, count: usize) -> Self {
+        self.append(Stage::Head(count))
+    }
+    pub fn tail(&self, count: usize) -> Self {
+        self.append(Stage::Tail(count))
+    }
     pub fn names(&self) -> DiffStringQuery {
         self.append(Stage::Names)
     }
@@ -167,8 +183,29 @@ impl DiffOpQuery {
     pub fn defs_at(&self, index: usize) -> Self {
         self.append(Stage::Defs(Some(index)))
     }
+    pub fn parent(&self) -> Self {
+        self.append(Stage::Parent)
+    }
+    pub fn children(&self) -> Self {
+        self.append(Stage::Children)
+    }
+    pub fn root(&self, predicate: Predicate) -> Self {
+        self.append(Stage::Root(predicate.model()))
+    }
+    pub fn subtree(&self) -> Self {
+        self.append(Stage::Subtree)
+    }
     pub fn unique(&self) -> Self {
         self.append(Stage::Unique)
+    }
+    pub fn reverse(&self) -> Self {
+        self.append(Stage::Reverse)
+    }
+    pub fn head(&self, count: usize) -> Self {
+        self.append(Stage::Head(count))
+    }
+    pub fn tail(&self, count: usize) -> Self {
+        self.append(Stage::Tail(count))
     }
     pub fn names(&self) -> DiffStringQuery {
         self.append(Stage::Names)
@@ -184,6 +221,15 @@ impl DiffStringQuery {
     }
     pub fn count(&self) -> DiffCountQuery {
         self.append(Stage::Count)
+    }
+    pub fn reverse(&self) -> Self {
+        self.append(Stage::Reverse)
+    }
+    pub fn head(&self, count: usize) -> Self {
+        self.append(Stage::Head(count))
+    }
+    pub fn tail(&self, count: usize) -> Self {
+        self.append(Stage::Tail(count))
     }
 }
 
@@ -359,12 +405,52 @@ fn evaluate_stage(
                 })
                 .collect()
         }),
+        Stage::Parent => navigate(diff, value, work, limits, |document, operation| {
+            parent_operation(document, operation).into_iter().collect()
+        }),
+        Stage::Children => navigate(diff, value, work, limits, operation_children),
+        Stage::Root(predicate) => navigate(diff, value, work, limits, |document, operation| {
+            let mut current = Some(operation);
+            while let Some(operation) = current {
+                if matches_operation(predicate, document, Some(operation)).unwrap_or(false) {
+                    return vec![operation];
+                }
+                current = parent_operation(document, operation);
+            }
+            Vec::new()
+        }),
+        Stage::Subtree => navigate(diff, value, work, limits, |document, operation| {
+            let mut result = vec![operation];
+            let mut cursor = 0;
+            while cursor < result.len() {
+                result.extend(operation_children(document, result[cursor]));
+                cursor += 1;
+            }
+            result
+        }),
         Stage::Unique => match value {
             Runtime::Changes(v) => Ok(Runtime::Changes(dedup(v))),
             Runtime::Operations(s, v) => Ok(Runtime::Operations(s, dedup(v))),
             Runtime::Strings(v) => Ok(Runtime::Strings(dedup(v))),
             Runtime::Count(_) => Err(EvaluationError::new("unique requires a stream")),
         },
+        Stage::Reverse => match value {
+            Runtime::Changes(mut values) => {
+                values.reverse();
+                Ok(Runtime::Changes(values))
+            }
+            Runtime::Operations(side, mut values) => {
+                values.reverse();
+                Ok(Runtime::Operations(side, values))
+            }
+            Runtime::Strings(mut values) => {
+                values.reverse();
+                Ok(Runtime::Strings(values))
+            }
+            Runtime::Count(_) => Err(EvaluationError::new("reverse requires a stream")),
+        },
+        Stage::Head(count) => bound(value, *count, true),
+        Stage::Tail(count) => bound(value, *count, false),
         Stage::Names => match value {
             Runtime::Changes(v) => Ok(Runtime::Strings(
                 v.into_iter()
@@ -392,6 +478,51 @@ fn evaluate_stage(
             Runtime::Count(_) => Err(EvaluationError::new("count requires a stream")),
         },
     }
+}
+
+fn bound(value: Runtime, count: usize, head: bool) -> Result<Runtime, EvaluationError> {
+    fn values<T>(mut values: Vec<T>, count: usize, head: bool) -> Vec<T> {
+        if head {
+            values.truncate(count);
+        } else if values.len() > count {
+            values.drain(..values.len() - count);
+        }
+        values
+    }
+    Ok(match value {
+        Runtime::Changes(items) => Runtime::Changes(values(items, count, head)),
+        Runtime::Operations(side, items) => Runtime::Operations(side, values(items, count, head)),
+        Runtime::Strings(items) => Runtime::Strings(values(items, count, head)),
+        Runtime::Count(_) => return Err(EvaluationError::new("head and tail require a stream")),
+    })
+}
+
+fn parent_operation(
+    document: &crate::semantic::Document,
+    operation: OperationId,
+) -> Option<OperationId> {
+    let block = document.operation(operation)?.parent_block()?;
+    let region = document.block(block)?.parent_region();
+    Some(document.region(region)?.parent_operation())
+}
+
+fn operation_children(
+    document: &crate::semantic::Document,
+    operation: OperationId,
+) -> Vec<OperationId> {
+    document
+        .operation_regions(operation)
+        .unwrap_or(&[])
+        .iter()
+        .flat_map(|region| {
+            document
+                .region(*region)
+                .and_then(|region| region.blocks(document))
+                .unwrap_or(&[])
+        })
+        .flat_map(|block| document.block_operations(*block).unwrap_or(&[]))
+        .copied()
+        .collect()
 }
 
 fn navigate(
