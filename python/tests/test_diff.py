@@ -1,5 +1,6 @@
 import json
 
+import pytest
 import zirium
 from zirium.query import changed, changes, dialect
 
@@ -51,3 +52,29 @@ def test_diff_requires_one_registry_context():
         assert "same registry instance" in str(error)
     else:
         raise AssertionError("registry mismatch should fail")
+
+
+@pytest.mark.parametrize(
+    "keyword,value",
+    [
+        ("max_work", True),
+        ("max_work", 0),
+        ("max_work", -1),
+        ("max_changes", False),
+        ("max_changes", 0),
+        ("max_changes", -1),
+    ],
+)
+def test_diff_rejects_non_positive_and_boolean_limits(keyword, value):
+    document = lower("module {}")
+    with pytest.raises(ValueError, match="positive integer"):
+        zirium.diff(document, document, **{keyword: value})
+
+
+@pytest.mark.parametrize("keyword,value", [("max_work", True), ("max_items", -1)])
+def test_diff_query_rejects_invalid_limits(keyword, value):
+    before = lower("module { %x = arith.constant 1 : i32 }")
+    after = lower("module { %x = arith.constant 2 : i32 }")
+    comparison = zirium.diff(before, after)
+    with pytest.raises(ValueError, match="positive integer"):
+        comparison.query(changes(), **{keyword: value})

@@ -1,5 +1,5 @@
 use super::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyBool, PyDict, PyList};
 use zirium::diff::{DiffLimits, DiffOptions, DiffSide, compare as compare_documents};
 use zirium::query as core_query;
 
@@ -69,6 +69,7 @@ pub(super) struct Diff {
     compare_locations: bool,
     statistics: Vec<(String, usize)>,
     registry: RegistryKind,
+    limits: DiffLimits,
 }
 
 #[pymethods]
@@ -117,15 +118,15 @@ impl Diff {
         &self,
         py: Python<'_>,
         expression: &Bound<'_, PyAny>,
-        max_work: Option<usize>,
-        max_items: Option<usize>,
+        max_work: Option<&Bound<'_, PyAny>>,
+        max_items: Option<&Bound<'_, PyAny>>,
         strict: bool,
     ) -> PyResult<Py<PyAny>> {
         let _ = strict;
         let defaults = core_query::EvaluationLimits::default();
         let limits = core_query::EvaluationLimits {
-            max_work: max_work.unwrap_or(defaults.max_work),
-            max_items: max_items.unwrap_or(defaults.max_items),
+            max_work: positive_limit(max_work, "max_work")?.unwrap_or(defaults.max_work),
+            max_items: positive_limit(max_items, "max_items")?.unwrap_or(defaults.max_items),
         };
         let before = read_document(&self.before_state)?;
         let after = read_document(&self.after_state)?;
@@ -136,7 +137,7 @@ impl Diff {
             DiffOptions {
                 compare_locations: self.compare_locations,
             },
-            DiffLimits::default(),
+            self.limits,
         )
         .map_err(diff_error)?;
         if let Ok(query) = expression.extract::<PyRef<'_, ChangeQuery>>() {
@@ -415,8 +416,8 @@ fn semantic_diff(
     before: &Document,
     after: &Document,
     compare_locations: bool,
-    max_work: Option<usize>,
-    max_changes: Option<usize>,
+    max_work: Option<&Bound<'_, PyAny>>,
+    max_changes: Option<&Bound<'_, PyAny>>,
     py: Python<'_>,
 ) -> PyResult<Diff> {
     if !before.registry.same_context(&after.registry) {
@@ -426,26 +427,28 @@ fn semantic_diff(
     }
     let defaults = DiffLimits::default();
     let limits = DiffLimits {
-        max_work: max_work.unwrap_or(defaults.max_work),
-        max_changes: max_changes.unwrap_or(defaults.max_changes),
+        max_work: positive_limit(max_work, "max_work")?.unwrap_or(defaults.max_work),
+        max_changes: positive_limit(max_changes, "max_changes")?.unwrap_or(defaults.max_changes),
     };
     if limits.max_work == 0 || limits.max_changes == 0 {
         return Err(PyValueError::new_err("diff limits must be positive"));
     }
-    let (before_snapshot, after_snapshot) = if Arc::ptr_eq(&before.state, &after.state) {
-        let snapshot = read_document(&before.state)?.clone();
-        (snapshot.clone(), snapshot)
-    } else if Arc::as_ptr(&before.state) as usize <= Arc::as_ptr(&after.state) as usize {
-        let left = read_document(&before.state)?;
-        let right = read_document(&after.state)?;
-        (left.clone(), right.clone())
-    } else {
-        let right = read_document(&after.state)?;
-        let left = read_document(&before.state)?;
-        (left.clone(), right.clone())
-    };
+    let before_input = before.state.clone();
+    let after_input = after.state.clone();
     let registry = before.registry.clone();
     py.detach(move || {
+        let (before_snapshot, after_snapshot) = if Arc::ptr_eq(&before_input, &after_input) {
+            let snapshot = read_document(&before_input)?.clone();
+            (snapshot.clone(), snapshot)
+        } else if Arc::as_ptr(&before_input) as usize <= Arc::as_ptr(&after_input) as usize {
+            let left = read_document(&before_input)?;
+            let right = read_document(&after_input)?;
+            (left.clone(), right.clone())
+        } else {
+            let right = read_document(&after_input)?;
+            let left = read_document(&before_input)?;
+            (left.clone(), right.clone())
+        };
         let before_state = Arc::new(RwLock::new(before_snapshot));
         let after_state = Arc::new(RwLock::new(after_snapshot));
         let before_guard = read_document(&before_state)?;
@@ -501,12 +504,33 @@ fn semantic_diff(
             compare_locations,
             statistics,
             registry: registry.clone(),
+            limits,
         };
         drop(comparison);
         drop(before_guard);
         drop(after_guard);
         Ok(result)
     })
+}
+
+fn positive_limit(value: Option<&Bound<'_, PyAny>>, name: &str) -> PyResult<Option<usize>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_instance_of::<PyBool>() {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be a positive integer, not bool"
+        )));
+    }
+    let value = value
+        .extract::<i128>()
+        .map_err(|_| PyValueError::new_err(format!("{name} must be a positive integer")))?;
+    if value <= 0 || value > usize::MAX as i128 {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be a positive integer"
+        )));
+    }
+    Ok(Some(value as usize))
 }
 
 fn diff_error(error: zirium::diff::DiffError) -> PyErr {
