@@ -73,7 +73,8 @@ unique, attr("name"), names, result_types, operand_types, tally,
 map_by(key, value), sort, sort_by(query), reverse, head(n), tail(n), min,
 min_all, min_by(query), min_all_by(query), max, max_all, max_by(query),
 max_all_by(query), set_attr("name", "value"), remove_attr("name"), check,
-check("message"), check(n), check(n, "message"), emit, json, markdown,
+check("message"), check(n), check(n, "message"), emit, format,
+format(assembly = "generic", width = n, indent = n), json, markdown,
 print("text"), count.
 Statements: prefix a query with `do` and end it with `;` to keep edits while
 suppressing that statement's implicit result.
@@ -752,6 +753,20 @@ fn run() -> Result<(), String> {
                             )
                             .map_err(|error| {
                                 EvaluationError::new(format!("could not print {name}: {error}"))
+                            })?,
+                        QueryOutput::Formatted {
+                            operations,
+                            options,
+                        } => document
+                            .write_formatted_selection(
+                                &mut staged_output,
+                                &operations,
+                                registry,
+                                fragment_scope,
+                                options,
+                            )
+                            .map_err(|error| {
+                                EvaluationError::new(format!("could not format {name}: {error}"))
                             })?,
                         QueryOutput::Count(count) => {
                             use std::io::Write;
@@ -2768,6 +2783,27 @@ fn write_ndjson_record(
             }
             record.write_all(b"\"").map_err(output_staging_error)?;
         }
+        QueryOutput::Formatted {
+            operations,
+            options,
+        } => {
+            record.write_all(b"\"").map_err(output_staging_error)?;
+            {
+                let mut buffered = BufWriter::with_capacity(8192, &mut *record);
+                let mut writer = JsonStringWriter::new(&mut buffered);
+                document
+                    .write_formatted_selection(
+                        &mut writer,
+                        &operations,
+                        registry,
+                        fragment_scope,
+                        options,
+                    )
+                    .map_err(|error| EvaluationError::new(error.to_string()))?;
+                writer.flush().map_err(output_staging_error)?;
+            }
+            record.write_all(b"\"").map_err(output_staging_error)?;
+        }
         output => {
             let result = ndjson_value(output)?;
             serde_json::to_writer(&mut *record, &result)
@@ -2844,6 +2880,7 @@ fn ndjson_value(output: QueryOutput) -> Result<serde_json::Value, EvaluationErro
         QueryOutput::Array(values) => serde_json::Value::Array(values),
         QueryOutput::Json(_) => unreachable!("JSON emissions retain their serialized order"),
         QueryOutput::Text(text) => serde_json::Value::String(text),
+        QueryOutput::Formatted { .. } => unreachable!("formatted output streams into NDJSON"),
     })
 }
 

@@ -397,6 +397,45 @@ impl Document {
         })
     }
 
+    #[pyo3(signature = (assembly="source", width=100, indent=2))]
+    fn formatted_bytes<'py>(
+        &self,
+        py: Python<'py>,
+        assembly: &str,
+        width: usize,
+        indent: usize,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let options = format_options(assembly, width, indent)?;
+        let state = self.state.clone();
+        let registry = self.registry.clone();
+        let bytes = py.detach(move || {
+            read_document(&state)?
+                .formatted_bytes(registry.registry(), options)
+                .map_err(py_error)
+        })?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    #[pyo3(signature = (path, assembly="source", width=100, indent=2))]
+    fn write_formatted(
+        &self,
+        path: PathBuf,
+        assembly: &str,
+        width: usize,
+        indent: usize,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        let options = format_options(assembly, width, indent)?;
+        let state = self.state.clone();
+        let registry = self.registry.clone();
+        py.detach(move || {
+            let bytes = read_document(&state)?
+                .formatted_bytes(registry.registry(), options)
+                .map_err(py_error)?;
+            std::fs::write(path, bytes).map_err(|error| PyIOError::new_err(error.to_string()))
+        })
+    }
+
     #[pyo3(signature = (compact=false))]
     fn custom_bytes<'py>(&self, py: Python<'py>, compact: bool) -> PyResult<Bound<'py, PyBytes>> {
         let state = self.state.clone();

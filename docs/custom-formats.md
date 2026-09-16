@@ -479,6 +479,10 @@ choosing an output path.
 
 In Python, choose output according to what you need:
 
+- `formatted_bytes()` normalizes indentation and spacing while retaining source
+  assembly where possible. Pass `assembly="generic"` on a semantic document to
+  rewrite operations to quoted generic form. Formatting indentation must be
+  between 1 and 256 spaces.
 - `custom_bytes()` prefers built-in assembly printers. Caller-defined shapes
   print in generic form. Built-in printers also fall back to generic form when
   they cannot faithfully represent the structure, properties, locations, typed

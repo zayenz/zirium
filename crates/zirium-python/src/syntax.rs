@@ -602,10 +602,37 @@ impl File {
     fn original_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, self.parsed.original_bytes())
     }
+    #[pyo3(signature = (width=100, indent=2))]
+    fn formatted_bytes<'py>(
+        &self,
+        py: Python<'py>,
+        width: usize,
+        indent: usize,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let options = format_options("source", width, indent)?;
+        let parsed = self.parsed.clone();
+        let bytes = py.detach(move || parsed.formatted_bytes(options).map_err(py_error))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
     fn write_original(&self, path: PathBuf, py: Python<'_>) -> PyResult<()> {
         let parsed = self.parsed.clone();
         py.detach(move || std::fs::write(path, parsed.original_bytes()))
             .map_err(|error| PyIOError::new_err(error.to_string()))
+    }
+    #[pyo3(signature = (path, width=100, indent=2))]
+    fn write_formatted(
+        &self,
+        path: PathBuf,
+        width: usize,
+        indent: usize,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        let options = format_options("source", width, indent)?;
+        let parsed = self.parsed.clone();
+        py.detach(move || {
+            let bytes = parsed.formatted_bytes(options).map_err(py_error)?;
+            std::fs::write(path, bytes).map_err(|error| PyIOError::new_err(error.to_string()))
+        })
     }
     #[getter]
     fn node_count(&self) -> usize {

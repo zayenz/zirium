@@ -98,6 +98,45 @@ fn scalar_count_and_source_aware_selection_remain_byte_exact() {
 }
 
 #[test]
+fn format_preserves_source_assembly_and_can_request_generic_assembly() {
+    let source = "module {\nfunc.func @twice(%input : i32) -> i32 {\n%sum=arith.addi %input,%input:i32 // keep\nfunc.return %sum:i32\n}\n}\n";
+    let formatted = run_stdin("format", source);
+    assert!(
+        formatted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&formatted.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(formatted.stdout).unwrap(),
+        "module {\n  func.func @twice(%input: i32) -> i32 {\n    %sum = arith.addi %input, %input : i32 // keep\n    func.return %sum : i32\n  }\n}\n"
+    );
+
+    let generic = run_stdin(r#"format(assembly = "generic")"#, source);
+    assert!(
+        generic.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generic.stderr)
+    );
+    let generic = String::from_utf8(generic.stdout).unwrap();
+    assert!(generic.contains(r#""arith.addi""#), "{generic}");
+    assert!(!generic.contains("arith.addi %input"), "{generic}");
+
+    let edited = run_stdin(
+        r#"do filter(op("func.func")) | set_attr("review.tag", "kept-custom"); format"#,
+        source,
+    );
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    let edited = String::from_utf8(edited.stdout).unwrap();
+    assert!(edited.contains("func.func @twice"), "{edited}");
+    assert!(!edited.contains(r#""func.func""#), "{edited}");
+    assert!(edited.contains(r#"review.tag = "kept-custom""#), "{edited}");
+}
+
+#[test]
 fn check_supports_presence_absence_and_exact_cardinality() {
     let passing = run_stdin(
         r#"do filter(op("arith.addi")) | check("addition is required");

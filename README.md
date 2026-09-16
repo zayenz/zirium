@@ -173,17 +173,20 @@ covers predicates, nested queries, semantic projections, and evaluation limits.
 
 ## Output modes
 
-Zirium has three output paths, each with a different contract:
+Zirium has four output paths, each with a different contract:
 
 | Output | Source object | Contract |
 | --- | --- | --- |
 | Original | Parsed file | Reproduces the input bytes exactly. |
+| Formatted | Parsed file or semantic document | Normalizes layout while retaining source assembly, names, aliases, and comments where available. |
 | Canonical | Semantic document | Emits deterministic generic MLIR from semantic storage. |
 | Preserving | Hybrid semantic document | Copies unchanged source and regenerates edited operations or blocks. |
 
-Canonical output normalizes formatting and SSA names and does not preserve
-comments or aliases. Use original output to reproduce the input, or hybrid
-retention when edits should preserve unrelated source text.
+Use `zirium 'format' input.mlir` for source-aware formatting. Pass
+`format(assembly = "generic")` to regenerate quoted generic operations before
+applying the same layout. Canonical output also normalizes SSA names and does
+not preserve comments or aliases. Use original output to reproduce the input,
+or hybrid retention when edits should preserve unrelated source text.
 
 For the exact structural-editing limits of Rust, Python, and the CLI, see the
 [structural editing capability matrix](https://github.com/zayenz/zirium/blob/main/docs/structural-editing.md).

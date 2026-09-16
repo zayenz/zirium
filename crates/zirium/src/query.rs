@@ -142,6 +142,10 @@ pub enum QueryOutput {
     Array(Vec<serde_json::Value>),
     Json(String),
     Text(String),
+    Formatted {
+        operations: Vec<OperationId>,
+        options: crate::formatter::FormatOptions,
+    },
 }
 
 /// Structured query results that have no corresponding CLI stream kind.
@@ -840,6 +844,16 @@ fn evaluate_pipeline(
                 return Ok(QueryOutput::Count(countable_len(&current, "count")?));
             }
             model::Stage::Emit { .. } => emit(document, current.clone())?,
+            model::Stage::Format { options, .. } => {
+                let operations = take_operations(current.clone(), "format")?;
+                emit(
+                    document,
+                    QueryOutput::Formatted {
+                        operations,
+                        options: *options,
+                    },
+                )?;
+            }
             model::Stage::Markdown { .. } => {
                 emit(
                     document,
@@ -907,7 +921,8 @@ fn countable_len(output: &QueryOutput, stage: &str) -> Result<usize, EvaluationE
         QueryOutput::Native(NativeValue::String(_))
         | QueryOutput::Count(_)
         | QueryOutput::Json(_)
-        | QueryOutput::Text(_) => Err(EvaluationError::new(format!(
+        | QueryOutput::Text(_)
+        | QueryOutput::Formatted { .. } => Err(EvaluationError::new(format!(
             "{stage} requires a stream, map, or array"
         ))),
     }
@@ -926,7 +941,8 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Native(NativeValue::String(_))
         | QueryOutput::Count(_)
         | QueryOutput::Json(_)
-        | QueryOutput::Text(_) => 1,
+        | QueryOutput::Text(_)
+        | QueryOutput::Formatted { .. } => 1,
     }
 }
 
@@ -1427,6 +1443,9 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
         QueryOutput::Count(count) => serde_json::json!(count),
         QueryOutput::Json(value) | QueryOutput::Text(value) => {
             serde_json::Value::String(value.clone())
+        }
+        QueryOutput::Formatted { .. } => {
+            unreachable!("formatted output is an emission request, not a query value")
         }
     }
 }

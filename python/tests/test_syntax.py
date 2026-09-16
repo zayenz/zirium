@@ -79,6 +79,20 @@ def test_registry_selects_custom_syntax_and_is_owned_by_file():
     assert generic.diagnostics
 
 
+def test_source_formatter_preserves_custom_assembly_and_writes_files(tmp_path: Path):
+    parsed = zirium.parse_text(
+        "module {\nfunc.func @f() {\nfunc.return\n}\n}\n",
+        registry=zirium.DialectRegistry.baseline(),
+    )
+    expected = b"module {\n  func.func @f() {\n    func.return\n  }\n}\n"
+    assert parsed.formatted_bytes() == expected
+    output = tmp_path / "formatted.mlir"
+    parsed.write_formatted(output)
+    assert output.read_bytes() == expected
+    with pytest.raises(ValueError, match="must not exceed 256"):
+        parsed.formatted_bytes(indent=257)
+
+
 def test_builtin_registries_accept_ordinary_and_nested_modules():
     source = b"module { module { } }"
     parsed = zirium.parse_bytes(source, registry=zirium.DialectRegistry.core())

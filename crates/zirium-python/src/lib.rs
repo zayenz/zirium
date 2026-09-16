@@ -15,6 +15,7 @@ use zirium::lexer::TokenKind;
 use zirium::{
     NodeId, SyntaxKind,
     dialect::{DialectRegistry, OperationShape as CoreOperationShape},
+    formatter::{AssemblyStyle, FormatOptions, MAX_INDENT_WIDTH},
     parser::{ParseFileError, ParseLimits, ParsedFile},
     printer::{DialectPrintMode, PrintLayout},
     semantic::{
@@ -33,6 +34,33 @@ create_exception!(zirium._zirium, SemanticEditError, PyException);
 create_exception!(zirium._zirium, StructuralVerificationError, PyException);
 create_exception!(zirium._zirium, SemanticVerificationErrorPy, PyException);
 create_exception!(zirium._zirium, ResourceLimitError, PyException);
+
+fn format_options(assembly: &str, width: usize, indent: usize) -> PyResult<FormatOptions> {
+    if width == 0 || indent == 0 {
+        return Err(PyValueError::new_err(
+            "format width and indent must be positive",
+        ));
+    }
+    if indent > MAX_INDENT_WIDTH {
+        return Err(PyValueError::new_err(format!(
+            "format indent must not exceed {MAX_INDENT_WIDTH}"
+        )));
+    }
+    let assembly = match assembly {
+        "source" => AssemblyStyle::Source,
+        "generic" => AssemblyStyle::Generic,
+        _ => {
+            return Err(PyValueError::new_err(
+                "assembly must be 'source' or 'generic'",
+            ));
+        }
+    };
+    Ok(FormatOptions {
+        assembly,
+        line_width: width,
+        indent_width: indent,
+    })
+}
 
 fn py_error(error: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(error.to_string())

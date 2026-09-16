@@ -121,6 +121,7 @@ fn evaluate(query: &Query, document: &mut Document) -> usize {
                 QueryOutput::Map(values) => values.len(),
                 QueryOutput::RankedMap(values) => values.len(),
                 QueryOutput::Array(values) => values.len(),
+                QueryOutput::Formatted { operations, .. } => operations.len(),
             };
             Ok(())
         })

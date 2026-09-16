@@ -253,6 +253,35 @@ fn parser_builds_root_projection_and_json_stages() {
 }
 
 #[test]
+fn parser_builds_format_stage_with_options() {
+    use zirium::formatter::{AssemblyStyle, FormatOptions};
+
+    let parsed = parse(&lex(
+        r#"format(assembly = "generic", width = 88, indent = 4)"#,
+    ));
+    assert!(parsed.diagnostics().is_empty());
+    assert!(matches!(
+        parsed.program().unwrap().expression().first.as_slice(),
+        [Stage::Format { options, .. }]
+            if *options == FormatOptions {
+                assembly: AssemblyStyle::Generic,
+                line_width: 88,
+                indent_width: 4,
+            }
+    ));
+
+    for source in [
+        r#"format(assembly = "unknown")"#,
+        "format(width = 0)",
+        "format(indent = 257)",
+        "format(mystery = 1)",
+        "format(width = 80, width = 90)",
+    ] {
+        assert!(!parse(&lex(source)).diagnostics().is_empty(), "{source}");
+    }
+}
+
+#[test]
 fn pipes_bind_more_tightly_than_set_operators() {
     use zirium::query::parser::SetOperator;
     let parsed = parse(&lex("input | defs union users | parent except children"));

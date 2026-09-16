@@ -374,6 +374,22 @@ def test_custom_file_output_matches_custom_bytes(tmp_path: Path):
     assert output.read_bytes() == document.custom_bytes()
 
 
+def test_document_formatter_supports_source_and_generic_assembly():
+    registry = zirium.DialectRegistry.baseline()
+    document = (
+        zirium.parse_text(
+            "module {\n%value = arith.constant 7 : i32\n}\n", registry=registry
+        )
+        .lower_strict("hybrid")
+        .document
+    )
+    assert document is not None
+    assert b"arith.constant 7" in document.formatted_bytes()
+    assert b'"arith.constant"()' in document.formatted_bytes(assembly="generic")
+    with pytest.raises(ValueError, match="must not exceed 256"):
+        document.formatted_bytes(indent=257)
+
+
 def test_formatted_file_output_reports_create_errors(tmp_path: Path):
     document = lower(VALID).document
     assert document is not None

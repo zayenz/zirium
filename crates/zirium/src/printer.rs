@@ -176,6 +176,25 @@ impl Document {
         registry: &DialectRegistry,
         scope: FragmentScope,
     ) -> Result<(), PrintError> {
+        self.write_selection_with_scope_and_mode(
+            sink,
+            selected,
+            layout,
+            registry,
+            scope,
+            DialectPrintMode::PreferCustom,
+        )
+    }
+
+    pub(crate) fn write_selection_with_scope_and_mode<W: io::Write>(
+        &self,
+        sink: &mut W,
+        selected: &[OperationId],
+        layout: PrintLayout,
+        registry: &DialectRegistry,
+        scope: FragmentScope,
+        mode: DialectPrintMode,
+    ) -> Result<(), PrintError> {
         for &operation in selected {
             self.check_operation(operation)
                 .map_err(|error| PrintError::UnsafeSelection(error.to_string()))?;
@@ -199,16 +218,9 @@ impl Document {
         }
         let value_names = self.selection_value_names(&selected)?;
         let mut adapter = IoAdapter { sink, error: None };
-        let result = Printer::new_selection(
-            self,
-            &mut adapter,
-            layout,
-            registry,
-            &selected,
-            value_names,
-            scope,
-        )
-        .document();
+        let result = Printer::new(self, &mut adapter, layout, mode, registry)
+            .with_selection(&selected, value_names, scope)
+            .document();
         if let Some(error) = adapter.error {
             return Err(PrintError::Io(error));
         }
@@ -495,16 +507,41 @@ impl Document {
     /// document with syntax mappings for every generated replacement. Replacing
     /// a range containing unknown custom syntax also fails.
     pub fn preserving_bytes(&self, layout: PrintLayout) -> Result<Vec<u8>, PreserveError> {
-        let plan = self.preserving_plan(layout)?;
+        self.preserving_bytes_with_mode(
+            layout,
+            DialectPrintMode::GenericOnly,
+            &DialectRegistry::EMPTY,
+        )
+    }
+
+    /// Returns source-preserving output while preferring registered custom
+    /// assembly for regenerated operations and blocks.
+    pub fn preserving_bytes_with_registry(
+        &self,
+        layout: PrintLayout,
+        registry: &DialectRegistry,
+    ) -> Result<Vec<u8>, PreserveError> {
+        self.preserving_bytes_with_mode(layout, DialectPrintMode::PreferCustom, registry)
+    }
+
+    fn preserving_bytes_with_mode(
+        &self,
+        layout: PrintLayout,
+        mode: DialectPrintMode,
+        registry: &DialectRegistry,
+    ) -> Result<Vec<u8>, PreserveError> {
+        let plan = self.preserving_plan(layout, mode, registry)?;
         let source = self.source_bytes().ok_or(PreserveError::NotHybrid)?;
         let mut output = Vec::with_capacity(source.len());
-        self.write_preserving_plan(&mut output, layout, &plan)?;
+        self.write_preserving_plan(&mut output, layout, mode, registry, &plan)?;
         Ok(output)
     }
 
     fn preserving_plan(
         &self,
         layout: PrintLayout,
+        mode: DialectPrintMode,
+        registry: &DialectRegistry,
     ) -> Result<Vec<PreservingReplacement>, PreserveError> {
         self.source_bytes().ok_or(PreserveError::NotHybrid)?;
         if self.retention_profile() != crate::semantic::RetentionProfile::Hybrid {
@@ -578,7 +615,7 @@ impl Document {
         // Formatting is infallible for a validated document in practice, but run it
         // during preflight so no formatting error can occur after the first sink write.
         for replacement in &planned {
-            let _ = self.render_replacement(*replacement, layout)?;
+            let _ = self.render_replacement(*replacement, layout, mode, registry)?;
         }
         Ok(planned)
     }
@@ -587,6 +624,8 @@ impl Document {
         &self,
         sink: &mut W,
         layout: PrintLayout,
+        mode: DialectPrintMode,
+        registry: &DialectRegistry,
         plan: &[PreservingReplacement],
     ) -> Result<(), PreserveError> {
         let source = self.source_bytes().ok_or(PreserveError::NotHybrid)?;
@@ -597,7 +636,7 @@ impl Document {
             let end = range.end() as usize;
             sink.write_all(&source[cursor..start])
                 .map_err(PreserveError::Io)?;
-            let bytes = self.render_replacement(replacement, layout)?;
+            let bytes = self.render_replacement(replacement, layout, mode, registry)?;
             sink.write_all(&bytes).map_err(PreserveError::Io)?;
             cursor = end;
         }
@@ -617,8 +656,18 @@ impl Document {
         sink: &mut W,
         layout: PrintLayout,
     ) -> Result<(), PreserveError> {
-        let plan = self.preserving_plan(layout)?;
-        self.write_preserving_plan(sink, layout, &plan)
+        let plan = self.preserving_plan(
+            layout,
+            DialectPrintMode::GenericOnly,
+            &DialectRegistry::EMPTY,
+        )?;
+        self.write_preserving_plan(
+            sink,
+            layout,
+            DialectPrintMode::GenericOnly,
+            &DialectRegistry::EMPTY,
+            &plan,
+        )
     }
 
     /// Writes source-preserving output to a newly created file.
@@ -632,21 +681,35 @@ impl Document {
         path: impl AsRef<Path>,
         layout: PrintLayout,
     ) -> Result<(), PreserveError> {
-        let plan = self.preserving_plan(layout)?;
+        let plan = self.preserving_plan(
+            layout,
+            DialectPrintMode::GenericOnly,
+            &DialectRegistry::EMPTY,
+        )?;
         let mut file = std::fs::File::create(path).map_err(PreserveError::Io)?;
-        self.write_preserving_plan(&mut file, layout, &plan)
+        self.write_preserving_plan(
+            &mut file,
+            layout,
+            DialectPrintMode::GenericOnly,
+            &DialectRegistry::EMPTY,
+            &plan,
+        )
     }
 
     fn render_replacement(
         &self,
         replacement: PreservingReplacement,
         layout: PrintLayout,
+        mode: DialectPrintMode,
+        registry: &DialectRegistry,
     ) -> Result<Vec<u8>, PreserveError> {
         match replacement {
             PreservingReplacement::Operation(_, operation) => {
-                self.render_operation(operation, layout)
+                self.render_operation(operation, layout, mode, registry)
             }
-            PreservingReplacement::Block(_, block) => self.render_block(block, layout),
+            PreservingReplacement::Block(_, block) => {
+                self.render_block(block, layout, mode, registry)
+            }
         }
     }
 
@@ -654,31 +717,27 @@ impl Document {
         &self,
         operation: OperationId,
         layout: PrintLayout,
+        mode: DialectPrintMode,
+        registry: &DialectRegistry,
     ) -> Result<Vec<u8>, PreserveError> {
         let mut output = String::new();
-        Printer::new(
-            self,
-            &mut output,
-            layout,
-            DialectPrintMode::GenericOnly,
-            &DialectRegistry::EMPTY,
-        )
-        .operation(operation, 0)
-        .map_err(PreserveError::Format)?;
+        Printer::new(self, &mut output, layout, mode, registry)
+            .operation(operation, 0)
+            .map_err(PreserveError::Format)?;
         Ok(output.into_bytes())
     }
 
-    fn render_block(&self, block: BlockId, layout: PrintLayout) -> Result<Vec<u8>, PreserveError> {
+    fn render_block(
+        &self,
+        block: BlockId,
+        layout: PrintLayout,
+        mode: DialectPrintMode,
+        registry: &DialectRegistry,
+    ) -> Result<Vec<u8>, PreserveError> {
         let mut output = String::new();
-        Printer::new(
-            self,
-            &mut output,
-            layout,
-            DialectPrintMode::GenericOnly,
-            &DialectRegistry::EMPTY,
-        )
-        .block_replacement(block)
-        .map_err(PreserveError::Format)?;
+        Printer::new(self, &mut output, layout, mode, registry)
+            .block_replacement(block)
+            .map_err(PreserveError::Format)?;
         Ok(output.into_bytes())
     }
 
@@ -813,22 +872,18 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
             custom_value_replacements: HashMap::new(),
         }
     }
-    fn new_selection(
-        doc: &'a Document,
-        sink: &'a mut W,
-        layout: PrintLayout,
-        registry: &'a DialectRegistry,
+    fn with_selection(
+        mut self,
         selected: &'a HashSet<OperationId>,
         values: HashMap<ValueId, String>,
         fragment_scope: FragmentScope,
     ) -> Self {
-        let mut printer = Self::new(doc, sink, layout, DialectPrintMode::PreferCustom, registry);
-        printer.selected = Some(selected);
-        printer.fragment_scope = fragment_scope;
+        self.selected = Some(selected);
+        self.fragment_scope = fragment_scope;
         // The ordinary printer already assigned canonical names. Compute the
         // selection's changes once, rather than rescanning every value for
         // every custom operation being printed.
-        printer.custom_value_replacements = printer
+        self.custom_value_replacements = self
             .values
             .iter()
             .filter_map(|(value, canonical)| {
@@ -836,8 +891,8 @@ impl<'a, W: fmt::Write> Printer<'a, W> {
                 (canonical != spelling).then(|| (canonical.clone(), spelling.clone()))
             })
             .collect();
-        printer.values = values;
-        printer
+        self.values = values;
+        self
     }
     fn retained(&self, operation: OperationId) -> bool {
         self.selected.is_none_or(|selected| {

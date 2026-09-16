@@ -21,7 +21,7 @@ incomplete semantic information.
 | Query | Structured query builders and the parsed query language, with explicit registry overrides. | Typed structured query builders through `Document.query()`. | Full query-language interface for reports, selections, and dependency traversal. |
 | Construct IR | Regionless `OperationSpec` insertion into a root or existing block; types and attributes may use arena-independent specs. | Regionless `OperationSpec` insertion; identity-bearing wrappers must belong to the document. | No operation, block, region, or signature construction. |
 | Mutate | Transactional attribute edits, result-type replacement, successor-argument rewiring, and restricted insertion/erasure. | The same core edits through buffered `document.edit()` commands, with narrower construction inputs. | Only `set_attr` and `remove_attr` on selected operations. |
-| Produce output | Original bytes, deterministic generic canonical output, custom printing with a registry, and eligible source-preserving output. | Original, canonical, built-in custom, and eligible source-preserving bytes/files. | Selected MLIR, complete edited MLIR, text, Markdown, JSON, or JSONL; stdout is buffered until success. |
+| Produce output | Original bytes, source-aware formatted output, deterministic generic canonical output, custom printing with a registry, and eligible source-preserving output. | Original, source-aware formatted, canonical, built-in custom, and eligible source-preserving bytes/files. | Selected or complete edited MLIR, source-aware or generic formatted MLIR, text, Markdown, JSON, or JSONL; stdout is buffered until success. |
 | Supply dialect callbacks | Yes: static descriptors can provide parsing, lowering, verification, and printing callbacks. | No callback registration; load declarative registries and bundled presets. | No callback registration; load declarative registries and bundled presets. |
 | Load registries and bundles | Presets, JSON text, one or more files, and file-relative import bundles. The caller passes the same registry at each relevant stage. | `DialectRegistry.from_name`, `.from_config`, and `.from_file`; parsed files retain the registry. | Repeatable `--preset` and `--registry`; imported paths resolve relative to the declaring file. |
 | Bound untrusted work | All parse limits, query work/item limits, and registry-bundle load limits are configurable. | All parse and query limits, plus registry-bundle load limits on `from_file`. | File bytes, query work/items, and registry depth/files/edges/bytes are configurable; other parse limits use defaults. |
@@ -54,6 +54,8 @@ and [CLI examples](cli-examples.md) for executable examples.
 - Canonical output is deterministic generic MLIR, not the original spelling.
   Original output is byte-for-byte; preserving output is available only while
   the hybrid-retention contract remains satisfied.
+- Formatted output normalizes layout while retaining source assembly by default.
+  Generic formatting intentionally replaces custom forms with quoted operations.
 - Limits are resource guards, not timeouts. Exact defaults and failure behavior
   are documented under [resource limits](compatibility.md#resource-limits) and
   [query limits](query-dsl.md#limits-and-errors).

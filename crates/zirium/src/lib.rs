@@ -5,6 +5,8 @@
 //! choose an output mode:
 //!
 //! - [`parser::ParsedFile::write_original`] reproduces the input bytes exactly.
+//! - [`parser::ParsedFile::write_formatted`] normalizes layout while retaining
+//!   source assembly, names, aliases, and comments.
 //! - [`semantic::Document::write_canonical`](crate::semantic::Document::write_canonical)
 //!   emits deterministic generic MLIR from semantic storage.
 //! - [`semantic::Document::write_preserving`](crate::semantic::Document::write_preserving)
@@ -69,6 +71,7 @@
 mod benchmark_allocator;
 pub mod dialect;
 pub mod diff;
+pub mod formatter;
 pub mod lexer;
 pub mod parser;
 pub mod printer;

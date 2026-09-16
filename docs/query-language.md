@@ -701,6 +701,31 @@ before later edits. A statement emits its final result implicitly unless it
 ends in an explicit emitter, including inside a final group. Thus `emit | emit`
 prints twice and `emit` prints once.
 
+`format` applies source-aware layout to the current fragment and also passes
+the selection onward. By default it retains the source assembly form for each
+operation, including custom operation syntax, SSA names, aliases, and comments
+when retained syntax is available:
+
+```zirium
+format
+```
+
+Formatting options use named arguments. `width` controls the preferred line
+width and `indent` controls spaces per indentation level. Both must be positive;
+`indent` may not exceed 256.
+Use MLIR's quoted generic assembly form explicitly when source spelling should
+be replaced:
+
+```zirium
+format(assembly = "generic", width = 100, indent = 2)
+```
+
+For edited hybrid documents, unchanged source is reused and dirty operations
+prefer registered custom printers. A fragment or structurally edited document
+without reusable source prefers registered custom syntax and falls back to
+generic syntax. Unknown recovered custom operations remain verbatim in source
+mode.
+
 Nested queries neither reset to `input` nor emit implicitly. A fixed-point body
 ending in `emit` prints each iteration; the enclosing statement still follows
 the final-emission rule above.
@@ -751,6 +776,7 @@ do-statement = "do" query ";"
 query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
 stage      = object | array | identifier | "markdown" | "print" "(" string ")"
+           | "format" [ "(" format-option { "," format-option } ")" ]
            | "tally" | "map_by" "(" query "," query ")"
            | "sort" | "sort_by" "(" query ")" | "value" | "reverse"
            | ("head" | "tail") "(" integer ")"
@@ -765,6 +791,8 @@ stage      = object | array | identifier | "markdown" | "print" "(" string ")"
            | "fixpoint" "(" query ")" | "(" query ")"
            | "set_attr" "(" string "," string ")"
            | "remove_attr" "(" string ")" | "emit" | "count"
+format-option = "assembly" "=" ("source" | "generic")
+              | ("width" | "indent") "=" integer
 predicate  = and-expr { "or" and-expr }
 and-expr   = not-expr { "and" not-expr }
 not-expr   = { "not" } primary

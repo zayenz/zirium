@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add source-aware MLIR formatting to the Rust and Python APIs and a `format`
+  query stage. Formatting retains custom operation assembly, names, aliases,
+  comments, and opaque recovered syntax where possible; `assembly = "generic"`
+  deliberately rewrites operations to quoted generic MLIR.
 - Add explicit `backward_slice` and `forward_slice` query stages for transitive
   SSA definition and use traversal. Keep `slice` as an alias for
   `backward_slice`. The Rust and Python query builders expose the same names.

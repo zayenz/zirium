@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::formatter::{AssemblyStyle, FormatOptions, MAX_INDENT_WIDTH};
 use crate::source::TextRange;
 
 use super::lexer::{Lexed, Token, TokenKind};
@@ -379,6 +380,13 @@ impl Parser<'_> {
             }
             "count" => Stage::Count { range },
             "emit" => Stage::Emit { range },
+            "format" => {
+                let options = self.format_options()?;
+                Stage::Format {
+                    options,
+                    range: self.span(start),
+                }
+            }
             "json" => Stage::Json { range },
             "markdown" => Stage::Markdown { range },
             "print" => {
@@ -432,10 +440,102 @@ impl Parser<'_> {
             "attr" => return self.attr(start, depth + 1),
             _ if self.bindings.contains(&name) => Stage::Binding { name, range },
             _ => {
-                self.error_at_previous("unknown query stage; expected input, filter, navigation, projection, fixpoint, an edit, check, count, emit, or json");
+                self.error_at_previous("unknown query stage; expected input, filter, navigation, projection, fixpoint, an edit, check, count, emit, format, or json");
                 return None;
             }
         })
+    }
+
+    fn format_options(&mut self) -> Option<FormatOptions> {
+        let mut options = FormatOptions::default();
+        self.skip_trivia();
+        if !self.at(TokenKind::LParen) {
+            return Some(options);
+        }
+        self.bump();
+        self.skip_trivia();
+        if self.at(TokenKind::RParen) {
+            self.bump();
+            return Some(options);
+        }
+        let mut assembly = false;
+        let mut width = false;
+        let mut indent = false;
+        loop {
+            self.skip_trivia();
+            if !self.at(TokenKind::Identifier) {
+                self.error("expected a format option name");
+                return None;
+            }
+            let name = self.current_text().to_owned();
+            self.bump();
+            self.expect(TokenKind::Equals, "expected `=` after format option name")?;
+            match name.as_str() {
+                "assembly" => {
+                    if assembly {
+                        self.error("duplicate `assembly` format option");
+                        return None;
+                    }
+                    assembly = true;
+                    let (value, _) =
+                        self.string("expected `source` or `generic` assembly style")?;
+                    options.assembly = match value.as_str() {
+                        "source" => AssemblyStyle::Source,
+                        "generic" => AssemblyStyle::Generic,
+                        _ => {
+                            self.error_at_previous("expected `source` or `generic` assembly style");
+                            return None;
+                        }
+                    };
+                }
+                "width" | "indent" => {
+                    let duplicate = if name == "width" {
+                        &mut width
+                    } else {
+                        &mut indent
+                    };
+                    if *duplicate {
+                        self.error("duplicate numeric format option");
+                        return None;
+                    }
+                    *duplicate = true;
+                    self.skip_trivia();
+                    if !self.at(TokenKind::Integer) {
+                        self.error("expected a positive integer format option value");
+                        return None;
+                    }
+                    let Ok(value) = self.current_text().parse::<usize>() else {
+                        self.error("format option value is too large");
+                        return None;
+                    };
+                    if value == 0 {
+                        self.error("format option value must be positive");
+                        return None;
+                    }
+                    if name == "indent" && value > MAX_INDENT_WIDTH {
+                        self.error("format indent must not exceed 256");
+                        return None;
+                    }
+                    self.bump();
+                    if name == "width" {
+                        options.line_width = value;
+                    } else {
+                        options.indent_width = value;
+                    }
+                }
+                _ => {
+                    self.error_at_previous("unknown format option");
+                    return None;
+                }
+            }
+            self.skip_trivia();
+            if self.at(TokenKind::RParen) {
+                self.bump();
+                break;
+            }
+            self.expect(TokenKind::Comma, "expected `,` between format options")?;
+        }
+        Some(options)
     }
 
     fn predicate(&mut self, depth: usize) -> Option<Predicate> {

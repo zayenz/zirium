@@ -1,6 +1,6 @@
 //! Shared query representation used by the text parser and library builders.
 
-use crate::source::TextRange;
+use crate::{formatter::FormatOptions, source::TextRange};
 
 /// Set operators have equal precedence and associate left to right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +98,7 @@ impl Expression {
                 Stage::SetAttr { .. }
                 | Stage::RemoveAttr { .. }
                 | Stage::Emit { .. }
+                | Stage::Format { .. }
                 | Stage::Json { .. }
                 | Stage::Markdown { .. }
                 | Stage::Print { .. } => false,
@@ -118,6 +119,7 @@ impl Expression {
         self.rest.is_empty()
             && self.first.last().is_some_and(|stage| match stage {
                 Stage::Emit { .. }
+                | Stage::Format { .. }
                 | Stage::Json { .. }
                 | Stage::Markdown { .. }
                 | Stage::Print { .. } => true,
@@ -355,6 +357,10 @@ pub enum Stage {
     Emit {
         range: TextRange,
     },
+    Format {
+        options: FormatOptions,
+        range: TextRange,
+    },
     Json {
         range: TextRange,
     },
@@ -408,6 +414,7 @@ impl Stage {
             | Self::Check { range, .. }
             | Self::Count { range }
             | Self::Emit { range }
+            | Self::Format { range, .. }
             | Self::Json { range } => *range,
         }
     }
