@@ -241,6 +241,9 @@ pub enum Stage {
     Slice {
         range: TextRange,
     },
+    ForwardSlice {
+        range: TextRange,
+    },
     Defs {
         index: Option<usize>,
         range: TextRange,
@@ -373,6 +376,7 @@ impl Stage {
             | Self::Filter { range, .. }
             | Self::Closure { range }
             | Self::Slice { range }
+            | Self::ForwardSlice { range }
             | Self::Defs { range, .. }
             | Self::Users { range, .. }
             | Self::Parent { range }

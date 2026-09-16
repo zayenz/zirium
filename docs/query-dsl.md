@@ -65,7 +65,8 @@ query expression to `bool` raises `TypeError` with guidance on the supported
 operators. String arguments are data; they need no query-language escaping.
 
 Navigation methods include `defs`, `users`, `parent`, `children`, `root(predicate)`,
-`subtree`, `slice`, `closure`, and `reachable`. Rust has `defs_at(index)` and
+`subtree`, `slice`, `backward_slice`, `forward_slice`, `closure`, and `reachable`.
+`slice()` is an alias for `backward_slice()`. Rust has `defs_at(index)` and
 `users_at(index)` for indexed navigation; Python accepts `defs(index)` and
 `users(index)`. Indices select the current operation's operand or result,
 respectively.
@@ -82,7 +83,8 @@ executing earlier stages.
 
 Graph traversal has the same structural meaning and dialect limitations as the
 textual language. In particular, `closure()` is one scope-retaining dependency
-step; `slice()` follows transitive SSA definitions, and `reachable()` also follows
+step; `backward_slice()` follows transitive SSA definitions,
+`forward_slice()` follows transitive SSA users, and `reachable()` also follows
 supported calls and branches. For repeated closure, use:
 
 ```python

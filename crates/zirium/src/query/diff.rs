@@ -26,6 +26,7 @@ enum Stage {
     Reachable,
     Closure,
     Slice,
+    ForwardSlice,
     Fixpoint(Vec<Stage>),
     Unique,
     Reverse,
@@ -225,6 +226,12 @@ impl DiffOpQuery {
     }
     pub fn slice(&self) -> Self {
         self.append(Stage::Slice)
+    }
+    pub fn backward_slice(&self) -> Self {
+        self.slice()
+    }
+    pub fn forward_slice(&self) -> Self {
+        self.append(Stage::ForwardSlice)
     }
     pub fn fixpoint(&self, body: &DiffOpQuery) -> Self {
         self.append(Stage::Fixpoint(body.stages.clone()))
@@ -522,6 +529,14 @@ fn evaluate_stage(
             limits,
             options,
             OperationTraversal::Slice,
+        ),
+        Stage::ForwardSlice => graph_traversal(
+            diff,
+            value,
+            work,
+            limits,
+            options,
+            OperationTraversal::ForwardSlice,
         ),
         Stage::Fixpoint(stages) => {
             let Runtime::Operations(side, mut current) = value else {

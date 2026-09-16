@@ -10,8 +10,9 @@ filter(op("arith.addi")) | users | filter(has_attr("analysis.tag"))
 This finds `arith.addi` operations, follows their direct users, and keeps users
 with an `analysis.tag` attribute. Navigation replaces the stream and preserves
 duplicates; edits keep the selection. Operation set operators, `closure`,
-`slice`, and `reachable` produce source-ordered sets. Use `unique` to remove
-duplicates from other streams.
+`backward_slice`, `forward_slice`, and `reachable` produce source-ordered sets.
+`slice` is an alias for `backward_slice`. Use `unique` to remove duplicates
+from other streams.
 
 For Rust and Python builders with native results, see the
 [structured query guide](query-dsl.md).
@@ -452,7 +453,8 @@ letters, digits, or underscores. `analysis.tag` and `_zirium.state_2` are valid.
 | `root(predicate)` | The nearest operation on each selected operation's ancestor chain that matches the predicate. |
 | `subtree` | Each selected operation and all its descendants. |
 | `closure` | The selection plus one step of supported dependency expansion. |
-| `slice` | The selection and its transitive SSA definitions, stopping at block arguments. |
+| `slice`, `backward_slice` | The selection and its transitive SSA definitions, stopping at block arguments. |
+| `forward_slice` | The selection and its transitive SSA users. |
 | `reachable` | The selection, explicit bodies, SSA definitions, and supported referenced bodies, each operation once. |
 
 `defs`, `users`, `parent`, and `children` move one step and replace the input
@@ -496,25 +498,38 @@ participate in filtering, counting, or editing.
 Fragments may omit required SSA definitions. Select dependencies explicitly;
 printing a fragment does not verify that it is valid standalone MLIR.
 
-Use `slice` to inspect a computation without expanding the whole function when
-an operand is a function input:
+Use `backward_slice` to inspect a computation without expanding the whole
+function when an operand is a function input. The shorter `slice` spelling is
+an alias:
 
 ```zirium
 # Follow the first returned value, for example logits rather than cache outputs.
-filter(op("func.return")) | defs(0) | slice
+filter(op("func.return")) | defs(0) | backward_slice
 ```
 
-`slice` follows explicit SSA operands only. It does not expand callees, successors,
-or region bodies, and does not infer which operands affect individual results of
-a multi-result operation. Generic quoted operations need no registration for
-this traversal; recovered unparsed operations and invalid operands are errors.
-Use `closure` when retaining complete scopes and supported symbol dependencies
-is the desired behavior.
+`backward_slice` follows explicit SSA operands only. It does not expand callees,
+successors, or region bodies, and does not infer which operands affect individual
+results of a multi-result operation. Generic quoted operations need no
+registration for this traversal; recovered unparsed operations and invalid
+operands are errors. Use `closure` when retaining complete scopes and supported
+symbol dependencies is the desired behavior.
+
+`forward_slice` follows uses of every result of the selected operations, then
+uses of every operation it reaches, until no new users remain. It retains the
+seed and returns each operation once in source order:
+
+```zirium
+filter(op("stablehlo.dot_general")) | forward_slice
+```
+
+Like `users`, it follows explicit SSA uses, including successor arguments. It
+does not infer control-flow, symbol, region, memory, or effect dependencies.
 
 `defs(index)` still maps a block argument directly to its owning operation. If
 the selected return operand is itself a function argument, that navigation
-selects the function; `slice` does not undo that selection. Starting `slice` at
-the return instead retains the return and stops at its argument operands.
+selects the function; `backward_slice` does not undo that selection. Starting
+`backward_slice` at the return instead retains the return and stops at its
+argument operands.
 
 Compact StableHLO reductions using `applies stablehlo.add` are represented as a
 single operation. Their implicit reducer body is not synthesized, so `children`
@@ -743,7 +758,8 @@ stage      = object | array | identifier | "markdown" | "print" "(" string ")"
            | "max" | "max_all" | ("max_by" | "max_all_by") "(" query ")"
            | "input" | "filter" "(" predicate ")"
            | ("defs" | "users") [ "(" integer ")" ]
-           | "parent" | "children" | "closure" | "slice" | "reachable"
+           | "parent" | "children" | "closure" | "slice"
+           | "backward_slice" | "forward_slice" | "reachable"
            | "root" "(" predicate ")" | "subtree" | "unique"
            | "attr" "(" string ")" | "names" | "result_types" | "operand_types" | "json"
            | "fixpoint" "(" query ")" | "(" query ")"

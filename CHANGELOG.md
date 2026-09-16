@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add explicit `backward_slice` and `forward_slice` query stages for transitive
+  SSA definition and use traversal. Keep `slice` as an alias for
+  `backward_slice`. The Rust and Python query builders expose the same names.
+
 ## 0.3.0
 
 Zirium 0.3.0 adds semantic diff for structural and SSA-aware comparison. It

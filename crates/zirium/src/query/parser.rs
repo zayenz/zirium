@@ -259,7 +259,8 @@ impl Parser<'_> {
             }
             "input" => Stage::Input { range },
             "closure" => Stage::Closure { range },
-            "slice" => Stage::Slice { range },
+            "slice" | "backward_slice" => Stage::Slice { range },
+            "forward_slice" => Stage::ForwardSlice { range },
             "defs" | "users" => {
                 self.skip_trivia();
                 let index = if self.at(TokenKind::LParen) {
@@ -968,6 +969,8 @@ fn is_reserved(name: &str) -> bool {
             | "filter"
             | "closure"
             | "slice"
+            | "backward_slice"
+            | "forward_slice"
             | "reachable"
             | "defs"
             | "users"

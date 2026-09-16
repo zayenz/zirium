@@ -67,7 +67,8 @@ Examples:
   zirium --diff before.mlir after.mlir 'filter(changed("operands")) | json'
 
 Stages: input, filter(predicate), defs, defs(index), users, users(index), parent,
-children, root(predicate), subtree, closure, slice, reachable, fixpoint(query),
+children, root(predicate), subtree, closure, slice, backward_slice,
+forward_slice, reachable, fixpoint(query),
 unique, attr("name"), names, result_types, operand_types, tally,
 map_by(key, value), sort, sort_by(query), reverse, head(n), tail(n), min,
 min_all, min_by(query), min_all_by(query), max, max_all, max_by(query),
@@ -1152,7 +1153,10 @@ fn evaluate_diff_pipeline(
                 }
                 result
             })?
-        } else if matches!(stage, "reachable" | "closure" | "slice") {
+        } else if matches!(
+            stage,
+            "reachable" | "closure" | "slice" | "backward_slice" | "forward_slice"
+        ) {
             graph_diff_operations(diff, value, stage, budget, strict)?
         } else if let Some(body) = stage
             .strip_prefix("fixpoint(")
@@ -1888,7 +1892,8 @@ fn graph_diff_operations(
     let traversal = match stage {
         "reachable" => zirium::query::OperationTraversal::Reachable,
         "closure" => zirium::query::OperationTraversal::Closure,
-        "slice" => zirium::query::OperationTraversal::Slice,
+        "slice" | "backward_slice" => zirium::query::OperationTraversal::Slice,
+        "forward_slice" => zirium::query::OperationTraversal::ForwardSlice,
         _ => unreachable!(),
     };
     let (operations, used) = zirium::query::evaluate_operation_traversal(

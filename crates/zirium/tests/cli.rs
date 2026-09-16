@@ -605,6 +605,10 @@ fn indexed_navigation_and_ssa_slices_isolate_one_return_path() {
             r#"filter(op("func.return")) | defs(1) | slice | names"#,
             "arith.constant\narith.muli\n",
         ),
+        (
+            r#"filter(op("func.return")) | defs(1) | backward_slice | names"#,
+            "arith.constant\narith.muli\n",
+        ),
         (r#"filter(op("func.return")) | defs(2) | count"#, "0\n"),
         (
             r#"filter(op("arith.addi")) | defs(0) | names"#,
@@ -643,6 +647,30 @@ fn indexed_navigation_and_ssa_slices_isolate_one_return_path() {
     ] {
         assert!(!run_stdin(query, input).status.success(), "{query}");
     }
+}
+
+#[test]
+fn forward_slice_follows_transitive_ssa_users_once_in_source_order() {
+    let input = r#"module {
+      %source = "test.source"() : () -> i32
+      %left = "test.left"(%source) : (i32) -> i32
+      %right = "test.right"(%source) : (i32) -> i32
+      "test.sink"(%left, %right) : (i32, i32) -> ()
+      "test.unrelated"() : () -> ()
+    }"#;
+    let output = run_stdin(
+        r#"filter(op("test.source")) | forward_slice | names"#,
+        input,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "test.source\ntest.left\ntest.right\ntest.sink\n"
+    );
 }
 
 fn run_stdin_with_registry(registry: &str, query: &str, input: &str) -> std::process::Output {

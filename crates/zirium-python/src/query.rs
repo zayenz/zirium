@@ -283,6 +283,18 @@ impl OpQuery {
             inner: self.inner.slice(),
         }
     }
+    /// Explicit alias for `slice()`.
+    fn backward_slice(&self) -> OpQuery {
+        OpQuery {
+            inner: self.inner.backward_slice(),
+        }
+    }
+    /// Follow transitive SSA users from the current selection.
+    fn forward_slice(&self) -> OpQuery {
+        OpQuery {
+            inner: self.inner.forward_slice(),
+        }
+    }
     fn reachable(&self) -> OpQuery {
         OpQuery {
             inner: self.inner.reachable(),

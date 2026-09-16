@@ -409,6 +409,16 @@ impl DiffOpQuery {
             inner: self.inner.slice(),
         }
     }
+    fn backward_slice(&self) -> Self {
+        Self {
+            inner: self.inner.backward_slice(),
+        }
+    }
+    fn forward_slice(&self) -> Self {
+        Self {
+            inner: self.inner.forward_slice(),
+        }
+    }
     fn fixpoint(&self, body: &DiffOpQuery) -> Self {
         Self {
             inner: self.inner.fixpoint(&body.inner),

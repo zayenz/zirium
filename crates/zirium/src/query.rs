@@ -69,6 +69,7 @@ pub enum OperationTraversal {
     Reachable,
     Closure,
     Slice,
+    ForwardSlice,
 }
 
 /// Runs one graph traversal from an explicit operation selection.
@@ -95,6 +96,9 @@ pub fn evaluate_operation_traversal(
             evaluate_closure(document, operations, registry, false, &mut state)
         }
         OperationTraversal::Slice => evaluate_slice(document, operations, &mut state),
+        OperationTraversal::ForwardSlice => {
+            evaluate_forward_slice(document, operations, &mut state)
+        }
     }?;
     Ok((result, limits.max_work - state.remaining))
 }
@@ -535,6 +539,11 @@ fn evaluate_pipeline(
             model::Stage::Slice { .. } => {
                 let selected = take_operations(current, "slice")?;
                 current = QueryOutput::Operations(evaluate_slice(document, selected, budget)?);
+            }
+            model::Stage::ForwardSlice { .. } => {
+                let selected = take_operations(current, "forward_slice")?;
+                current =
+                    QueryOutput::Operations(evaluate_forward_slice(document, selected, budget)?);
             }
             model::Stage::Defs { index, .. } => {
                 let selected = take_operations(current, "defs")?;
@@ -1523,6 +1532,38 @@ fn evaluate_slice(
                         "slice encountered an invalid SSA operand",
                     ));
                 }
+            }
+        }
+    }
+    Ok(source_ordered(document, selection.selected))
+}
+
+// SSA-only traversal in the use direction. As with `users`, this follows uses
+// of operation results, including successor arguments, but does not infer
+// control-flow, symbol, region, or memory dependencies.
+fn evaluate_forward_slice(
+    document: &Document,
+    seeds: Vec<OperationId>,
+    budget: &mut EvaluationState,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    let mut selection = ClosureSelection::default();
+    for operation in seeds {
+        selection.insert(operation, budget)?;
+    }
+    while let Some(operation) = selection.pending.pop_front() {
+        budget.charge(1)?;
+        let result_count = document.result_types(operation).map_or(0, <[_]>::len);
+        for result in 0..result_count {
+            for site in document.uses(ValueId::OperationResult {
+                operation,
+                result: result as u32,
+            }) {
+                budget.charge(1)?;
+                let user = match site {
+                    UseSite::Operand { operation, .. }
+                    | UseSite::SuccessorArgument { operation, .. } => operation,
+                };
+                selection.insert(user, budget)?;
             }
         }
     }

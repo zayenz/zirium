@@ -58,8 +58,9 @@ Keep these distinctions explicit:
   `children` replace the selection with related operations.
 - Navigation can preserve duplicates. Add `unique` before counting distinct
   operations, but keep duplicates when they carry multiplicity for `tally`.
-- `subtree` expands nested operations. `slice` follows transitive SSA
-  definitions. `reachable` also follows supported bodies and references.
+- `subtree` expands nested operations. `backward_slice` follows transitive SSA
+  definitions; `slice` is its alias. `forward_slice` follows transitive SSA
+  users. `reachable` also follows supported bodies and references.
   `fixpoint(closure)` retains supported dependency context for a fragment.
 - `union`, `intersect`, and `except` combine selections. Parenthesize a set
   expression before piping its combined result onward.

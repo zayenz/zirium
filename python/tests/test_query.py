@@ -36,6 +36,18 @@ def test_navigation_composition_and_native_types():
         "test.add",
         "test.end",
     ]
+    assert doc.query(seed.forward_slice().names()) == [
+        "test.seed",
+        "test.add",
+        "test.end",
+    ]
+    end = ops().filter(op("test.end"))
+    assert doc.query(end.backward_slice().names()) == [
+        "test.seed",
+        "test.add",
+        "test.end",
+    ]
+    assert doc.query(end.slice().names()) == doc.query(end.backward_slice().names())
     selection = doc.query(seed)
     assert_type(selection, list[zirium.SemanticOperation])
     assert selection[0].name == "test.seed"

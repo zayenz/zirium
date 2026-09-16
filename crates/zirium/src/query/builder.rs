@@ -347,6 +347,16 @@ impl OpQuery {
     pub fn slice(&self) -> OpQuery {
         self.stage(Stage::Slice { range: range() })
     }
+
+    /// Explicit alias for [`Self::slice`].
+    pub fn backward_slice(&self) -> OpQuery {
+        self.slice()
+    }
+
+    /// Follow transitive SSA users from the current selection.
+    pub fn forward_slice(&self) -> OpQuery {
+        self.stage(Stage::ForwardSlice { range: range() })
+    }
 }
 stages!(StringQuery; sort => Sort: StringQuery, min => Min: StringQuery, max => Max: StringQuery,
     min_all => MinAll: StringQuery, max_all => MaxAll: StringQuery, tally => Tally: MapQuery<usize>);
