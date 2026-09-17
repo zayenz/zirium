@@ -1,6 +1,6 @@
 # Compatibility and local wheel checks
 
-Zirium 0.3.0 requires Rust 1.88 or newer. Wheels support conventional CPython
+Zirium 0.4.0 requires Rust 1.88 or newer. Wheels support conventional CPython
 3.11 through 3.14 on Linux x86_64 and macOS arm64; CI checks both platforms.
 Wheels use version-specific ABIs, without `abi3` or `abi3t`. Other platforms and
 free-threaded CPython 3.14 are unsupported, though source builds may work.

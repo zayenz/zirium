@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
+
+Zirium 0.4.0 adds source-aware MLIR formatting and explicit forward and
+backward SSA slicing to its Rust and Python APIs. The API remains experimental.
 
 - Add source-aware MLIR formatting to the Rust and Python APIs and a `format`
   query stage. Formatting retains custom operation assembly, names, aliases,
