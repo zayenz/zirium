@@ -105,7 +105,7 @@ fn into_output(kind: StreamKind, rows: Vec<Row>) -> QueryOutput {
     }
 }
 
-fn is_stream_stage(stage: &model::Stage) -> bool {
+pub(super) fn is_stream_stage(stage: &model::Stage) -> bool {
     use model::{Stage as S, StructuredStage as N};
     matches!(
         stage,
@@ -142,24 +142,8 @@ fn is_stream_stage(stage: &model::Stage) -> bool {
     )
 }
 
-pub(super) fn segment_len(stages: &[model::Stage], input: &QueryOutput) -> usize {
-    if stream_kind(input).is_none() {
-        return 0;
-    }
-    let mut count = 0;
-    for stage in stages {
-        if !is_stream_stage(stage) {
-            break;
-        }
-        count += 1;
-        if matches!(
-            stage,
-            model::Stage::Count { .. } | model::Stage::Tally { .. }
-        ) {
-            break;
-        }
-    }
-    count
+pub(super) fn is_stream(output: &QueryOutput) -> bool {
+    stream_kind(output).is_some()
 }
 
 fn range(range: crate::source::TextRange) -> Range<usize> {
@@ -194,12 +178,9 @@ fn evaluation_error(error: zirql::EvaluationError<EvaluationError>) -> Evaluatio
     }
 }
 
-pub(super) fn evaluate(
-    stages: &[model::Stage],
-    context: &mut EvaluationContext<'_, '_>,
-    input: QueryOutput,
-    budget: &mut Budget,
-) -> Result<QueryOutput, EvaluationError> {
+pub(super) type NativePipeline<'q> = Pipeline<&'q model::Predicate, &'q model::Stage>;
+
+pub(super) fn lower(stages: &[model::Stage]) -> Result<NativePipeline<'_>, EvaluationError> {
     let stages = stages
         .iter()
         .map(|stage| {
@@ -219,21 +200,30 @@ pub(super) fn evaluate(
         .expect("a core segment has at least one stage")
         .range
         .start..stages.last().unwrap().range.end;
-    let pipeline = Pipeline::with_group_not_nesting(stages, location.clone(), zirql::MAX_NESTING)
-        .map_err(core_error)?;
+    Pipeline::with_group_not_nesting(stages, location, zirql::MAX_NESTING).map_err(core_error)
+}
+
+pub(super) fn evaluate(
+    pipeline: &NativePipeline<'_>,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    input: QueryOutput,
+    bindings: &zirql::Bindings<QueryOutput>,
+    budget: &mut Budget,
+) -> Result<QueryOutput, EvaluationError> {
+    let location = pipeline.range();
     let (kind, items) = into_rows(input);
     let input = NativeInput::from_admitted(
         StreamContext {
             evaluation: context,
             kind,
+            bindings,
         },
         items,
         budget,
         zirql::Location::Query(location),
     )
     .map_err(core_error)?;
-    let result =
-        zirql::evaluate(&pipeline, &StreamHost, input, budget).map_err(evaluation_error)?;
+    let result = zirql::evaluate(pipeline, &StreamHost, input, budget).map_err(evaluation_error)?;
     Ok(match result.value {
         zirql::NativeValue::Stream(rows) => into_output(result.context.kind, rows),
         zirql::NativeValue::Count(count) => QueryOutput::Count(count),
@@ -254,20 +244,22 @@ pub(super) fn evaluate(
     })
 }
 
-struct StreamContext<'a, 'host, 'document> {
-    evaluation: &'a mut EvaluationContext<'host, 'document>,
+struct StreamContext<'a, 'host, 'document, 'query> {
+    evaluation: &'a mut EvaluationContext<'host, 'document, 'query>,
     kind: StreamKind,
+    bindings: &'a zirql::Bindings<QueryOutput>,
 }
 
 struct StreamHost;
 
-impl<'stage> Host<Row, StreamContext<'_, '_, '_>, &'stage model::Predicate, &'stage model::Stage>
+impl<'stage>
+    Host<Row, StreamContext<'_, '_, '_, '_>, &'stage model::Predicate, &'stage model::Stage>
     for StreamHost
 {
     type Error = EvaluationError;
     type Key = Row;
 
-    fn stage_work(&self, items: &[Row], _: &StreamContext<'_, '_, '_>) -> usize {
+    fn stage_work(&self, items: &[Row], _: &StreamContext<'_, '_, '_, '_>) -> usize {
         items.len().max(1)
     }
 
@@ -278,7 +270,7 @@ impl<'stage> Host<Row, StreamContext<'_, '_, '_>, &'stage model::Predicate, &'st
     fn prepare_stage(
         &self,
         stage: &Located<Stage<&'stage model::Predicate, &'stage model::Stage>>,
-        context: &mut StreamContext<'_, '_, '_>,
+        context: &mut StreamContext<'_, '_, '_, '_>,
         _: &mut Budget,
     ) -> Result<(), zirql::EvaluationError<Self::Error>> {
         match stage.value {
@@ -299,7 +291,7 @@ impl<'stage> Host<Row, StreamContext<'_, '_, '_>, &'stage model::Predicate, &'st
     fn prepare_filter_item(
         &self,
         _: &Row,
-        _: &mut StreamContext<'_, '_, '_>,
+        _: &mut StreamContext<'_, '_, '_, '_>,
         _: &mut Budget,
         _: &Range<usize>,
     ) -> Result<(), zirql::EvaluationError<Self::Error>> {
@@ -310,7 +302,7 @@ impl<'stage> Host<Row, StreamContext<'_, '_, '_>, &'stage model::Predicate, &'st
         &self,
         leaf: &&'stage model::Predicate,
         item: &Row,
-        context: &mut StreamContext<'_, '_, '_>,
+        context: &mut StreamContext<'_, '_, '_, '_>,
         _: &mut Budget,
         _: &Range<usize>,
     ) -> Result<Truth, zirql::EvaluationError<Self::Error>> {
@@ -324,7 +316,7 @@ impl<'stage> Host<Row, StreamContext<'_, '_, '_>, &'stage model::Predicate, &'st
         &self,
         stage: &&'stage model::Stage,
         items: Vec<Row>,
-        context: &mut StreamContext<'_, '_, '_>,
+        context: &mut StreamContext<'_, '_, '_, '_>,
         budget: &mut Budget,
         _: &Range<usize>,
     ) -> Result<Vec<Row>, zirql::EvaluationError<Self::Error>> {
@@ -332,6 +324,7 @@ impl<'stage> Host<Row, StreamContext<'_, '_, '_>, &'stage model::Predicate, &'st
             stage,
             context.evaluation,
             into_output(context.kind, items),
+            context.bindings,
             budget,
         )
         .map_err(zirql::EvaluationError::Host)?;
@@ -343,7 +336,7 @@ impl<'stage> Host<Row, StreamContext<'_, '_, '_>, &'stage model::Predicate, &'st
     fn identity_key(
         &self,
         item: &Row,
-        _: &mut StreamContext<'_, '_, '_>,
+        _: &mut StreamContext<'_, '_, '_, '_>,
         _: &mut Budget,
         _: &Range<usize>,
     ) -> Result<Row, zirql::EvaluationError<Self::Error>> {
@@ -353,7 +346,7 @@ impl<'stage> Host<Row, StreamContext<'_, '_, '_>, &'stage model::Predicate, &'st
     fn tally_key(
         &self,
         item: Row,
-        _: &mut StreamContext<'_, '_, '_>,
+        _: &mut StreamContext<'_, '_, '_, '_>,
         _: &mut Budget,
         _: &Range<usize>,
     ) -> Result<String, zirql::EvaluationError<Self::Error>> {

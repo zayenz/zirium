@@ -176,20 +176,32 @@ impl<T> QueryExpr<T> {
         }
         let mut budget = evaluation_budget(limits);
         charge(&mut budget, self.nodes)?;
-        let selected = QueryOutput::Operations(collect(&budget, document.operations())?);
+        let selected = QueryOutput::Operations(collect(&mut budget, document.operations())?);
         let mut access = DocumentAccess::Shared(document);
         let mut emit = |_: &Document, _: QueryOutput| {
             Err(EvaluationError::new("cannot emit in a read-only query"))
         };
+        program::validate_expression(
+            &self.expression,
+            program::Kind::Operations,
+            &BTreeMap::new(),
+        )?;
+        let expressions = program::expressions(std::iter::once(&self.expression));
         let mut context = EvaluationContext {
             document: &mut access,
             registry,
-            bindings: BTreeMap::new(),
+            expressions: &expressions,
             options,
             output: OutputMode::Native,
             emit: &mut emit,
         };
-        evaluate_expression(&self.expression, &mut context, selected, &mut budget)
+        evaluate_expression(
+            &self.expression,
+            &mut context,
+            selected,
+            &zirql::Bindings::default(),
+            &mut budget,
+        )
     }
 }
 
@@ -685,8 +697,9 @@ impl<T: QueryResult> QueryResult for BTreeMap<String, T> {
 
 pub(super) fn evaluate_structured(
     step: &StructuredStage,
-    context: &mut EvaluationContext<'_, '_>,
+    context: &mut EvaluationContext<'_, '_, '_>,
     current: QueryOutput,
+    bindings: &zirql::Bindings<QueryOutput>,
     budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     Ok(match step {
@@ -709,23 +722,28 @@ pub(super) fn evaluate_structured(
                     query,
                     context,
                     QueryOutput::Operations(vec![operation]),
+                    bindings,
                     budget,
                 )?;
                 if !operations(&result, "where_exists")?.is_empty() {
+                    program::charge_results(budget, 1, &(0..0))?;
                     selected.push(operation);
                 }
             }
             QueryOutput::Operations(selected)
         }
         StructuredStage::MapBy { key, value } => {
+            program::charge_results(budget, 1, &(0..0))?;
             let mut entries = BTreeMap::new();
             let mut items = 0usize;
             for operation in take_operations(current, "map_by")? {
+                program::charge_results(budget, 1, &(0..0))?;
                 let seed = QueryOutput::Operations(vec![operation]);
                 let key = String::from_query_output(evaluate_expression(
                     key,
                     context,
-                    seed.clone(),
+                    program::copy_value(&seed, budget, &(0..0))?,
+                    bindings,
                     budget,
                 )?)?;
                 if entries.contains_key(&key) {
@@ -733,10 +751,11 @@ pub(super) fn evaluate_structured(
                         "map_by encountered duplicate key `{key}`; select unique keys"
                     )));
                 }
-                let value = evaluate_expression(value, context, seed, budget)?;
+                let value = evaluate_expression(value, context, seed, bindings, budget)?;
                 items = items.saturating_add(output_size(&value).saturating_add(1));
                 check_items(budget, items)?;
                 charge(budget, output_size(&value))?;
+                program::charge_results(budget, 1, &(0..0))?;
                 entries.insert(key, value);
             }
             QueryOutput::Native(NativeValue::Map(entries))
@@ -753,6 +772,8 @@ pub(super) fn evaluate_structured(
                         "attribute `{name}` is not a string"
                     )));
                 };
+                program::charge_results(budget, 1, &(0..0))?;
+                program::charge_bytes(budget, spelling.len(), &(0..0))?;
                 values.push(decode_mlir_string(spelling).ok_or_else(|| {
                     EvaluationError::new(format!("attribute `{name}` cannot be decoded as UTF-8"))
                 })?);
@@ -760,15 +781,14 @@ pub(super) fn evaluate_structured(
             QueryOutput::Values(values)
         }
         StructuredStage::Attributes(name) => {
-            let values = take_operations(current, "attributes")?
-                .into_iter()
-                .filter_map(|operation| {
-                    context
-                        .document
-                        .attribute_id(operation, name)
-                        .map(|id| (name.clone(), id))
-                })
-                .collect();
+            let mut values = Vec::new();
+            for operation in take_operations(current, "attributes")? {
+                if let Some(id) = context.document.attribute_id(operation, name) {
+                    program::charge_results(budget, 1, &(0..0))?;
+                    program::charge_bytes(budget, name.len(), &(0..0))?;
+                    values.push((name.clone(), id));
+                }
+            }
             QueryOutput::Native(NativeValue::Attributes(values))
         }
         StructuredStage::Types { operands } => {
@@ -778,6 +798,7 @@ pub(super) fn evaluate_structured(
                     for &value in context.document.operands(operation).unwrap_or(&[]) {
                         charge(budget, 1)?;
                         if let Some(id) = context.document.value_type_id(value) {
+                            program::charge_results(budget, 1, &(0..0))?;
                             values.push(id);
                             check_items(budget, values.len())?;
                         }
@@ -786,6 +807,7 @@ pub(super) fn evaluate_structured(
                     let types = context.document.result_types(operation).unwrap_or(&[]);
                     charge(budget, types.len())?;
                     check_items(budget, values.len().saturating_add(types.len()))?;
+                    program::charge_results(budget, types.len(), &(0..0))?;
                     values.extend_from_slice(types);
                 }
             }
@@ -798,8 +820,12 @@ pub(super) fn evaluate_structured(
                     context
                         .document
                         .type_spelling(id)
-                        .map(str::to_owned)
                         .ok_or_else(wrong_result)
+                        .and_then(|value| {
+                            program::charge_results(budget, 1, &(0..0))?;
+                            program::charge_bytes(budget, value.len(), &(0..0))?;
+                            Ok(value.to_owned())
+                        })
                 })
                 .collect::<Result<_, _>>()?,
             QueryOutput::Native(NativeValue::Attributes(values)) => values
@@ -808,8 +834,12 @@ pub(super) fn evaluate_structured(
                     context
                         .document
                         .attribute_spelling_value(id)
-                        .map(str::to_owned)
                         .ok_or_else(wrong_result)
+                        .and_then(|value| {
+                            program::charge_results(budget, 1, &(0..0))?;
+                            program::charge_bytes(budget, value.len(), &(0..0))?;
+                            Ok(value.to_owned())
+                        })
                 })
                 .collect::<Result<_, _>>()?,
             _ => return Err(wrong_result()),

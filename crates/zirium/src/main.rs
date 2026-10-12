@@ -14,7 +14,9 @@ use zirium::{
     parser::{ParseDiagnosticKind, ParseLimits, ParsedFile},
     printer::{FragmentScope, PrintLayout},
     query::{EvaluationError, EvaluationLimits, EvaluationOptions, Query, QueryOutput},
-    semantic::{LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention},
+    semantic::{
+        Document, LoweringMode, RetentionProfile, lower_with_dialect_registry_and_retention,
+    },
 };
 
 fn main() {
@@ -59,6 +61,7 @@ Parser limits:
 Evaluator limits:
   --max-work N            Evaluation work limit (default 10000000)
   --max-items N           Maximum items per stream (default 1000000)
+  --max-results N         Aggregate produced/copied entries for a query program
 
 Examples:
   zirium 'filter(op("arith.addi")) | users | unique | count' input.mlir
@@ -376,6 +379,7 @@ fn run() -> Result<(), String> {
     let mut ndjson = false;
     let mut fragment_scope = FragmentScope::Full;
     let mut evaluation_limits = EvaluationLimits::default();
+    let mut max_results = None;
     let mut parse_limits = ParseLimits::default();
     let mut registry_limits = RegistryLoadOptions::default();
     let mut program_path = None;
@@ -400,6 +404,7 @@ fn run() -> Result<(), String> {
                         | "--max-work"
                         | "--max-diff-work"
                         | "--max-items"
+                        | "--max-results"
                         | "--max-registry-depth"
                         | "--max-registry-files"
                         | "--max-registry-edges"
@@ -468,6 +473,7 @@ fn run() -> Result<(), String> {
             | "--max-work"
             | "--max-diff-work"
             | "--max-items"
+            | "--max-results"
             | "--max-registry-depth"
             | "--max-registry-files"
             | "--max-registry-edges"
@@ -482,7 +488,11 @@ fn run() -> Result<(), String> {
                     .to_str()
                     .and_then(|value| value.parse::<usize>().ok())
                     .ok_or_else(|| format!("{option} requires {requirement}"))?;
-                if value == 0 && matches!(option, "--max-work" | "--max-diff-work" | "--max-items")
+                if value == 0
+                    && matches!(
+                        option,
+                        "--max-work" | "--max-diff-work" | "--max-items" | "--max-results"
+                    )
                 {
                     return Err(format!("{option} requires a positive integer"));
                 }
@@ -494,6 +504,7 @@ fn run() -> Result<(), String> {
                         max_diff_work_supplied = true;
                     }
                     "--max-items" => evaluation_limits.max_items = value,
+                    "--max-results" => max_results = Some(value),
                     "--max-registry-depth" => registry_limits.max_depth = value,
                     "--max-registry-files" => registry_limits.max_files = value,
                     "--max-registry-edges" => registry_limits.max_edges = value,
@@ -571,6 +582,9 @@ fn run() -> Result<(), String> {
     }
     if diff_paths.is_none() && max_diff_work_supplied {
         return Err("--max-diff-work requires --diff".into());
+    }
+    if max_results.is_some() && diff_paths.is_some() {
+        return Err("--max-results applies to document query programs".into());
     }
     if let Some((before, after)) = diff_paths {
         if !paths.is_empty() {
@@ -713,111 +727,139 @@ fn run() -> Result<(), String> {
                 format!("could not lower {name}:\n{detail}")
             })?;
         drop(parsed);
-        query
-            .evaluate_with_context_options_and_limits(
+        let emit = |document: &Document, output| {
+            if silent {
+                return Ok(());
+            }
+            if ndjson {
+                write_ndjson_record(
+                    &mut staged_output,
+                    document,
+                    &name,
+                    output,
+                    registry,
+                    fragment_scope,
+                )?;
+                return Ok(());
+            }
+            match output {
+                QueryOutput::Native(_) => {
+                    return Err(EvaluationError::new(
+                        "native query results require a library consumer",
+                    ));
+                }
+                QueryOutput::Operations(selected) => document
+                    .write_selection_with_scope(
+                        &mut staged_output,
+                        &selected,
+                        PrintLayout::Pretty,
+                        registry,
+                        fragment_scope,
+                    )
+                    .map_err(|error| {
+                        EvaluationError::new(format!("could not print {name}: {error}"))
+                    })?,
+                QueryOutput::Formatted {
+                    operations,
+                    options,
+                } => document
+                    .write_formatted_selection(
+                        &mut staged_output,
+                        &operations,
+                        registry,
+                        fragment_scope,
+                        options,
+                    )
+                    .map_err(|error| {
+                        EvaluationError::new(format!("could not format {name}: {error}"))
+                    })?,
+                QueryOutput::Count(count) => {
+                    use std::io::Write;
+                    writeln!(staged_output, "{count}").map_err(output_staging_error)?;
+                }
+                QueryOutput::Values(values) => {
+                    use std::io::Write;
+                    for value in values {
+                        writeln!(staged_output, "{value}").map_err(output_staging_error)?;
+                    }
+                }
+                QueryOutput::Array(values) => {
+                    serde_json::to_writer_pretty(&mut staged_output, &values)
+                        .map_err(|error| EvaluationError::new(error.to_string()))?;
+                    staged_output
+                        .write_all(b"\n")
+                        .map_err(output_staging_error)?;
+                }
+                QueryOutput::Map(values) => {
+                    serde_json::to_writer_pretty(&mut staged_output, &values)
+                        .map_err(|error| EvaluationError::new(error.to_string()))?;
+                    staged_output
+                        .write_all(b"\n")
+                        .map_err(output_staging_error)?;
+                }
+                QueryOutput::RankedMap(entries) => {
+                    use serde::ser::{SerializeMap, Serializer};
+                    let mut serializer = serde_json::Serializer::pretty(&mut staged_output);
+                    let mut map = serializer
+                        .serialize_map(Some(entries.len()))
+                        .map_err(|error| EvaluationError::new(error.to_string()))?;
+                    for (key, value) in entries {
+                        map.serialize_entry(&key, &value)
+                            .map_err(|error| EvaluationError::new(error.to_string()))?;
+                    }
+                    map.end()
+                        .map_err(|error| EvaluationError::new(error.to_string()))?;
+                    staged_output
+                        .write_all(b"\n")
+                        .map_err(output_staging_error)?;
+                }
+                QueryOutput::Json(json) | QueryOutput::Text(json) => {
+                    staged_output
+                        .write_all(json.as_bytes())
+                        .map_err(output_staging_error)?;
+                }
+            }
+            Ok(())
+        };
+        let options = EvaluationOptions {
+            strict_unknown_references: strict,
+        };
+        let result = if let Some(results) = max_results {
+            query.evaluate_with_program_limits(
                 &mut document,
                 registry,
                 Some(&name),
-                EvaluationOptions {
-                    strict_unknown_references: strict,
+                options,
+                zirql::ProgramLimits {
+                    work: evaluation_limits.max_work,
+                    results,
+                    nesting: 64,
+                    stream_items: evaluation_limits.max_items,
                 },
-                evaluation_limits,
-                |document, output| {
-                    if silent {
-                        return Ok(());
-                    }
-                    if ndjson {
-                        write_ndjson_record(
-                            &mut staged_output,
-                            document,
-                            &name,
-                            output,
-                            registry,
-                            fragment_scope,
-                        )?;
-                        return Ok(());
-                    }
-                    match output {
-                        QueryOutput::Native(_) => {
-                            return Err(EvaluationError::new(
-                                "native query results require a library consumer",
-                            ));
-                        }
-                        QueryOutput::Operations(selected) => document
-                            .write_selection_with_scope(
-                                &mut staged_output,
-                                &selected,
-                                PrintLayout::Pretty,
-                                registry,
-                                fragment_scope,
-                            )
-                            .map_err(|error| {
-                                EvaluationError::new(format!("could not print {name}: {error}"))
-                            })?,
-                        QueryOutput::Formatted {
-                            operations,
-                            options,
-                        } => document
-                            .write_formatted_selection(
-                                &mut staged_output,
-                                &operations,
-                                registry,
-                                fragment_scope,
-                                options,
-                            )
-                            .map_err(|error| {
-                                EvaluationError::new(format!("could not format {name}: {error}"))
-                            })?,
-                        QueryOutput::Count(count) => {
-                            use std::io::Write;
-                            writeln!(staged_output, "{count}").map_err(output_staging_error)?;
-                        }
-                        QueryOutput::Values(values) => {
-                            use std::io::Write;
-                            for value in values {
-                                writeln!(staged_output, "{value}").map_err(output_staging_error)?;
-                            }
-                        }
-                        QueryOutput::Array(values) => {
-                            serde_json::to_writer_pretty(&mut staged_output, &values)
-                                .map_err(|error| EvaluationError::new(error.to_string()))?;
-                            staged_output
-                                .write_all(b"\n")
-                                .map_err(output_staging_error)?;
-                        }
-                        QueryOutput::Map(values) => {
-                            serde_json::to_writer_pretty(&mut staged_output, &values)
-                                .map_err(|error| EvaluationError::new(error.to_string()))?;
-                            staged_output
-                                .write_all(b"\n")
-                                .map_err(output_staging_error)?;
-                        }
-                        QueryOutput::RankedMap(entries) => {
-                            use serde::ser::{SerializeMap, Serializer};
-                            let mut serializer = serde_json::Serializer::pretty(&mut staged_output);
-                            let mut map = serializer
-                                .serialize_map(Some(entries.len()))
-                                .map_err(|error| EvaluationError::new(error.to_string()))?;
-                            for (key, value) in entries {
-                                map.serialize_entry(&key, &value)
-                                    .map_err(|error| EvaluationError::new(error.to_string()))?;
-                            }
-                            map.end()
-                                .map_err(|error| EvaluationError::new(error.to_string()))?;
-                            staged_output
-                                .write_all(b"\n")
-                                .map_err(output_staging_error)?;
-                        }
-                        QueryOutput::Json(json) | QueryOutput::Text(json) => {
-                            staged_output
-                                .write_all(json.as_bytes())
-                                .map_err(output_staging_error)?;
-                        }
-                    }
-                    Ok(())
-                },
+                emit,
             )
-            .map_err(|error| format!("could not evaluate {name}: {error}"))?;
+        } else {
+            query.evaluate_with_context_options_and_limits(
+                &mut document,
+                registry,
+                Some(&name),
+                options,
+                evaluation_limits,
+                emit,
+            )
+        };
+        result.map_err(|error| {
+            if let Some(range) = error.range() {
+                source_diagnostic(
+                    &query_name,
+                    query_text.as_bytes(),
+                    range,
+                    &error.to_string(),
+                )
+            } else {
+                format!("could not evaluate {name}: {error}")
+            }
+        })?;
     }
     staged_output.deliver_stdout()
 }

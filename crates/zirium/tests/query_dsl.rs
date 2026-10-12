@@ -107,12 +107,38 @@ fn structured_and_textual_queries_agree_on_stream_and_set_semantics() {
 
 #[test]
 fn document_context_reports_when_evaluation_does_not_supply_a_name() {
-    let query = Query::parse_with_document_context(r#"print("{document}")"#).unwrap();
-    let mut document = document();
-    let error = query
-        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
-        .unwrap_err();
-    assert!(error.to_string().contains("unavailable"));
+    for source in [r#"print("{document}")"#, r#"{"file": document}"#] {
+        let query = Query::parse_with_document_context(source).unwrap();
+        let mut document = document();
+        let error = query
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .unwrap_err();
+        assert!(error.to_string().contains("unavailable"));
+    }
+}
+
+#[test]
+fn literal_interpolation_rejects_known_kinds_before_emitting() {
+    for literal in [r#"{"x": "{a}"}"#, r#"{"{a}": 1}"#] {
+        let source = format!(r#"a = filter(true); print("earlier"); {literal} | json"#);
+        let query = Query::parse(&source).unwrap();
+        let mut document = document();
+        let mut emitted = Vec::new();
+        let error = query
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, output| {
+                emitted.push(output);
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(emitted.is_empty(), "{source}: {emitted:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("string interpolation requires a count or exactly one string")
+        );
+        let start = source.find(literal).unwrap();
+        assert_eq!(error.range(), Some(start..start + literal.len()));
+    }
 }
 
 #[test]
@@ -448,4 +474,27 @@ fn nested_root_queries_keep_the_frontend_nesting_boundary() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn explicit_program_allowance_bounds_binding_copies_with_located_errors() {
+    let mut document = document();
+    let query = Query::parse("selected = input; selected; selected").unwrap();
+    let error = query
+        .evaluate_with_program_limits(
+            &mut document,
+            DialectRegistry::baseline(),
+            None,
+            zirium::query::EvaluationOptions::default(),
+            zirium::query::ProgramLimits {
+                work: 10_000,
+                results: 20,
+                nesting: 64,
+                stream_items: 100,
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("result limit"));
+    assert!(error.range().is_some());
 }

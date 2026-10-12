@@ -641,6 +641,16 @@ The initial stream contains every operation, so it must fit `max_items` even
 when the first stage filters down to a small selection. The work limit does not
 bound MLIR parsing, printing, or the total bytes buffered across emissions.
 
+`--max-results N` adds a whole-program allowance for produced and copied native
+entries, binding reads, emission snapshots, nested JSON containers/fields and
+rendered report storage. It is separate from the per-stream `--max-items` ceiling.
+With this option, copied strings and encoded JSON/Markdown also consume work;
+escaped Markdown reserves a byte bound before construction. Rust callers can use
+`Query::evaluate_with_program_limits` with `zirium::query::ProgramLimits`. Existing
+`EvaluationLimits` APIs keep their established work and stream limits. An
+aggregate failure carries a query range and follows the same no-stdout CLI rule.
+Native MLIR printing remains a caller-owned emission boundary.
+
 The common `fixpoint(closure)` query uses a worklist and visits dependencies once.
 A body with additional stages, including `emit` or `json`, runs step by step and
 retains its per-iteration output. Deep slices with per-iteration output can still

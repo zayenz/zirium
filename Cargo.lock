@@ -250,8 +250,8 @@ dependencies = [
 
 [[package]]
 name = "zirql"
-version = "0.1.0-alpha.1"
-source = "git+https://github.com/zayenz/zirql?rev=7ee35cad2f8d92cbccf29977ff4496987cf7e19d#7ee35cad2f8d92cbccf29977ff4496987cf7e19d"
+version = "0.1.0-alpha.3"
+source = "git+https://github.com/zayenz/zirql?rev=4e4baf38e7c8566781f069dccea110383d6c0d24#4e4baf38e7c8566781f069dccea110383d6c0d24"
 
 [[package]]
 name = "zmij"

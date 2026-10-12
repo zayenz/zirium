@@ -247,6 +247,14 @@ Nested expressions and predicates have a 64-level limit; flat
 pipelines, boolean chains, and set chains do not consume a level per term.
 Excessive nesting is reported when the expression is evaluated.
 
+Textual programs share statement order, immutable binding scope, groups and set
+sequencing with Zirql. Native selectors reenter the expression runner with the
+same document, bindings and budget. The textual `Query` API also accepts
+`evaluate_with_program_limits`; `--max-results` exposes its aggregate allowance
+in the CLI. Typed expression APIs retain their existing limits and native values.
+See [query language limits](query-language.md) for the
+aggregate units and the caller-owned printing boundary.
+
 Evaluation returns `EvaluationError` in Rust and raises `ValueError` in Python.
 Python rejects invalid argument types with `TypeError`. Evaluation runs in Rust
 with shared document access and without holding the Python interpreter lock;

@@ -5,22 +5,40 @@ use super::{EvaluationError, QueryOutput, charge, check_items, parser::PrintPart
 
 pub(super) fn interpolate(
     parts: &[PrintPart],
-    bindings: &std::collections::BTreeMap<String, QueryOutput>,
+    bindings: &zirql::Bindings<QueryOutput>,
     state: &mut zirql::Budget,
 ) -> Result<String, EvaluationError> {
     let mut text = String::new();
     for part in parts {
         let value = match part {
-            PrintPart::Literal(value) => value.clone(),
-            PrintPart::Binding(name) => match bindings.get(name).ok_or_else(|| {
+            PrintPart::Literal(value) => {
+                charge(state, value.len())?;
+                value.clone()
+            }
+            PrintPart::Binding(name) => match bindings.get(name, 0..0).map_err(|_| {
                 EvaluationError::new(format!(
                     "binding `{name}` is unavailable in this evaluation context"
                 ))
             })? {
-                QueryOutput::Count(count) => count.to_string(),
-                QueryOutput::Values(values) if values.len() == 1 => values[0].clone(),
+                QueryOutput::Count(count) => {
+                    charge(
+                        state,
+                        if *count == 0 {
+                            1
+                        } else {
+                            count.ilog10() as usize + 1
+                        },
+                    )?;
+                    count.to_string()
+                }
+                QueryOutput::Values(values) if values.len() == 1 => {
+                    charge(state, values[0].len())?;
+                    values[0].clone()
+                }
                 QueryOutput::Array(values) if values.len() == 1 && values[0].is_string() => {
-                    values[0].as_str().unwrap().to_owned()
+                    let value = values[0].as_str().unwrap();
+                    charge(state, value.len())?;
+                    value.to_owned()
                 }
                 _ => {
                     return Err(EvaluationError::new(format!(
@@ -29,7 +47,7 @@ pub(super) fn interpolate(
                 }
             },
         };
-        charge(state, value.len())?;
+        super::program::charge_results(state, 1, &(0..0))?;
         text.push_str(&value);
     }
     Ok(text)
@@ -141,8 +159,15 @@ fn table_budget(rows: usize, columns: usize, state: &zirql::Budget) -> Result<()
 }
 
 fn header(columns: &[&str], state: &mut zirql::Budget) -> Result<String, EvaluationError> {
+    super::program::charge_bytes(state, 16, &(0..0))?;
     for column in columns {
         charge(state, column.len().max(1))?;
+        super::program::charge_results(state, 1, &(0..0))?;
+        super::program::charge_bytes(
+            state,
+            column.len().saturating_mul(6).saturating_add(16),
+            &(0..0),
+        )?;
     }
     let mut text = String::from("\n| ");
     text.push_str(
@@ -163,9 +188,16 @@ fn row<'a>(
     cells: impl IntoIterator<Item = &'a str>,
     state: &mut zirql::Budget,
 ) -> Result<(), EvaluationError> {
+    super::program::charge_bytes(state, 2, &(0..0))?;
     text.push('|');
     for cell in cells {
         charge(state, cell.len().max(1))?;
+        super::program::charge_results(state, 1, &(0..0))?;
+        super::program::charge_bytes(
+            state,
+            cell.len().saturating_mul(6).saturating_add(4),
+            &(0..0),
+        )?;
         write!(text, " {} |", escape(cell)).expect("writing to a string");
     }
     text.push('\n');

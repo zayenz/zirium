@@ -3236,3 +3236,17 @@ fn root_short_circuits_with_the_original_work_allowance() {
     assert!(refused.stdout.is_empty());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("work limit exceeded"));
 }
+
+#[test]
+fn aggregate_program_failure_is_located_and_keeps_stdout_empty() {
+    let output = run_stdin_with_options(
+        &["--max-results", "20"],
+        "selected = input; selected; selected",
+        INPUT,
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("result limit"), "{diagnostic}");
+    assert!(diagnostic.contains("query"), "{diagnostic}");
+}

@@ -1,0 +1,828 @@
+//! Native program lowering. Domain operations and emission snapshots stay in Zirium.
+use super::*;
+use std::ops::Range;
+use zirql::{Bindings, EmissionPolicy, ExpressionKind, ExpressionStep, Located, ProgramHost};
+
+pub(super) type Expression<'q> = zirql::Expression<Stages<'q>, model::SetOperator, Emitter<'q>>;
+
+#[derive(Debug)]
+pub(super) struct Stages<'q> {
+    native: &'q model::Stage,
+    pipeline: Option<pipeline::NativePipeline<'q>>,
+}
+#[derive(Debug)]
+pub(super) enum Emitter<'q> {
+    Result,
+    Written(&'q model::Stage),
+    AlreadyEmitted,
+}
+
+pub(super) fn range(range: crate::source::TextRange) -> Range<usize> {
+    range.start() as usize..range.end() as usize
+}
+
+pub(super) fn lower(query: &Query) -> zirql::Program<Stages<'_>, model::SetOperator, Emitter<'_>> {
+    let statements = query
+        .statements
+        .iter()
+        .map(|statement| {
+            let (expression, statement) = match statement {
+                model::Statement::Binding { name, expression } => (
+                    expression,
+                    zirql::Statement::Bind {
+                        name: Located::new(name.clone(), range(expression.range)),
+                        expression: lower_expression(expression),
+                    },
+                ),
+                model::Statement::Do(expression) => (
+                    expression,
+                    zirql::Statement::Evaluate {
+                        expression: lower_expression(expression),
+                        implicit_output: None,
+                    },
+                ),
+                model::Statement::Query(expression) => (
+                    expression,
+                    zirql::Statement::Evaluate {
+                        expression: lower_expression(expression),
+                        implicit_output: Some(Emitter::Result),
+                    },
+                ),
+            };
+            Located::new(statement, range(expression.range))
+        })
+        .chain(std::iter::once(Located::new(
+            zirql::Statement::Evaluate {
+                expression: lower_expression(&query.expression),
+                implicit_output: query.emit_final_result.then_some(Emitter::Result),
+            },
+            range(query.expression.range),
+        )))
+        .collect();
+    zirql::Program::new(statements, range(query.expression.range))
+}
+
+fn lower_expression(expression: &model::Expression) -> Expression<'_> {
+    let mut lowered = lower_stages(&expression.first, expression.range);
+    for (operator, stages) in &expression.rest {
+        lowered = Located::new(
+            ExpressionKind::Set {
+                operator: *operator,
+                left: Box::new(lowered),
+                right: Box::new(lower_stages(stages, expression.range)),
+            },
+            range(expression.range),
+        );
+    }
+    lowered
+}
+
+fn lower_stages(stages: &[model::Stage], location: crate::source::TextRange) -> Expression<'_> {
+    let mut input = Located::new(ExpressionKind::Input, range(location));
+    let mut steps = Vec::new();
+    for (index, stage) in stages.iter().enumerate() {
+        let emitter = match stage {
+            model::Stage::Emit { .. }
+            | model::Stage::Format { .. }
+            | model::Stage::Json { .. }
+            | model::Stage::Markdown { .. } => Some(Emitter::Written(stage)),
+            _ => None,
+        };
+        if let Some(emitter) = emitter {
+            steps.push(Located::new(
+                ExpressionStep::Emit {
+                    emitter,
+                    policy: EmissionPolicy::PassThrough,
+                },
+                range(stage.range()),
+            ));
+            continue;
+        }
+        if index == 0
+            && let model::Stage::Group { expression, .. } = stage
+        {
+            input = Located::new(
+                ExpressionKind::Group(Box::new(lower_expression(expression))),
+                range(stage.range()),
+            );
+            continue;
+        }
+        let pipeline = pipeline::is_stream_stage(stage).then(|| {
+            pipeline::lower(std::slice::from_ref(stage))
+                .expect("frontend stage nesting was validated")
+        });
+        steps.push(Located::new(
+            ExpressionStep::Stage(Stages {
+                native: stage,
+                pipeline,
+            }),
+            range(stage.range()),
+        ));
+        if matches!(stage, model::Stage::Print { .. })
+            || matches!(stage, model::Stage::Group { expression, .. } if expression.ends_with_emission())
+        {
+            steps.push(Located::new(
+                ExpressionStep::Emit {
+                    emitter: Emitter::AlreadyEmitted,
+                    policy: EmissionPolicy::PassThrough,
+                },
+                range(stage.range()),
+            ));
+        }
+    }
+    if steps.is_empty() {
+        input
+    } else {
+        Located::new(
+            ExpressionKind::Sequence {
+                input: Box::new(input),
+                steps,
+            },
+            range(location),
+        )
+    }
+}
+
+/// Lower selectors once before native execution. The address keys only connect
+/// the retained frontend expressions to their compiled expressions for this call.
+pub(super) fn expressions<'q>(
+    roots: impl Iterator<Item = &'q model::Expression>,
+) -> BTreeMap<usize, Expression<'q>> {
+    let mut expressions = BTreeMap::new();
+    let mut pending: Vec<_> = roots.collect();
+    while let Some(expression) = pending.pop() {
+        expressions.insert(
+            std::ptr::from_ref(expression) as usize,
+            lower_expression(expression),
+        );
+        for stage in expression
+            .first
+            .iter()
+            .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
+        {
+            match stage {
+                model::Stage::Group { expression, .. }
+                | model::Stage::Fixpoint { expression, .. } => pending.push(expression),
+                model::Stage::MapBy { key, value, .. } => {
+                    pending.push(key);
+                    pending.push(value);
+                }
+                model::Stage::SortBy { selector, .. }
+                | model::Stage::MinBy { selector, .. }
+                | model::Stage::MinAllBy { selector, .. }
+                | model::Stage::MaxBy { selector, .. }
+                | model::Stage::MaxAllBy { selector, .. } => pending.push(selector),
+                model::Stage::Structured {
+                    step: model::StructuredStage::MapBy { key, value },
+                    ..
+                } => {
+                    pending.push(key);
+                    pending.push(value);
+                }
+                model::Stage::Structured {
+                    step: model::StructuredStage::WhereExists(expression),
+                    ..
+                } => pending.push(expression),
+                _ => {}
+            }
+        }
+    }
+    expressions
+}
+
+pub(super) fn evaluation_error(error: zirql::EvaluationError<EvaluationError>) -> EvaluationError {
+    match error {
+        zirql::EvaluationError::Core(error) => core_error(error),
+        zirql::EvaluationError::Host(error) => error,
+    }
+}
+
+pub(super) fn admit(
+    value: &QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &Range<usize>,
+) -> Result<(), EvaluationError> {
+    budget
+        .charge_results(result_units(value), zirql::Location::Query(range.clone()))
+        .map_err(core_error)
+}
+
+fn result_units(value: &QueryOutput) -> usize {
+    match value {
+        QueryOutput::Native(NativeValue::Map(entries)) => {
+            1 + entries
+                .values()
+                .map(|value| 1 + result_units(value))
+                .sum::<usize>()
+        }
+        QueryOutput::Map(_) | QueryOutput::RankedMap(_) => 1 + output_size(value),
+        _ => output_size(value).max(1),
+    }
+}
+
+pub(super) fn charge_results(
+    budget: &mut zirql::Budget,
+    units: usize,
+    range: &Range<usize>,
+) -> Result<(), EvaluationError> {
+    budget
+        .charge_results(units, zirql::Location::Query(range.clone()))
+        .map_err(core_error)
+}
+
+pub(super) fn charge_bytes(
+    budget: &mut zirql::Budget,
+    bytes: usize,
+    range: &Range<usize>,
+) -> Result<(), EvaluationError> {
+    if budget.remaining_results().is_some() {
+        budget
+            .charge(bytes, zirql::Location::Query(range.clone()))
+            .map_err(core_error)?;
+    }
+    Ok(())
+}
+
+/// Admit the owned JSON tree before copying native leaves into it.
+pub(super) fn to_json(
+    document: &Document,
+    value: &QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &Range<usize>,
+) -> Result<serde_json::Value, EvaluationError> {
+    let (units, bytes) = json_allocation(document, value);
+    charge_results(budget, units, range)?;
+    charge_bytes(budget, bytes, range)?;
+    Ok(output_value(document, value))
+}
+
+fn json_allocation(document: &Document, value: &QueryOutput) -> (usize, usize) {
+    match value {
+        QueryOutput::Operations(rows) => {
+            let mut units = 1;
+            let mut bytes = 0;
+            for &row in rows {
+                units += 9;
+                bytes += 40 + document.operation_name(row).map_or(0, str::len);
+                for (key, value) in document.attributes(row).into_iter().flatten() {
+                    units += 2;
+                    bytes += key.len() + value.len();
+                }
+                for &operand in document.operands(row).unwrap_or(&[]) {
+                    units += 1;
+                    bytes += document.value_type(operand).map_or(0, str::len);
+                }
+                for &ty in document.result_types(row).unwrap_or(&[]) {
+                    units += 1;
+                    bytes += document.type_spelling(ty).map_or(0, str::len);
+                }
+            }
+            (units, bytes)
+        }
+        QueryOutput::Native(NativeValue::Types(rows)) => (
+            1 + rows.len(),
+            rows.iter()
+                .map(|&id| document.type_spelling(id).map_or(0, str::len))
+                .sum(),
+        ),
+        QueryOutput::Native(NativeValue::Attributes(rows)) => (
+            1 + rows.len(),
+            rows.iter()
+                .map(|(_, id)| document.attribute_spelling_value(*id).map_or(0, str::len))
+                .sum(),
+        ),
+        QueryOutput::Native(NativeValue::Map(rows)) => {
+            rows.iter().fold((1, 0), |(units, bytes), (key, value)| {
+                let (u, b) = json_allocation(document, value);
+                (units + 1 + u, bytes + key.len() + b)
+            })
+        }
+        QueryOutput::Values(rows) => (1 + rows.len(), rows.iter().map(String::len).sum()),
+        QueryOutput::Map(rows) => (
+            1 + rows.values().map(|v| 1 + json_size(v)).sum::<usize>(),
+            copied_bytes(value),
+        ),
+        QueryOutput::RankedMap(rows) => (
+            1 + rows.iter().map(|(_, v)| 1 + json_size(v)).sum::<usize>(),
+            copied_bytes(value),
+        ),
+        QueryOutput::Array(rows) => (
+            1 + rows.iter().map(json_size).sum::<usize>(),
+            copied_bytes(value),
+        ),
+        _ => (1, copied_bytes(value)),
+    }
+}
+
+struct BudgetWriter<'a> {
+    bytes: &'a mut Vec<u8>,
+    budget: &'a mut zirql::Budget,
+    range: &'a Range<usize>,
+}
+impl std::io::Write for BudgetWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        charge_bytes(self.budget, bytes.len(), self.range).map_err(std::io::Error::other)?;
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn json(
+    document: &Document,
+    value: &QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &Range<usize>,
+) -> Result<String, EvaluationError> {
+    use serde::ser::{SerializeMap, Serializer};
+    let mut bytes = Vec::new();
+    if let QueryOutput::RankedMap(entries) = value {
+        let mut serializer = serde_json::Serializer::pretty(BudgetWriter {
+            bytes: &mut bytes,
+            budget,
+            range,
+        });
+        let mut map = serializer
+            .serialize_map(Some(entries.len()))
+            .map_err(|e| EvaluationError::new(e.to_string()))?;
+        for (key, value) in entries {
+            map.serialize_entry(key, value)
+                .map_err(|e| EvaluationError::new(e.to_string()))?;
+        }
+        map.end().map_err(|e| EvaluationError::new(e.to_string()))?;
+    } else {
+        let value = to_json(document, value, budget, range)?;
+        serde_json::to_writer_pretty(
+            BudgetWriter {
+                bytes: &mut bytes,
+                budget,
+                range,
+            },
+            &value,
+        )
+        .map_err(|e| EvaluationError::new(e.to_string()))?;
+    }
+    charge_results(budget, 1, range)?;
+    charge_bytes(budget, 1, range)?;
+    bytes.push(b'\n');
+    Ok(String::from_utf8(bytes).expect("JSON is UTF-8"))
+}
+
+pub(super) fn copy_value(
+    value: &QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    admit(value, budget, range)?;
+    if budget.remaining_results().is_some() {
+        budget
+            .charge(copied_bytes(value), zirql::Location::Query(range.clone()))
+            .map_err(core_error)?;
+    }
+    Ok(value.clone())
+}
+
+fn copied_bytes(value: &QueryOutput) -> usize {
+    match value {
+        QueryOutput::Values(values) => values.iter().map(String::len).sum(),
+        QueryOutput::Native(NativeValue::Attributes(values)) => {
+            values.iter().map(|(name, _)| name.len()).sum()
+        }
+        QueryOutput::Json(value)
+        | QueryOutput::Text(value)
+        | QueryOutput::Native(NativeValue::String(value)) => value.len(),
+        QueryOutput::Native(NativeValue::Map(entries)) => entries
+            .iter()
+            .map(|(key, value)| key.len() + copied_bytes(value))
+            .sum(),
+        QueryOutput::Map(entries) => entries
+            .iter()
+            .map(|(key, value)| key.len() + json_bytes(value))
+            .sum(),
+        QueryOutput::RankedMap(entries) => entries
+            .iter()
+            .map(|(key, value)| key.len() + json_bytes(value))
+            .sum(),
+        QueryOutput::Array(values) => values.iter().map(json_bytes).sum(),
+        _ => 0,
+    }
+}
+fn json_bytes(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::String(value) => value.len(),
+        serde_json::Value::Array(values) => values.iter().map(json_bytes).sum(),
+        serde_json::Value::Object(values) => values
+            .iter()
+            .map(|(key, value)| key.len() + json_bytes(value))
+            .sum(),
+        _ => 0,
+    }
+}
+
+pub(super) struct NativeHost;
+impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
+    type Value = QueryOutput;
+    type Stage = Stages<'q>;
+    type SetOperator = model::SetOperator;
+    type Emitter = Emitter<'q>;
+    type Error = EvaluationError;
+
+    fn copy_value(
+        &self,
+        value: &QueryOutput,
+        _: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut zirql::Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        copy_value(value, budget, range).map_err(zirql::EvaluationError::Host)
+    }
+    fn evaluate_stage(
+        &self,
+        stage: &Stages<'q>,
+        input: QueryOutput,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        bindings: &Bindings<QueryOutput>,
+        budget: &mut zirql::Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        let result = if let Some(pipeline) = &stage.pipeline
+            && pipeline::is_stream(&input)
+        {
+            pipeline::evaluate(pipeline, context, input, bindings, budget)
+        } else {
+            charge(budget, output_size(&input).max(1))
+                .and_then(|()| evaluate_host_stage(stage.native, context, input, bindings, budget))
+        };
+        let value =
+            result.map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))?;
+        check_items(budget, output_size(&value))
+            .map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))?;
+        Ok(value)
+    }
+    fn combine(
+        &self,
+        operator: &model::SetOperator,
+        left: QueryOutput,
+        right: QueryOutput,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut zirql::Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        // Set construction retains temporary identity sets as well as its result.
+        charge_results(budget, 3 * (output_len(&left) + output_len(&right)), range)
+            .map_err(zirql::EvaluationError::Host)?;
+        charge_bytes(
+            budget,
+            copied_bytes(&left) + 2 * copied_bytes(&right),
+            range,
+        )
+        .map_err(zirql::EvaluationError::Host)?;
+        let result = evaluate_set_operator(context.document, *operator, left, right)
+            .map_err(zirql::EvaluationError::Host)?;
+        check_items(budget, output_len(&result))
+            .map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))?;
+        Ok(result)
+    }
+    fn construct_record(
+        &self,
+        _: Vec<(String, QueryOutput)>,
+        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut zirql::Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        Err(zirql::EvaluationError::Host(
+            EvaluationError::new("text reports use Zirium JSON literals").at(range.clone()),
+        ))
+    }
+    fn emit(
+        &self,
+        emitter: &Emitter<'q>,
+        value: &QueryOutput,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut zirql::Budget,
+        range: &Range<usize>,
+    ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
+        match emitter {
+            Emitter::Result => (context.emit)(
+                context.document,
+                copy_value(value, budget, range).map_err(zirql::EvaluationError::Host)?,
+            )
+            .map_err(zirql::EvaluationError::Host)?,
+            Emitter::Written(stage) => {
+                charge(budget, output_size(value).max(1)).map_err(zirql::EvaluationError::Host)?;
+                let output = match stage {
+                    model::Stage::Emit { .. } => copy_value(value, budget, range),
+                    model::Stage::Format { options, .. } => {
+                        let operations =
+                            operations(value, "format").map_err(zirql::EvaluationError::Host)?;
+                        charge_results(budget, operations.len(), range)
+                            .map_err(zirql::EvaluationError::Host)?;
+                        Ok(QueryOutput::Formatted {
+                            operations: operations.to_vec(),
+                            options: *options,
+                        })
+                    }
+                    model::Stage::Json { .. } => {
+                        json(context.document, value, budget, range).map(QueryOutput::Json)
+                    }
+                    model::Stage::Markdown { .. } => {
+                        charge_results(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+                        render::markdown(value, budget).map(QueryOutput::Text)
+                    }
+                    _ => unreachable!("written emitter"),
+                }
+                .map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))?;
+                (context.emit)(context.document, output).map_err(zirql::EvaluationError::Host)?;
+            }
+            Emitter::AlreadyEmitted => {}
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    Operations,
+    Strings,
+    Count,
+    Map,
+    Array,
+    String,
+    Types,
+    Attributes,
+}
+
+pub(super) fn validate(query: &Query, document_name: Option<&str>) -> Result<(), EvaluationError> {
+    let mut names = BTreeMap::new();
+    if document_name.is_some() {
+        names.insert("document".to_owned(), Kind::Strings);
+    }
+    for statement in &query.statements {
+        let expression = match statement {
+            model::Statement::Binding { expression, .. }
+            | model::Statement::Do(expression)
+            | model::Statement::Query(expression) => expression,
+        };
+        let kind = validate_expression(expression, Kind::Operations, &names)?;
+        if let model::Statement::Binding { name, .. } = statement {
+            names.insert(name.clone(), kind);
+        }
+    }
+    validate_expression(&query.expression, Kind::Operations, &names)?;
+    Ok(())
+}
+
+pub(super) fn validate_expression(
+    expression: &model::Expression,
+    input: Kind,
+    names: &BTreeMap<String, Kind>,
+) -> Result<Kind, EvaluationError> {
+    let left = validate_stages(&expression.first, input, names)?;
+    for (_, stages) in &expression.rest {
+        let right = validate_stages(stages, input, names)?;
+        if left != right || !matches!(left, Kind::Operations | Kind::Strings) {
+            return Err(EvaluationError::new(
+                "set operands require operation or value streams of the same kind",
+            )
+            .at(range(expression.range)));
+        }
+    }
+    Ok(left)
+}
+
+fn validate_stages(
+    stages: &[model::Stage],
+    mut kind: Kind,
+    names: &BTreeMap<String, Kind>,
+) -> Result<Kind, EvaluationError> {
+    use model::{Stage as S, StructuredStage as N};
+    for stage in stages {
+        let failure = |message: &str| EvaluationError::new(message).at(range(stage.range()));
+        let require = |valid, message: &str| if valid { Ok(()) } else { Err(failure(message)) };
+        match stage {
+            S::Input { .. } => kind = Kind::Operations,
+            S::Binding { name, .. } => {
+                kind = *names.get(name).ok_or_else(|| {
+                    failure(&format!(
+                        "binding `{name}` is unavailable in this evaluation context"
+                    ))
+                })?
+            }
+            S::Literal { value, .. } => {
+                validate_literal(value, names).map_err(|error| error.at(range(stage.range())))?;
+                kind = match value {
+                    model::JsonLiteral::Object(_) => Kind::Map,
+                    model::JsonLiteral::Array(_) => Kind::Array,
+                    _ => unreachable!(),
+                }
+            }
+            S::Group { expression, .. } => kind = validate_expression(expression, kind, names)?,
+            S::Fixpoint { expression, .. } => {
+                require(
+                    matches!(kind, Kind::Operations | Kind::Strings),
+                    "fixpoint requires an operation or value stream",
+                )?;
+                kind = validate_expression(expression, kind, names)?;
+                require(
+                    matches!(kind, Kind::Operations | Kind::Strings),
+                    "fixpoint requires an operation or value stream",
+                )?;
+            }
+            S::Filter { .. }
+            | S::Reachable { .. }
+            | S::Closure { .. }
+            | S::Slice { .. }
+            | S::ForwardSlice { .. }
+            | S::Defs { .. }
+            | S::Users { .. }
+            | S::Parent { .. }
+            | S::Children { .. }
+            | S::Root { .. }
+            | S::Subtree { .. }
+            | S::SetAttr { .. }
+            | S::RemoveAttr { .. } => require(
+                kind == Kind::Operations,
+                "stage requires operations, but the current stream contains values",
+            )?,
+            S::Names { .. } | S::Attr { .. } | S::ResultTypes { .. } | S::OperandTypes { .. } => {
+                require(kind == Kind::Operations, "projection requires operations")?;
+                kind = Kind::Strings;
+            }
+            S::Tally { .. } => {
+                require(
+                    kind == Kind::Strings,
+                    "tally requires a value stream; use names or attr first",
+                )?;
+                kind = Kind::Map;
+            }
+            S::Unique { .. } => require(
+                matches!(
+                    kind,
+                    Kind::Operations | Kind::Strings | Kind::Types | Kind::Attributes
+                ),
+                "unique requires an operation or value stream",
+            )?,
+            S::Sort { .. }
+            | S::Min { .. }
+            | S::Max { .. }
+            | S::MinAll { .. }
+            | S::MaxAll { .. } => {
+                require(kind == Kind::Strings, "ordering requires a value stream")?
+            }
+            S::SortBy { selector, .. } if kind == Kind::Map => require(
+                selector.is_map_value(),
+                "sort_by on a map requires the scalar selector value",
+            )?,
+            S::SortBy { selector, .. }
+            | S::MinBy { selector, .. }
+            | S::MinAllBy { selector, .. }
+            | S::MaxBy { selector, .. }
+            | S::MaxAllBy { selector, .. } => {
+                require(
+                    kind == Kind::Operations,
+                    "ordering selector requires operations",
+                )?;
+                let selector = validate_expression(selector, Kind::Operations, names)?;
+                require(
+                    matches!(selector, Kind::Strings | Kind::String | Kind::Count),
+                    "ordering selector must produce exactly one string or count per operation",
+                )?;
+            }
+            S::Reverse { .. } | S::Head { .. } | S::Tail { .. } => require(
+                !matches!(kind, Kind::Count | Kind::String),
+                "stage requires a stream, map, or array",
+            )?,
+            S::Count { .. } | S::Check { .. } => {
+                require(
+                    !matches!(kind, Kind::Count | Kind::String),
+                    "stage requires a stream, map, or array",
+                )?;
+                if matches!(stage, S::Count { .. }) {
+                    kind = Kind::Count;
+                }
+            }
+            S::MapBy { key, value, .. } => {
+                require(kind == Kind::Operations, "map_by requires operations")?;
+                require(
+                    validate_expression(key, Kind::Operations, names)? == Kind::Strings,
+                    "map_by key must produce exactly one string",
+                )?;
+                validate_expression(value, Kind::Operations, names)?;
+                kind = Kind::Map;
+            }
+            S::Structured { step, .. } => match step {
+                N::One => {
+                    require(kind == Kind::Strings, "one requires a string stream")?;
+                    kind = Kind::String;
+                }
+                N::WhereExists(expression) => {
+                    require(kind == Kind::Operations, "where_exists requires operations")?;
+                    require(
+                        validate_expression(expression, Kind::Operations, names)?
+                            == Kind::Operations,
+                        "where_exists requires operations",
+                    )?;
+                }
+                N::MapBy { key, value } => {
+                    require(kind == Kind::Operations, "map_by requires operations")?;
+                    require(
+                        validate_expression(key, Kind::Operations, names)? == Kind::String,
+                        "map_by key must produce exactly one string",
+                    )?;
+                    validate_expression(value, Kind::Operations, names)?;
+                    kind = Kind::Map;
+                }
+                N::StringAttr(_) => {
+                    require(kind == Kind::Operations, "string_attr requires operations")?;
+                    kind = Kind::Strings;
+                }
+                N::Types { .. } => {
+                    require(kind == Kind::Operations, "types requires operations")?;
+                    kind = Kind::Types;
+                }
+                N::Attributes(_) => {
+                    require(kind == Kind::Operations, "attributes requires operations")?;
+                    kind = Kind::Attributes;
+                }
+                N::Spellings => {
+                    require(
+                        matches!(kind, Kind::Types | Kind::Attributes),
+                        "spellings requires native types or attributes",
+                    )?;
+                    kind = Kind::Strings;
+                }
+            },
+            S::Format { .. } => require(kind == Kind::Operations, "format requires operations")?,
+            S::Markdown { .. } => require(
+                matches!(kind, Kind::Map | Kind::Array | Kind::Strings | Kind::Count),
+                "markdown requires values, a count, or a map of scalars or maps of scalars",
+            )?,
+            S::Print { parts, .. } => {
+                validate_interpolation(parts, names)
+                    .map_err(|error| error.at(range(stage.range())))?;
+            }
+            S::Emit { .. } | S::Json { .. } => {}
+            S::Value { .. } => {
+                return Err(failure(
+                    "value is only valid as the selector in sort_by(value) on a map",
+                ));
+            }
+        }
+    }
+    Ok(kind)
+}
+
+fn validate_interpolation(
+    parts: &[model::PrintPart],
+    names: &BTreeMap<String, Kind>,
+) -> Result<(), EvaluationError> {
+    for part in parts {
+        if let model::PrintPart::Binding(name) = part {
+            let kind = names.get(name).ok_or_else(|| {
+                EvaluationError::new(format!(
+                    "binding `{name}` is unavailable in this evaluation context"
+                ))
+            })?;
+            if !matches!(kind, Kind::Strings | Kind::Count | Kind::Array) {
+                return Err(EvaluationError::new(
+                    "string interpolation requires a count or exactly one string",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_literal(
+    value: &model::JsonLiteral,
+    names: &BTreeMap<String, Kind>,
+) -> Result<(), EvaluationError> {
+    let binding = |name: &str| {
+        if names.contains_key(name) {
+            Ok(())
+        } else {
+            Err(EvaluationError::new(format!(
+                "binding `{name}` is unavailable in this evaluation context"
+            )))
+        }
+    };
+    match value {
+        model::JsonLiteral::Binding(name) => binding(name)?,
+        model::JsonLiteral::String(text) => validate_interpolation(text, names)?,
+        model::JsonLiteral::Array(values) => {
+            for value in values {
+                validate_literal(value, names)?;
+            }
+        }
+        model::JsonLiteral::Object(fields) => {
+            for (key, value) in fields {
+                validate_interpolation(key, names)?;
+                validate_literal(value, names)?;
+            }
+        }
+        model::JsonLiteral::Scalar(_) => {}
+    }
+    Ok(())
+}
