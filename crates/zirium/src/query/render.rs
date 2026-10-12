@@ -1,17 +1,18 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use super::{EvaluationError, EvaluationState, QueryOutput, parser::PrintPart};
+use super::{EvaluationError, QueryOutput, charge, check_items, parser::PrintPart};
 
 pub(super) fn interpolate(
     parts: &[PrintPart],
-    state: &mut EvaluationState,
+    bindings: &std::collections::BTreeMap<String, QueryOutput>,
+    state: &mut zirql::Budget,
 ) -> Result<String, EvaluationError> {
     let mut text = String::new();
     for part in parts {
         let value = match part {
             PrintPart::Literal(value) => value.clone(),
-            PrintPart::Binding(name) => match state.bindings.get(name).ok_or_else(|| {
+            PrintPart::Binding(name) => match bindings.get(name).ok_or_else(|| {
                 EvaluationError::new(format!(
                     "binding `{name}` is unavailable in this evaluation context"
                 ))
@@ -28,7 +29,7 @@ pub(super) fn interpolate(
                 }
             },
         };
-        state.charge(value.len())?;
+        charge(state, value.len())?;
         text.push_str(&value);
     }
     Ok(text)
@@ -36,7 +37,7 @@ pub(super) fn interpolate(
 
 pub(super) fn markdown(
     output: &QueryOutput,
-    state: &mut EvaluationState,
+    state: &mut zirql::Budget,
 ) -> Result<String, EvaluationError> {
     if let Some(entries) = map_entries(output) {
         return markdown_map(&entries, state);
@@ -74,7 +75,7 @@ fn map_entries(output: &QueryOutput) -> Option<Vec<(&String, &serde_json::Value)
 
 fn markdown_map(
     entries: &[(&String, &serde_json::Value)],
-    state: &mut EvaluationState,
+    state: &mut zirql::Budget,
 ) -> Result<String, EvaluationError> {
     if entries.is_empty() {
         return Ok(finish(String::new(), true));
@@ -135,17 +136,13 @@ fn scalar(value: &serde_json::Value) -> Result<String, EvaluationError> {
     }
 }
 
-fn table_budget(
-    rows: usize,
-    columns: usize,
-    state: &EvaluationState,
-) -> Result<(), EvaluationError> {
-    state.check_items(rows.saturating_add(1).saturating_mul(columns))
+fn table_budget(rows: usize, columns: usize, state: &zirql::Budget) -> Result<(), EvaluationError> {
+    check_items(state, rows.saturating_add(1).saturating_mul(columns))
 }
 
-fn header(columns: &[&str], state: &mut EvaluationState) -> Result<String, EvaluationError> {
+fn header(columns: &[&str], state: &mut zirql::Budget) -> Result<String, EvaluationError> {
     for column in columns {
-        state.charge(column.len().max(1))?;
+        charge(state, column.len().max(1))?;
     }
     let mut text = String::from("\n| ");
     text.push_str(
@@ -164,11 +161,11 @@ fn header(columns: &[&str], state: &mut EvaluationState) -> Result<String, Evalu
 fn row<'a>(
     text: &mut String,
     cells: impl IntoIterator<Item = &'a str>,
-    state: &mut EvaluationState,
+    state: &mut zirql::Budget,
 ) -> Result<(), EvaluationError> {
     text.push('|');
     for cell in cells {
-        state.charge(cell.len().max(1))?;
+        charge(state, cell.len().max(1))?;
         write!(text, " {} |", escape(cell)).expect("writing to a string");
     }
     text.push('\n');

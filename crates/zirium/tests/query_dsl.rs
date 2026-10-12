@@ -20,8 +20,12 @@ const SOURCE: &str = r#"
 "#;
 
 fn document() -> Document {
+    document_from(SOURCE)
+}
+
+fn document_from(source: &str) -> Document {
     let parsed =
-        ParsedFile::parse_with_registry(SOURCE.as_bytes(), DialectRegistry::baseline()).unwrap();
+        ParsedFile::parse_with_registry(source.as_bytes(), DialectRegistry::baseline()).unwrap();
     let lowered =
         lower_with_dialect_registry(&parsed, LoweringMode::Strict, DialectRegistry::baseline());
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
@@ -318,4 +322,130 @@ fn predicate_work_is_charged_per_operation_and_short_circuits() {
             .unwrap_err();
         assert!(error.to_string().contains("work limit exceeded"));
     }
+}
+
+#[test]
+fn stream_stages_and_nested_queries_preserve_exact_work_allowances() {
+    let mut document = document();
+    let scopes = ops().filter(op("test.scope"));
+    let nested = scopes.map_by(
+        &input().string_attr("sym_name").one(),
+        &input().children().count(),
+    );
+    for (query, allowance, expected) in [
+        (
+            ops().names().unique().tally(),
+            27,
+            BTreeMap::from([
+                ("test.scope".to_owned(), 1),
+                ("test.seed".to_owned(), 1),
+                ("test.add".to_owned(), 1),
+                ("test.end".to_owned(), 1),
+                ("test.idle".to_owned(), 1),
+            ]),
+        ),
+        (
+            nested,
+            40,
+            BTreeMap::from([("first".to_owned(), 3), ("second".to_owned(), 1)]),
+        ),
+    ] {
+        let limits = EvaluationLimits {
+            max_work: allowance,
+            max_items: 100,
+        };
+        assert_eq!(
+            query
+                .evaluate(&document, DialectRegistry::baseline(), limits)
+                .unwrap(),
+            expected
+        );
+        let error = query
+            .evaluate(
+                &document,
+                DialectRegistry::baseline(),
+                EvaluationLimits {
+                    max_work: allowance - 1,
+                    ..limits
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("work limit exceeded"));
+    }
+    for (source, allowance) in [
+        ("names | unique | tally", 17),
+        (
+            r#"filter(op("test.scope")) | map_by(attr("sym_name"), children | count)"#,
+            24,
+        ),
+    ] {
+        let query = Query::parse(source).unwrap();
+        let limits = EvaluationLimits {
+            max_work: allowance,
+            max_items: 100,
+        };
+        query
+            .evaluate_with_limits(
+                &mut document,
+                DialectRegistry::baseline(),
+                limits,
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        let error = query
+            .evaluate_with_limits(
+                &mut document,
+                DialectRegistry::baseline(),
+                EvaluationLimits {
+                    max_work: allowance - 1,
+                    ..limits
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("work limit exceeded"));
+    }
+}
+
+#[test]
+fn nested_root_queries_keep_the_frontend_nesting_boundary() {
+    // The admitted maximum needs the main-sized stack also used by the baseline evaluator.
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let mut document = document_from(r#""test.op"() : () -> ()"#);
+            let mut text = "root(true)".to_owned();
+            let mut builder = input().root(always(true));
+            for _ in 0..62 {
+                text = format!("({text})");
+                builder = input().where_exists(&builder);
+            }
+            assert_eq!(document.query(&builder).unwrap().len(), 1);
+            Query::parse(&text)
+                .unwrap()
+                .evaluate(&mut document, DialectRegistry::baseline(), |_, output| {
+                    let QueryOutput::Operations(selected) = output else {
+                        panic!("root must retain operations")
+                    };
+                    assert_eq!(selected.len(), 1);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(
+                Query::parse(&format!("({text})"))
+                    .unwrap_err()
+                    .message
+                    .contains("nesting limit")
+            );
+            assert!(
+                document
+                    .query(&input().where_exists(&builder))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("nesting limit")
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

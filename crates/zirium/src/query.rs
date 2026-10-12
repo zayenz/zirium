@@ -21,6 +21,7 @@ pub use builder::*;
 pub use diff::*;
 mod literal;
 pub mod parser;
+mod pipeline;
 mod render;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,11 +56,68 @@ pub struct EvaluationOptions {
     pub strict_unknown_references: bool,
 }
 
-struct EvaluationState {
+// Document access and host policy stay outside the caller-owned core budget.
+struct EvaluationContext<'a, 'document> {
+    document: &'a mut DocumentAccess<'document>,
+    registry: &'a DialectRegistry,
     bindings: BTreeMap<String, QueryOutput>,
-    remaining: usize,
-    max_items: usize,
     options: EvaluationOptions,
+    output: OutputMode,
+    emit: &'a mut dyn FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+}
+
+#[derive(Clone, Copy)]
+enum OutputMode {
+    Textual,
+    Native,
+}
+
+fn evaluation_budget(limits: EvaluationLimits) -> zirql::Budget {
+    zirql::Budget::new(zirql::Limits {
+        work: limits.max_work,
+        items: limits.max_items,
+        nesting: parser::DEFAULT_NESTING_LIMIT,
+    })
+}
+
+fn core_error(error: zirql::QueryError) -> EvaluationError {
+    EvaluationError::new(match error.message.as_str() {
+        "work limit exceeded" => {
+            "query work limit exceeded; fixed points may need unique or a larger work limit"
+                .to_owned()
+        }
+        "item limit exceeded" => {
+            "query stream size limit exceeded; use unique or a larger item limit".to_owned()
+        }
+        "nesting limit exceeded" | "nested evaluation call limit exceeded" => {
+            "query nesting limit exceeded".to_owned()
+        }
+        _ => error.message,
+    })
+}
+
+fn charge(budget: &mut zirql::Budget, work: usize) -> Result<(), EvaluationError> {
+    budget
+        .charge(work, zirql::Location::Query(0..0))
+        .map_err(core_error)
+}
+
+fn check_items(budget: &zirql::Budget, count: usize) -> Result<(), EvaluationError> {
+    budget
+        .check_items(count, zirql::Location::Query(0..0))
+        .map_err(core_error)
+}
+
+fn collect<T>(
+    budget: &zirql::Budget,
+    values: impl Iterator<Item = T>,
+) -> Result<Vec<T>, EvaluationError> {
+    let mut collected = Vec::new();
+    for value in values {
+        check_items(budget, collected.len().saturating_add(1))?;
+        collected.push(value);
+    }
+    Ok(collected)
 }
 
 /// Graph traversal shared by ordinary and diff query evaluation.
@@ -82,15 +140,10 @@ pub fn evaluate_operation_traversal(
     limits: EvaluationLimits,
     options: EvaluationOptions,
 ) -> Result<(Vec<OperationId>, usize), EvaluationError> {
-    let mut state = EvaluationState {
-        bindings: BTreeMap::new(),
-        remaining: limits.max_work,
-        max_items: limits.max_items,
-        options,
-    };
+    let mut state = evaluation_budget(limits);
     let result = match traversal {
         OperationTraversal::Reachable => {
-            evaluate_reachable(document, operations, registry, &mut state)
+            evaluate_reachable(document, operations, registry, options, &mut state)
         }
         OperationTraversal::Closure => {
             evaluate_closure(document, operations, registry, false, &mut state)
@@ -100,33 +153,7 @@ pub fn evaluate_operation_traversal(
             evaluate_forward_slice(document, operations, &mut state)
         }
     }?;
-    Ok((result, limits.max_work - state.remaining))
-}
-
-impl EvaluationState {
-    fn charge(&mut self, work: usize) -> Result<(), EvaluationError> {
-        self.remaining = self.remaining.checked_sub(work).ok_or_else(|| {
-            EvaluationError::new(
-                "query work limit exceeded; fixed points may need unique or a larger work limit",
-            )
-        })?;
-        Ok(())
-    }
-
-    fn check_items(&self, count: usize) -> Result<(), EvaluationError> {
-        if count > self.max_items {
-            return Err(EvaluationError::new(
-                "query stream size limit exceeded; use unique or a larger item limit",
-            ));
-        }
-        Ok(())
-    }
-
-    fn collect<T>(&self, values: impl Iterator<Item = T>) -> Result<Vec<T>, EvaluationError> {
-        let values: Vec<_> = values.take(self.max_items.saturating_add(1)).collect();
-        self.check_items(values.len())?;
-        Ok(values)
-    }
+    Ok((result, limits.max_work - state.remaining_work()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -310,8 +337,11 @@ impl Query {
         mut emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
         let mut access = DocumentAccess::Mutable(document);
-        let document = &mut access;
-        let mut budget = EvaluationState {
+        let mut budget = evaluation_budget(limits);
+        let input = QueryOutput::Operations(collect(&budget, access.operations())?);
+        let mut context = EvaluationContext {
+            document: &mut access,
+            registry,
             bindings: document_name
                 .map(|name| {
                     BTreeMap::from([(
@@ -320,46 +350,31 @@ impl Query {
                     )])
                 })
                 .unwrap_or_default(),
-            remaining: limits.max_work,
-            max_items: limits.max_items,
             options,
+            output: OutputMode::Textual,
+            emit: &mut emit,
         };
-        let input = QueryOutput::Operations(budget.collect(document.operations())?);
         for statement in &self.statements {
             let expression = match statement {
                 model::Statement::Binding { expression, .. }
                 | model::Statement::Do(expression)
                 | model::Statement::Query(expression) => expression,
             };
-            let output = evaluate_expression(
-                expression,
-                document,
-                registry,
-                input.clone(),
-                &mut emit,
-                &mut budget,
-            )?;
+            let output = evaluate_expression(expression, &mut context, input.clone(), &mut budget)?;
             match statement {
                 model::Statement::Binding { name, .. } => {
-                    budget.bindings.insert(name.clone(), output);
+                    context.bindings.insert(name.clone(), output);
                 }
                 model::Statement::Do(_) => {}
                 model::Statement::Query(_) if !expression.ends_with_emission() => {
-                    emit(document, output)?
+                    (context.emit)(context.document, output)?
                 }
                 model::Statement::Query(_) => {}
             }
         }
-        let output = evaluate_expression(
-            &self.expression,
-            document,
-            registry,
-            input,
-            &mut emit,
-            &mut budget,
-        )?;
+        let output = evaluate_expression(&self.expression, &mut context, input, &mut budget)?;
         if self.emit_final_result && !self.expression.ends_with_emission() {
-            emit(document, output)?;
+            (context.emit)(context.document, output)?;
         }
         Ok(())
     }
@@ -392,485 +407,485 @@ impl DocumentAccess<'_> {
 
 fn evaluate_expression(
     expression: &model::Expression,
-    document: &mut DocumentAccess<'_>,
-    registry: &DialectRegistry,
+    context: &mut EvaluationContext<'_, '_>,
     input: QueryOutput,
-    emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
-    budget: &mut EvaluationState,
+    budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     if expression.rest.is_empty() {
-        return evaluate_pipeline(&expression.first, document, registry, input, emit, budget);
+        return evaluate_pipeline(&expression.first, context, input, budget);
     }
-    let first = evaluate_pipeline(
-        &expression.first,
-        document,
-        registry,
-        input.clone(),
-        emit,
-        budget,
-    )?;
-    let mut selected = first;
+    let mut selected = evaluate_pipeline(&expression.first, context, input.clone(), budget)?;
     for (operator, stages) in &expression.rest {
-        let right = evaluate_pipeline(stages, document, registry, input.clone(), emit, budget)?;
-        selected = evaluate_set_operator(document, *operator, selected, right)?;
-        budget.check_items(output_len(&selected))?;
+        let right = evaluate_pipeline(stages, context, input.clone(), budget)?;
+        selected = evaluate_set_operator(context.document, *operator, selected, right)?;
+        check_items(budget, output_len(&selected))?;
     }
     Ok(selected)
 }
 
 fn evaluate_pipeline(
     stages: &[model::Stage],
-    document: &mut DocumentAccess<'_>,
-    registry: &DialectRegistry,
+    context: &mut EvaluationContext<'_, '_>,
     input: QueryOutput,
-    emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
-    budget: &mut EvaluationState,
+    budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     let mut current = input;
-    for stage in stages {
-        budget.charge(output_size(&current).max(1))?;
-        match stage {
-            model::Stage::Structured { step, .. } => {
-                current = evaluate_structured(step, document, registry, current, emit, budget)?;
+    let mut remaining = stages;
+    while let Some((stage, rest)) = remaining.split_first() {
+        let segment_len = pipeline::segment_len(remaining, &current);
+        let terminal_count = matches!(
+            remaining.get(segment_len.saturating_sub(1)),
+            Some(model::Stage::Count { .. })
+        );
+        if segment_len != 0 {
+            current = pipeline::evaluate(&remaining[..segment_len], context, current, budget)?;
+            remaining = &remaining[segment_len..];
+        } else {
+            charge(budget, output_size(&current).max(1))?;
+            current = evaluate_host_stage(stage, context, current, budget)?;
+            remaining = rest;
+        }
+        if terminal_count {
+            return Ok(current);
+        }
+        check_items(budget, output_size(&current))?;
+    }
+    Ok(current)
+}
+
+// One dispatcher owns all host stages, including those run inside stream segments.
+fn evaluate_host_stage(
+    stage: &model::Stage,
+    context: &mut EvaluationContext<'_, '_>,
+    mut current: QueryOutput,
+    budget: &mut zirql::Budget,
+) -> Result<QueryOutput, EvaluationError> {
+    match stage {
+        model::Stage::Structured { step, .. } => {
+            current = evaluate_structured(step, context, current, budget)?;
+        }
+        model::Stage::Literal { value, .. } => {
+            let value =
+                literal::evaluate(value, context.document, &context.bindings, budget, &mut 0)?;
+            if value_depth(&value) > parser::DEFAULT_NESTING_LIMIT {
+                return Err(EvaluationError::new("JSON nesting limit exceeded"));
             }
-            model::Stage::Literal { value, .. } => {
-                let value = literal::evaluate(value, document, budget, &mut 0)?;
-                if value_depth(&value) > parser::DEFAULT_NESTING_LIMIT {
-                    return Err(EvaluationError::new("JSON nesting limit exceeded"));
-                }
-                current = match value {
-                    serde_json::Value::Object(entries) => QueryOutput::Map(entries),
-                    serde_json::Value::Array(values) => QueryOutput::Array(values),
-                    _ => unreachable!("literal stages start with an object or array"),
-                };
-            }
-            model::Stage::Binding { name, .. } => {
-                let binding = budget.bindings.get(name).cloned().ok_or_else(|| {
-                    EvaluationError::new(format!(
-                        "binding `{name}` is unavailable in this evaluation context"
-                    ))
-                })?;
-                budget.charge(output_size(&binding).max(1))?;
-                current = binding;
-            }
-            model::Stage::Tally { .. } => {
-                let QueryOutput::Values(values) = current else {
+            current = match value {
+                serde_json::Value::Object(entries) => QueryOutput::Map(entries),
+                serde_json::Value::Array(values) => QueryOutput::Array(values),
+                _ => unreachable!("literal stages start with an object or array"),
+            };
+        }
+        model::Stage::Binding { name, .. } => {
+            let binding = context.bindings.get(name).cloned().ok_or_else(|| {
+                EvaluationError::new(format!(
+                    "binding `{name}` is unavailable in this evaluation context"
+                ))
+            })?;
+            charge(budget, output_size(&binding).max(1))?;
+            current = binding;
+        }
+        model::Stage::Tally { .. } => {
+            return Err(EvaluationError::new(
+                "tally requires a value stream; use names or attr first",
+            ));
+        }
+        model::Stage::Value { .. } => {
+            return Err(EvaluationError::new(
+                "value is only valid as the selector in sort_by(value) on a map",
+            ));
+        }
+        model::Stage::MapBy { key, value, .. } => {
+            let selected = take_operations(current, "map_by")?;
+            let mut entries = serde_json::Map::new();
+            let mut items = 0usize;
+            for operation in selected {
+                let item = QueryOutput::Operations(vec![operation]);
+                let key = evaluate_expression(key, context, item.clone(), budget)?;
+                let QueryOutput::Values(mut keys) = key else {
                     return Err(EvaluationError::new(
-                        "tally requires a value stream; use names or attr first",
+                        "map_by key must produce exactly one string",
                     ));
                 };
-                let mut counts = BTreeMap::<String, usize>::new();
-                for value in values {
-                    *counts.entry(value).or_default() += 1;
+                if keys.len() != 1 {
+                    return Err(EvaluationError::new(
+                        "map_by key must produce exactly one string",
+                    ));
                 }
-                current = QueryOutput::Map(
-                    counts
-                        .into_iter()
-                        .map(|(key, count)| (key, serde_json::json!(count)))
-                        .collect(),
-                );
+                let key = keys.pop().unwrap();
+                if entries.contains_key(&key) {
+                    return Err(EvaluationError::new(format!(
+                        "map_by encountered duplicate key `{key}`; select unique keys"
+                    )));
+                }
+                let value = evaluate_expression(value, context, item, budget)?;
+                items = items.saturating_add(output_size(&value).saturating_add(1));
+                check_items(budget, items)?;
+                charge(budget, output_size(&value))?;
+                let value = output_value(context.document, &value);
+                if value_depth(&value) >= parser::DEFAULT_NESTING_LIMIT {
+                    return Err(EvaluationError::new("map nesting limit exceeded"));
+                }
+                entries.insert(key, value);
             }
-            model::Stage::Value { .. } => {
+            current = QueryOutput::Map(entries);
+        }
+        model::Stage::Reachable { .. } => {
+            current = QueryOutput::Operations(evaluate_reachable(
+                context.document,
+                take_operations(current, "reachable")?,
+                context.registry,
+                context.options,
+                budget,
+            )?);
+        }
+        model::Stage::Input { .. } => {
+            current = QueryOutput::Operations(collect(budget, context.document.operations())?)
+        }
+        model::Stage::Filter { .. } => {
+            return Err(EvaluationError::new(
+                "filter requires operations, but the current stream contains values",
+            ));
+        }
+        model::Stage::Closure { .. } => {
+            let selected = take_operations(current, "closure")?;
+            current = QueryOutput::Operations(evaluate_closure(
+                context.document,
+                selected,
+                context.registry,
+                false,
+                budget,
+            )?);
+        }
+        model::Stage::Slice { .. } => {
+            let selected = take_operations(current, "slice")?;
+            current = QueryOutput::Operations(evaluate_slice(context.document, selected, budget)?);
+        }
+        model::Stage::ForwardSlice { .. } => {
+            let selected = take_operations(current, "forward_slice")?;
+            current = QueryOutput::Operations(evaluate_forward_slice(
+                context.document,
+                selected,
+                budget,
+            )?);
+        }
+        model::Stage::Defs { index, .. } => {
+            let selected = take_operations(current, "defs")?;
+            current = QueryOutput::Operations(evaluate_defs(
+                context.document,
+                &selected,
+                *index,
+                budget,
+            )?);
+        }
+        model::Stage::Users { index, .. } => {
+            let selected = take_operations(current, "users")?;
+            current = QueryOutput::Operations(evaluate_users(
+                context.document,
+                &selected,
+                *index,
+                budget,
+            )?);
+        }
+        model::Stage::Parent { .. } => {
+            let selected = take_operations(current, "parent")?;
+            current =
+                QueryOutput::Operations(evaluate_parent(context.document, &selected, budget)?);
+        }
+        model::Stage::Children { .. } => {
+            let selected = take_operations(current, "children")?;
+            current =
+                QueryOutput::Operations(evaluate_children(context.document, &selected, budget)?);
+        }
+        model::Stage::Root { predicate, .. } => {
+            let selected = take_operations(current, "root")?;
+            current = QueryOutput::Operations(evaluate_root(
+                context.document,
+                &selected,
+                predicate,
+                budget,
+            )?);
+        }
+        model::Stage::Subtree { .. } => {
+            let selected = take_operations(current, "subtree")?;
+            let mut expanded = Vec::new();
+            for operation in selected {
+                append_subtree(context.document, operation, &mut expanded, budget)?;
+            }
+            current = QueryOutput::Operations(expanded);
+        }
+        model::Stage::Unique { .. } => {
+            return Err(EvaluationError::new(
+                "unique requires an operation or value stream",
+            ));
+        }
+        model::Stage::Sort { .. } => {
+            let QueryOutput::Values(values) = &mut current else {
                 return Err(EvaluationError::new(
-                    "value is only valid as the selector in sort_by(value) on a map",
+                    "sort requires a value stream; use names or attr first",
+                ));
+            };
+            values.sort();
+        }
+        model::Stage::SortBy { selector, .. } => {
+            if selector.is_map_value() {
+                current = sort_map_by_value(current)?;
+            } else {
+                if matches!(current, QueryOutput::Map(_) | QueryOutput::RankedMap(_)) {
+                    return Err(EvaluationError::new(
+                        "sort_by on a map requires the scalar selector value",
+                    ));
+                }
+                let selected = take_operations(current, "sort_by")?;
+                current = QueryOutput::Operations(sort_operations_by(
+                    selected, selector, context, budget, false, None,
+                )?);
+            }
+        }
+        model::Stage::Reverse { .. } => match &mut current {
+            QueryOutput::Operations(values) => values.reverse(),
+            QueryOutput::Values(values) => values.reverse(),
+            QueryOutput::Native(NativeValue::Types(values)) => values.reverse(),
+            QueryOutput::Native(NativeValue::Attributes(values)) => values.reverse(),
+            QueryOutput::RankedMap(entries) => entries.reverse(),
+            _ => {
+                return Err(EvaluationError::new(
+                    "reverse requires an operation stream, value stream, or ranked map",
                 ));
             }
-            model::Stage::MapBy { key, value, .. } => {
-                let selected = take_operations(current, "map_by")?;
-                let mut entries = serde_json::Map::new();
-                let mut items = 0usize;
-                for operation in selected {
-                    let item = QueryOutput::Operations(vec![operation]);
-                    let key =
-                        evaluate_expression(key, document, registry, item.clone(), emit, budget)?;
-                    let QueryOutput::Values(mut keys) = key else {
-                        return Err(EvaluationError::new(
-                            "map_by key must produce exactly one string",
-                        ));
-                    };
-                    if keys.len() != 1 {
-                        return Err(EvaluationError::new(
-                            "map_by key must produce exactly one string",
-                        ));
-                    }
-                    let key = keys.pop().unwrap();
-                    if entries.contains_key(&key) {
-                        return Err(EvaluationError::new(format!(
-                            "map_by encountered duplicate key `{key}`; select unique keys"
-                        )));
-                    }
-                    let value = evaluate_expression(value, document, registry, item, emit, budget)?;
-                    items = items.saturating_add(output_size(&value).saturating_add(1));
-                    budget.check_items(items)?;
-                    budget.charge(output_size(&value))?;
-                    let value = output_value(document, &value);
-                    if value_depth(&value) >= parser::DEFAULT_NESTING_LIMIT {
-                        return Err(EvaluationError::new("map nesting limit exceeded"));
-                    }
-                    entries.insert(key, value);
-                }
-                current = QueryOutput::Map(entries);
-            }
-            model::Stage::Reachable { .. } => {
-                current = QueryOutput::Operations(evaluate_reachable(
-                    document,
-                    take_operations(current, "reachable")?,
-                    registry,
-                    budget,
-                )?);
-            }
-            model::Stage::Input { .. } => {
-                current = QueryOutput::Operations(budget.collect(document.operations())?)
-            }
-            model::Stage::Filter { predicate, .. } => {
-                let selected = operations_mut(&mut current, "filter")?;
-                let mut retained = 0;
-                for index in 0..selected.len() {
-                    let operation = selected[index];
-                    if evaluate_predicate(predicate, document, operation, budget)? {
-                        selected[retained] = operation;
-                        retained += 1;
-                    }
-                }
-                selected.truncate(retained);
-            }
-            model::Stage::Closure { .. } => {
-                let selected = take_operations(current, "closure")?;
+        },
+        model::Stage::Head { count, .. } => truncate_stream(&mut current, *count, false)?,
+        model::Stage::Tail { count, .. } => truncate_stream(&mut current, *count, true)?,
+        model::Stage::Min { .. } => {
+            current = QueryOutput::Values(extreme_value(current, false, false)?);
+        }
+        model::Stage::Max { .. } => {
+            current = QueryOutput::Values(extreme_value(current, true, false)?);
+        }
+        model::Stage::MinAll { .. } => {
+            current = QueryOutput::Values(extreme_value(current, false, true)?);
+        }
+        model::Stage::MaxAll { .. } => {
+            current = QueryOutput::Values(extreme_value(current, true, true)?);
+        }
+        model::Stage::MinBy { selector, .. } => {
+            let selected = take_operations(current, "min_by")?;
+            current = QueryOutput::Operations(sort_operations_by(
+                selected,
+                selector,
+                context,
+                budget,
+                false,
+                Some(false),
+            )?);
+        }
+        model::Stage::MaxBy { selector, .. } => {
+            let selected = take_operations(current, "max_by")?;
+            current = QueryOutput::Operations(sort_operations_by(
+                selected,
+                selector,
+                context,
+                budget,
+                true,
+                Some(false),
+            )?);
+        }
+        model::Stage::MinAllBy { selector, .. } => {
+            let selected = take_operations(current, "min_all_by")?;
+            current = QueryOutput::Operations(sort_operations_by(
+                selected,
+                selector,
+                context,
+                budget,
+                false,
+                Some(true),
+            )?);
+        }
+        model::Stage::MaxAllBy { selector, .. } => {
+            let selected = take_operations(current, "max_all_by")?;
+            current = QueryOutput::Operations(sort_operations_by(
+                selected,
+                selector,
+                context,
+                budget,
+                true,
+                Some(true),
+            )?);
+        }
+        model::Stage::Attr { name, .. } => {
+            let selected = take_operations(current, "attr")?;
+            current = QueryOutput::Values(evaluate_attr(context.document, &selected, name)?);
+        }
+        model::Stage::Names { .. } => {
+            let selected = take_operations(current, "names")?;
+            current = QueryOutput::Values(
+                selected
+                    .iter()
+                    .filter_map(|&op| context.document.operation_name(op).map(str::to_owned))
+                    .collect(),
+            );
+        }
+        model::Stage::ResultTypes { .. } => {
+            let selected = take_operations(current, "result_types")?;
+            current = QueryOutput::Values(collect(
+                budget,
+                selected
+                    .iter()
+                    .flat_map(|&op| context.document.result_types(op).unwrap_or(&[]))
+                    .filter_map(|&ty| context.document.type_spelling(ty).map(str::to_owned)),
+            )?);
+        }
+        model::Stage::OperandTypes { .. } => {
+            let selected = take_operations(current, "operand_types")?;
+            current = QueryOutput::Values(collect(
+                budget,
+                selected
+                    .iter()
+                    .flat_map(|&op| context.document.operands(op).unwrap_or(&[]))
+                    .filter_map(|&value| context.document.value_type(value).map(str::to_owned)),
+            )?);
+        }
+        model::Stage::Group { expression, .. } => {
+            current = evaluate_expression(expression, context, current, budget)?;
+        }
+        model::Stage::Fixpoint { expression, .. } => {
+            if expression.is_single_closure() {
                 current = QueryOutput::Operations(evaluate_closure(
-                    document, selected, registry, false, budget,
-                )?);
-            }
-            model::Stage::Slice { .. } => {
-                let selected = take_operations(current, "slice")?;
-                current = QueryOutput::Operations(evaluate_slice(document, selected, budget)?);
-            }
-            model::Stage::ForwardSlice { .. } => {
-                let selected = take_operations(current, "forward_slice")?;
-                current =
-                    QueryOutput::Operations(evaluate_forward_slice(document, selected, budget)?);
-            }
-            model::Stage::Defs { index, .. } => {
-                let selected = take_operations(current, "defs")?;
-                current =
-                    QueryOutput::Operations(evaluate_defs(document, &selected, *index, budget)?);
-            }
-            model::Stage::Users { index, .. } => {
-                let selected = take_operations(current, "users")?;
-                current =
-                    QueryOutput::Operations(evaluate_users(document, &selected, *index, budget)?);
-            }
-            model::Stage::Parent { .. } => {
-                let selected = take_operations(current, "parent")?;
-                current = QueryOutput::Operations(evaluate_parent(document, &selected, budget)?);
-            }
-            model::Stage::Children { .. } => {
-                let selected = take_operations(current, "children")?;
-                current = QueryOutput::Operations(evaluate_children(document, &selected, budget)?);
-            }
-            model::Stage::Root { predicate, .. } => {
-                let selected = take_operations(current, "root")?;
-                current =
-                    QueryOutput::Operations(evaluate_root(document, &selected, predicate, budget)?);
-            }
-            model::Stage::Subtree { .. } => {
-                let selected = take_operations(current, "subtree")?;
-                let mut expanded = Vec::new();
-                for operation in selected {
-                    append_subtree(document, operation, &mut expanded, budget)?;
-                }
-                current = QueryOutput::Operations(expanded);
-            }
-            model::Stage::Unique { .. } => match &mut current {
-                QueryOutput::Operations(selected) => retain_unique(selected),
-                QueryOutput::Values(values) => retain_unique(values),
-                QueryOutput::Native(NativeValue::Types(values)) => retain_unique(values),
-                QueryOutput::Native(NativeValue::Attributes(values)) => retain_unique(values),
-                _ => {
-                    return Err(EvaluationError::new(
-                        "unique requires an operation or value stream",
-                    ));
-                }
-            },
-            model::Stage::Sort { .. } => {
-                let QueryOutput::Values(values) = &mut current else {
-                    return Err(EvaluationError::new(
-                        "sort requires a value stream; use names or attr first",
-                    ));
-                };
-                values.sort();
-            }
-            model::Stage::SortBy { selector, .. } => {
-                if selector.is_map_value() {
-                    current = sort_map_by_value(current)?;
-                } else {
-                    if matches!(current, QueryOutput::Map(_) | QueryOutput::RankedMap(_)) {
-                        return Err(EvaluationError::new(
-                            "sort_by on a map requires the scalar selector value",
-                        ));
-                    }
-                    let selected = take_operations(current, "sort_by")?;
-                    current = QueryOutput::Operations(sort_operations_by(
-                        selected, selector, document, registry, emit, budget, false, None,
-                    )?);
-                }
-            }
-            model::Stage::Reverse { .. } => match &mut current {
-                QueryOutput::Operations(values) => values.reverse(),
-                QueryOutput::Values(values) => values.reverse(),
-                QueryOutput::Native(NativeValue::Types(values)) => values.reverse(),
-                QueryOutput::Native(NativeValue::Attributes(values)) => values.reverse(),
-                QueryOutput::RankedMap(entries) => entries.reverse(),
-                _ => {
-                    return Err(EvaluationError::new(
-                        "reverse requires an operation stream, value stream, or ranked map",
-                    ));
-                }
-            },
-            model::Stage::Head { count, .. } => truncate_stream(&mut current, *count, false)?,
-            model::Stage::Tail { count, .. } => truncate_stream(&mut current, *count, true)?,
-            model::Stage::Min { .. } => {
-                current = QueryOutput::Values(extreme_value(current, false, false)?);
-            }
-            model::Stage::Max { .. } => {
-                current = QueryOutput::Values(extreme_value(current, true, false)?);
-            }
-            model::Stage::MinAll { .. } => {
-                current = QueryOutput::Values(extreme_value(current, false, true)?);
-            }
-            model::Stage::MaxAll { .. } => {
-                current = QueryOutput::Values(extreme_value(current, true, true)?);
-            }
-            model::Stage::MinBy { selector, .. } => {
-                let selected = take_operations(current, "min_by")?;
-                current = QueryOutput::Operations(sort_operations_by(
-                    selected,
-                    selector,
-                    document,
-                    registry,
-                    emit,
-                    budget,
-                    false,
-                    Some(false),
-                )?);
-            }
-            model::Stage::MaxBy { selector, .. } => {
-                let selected = take_operations(current, "max_by")?;
-                current = QueryOutput::Operations(sort_operations_by(
-                    selected,
-                    selector,
-                    document,
-                    registry,
-                    emit,
-                    budget,
+                    context.document,
+                    take_operations(current, "closure")?,
+                    context.registry,
                     true,
-                    Some(false),
-                )?);
-            }
-            model::Stage::MinAllBy { selector, .. } => {
-                let selected = take_operations(current, "min_all_by")?;
-                current = QueryOutput::Operations(sort_operations_by(
-                    selected,
-                    selector,
-                    document,
-                    registry,
-                    emit,
                     budget,
-                    false,
-                    Some(true),
                 )?);
+                return Ok(current);
             }
-            model::Stage::MaxAllBy { selector, .. } => {
-                let selected = take_operations(current, "max_all_by")?;
-                current = QueryOutput::Operations(sort_operations_by(
-                    selected,
-                    selector,
-                    document,
-                    registry,
-                    emit,
-                    budget,
-                    true,
-                    Some(true),
-                )?);
-            }
-            model::Stage::Attr { name, .. } => {
-                let selected = take_operations(current, "attr")?;
-                current = QueryOutput::Values(evaluate_attr(document, &selected, name)?);
-            }
-            model::Stage::Names { .. } => {
-                let selected = take_operations(current, "names")?;
-                current = QueryOutput::Values(
-                    selected
-                        .iter()
-                        .filter_map(|&op| document.operation_name(op).map(str::to_owned))
-                        .collect(),
-                );
-            }
-            model::Stage::ResultTypes { .. } => {
-                let selected = take_operations(current, "result_types")?;
-                current = QueryOutput::Values(
-                    budget.collect(
-                        selected
-                            .iter()
-                            .flat_map(|&op| document.result_types(op).unwrap_or(&[]))
-                            .filter_map(|&ty| document.type_spelling(ty).map(str::to_owned)),
-                    )?,
-                );
-            }
-            model::Stage::OperandTypes { .. } => {
-                let selected = take_operations(current, "operand_types")?;
-                current = QueryOutput::Values(
-                    budget.collect(
-                        selected
-                            .iter()
-                            .flat_map(|&op| document.operands(op).unwrap_or(&[]))
-                            .filter_map(|&value| document.value_type(value).map(str::to_owned)),
-                    )?,
-                );
-            }
-            model::Stage::Group { expression, .. } => {
-                current =
-                    evaluate_expression(expression, document, registry, current, emit, budget)?;
-            }
-            model::Stage::Fixpoint { expression, .. } => {
-                if expression.is_single_closure() {
-                    current = QueryOutput::Operations(evaluate_closure(
-                        document,
-                        take_operations(current, "closure")?,
-                        registry,
-                        true,
-                        budget,
-                    )?);
-                    continue;
+            // Brent's cycle detection keeps one checkpoint instead of storing
+            // every intermediate selection. Read-only bodies produce deterministic selections.
+            let mut checkpoint = current.clone();
+            let mut power = 1usize;
+            let mut distance = 0usize;
+            loop {
+                let next = evaluate_expression(expression, context, current.clone(), budget)?;
+                if matches!(
+                    next,
+                    QueryOutput::Count(_)
+                        | QueryOutput::Json(_)
+                        | QueryOutput::Text(_)
+                        | QueryOutput::Map(_)
+                        | QueryOutput::RankedMap(_)
+                        | QueryOutput::Array(_)
+                ) {
+                    return Err(EvaluationError::new(
+                        "fixpoint requires an operation or value stream",
+                    ));
                 }
-                // Brent's cycle detection keeps one checkpoint instead of storing
-                // every intermediate selection. Read-only bodies produce deterministic selections.
-                let mut checkpoint = current.clone();
-                let mut power = 1usize;
-                let mut distance = 0usize;
-                loop {
-                    let next = evaluate_expression(
-                        expression,
-                        document,
-                        registry,
-                        current.clone(),
-                        emit,
-                        budget,
-                    )?;
-                    if matches!(
-                        next,
-                        QueryOutput::Count(_)
-                            | QueryOutput::Json(_)
-                            | QueryOutput::Text(_)
-                            | QueryOutput::Map(_)
-                            | QueryOutput::RankedMap(_)
-                            | QueryOutput::Array(_)
-                    ) {
-                        return Err(EvaluationError::new(
-                            "fixpoint requires an operation or value stream",
-                        ));
-                    }
-                    budget.charge(1)?;
-                    if next == current {
-                        break;
-                    }
-                    if next == checkpoint {
-                        return Err(EvaluationError {
-                            message:
-                                "fixpoint query cycles without reaching an unchanged selection"
-                                    .into(),
-                        });
-                    }
-                    current = next;
-                    distance += 1;
-                    if distance == power {
-                        checkpoint = current.clone();
-                        power = power.saturating_mul(2);
-                        distance = 0;
-                    }
+                charge(budget, 1)?;
+                if next == current {
+                    break;
+                }
+                if next == checkpoint {
+                    return Err(EvaluationError {
+                        message: "fixpoint query cycles without reaching an unchanged selection"
+                            .into(),
+                    });
+                }
+                current = next;
+                distance += 1;
+                if distance == power {
+                    checkpoint = current.clone();
+                    power = power.saturating_mul(2);
+                    distance = 0;
                 }
             }
-            model::Stage::SetAttr { name, value, .. } => {
-                let selected = operations(&current, "set_attr")?;
-                let mut editor = document.editable()?.edit(registry).map_err(edit_error)?;
-                for operation in selected.iter().copied().collect::<HashSet<_>>() {
+        }
+        model::Stage::SetAttr { name, value, .. } => {
+            let selected = operations(&current, "set_attr")?;
+            let mut editor = context
+                .document
+                .editable()?
+                .edit(context.registry)
+                .map_err(edit_error)?;
+            for operation in selected.iter().copied().collect::<HashSet<_>>() {
+                editor
+                    .set_attribute(operation, AttributeSpec::string(name.clone(), value))
+                    .map_err(edit_error)?;
+            }
+            editor.commit().map_err(edit_error)?;
+        }
+        model::Stage::RemoveAttr { name, .. } => {
+            let selected = operations(&current, "remove_attr")?;
+            let targets = selected
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .filter(|&operation| {
+                    context.document.operation_is_unparsed(operation) == Some(true)
+                        || context.document.attribute_id(operation, name).is_some()
+                })
+                .collect::<Vec<_>>();
+            if !targets.is_empty() {
+                let mut editor = context
+                    .document
+                    .editable()?
+                    .edit(context.registry)
+                    .map_err(edit_error)?;
+                for operation in targets {
                     editor
-                        .set_attribute(operation, AttributeSpec::string(name.clone(), value))
+                        .remove_attribute(operation, name)
                         .map_err(edit_error)?;
                 }
                 editor.commit().map_err(edit_error)?;
             }
-            model::Stage::RemoveAttr { name, .. } => {
-                let selected = operations(&current, "remove_attr")?;
-                let targets = selected
-                    .iter()
-                    .copied()
-                    .collect::<HashSet<_>>()
-                    .into_iter()
-                    .filter(|&operation| {
-                        document.operation_is_unparsed(operation) == Some(true)
-                            || document.attribute_id(operation, name).is_some()
-                    })
-                    .collect::<Vec<_>>();
-                if !targets.is_empty() {
-                    let mut editor = document.editable()?.edit(registry).map_err(edit_error)?;
-                    for operation in targets {
-                        editor
-                            .remove_attribute(operation, name)
-                            .map_err(edit_error)?;
-                    }
-                    editor.commit().map_err(edit_error)?;
-                }
-            }
-            model::Stage::Check {
-                expected, message, ..
-            } => {
-                let actual = countable_len(&current, "check")?;
-                let failure = match expected {
-                    Some(expected) if actual != *expected => {
-                        Some(format!("expected {expected} items, got {actual}"))
-                    }
-                    None if actual == 0 => Some("expected at least one item, got 0".to_owned()),
-                    _ => None,
-                };
-                if let Some(failure) = failure {
-                    let message = match message {
-                        Some(message) => format!("{failure}: {message}"),
-                        None => failure,
-                    };
-                    return Err(EvaluationError::new(format!("check failed: {message}")));
-                }
-            }
-            model::Stage::Count { .. } => {
-                return Ok(QueryOutput::Count(countable_len(&current, "count")?));
-            }
-            model::Stage::Emit { .. } => emit(document, current.clone())?,
-            model::Stage::Format { options, .. } => {
-                let operations = take_operations(current.clone(), "format")?;
-                emit(
-                    document,
-                    QueryOutput::Formatted {
-                        operations,
-                        options: *options,
-                    },
-                )?;
-            }
-            model::Stage::Markdown { .. } => {
-                emit(
-                    document,
-                    QueryOutput::Text(render::markdown(&current, budget)?),
-                )?;
-            }
-            model::Stage::Print { parts, .. } => {
-                let mut text = render::interpolate(parts, budget)?;
-                text.push('\n');
-                emit(document, QueryOutput::Text(text))?;
-            }
-            model::Stage::Json { .. } => emit(
-                document,
-                QueryOutput::Json(output_json(document, &current)?),
-            )?,
         }
-        budget.check_items(output_size(&current))?;
+        model::Stage::Check {
+            expected, message, ..
+        } => {
+            let actual = countable_len(&current, "check")?;
+            let failure = match expected {
+                Some(expected) if actual != *expected => {
+                    Some(format!("expected {expected} items, got {actual}"))
+                }
+                None if actual == 0 => Some("expected at least one item, got 0".to_owned()),
+                _ => None,
+            };
+            if let Some(failure) = failure {
+                let message = match message {
+                    Some(message) => format!("{failure}: {message}"),
+                    None => failure,
+                };
+                return Err(EvaluationError::new(format!("check failed: {message}")));
+            }
+        }
+        model::Stage::Count { .. } => {
+            return Ok(QueryOutput::Count(countable_len(&current, "count")?));
+        }
+        model::Stage::Emit { .. } => (context.emit)(context.document, current.clone())?,
+        model::Stage::Format { options, .. } => {
+            let operations = take_operations(current.clone(), "format")?;
+            (context.emit)(
+                context.document,
+                QueryOutput::Formatted {
+                    operations,
+                    options: *options,
+                },
+            )?;
+        }
+        model::Stage::Markdown { .. } => {
+            (context.emit)(
+                context.document,
+                QueryOutput::Text(render::markdown(&current, budget)?),
+            )?;
+        }
+        model::Stage::Print { parts, .. } => {
+            let mut text = render::interpolate(parts, &context.bindings, budget)?;
+            text.push('\n');
+            (context.emit)(context.document, QueryOutput::Text(text))?;
+        }
+        model::Stage::Json { .. } => (context.emit)(
+            context.document,
+            QueryOutput::Json(output_json(context.document, &current)?),
+        )?,
     }
     Ok(current)
 }
@@ -879,18 +894,6 @@ fn operations<'a>(
     output: &'a QueryOutput,
     stage: &str,
 ) -> Result<&'a [OperationId], EvaluationError> {
-    match output {
-        QueryOutput::Operations(selected) => Ok(selected),
-        _ => Err(EvaluationError::new(format!(
-            "{stage} requires operations, but the current stream contains values"
-        ))),
-    }
-}
-
-fn operations_mut<'a>(
-    output: &'a mut QueryOutput,
-    stage: &str,
-) -> Result<&'a mut Vec<OperationId>, EvaluationError> {
     match output {
         QueryOutput::Operations(selected) => Ok(selected),
         _ => Err(EvaluationError::new(format!(
@@ -1082,14 +1085,11 @@ fn compare_integer_float(integer: i128, float: f64) -> std::cmp::Ordering {
         .then_with(|| 0.0f64.partial_cmp(&float.fract()).unwrap())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn sort_operations_by(
     selected: Vec<OperationId>,
     selector: &model::Expression,
-    document: &mut DocumentAccess<'_>,
-    registry: &DialectRegistry,
-    emit: &mut impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
-    budget: &mut EvaluationState,
+    context: &mut EvaluationContext<'_, '_>,
+    budget: &mut zirql::Budget,
     descending: bool,
     extrema: Option<bool>,
 ) -> Result<Vec<OperationId>, EvaluationError> {
@@ -1102,10 +1102,8 @@ fn sort_operations_by(
     for operation in selected {
         let output = evaluate_expression(
             selector,
-            document,
-            registry,
+            context,
             QueryOutput::Operations(vec![operation]),
-            emit,
             budget,
         )?;
         let key = match output {
@@ -1228,9 +1226,10 @@ fn evaluate_defs(
     document: &Document,
     selected: &[OperationId],
     index: Option<usize>,
-    budget: &EvaluationState,
+    budget: &zirql::Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
-    budget.collect(
+    collect(
+        budget,
         selected
             .iter()
             .flat_map(|&operation| {
@@ -1257,9 +1256,10 @@ fn evaluate_users(
     document: &Document,
     selected: &[OperationId],
     index: Option<usize>,
-    budget: &EvaluationState,
+    budget: &zirql::Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
-    budget.collect(
+    collect(
+        budget,
         selected
             .iter()
             .flat_map(|&operation| {
@@ -1283,24 +1283,28 @@ fn evaluate_users(
 fn evaluate_parent(
     document: &Document,
     selected: &[OperationId],
-    budget: &EvaluationState,
+    budget: &zirql::Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
-    budget.collect(selected.iter().filter_map(|&operation| {
-        document
-            .operation(operation)?
-            .parent_block()
-            .and_then(|block| document.block(block))
-            .and_then(|block| document.region(block.parent_region()))
-            .map(|region| region.parent_operation())
-    }))
+    collect(
+        budget,
+        selected.iter().filter_map(|&operation| {
+            document
+                .operation(operation)?
+                .parent_block()
+                .and_then(|block| document.block(block))
+                .and_then(|block| document.region(block.parent_region()))
+                .map(|region| region.parent_operation())
+        }),
+    )
 }
 
 fn evaluate_children(
     document: &Document,
     selected: &[OperationId],
-    budget: &EvaluationState,
+    budget: &zirql::Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
-    budget.collect(
+    collect(
+        budget,
         selected
             .iter()
             .flat_map(|&operation| document.operation_regions(operation).unwrap_or(&[]))
@@ -1319,14 +1323,15 @@ fn evaluate_root(
     document: &Document,
     selected: &[OperationId],
     predicate: &model::Predicate,
-    budget: &mut EvaluationState,
+    budget: &mut zirql::Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
+    let filter = pipeline::root_filter(predicate)?;
     let mut roots = Vec::new();
     for &operation in selected {
         let mut candidate = Some(operation);
         while let Some(operation) = candidate {
-            budget.charge(1)?;
-            if evaluate_predicate(predicate, document, operation, budget)? {
+            charge(budget, 1)?;
+            if pipeline::matches_root(&filter, document, operation, budget)? {
                 roots.push(operation);
                 break;
             }
@@ -1450,49 +1455,6 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
     }
 }
 
-fn evaluate_predicate(
-    predicate: &model::Predicate,
-    document: &Document,
-    operation: OperationId,
-    budget: &mut EvaluationState,
-) -> Result<bool, EvaluationError> {
-    budget.charge(1)?;
-    Ok(match predicate {
-        model::Predicate::Bool { value, .. } => *value,
-        model::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
-        model::Predicate::Dialect { name, .. } => document.operation_name(operation)
-            .and_then(|op| op.split_once('.')).is_some_and(|(dialect, _)| dialect == name),
-        model::Predicate::ResultType { spelling, .. } => document.result_types(operation).unwrap_or(&[])
-            .iter().any(|&ty| document.type_spelling(ty) == Some(spelling)),
-        model::Predicate::HasAttr { name, .. } => document
-            .attribute_entries(operation)
-            .is_some_and(|mut entries| entries.any(|(attribute, _)| attribute == name)),
-        model::Predicate::Attr { name, value, .. } => document
-            .attribute_entries(operation)
-            .and_then(|mut entries| entries.find(|(attribute, _)| attribute == name))
-            .and_then(|(_, id)| document.attribute_value(id))
-            .is_some_and(|attribute| matches!(attribute, AttributeValue::String(spelling) if decode_mlir_string(spelling).as_deref() == Some(value))),
-        model::Predicate::Not { predicate, .. } => !evaluate_predicate(predicate, document, operation, budget)?,
-        model::Predicate::And { predicates, .. } => {
-            for predicate in predicates {
-                if !evaluate_predicate(predicate, document, operation, budget)? {
-                    return Ok(false);
-                }
-            }
-            true
-        }
-        model::Predicate::Or { predicates, .. } => {
-            for predicate in predicates {
-                if evaluate_predicate(predicate, document, operation, budget)? {
-                    return Ok(true);
-                }
-            }
-            false
-        }
-        model::Predicate::Group { predicate, .. } => evaluate_predicate(predicate, document, operation, budget)?,
-    })
-}
-
 fn edit_error(error: impl fmt::Display) -> EvaluationError {
     EvaluationError {
         message: format!("edit failed: {error}"),
@@ -1511,10 +1473,10 @@ impl ClosureSelection {
     fn insert(
         &mut self,
         operation: OperationId,
-        budget: &EvaluationState,
+        budget: &zirql::Budget,
     ) -> Result<(), EvaluationError> {
         if self.selected.insert(operation) {
-            budget.check_items(self.selected.len())?;
+            check_items(budget, self.selected.len())?;
             self.pending.push_back(operation);
         }
         Ok(())
@@ -1526,20 +1488,20 @@ impl ClosureSelection {
 fn evaluate_slice(
     document: &Document,
     seeds: Vec<OperationId>,
-    budget: &mut EvaluationState,
+    budget: &mut zirql::Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     let mut selection = ClosureSelection::default();
     for operation in seeds {
         selection.insert(operation, budget)?;
     }
     while let Some(operation) = selection.pending.pop_front() {
-        budget.charge(1)?;
+        charge(budget, 1)?;
         if document.operation_is_unparsed(operation) == Some(true) {
             return Err(EvaluationError::new(
                 "slice requires parsed SSA operands; load the appropriate registry",
             ));
         }
-        budget.charge(document.operands(operation).unwrap_or(&[]).len())?;
+        charge(budget, document.operands(operation).unwrap_or(&[]).len())?;
         for operand in document.operands(operation).unwrap_or(&[]) {
             match *operand {
                 ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => {
@@ -1563,21 +1525,21 @@ fn evaluate_slice(
 fn evaluate_forward_slice(
     document: &Document,
     seeds: Vec<OperationId>,
-    budget: &mut EvaluationState,
+    budget: &mut zirql::Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     let mut selection = ClosureSelection::default();
     for operation in seeds {
         selection.insert(operation, budget)?;
     }
     while let Some(operation) = selection.pending.pop_front() {
-        budget.charge(1)?;
+        charge(budget, 1)?;
         let result_count = document.result_types(operation).map_or(0, <[_]>::len);
         for result in 0..result_count {
             for site in document.uses(ValueId::OperationResult {
                 operation,
                 result: result as u32,
             }) {
-                budget.charge(1)?;
+                charge(budget, 1)?;
                 let user = match site {
                     UseSite::Operand { operation, .. }
                     | UseSite::SuccessorArgument { operation, .. } => operation,
@@ -1595,14 +1557,15 @@ fn evaluate_reachable(
     document: &Document,
     seeds: Vec<OperationId>,
     registry: &DialectRegistry,
-    budget: &mut EvaluationState,
+    options: EvaluationOptions,
+    budget: &mut zirql::Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     let mut selection = ClosureSelection::default();
     for operation in seeds {
         selection.insert(operation, budget)?;
     }
     while let Some(operation) = selection.pending.pop_front() {
-        budget.charge(1)?;
+        charge(budget, 1)?;
         let name = document
             .operation_name(operation)
             .unwrap_or("<invalid operation>");
@@ -1612,7 +1575,7 @@ fn evaluate_reachable(
                 && registry.operation_format(name).is_none()
                 && registry.operation_grammars(name).is_none())
         {
-            if budget.options.strict_unknown_references {
+            if options.strict_unknown_references {
                 return Err(EvaluationError::new(format!(
                     "reachable cannot determine reference semantics for `{name}`; load the appropriate registry"
                 )));
@@ -1660,7 +1623,7 @@ fn evaluate_reachable(
                 selection.insert(target, budget)?;
             }
         }
-        budget.charge(document.operands(operation).unwrap_or(&[]).len())?;
+        charge(budget, document.operands(operation).unwrap_or(&[]).len())?;
         for operand in document.operands(operation).unwrap_or(&[]) {
             match *operand {
                 ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => {
@@ -1683,7 +1646,7 @@ fn evaluate_closure(
     seeds: Vec<OperationId>,
     registry: &DialectRegistry,
     transitive: bool,
-    budget: &mut EvaluationState,
+    budget: &mut zirql::Budget,
 ) -> Result<Vec<OperationId>, EvaluationError> {
     let mut selection = ClosureSelection::default();
     for operation in seeds {
@@ -1695,7 +1658,7 @@ fn evaluate_closure(
         let Some(operation) = selection.pending.pop_front() else {
             break;
         };
-        budget.charge(1)?;
+        charge(budget, 1)?;
         visited += 1;
         let name = document
             .operation_name(operation)
@@ -1774,7 +1737,7 @@ fn evaluate_closure(
                 message: format!("closure does not yet support symbol references on `{name}`"),
             });
         }
-        budget.charge(document.operands(operation).unwrap_or(&[]).len())?;
+        charge(budget, document.operands(operation).unwrap_or(&[]).len())?;
         for operand in document.operands(operation).unwrap_or(&[]) {
             match *operand {
                 ValueReference::Invalid(_) => {
@@ -1827,7 +1790,7 @@ fn retain_successor_region(
     successor: Successor,
     operation_name: &str,
     selection: &mut ClosureSelection,
-    budget: &mut EvaluationState,
+    budget: &mut zirql::Budget,
 ) -> Result<(), EvaluationError> {
     let owner = document
         .block(successor.block())
@@ -1846,14 +1809,14 @@ fn retain_subtree(
     document: &Document,
     operation: OperationId,
     selection: &mut ClosureSelection,
-    budget: &mut EvaluationState,
+    budget: &mut zirql::Budget,
 ) -> Result<(), EvaluationError> {
     let mut pending = vec![operation];
     while let Some(operation) = pending.pop() {
         if !selection.expanded_subtrees.insert(operation) {
             continue;
         }
-        budget.charge(1)?;
+        charge(budget, 1)?;
         selection.insert(operation, budget)?;
         for &region in document.operation_regions(operation).unwrap_or(&[]) {
             for &block in document
@@ -1872,12 +1835,12 @@ fn append_subtree(
     document: &Document,
     operation: OperationId,
     selected: &mut Vec<OperationId>,
-    budget: &mut EvaluationState,
+    budget: &mut zirql::Budget,
 ) -> Result<(), EvaluationError> {
     let mut pending = vec![operation];
     while let Some(operation) = pending.pop() {
-        budget.charge(1)?;
-        budget.check_items(selected.len().saturating_add(1))?;
+        charge(budget, 1)?;
+        check_items(budget, selected.len().saturating_add(1))?;
         selected.push(operation);
         let children = document
             .operation_regions(operation)
