@@ -23,9 +23,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/zayenz/zirium"
+Homepage = "https://zayenz.se/zirium/"
 Repository = "https://github.com/zayenz/zirium"
-Documentation = "https://github.com/zayenz/zirium/blob/main/docs/getting-started.md"
+Documentation = "https://zayenz.se/zirium/guides/getting-started/"
 Issues = "https://github.com/zayenz/zirium/issues"
 
 [dependency-groups]

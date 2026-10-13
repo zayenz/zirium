@@ -5,3 +5,10 @@
 !/fuzz/corpus/semantic_lowering/
 /.venv/
 /python/zirium/*.so
+
+# Generated documentation site
+/site/node_modules/
+/site/dist/
+/site/.astro/
+/site/src/content/docs/
+/site/public/

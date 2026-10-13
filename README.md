@@ -22,6 +22,8 @@ Version 0.4.0 is experimental. It targets MLIR 22.1 textual syntax and supports
 selected custom dialect forms. The API may change without a migration path;
 bytecode and ODS/TableGen loading are unsupported.
 
+[Homepage and guides](https://zayenz.se/zirium/) · [Rust API](https://docs.rs/zirium)
+
 ## Installation
 
 Install the Python package with:

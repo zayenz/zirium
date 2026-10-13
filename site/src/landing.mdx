@@ -1,0 +1,98 @@
+---
+title: Textual MLIR tools for Rust, Python and the command line
+description: Parse, query, compare and edit textual MLIR with Zirium, without linking LLVM.
+template: splash
+hero:
+  title: Work directly with textual MLIR.
+  tagline: Read, query, compare and edit MLIR in Rust, Python or the command line. Zirium keeps the original source and works without linking LLVM.
+  image:
+    file: ../../../../assets/zirium-element-dark.svg
+  actions:
+    - text: Install Zirium
+      link: '#installation'
+      icon: right-arrow
+    - text: Read the guides
+      link: ./guides/getting-started/
+      variant: minimal
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+<div className="project-note">Rust · Python · CLI · Experimental</div>
+
+## Keep the source. Inspect the structure.
+
+Zirium's parser retains the original bytes, including comments, whitespace and
+malformed input. A separate semantic document resolves SSA values, types and
+symbols for queries, comparisons and transactional edits. Choose the
+representation that fits the work.
+
+<CardGrid>
+  <LinkCard title="Query MLIR" description="Select operations, follow dependencies and report counts from shell pipelines." href="./guides/cli-examples/" />
+  <LinkCard title="Use Rust or Python" description="Parse source, inspect diagnostics and work with a semantic document." href="./guides/getting-started/" />
+  <LinkCard title="Compare and edit" description="Compare semantic structure and apply edits with explicit source-retention limits." href="./guides/semantic-diff/" />
+</CardGrid>
+
+## Installation
+
+Install the published Python package:
+
+```sh
+python -m pip install zirium
+```
+
+Wheels cover conventional CPython 3.11–3.14 on Linux x86_64 and macOS arm64.
+Other platforms and free-threaded CPython are unsupported. The Python wheel
+does not include the CLI.
+
+With Rust 1.88 or newer, install the published CLI:
+
+```sh
+cargo install zirium --locked
+```
+
+For a Rust application, add the library with `cargo add zirium` and consult the
+[Rust API reference](https://docs.rs/zirium). The
+[getting-started guide](./guides/getting-started/) covers library usage and
+building from a checkout.
+
+### CLI binaries
+
+[GitHub Releases](https://github.com/zayenz/zirium/releases) provides standalone
+CLI archives for Linux x86_64 (static musl) and macOS arm64. These do not require
+Rust, Python or LLVM. Follow the
+[download and checksum instructions](https://github.com/zayenz/zirium#cli-binaries)
+for your platform.
+
+## Try a query
+
+This example reads generic MLIR from stdin and needs no dialect registry:
+
+```sh
+printf '%s\n' '"example.make"() : () -> i32' | zirium 'names | tally | json'
+```
+
+For a file using registered custom syntax, choose a preset and use strict
+lowering to reject incomplete semantic information:
+
+```sh
+zirium --preset stablehlo --strict 'names | tally | json' model.mlir
+```
+
+The [query language reference](./guides/query-language/) lists predicates and
+pipeline stages. The [preset reference](./guides/registry-presets/) records
+which custom forms each registry supports.
+
+## Know the boundaries
+
+Zirium is experimental and its API may change without a migration path. Its
+textual syntax target is MLIR 22.1, with selected custom dialect forms.
+Presets support structural inspection; they do not provide complete dialect
+verification, type inference or execution. Bytecode and ODS/TableGen loading
+are unsupported.
+
+Original output reproduces the input bytes. Formatting, canonical output and
+source-preserving edits each have a different contract. Read the
+[capability reference](./guides/capabilities/) and
+[structural editing guide](./guides/structural-editing/) before choosing an
+output path.
