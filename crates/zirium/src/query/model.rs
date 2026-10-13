@@ -138,6 +138,10 @@ pub enum Predicate {
         value: bool,
         range: TextRange,
     },
+    OpValue {
+        name: super::comprehension::ParsedComprehension,
+        range: TextRange,
+    },
     Op {
         name: String,
         range: TextRange,
@@ -182,6 +186,7 @@ impl Predicate {
         match self {
             Self::Bool { range, .. }
             | Self::Op { range, .. }
+            | Self::OpValue { range, .. }
             | Self::Dialect { range, .. }
             | Self::ResultType { range, .. }
             | Self::HasAttr { range, .. }
@@ -203,6 +208,10 @@ pub enum Stage {
     },
     Comprehension {
         value: super::comprehension::ParsedComprehension,
+        range: TextRange,
+    },
+    Projection {
+        value: super::report::ParsedProjection,
         range: TextRange,
     },
     Literal {
@@ -373,7 +382,8 @@ pub enum Stage {
 impl Stage {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Comprehension { range, .. }
+            Self::Projection { range, .. }
+            | Self::Comprehension { range, .. }
             | Self::Structured { range, .. }
             | Self::Literal { range, .. }
             | Self::Markdown { range }
@@ -432,7 +442,8 @@ impl Stage {
             | Self::Value { .. }
             | Self::MapBy { .. }
             | Self::Literal { .. }
-            | Self::Comprehension { .. } => false,
+            | Self::Comprehension { .. }
+            | Self::Projection { .. } => false,
             Self::Group { expression, .. } | Self::Fixpoint { expression, .. } => {
                 expression.is_selection_only()
             }

@@ -3352,3 +3352,73 @@ fn comprehension_reports_render_plain_json_and_document_records() {
     assert!(limited.stdout.is_empty());
     assert!(String::from_utf8_lossy(&limited.stderr).contains("limit exceeded"));
 }
+
+#[test]
+fn correlated_reports_agree_inline_file_and_explicit_emission() {
+    let input = include_str!("../../../examples/cli/function-report.mlir");
+    let program = include_str!("../../../examples/cli/function-report.zirql");
+    let inline = run_stdin(program, input);
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&inline.stdout).unwrap();
+    assert_eq!(value["total_operations"], 5);
+    assert_eq!(value["total_matches"], 2);
+    assert_eq!(value["functions"][0]["name"], "double");
+    assert_eq!(value["functions"][1]["name"], "mix");
+    let explicit = run_stdin(
+        &format!("{} | json;", program.trim_end().strip_suffix(';').unwrap()),
+        input,
+    );
+    assert!(
+        explicit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&explicit.stderr)
+    );
+    assert_eq!(inline.stdout, explicit.stdout);
+    let path = temporary_path("correlated-report", "zirql");
+    fs::write(&path, program).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["-f", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let file = child.wait_with_output().unwrap();
+    fs::remove_file(&path).unwrap();
+    assert!(
+        file.status.success(),
+        "{}",
+        String::from_utf8_lossy(&file.stderr)
+    );
+    assert_eq!(file.stdout, inline.stdout);
+    let short = run_stdin(
+        r#"filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "n": f | children | count}) | json"#,
+        input,
+    );
+    assert!(
+        short.status.success(),
+        "{}",
+        String::from_utf8_lossy(&short.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&short.stdout).unwrap(),
+        serde_json::json!([{"name":"double","n":2},{"name":"mix","n":3},{"name":"plain","n":1}])
+    );
+    let failed = run_stdin(
+        r#"report {"early": 1}; report require(false, filter(op("func.func")) | attr("absent") | one, "stop");"#,
+        input,
+    );
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("stop"));
+}

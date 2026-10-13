@@ -171,22 +171,49 @@ impl<T> QueryExpr<T> {
         options: EvaluationOptions,
         limits: EvaluationLimits,
     ) -> Result<QueryOutput, EvaluationError> {
+        let mut budget = self.new_budget(limits);
+        self.evaluate_output_with_budget(document, registry, options, &mut budget)
+    }
+    /// Create this request's allowance, retaining legacy policy for ordinary queries.
+    pub fn new_budget(&self, limits: EvaluationLimits) -> zirql::Budget {
+        if report::has_constructed(&self.expression) {
+            zirql::Budget::for_program(ProgramLimits {
+                work: limits.max_work,
+                stream_items: limits.max_items,
+                ..comprehension::default_limits()
+            })
+        } else {
+            evaluation_budget(limits)
+        }
+    }
+    /// Evaluate and retain the caller's remaining allowance for native conversion.
+    pub fn evaluate_output_with_budget(
+        &self,
+        document: &Document,
+        registry: &DialectRegistry,
+        options: EvaluationOptions,
+        budget: &mut zirql::Budget,
+    ) -> Result<QueryOutput, EvaluationError> {
         if let Some(message) = self.invalid {
             return Err(EvaluationError::new(message));
         }
-        let mut budget = evaluation_budget(limits);
-        charge(&mut budget, self.nodes)?;
-        let selected = QueryOutput::Operations(collect(&mut budget, document.operations())?);
-        let mut access = DocumentAccess::Shared(document);
-        let mut emit = |_: &Document, _: QueryOutput, _: &mut zirql::Budget| {
-            Err(EvaluationError::new("cannot emit in a read-only query"))
-        };
+        if report::has_constructed(&self.expression) && budget.remaining_results().is_none() {
+            return Err(EvaluationError::new(
+                "constructed reports require an aggregate result allowance",
+            ));
+        }
+        charge(budget, self.nodes)?;
         program::validate_expression(
             &self.expression,
             program::Kind::Operations,
             &BTreeMap::new(),
-            &mut budget,
+            budget,
         )?;
+        let selected = QueryOutput::Operations(collect(budget, document.operations())?);
+        let mut access = DocumentAccess::Shared(document);
+        let mut emit = |_: &Document, _: QueryOutput, _: &mut zirql::Budget| {
+            Err(EvaluationError::new("cannot emit in a read-only query"))
+        };
         let expressions = program::expressions(std::iter::once(&self.expression));
         let mut context = EvaluationContext {
             document: &mut access,
@@ -201,8 +228,25 @@ impl<T> QueryExpr<T> {
             &mut context,
             selected,
             &zirql::Bindings::default(),
-            &mut budget,
+            budget,
         )
+    }
+    /// Execute a constructed request with explicit aggregate and stream bounds.
+    pub fn evaluate_with_program_limits(
+        &self,
+        document: &Document,
+        registry: &DialectRegistry,
+        limits: ProgramLimits,
+    ) -> Result<T, EvaluationError>
+    where
+        T: QueryResult,
+    {
+        T::from_query_output(self.evaluate_output_with_budget(
+            document,
+            registry,
+            EvaluationOptions::default(),
+            &mut zirql::Budget::for_program(limits),
+        )?)
     }
 }
 
@@ -320,6 +364,13 @@ impl OpQuery {
     }
     pub fn string_attr(&self, name: impl Into<String>) -> StringQuery {
         self.structured(StructuredStage::StringAttr(name.into()))
+    }
+    /// Project attribute spellings using the textual `attr` stage's rules.
+    pub fn attr(&self, name: impl Into<String>) -> StringQuery {
+        self.stage(Stage::Attr {
+            name: name.into(),
+            range: range(),
+        })
     }
     pub fn attributes(&self, name: impl Into<String>) -> AttributeQuery {
         self.structured(StructuredStage::Attributes(name.into()))
@@ -712,16 +763,14 @@ pub(super) fn evaluate_structured(
 ) -> Result<QueryOutput, EvaluationError> {
     Ok(match step {
         StructuredStage::One => {
-            let QueryOutput::Values(mut values) = current else {
+            let QueryOutput::Values(values) = current else {
                 return Err(wrong_result());
             };
-            if values.len() != 1 {
-                return Err(EvaluationError::new(format!(
-                    "one requires exactly one string, got {}",
-                    values.len()
-                )));
-            }
-            QueryOutput::Native(NativeValue::String(values.pop().unwrap()))
+            let count = values.len();
+            let value = zirql::take_one(values, 0..0).map_err(|_| {
+                EvaluationError::new(format!("one requires exactly one string, got {count}"))
+            })?;
+            QueryOutput::Native(NativeValue::String(value))
         }
         StructuredStage::WhereExists(query) => {
             let mut selected = Vec::new();
@@ -860,4 +909,277 @@ impl QueryResult for QueryOutput {
     fn from_query_output(output: QueryOutput) -> Result<Self, EvaluationError> {
         Ok(output)
     }
+}
+
+/// Constructed report data, before JSON or Python rendering.
+pub type ReportQuery = QueryExpr<ConstructedReport>;
+/// The shared native operand representation used by report expressions.
+pub type ReportOperand = zirql::Expression<parser::Stage, parser::SetOperator, ()>;
+
+/// Immutable shared value expression. Native leaves retain typed query trees.
+#[derive(Clone, Debug)]
+pub struct ReportExpr {
+    value: ParsedComprehension,
+}
+impl ReportExpr {
+    fn node(value: zirql::ValueExpressionKind<ReportOperand>) -> Self {
+        Self {
+            value: ParsedComprehension::new(zirql::Located::new(value, 0..0)),
+        }
+    }
+    fn into_expression(mut self) -> zirql::ValueExpression<ReportOperand> {
+        if let Some(expression) = std::sync::Arc::get_mut(&mut self.value.expression) {
+            return std::mem::replace(
+                expression,
+                zirql::Located::new(
+                    zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Integer(0)),
+                    0..0,
+                ),
+            );
+        }
+        zirql::Located::new(
+            zirql::ValueExpressionKind::NativeQuery(Box::new(report::operand(
+                &super::builder::expression(vec![Stage::Comprehension {
+                    value: self.value,
+                    range: range(),
+                }]),
+            ))),
+            0..0,
+        )
+    }
+    pub fn integer(value: i64) -> Self {
+        Self::node(zirql::ValueExpressionKind::Literal(
+            zirql::ConstructedValue::Integer(value),
+        ))
+    }
+    pub fn boolean(value: bool) -> Self {
+        Self::node(zirql::ValueExpressionKind::Literal(
+            zirql::ConstructedValue::Boolean(value),
+        ))
+    }
+    pub fn string(value: impl Into<String>) -> Self {
+        Self::node(zirql::ValueExpressionKind::Literal(
+            zirql::ConstructedValue::String(value.into()),
+        ))
+    }
+    /// Finite floating literal construction; invalid decimals are rejected before storage.
+    pub fn float(value: f64) -> Result<Self, EvaluationError> {
+        if !value.is_finite() {
+            return Err(EvaluationError::new("nonfinite float literal"));
+        }
+        Ok(Self::node(zirql::ValueExpressionKind::Literal(
+            zirql::ConstructedValue::Float(value),
+        )))
+    }
+    pub fn name(name: impl Into<String>) -> Self {
+        Self::node(zirql::ValueExpressionKind::Name(name.into()))
+    }
+    pub fn array(values: impl IntoIterator<Item = Self>) -> Self {
+        Self::node(zirql::ValueExpressionKind::Array(
+            values.into_iter().map(Self::into_expression).collect(),
+        ))
+    }
+    pub fn record<S: Into<String>>(fields: impl IntoIterator<Item = (S, Self)>) -> Self {
+        Self::node(zirql::ValueExpressionKind::Record(
+            fields
+                .into_iter()
+                .map(|(name, value)| {
+                    (
+                        zirql::Located::new(name.into(), 0..0),
+                        value.into_expression(),
+                    )
+                })
+                .collect(),
+        ))
+    }
+    pub fn field(self, name: impl Into<String>) -> Self {
+        Self::node(zirql::ValueExpressionKind::Field {
+            value: Box::new(self.into_expression()),
+            field: zirql::Located::new(name.into(), 0..0),
+        })
+    }
+    pub fn at(self, index: Self) -> Self {
+        Self::node(zirql::ValueExpressionKind::ArrayAccess {
+            array: Box::new(self.into_expression()),
+            index: Box::new(index.into_expression()),
+        })
+    }
+    pub fn unary(self, operator: zirql::ValueUnaryOperator) -> Self {
+        Self::node(zirql::ValueExpressionKind::Unary {
+            operator,
+            operand: Box::new(self.into_expression()),
+        })
+    }
+    pub fn binary(self, operator: zirql::ValueBinaryOperator, right: Self) -> Self {
+        Self::node(zirql::ValueExpressionKind::Binary {
+            operator,
+            left: Box::new(self.into_expression()),
+            right: Box::new(right.into_expression()),
+        })
+    }
+    pub fn one(self) -> Self {
+        Self::node(zirql::ValueExpressionKind::One(Box::new(
+            self.into_expression(),
+        )))
+    }
+    pub fn reduce(self, operator: zirql::ValueReducer) -> Self {
+        Self::node(zirql::ValueExpressionKind::Reduce {
+            operator,
+            array: Box::new(self.into_expression()),
+        })
+    }
+    pub fn length(self) -> Self {
+        self.reduce(zirql::ValueReducer::Length)
+    }
+    pub fn sum(self) -> Self {
+        self.reduce(zirql::ValueReducer::Sum)
+    }
+    pub fn forall(self) -> Self {
+        self.reduce(zirql::ValueReducer::Forall)
+    }
+    pub fn exists(self) -> Self {
+        self.reduce(zirql::ValueReducer::Exists)
+    }
+    pub fn require(condition: Self, value: Self, message: impl Into<String>) -> Self {
+        Self::node(zirql::ValueExpressionKind::Require {
+            condition: Box::new(condition.into_expression()),
+            value: Box::new(value.into_expression()),
+            message: zirql::Located::new(message.into(), 0..0),
+        })
+    }
+    pub fn comprehension(head: Self, clauses: impl IntoIterator<Item = ReportGenerator>) -> Self {
+        Self::node(zirql::ValueExpressionKind::Comprehension {
+            constructor: zirql::ValueConstructor::Array,
+            clauses: clauses.into_iter().map(|clause| clause.clause).collect(),
+            head: Box::new(head.into_expression()),
+        })
+    }
+    /// Evaluate immutable local bindings in order, then return one constructed value.
+    pub fn scope<S: Into<String>>(
+        bindings: impl IntoIterator<Item = (S, Self)>,
+        value: Self,
+    ) -> Self {
+        Self::comprehension(
+            value,
+            bindings
+                .into_iter()
+                .map(|(name, value)| ReportGenerator::bind(name, value)),
+        )
+        .one()
+    }
+}
+/// A shared generator clause, with immutable binding and optional known-Boolean filter.
+pub struct ReportGenerator {
+    clause: zirql::Located<zirql::ValueGenerator<ReportOperand>>,
+}
+impl ReportGenerator {
+    pub fn in_values(
+        name: impl Into<String>,
+        source: ReportExpr,
+        filter: Option<ReportExpr>,
+    ) -> Self {
+        Self {
+            clause: zirql::Located::new(
+                zirql::ValueGenerator::In {
+                    binders: vec![zirql::Located::new(Some(name.into()), 0..0)],
+                    source: source.into_expression(),
+                    filter: filter.map(ReportExpr::into_expression),
+                },
+                0..0,
+            ),
+        }
+    }
+    pub fn bind(name: impl Into<String>, value: ReportExpr) -> Self {
+        Self {
+            clause: zirql::Located::new(
+                zirql::ValueGenerator::Bind {
+                    binder: zirql::Located::new(Some(name.into()), 0..0),
+                    value: value.into_expression(),
+                    filter: None,
+                },
+                0..0,
+            ),
+        }
+    }
+}
+/// Refer to a saved native operation selection or the local projection subject.
+pub fn bound_ops(name: impl Into<String>) -> OpQuery {
+    QueryExpr::start(vec![Stage::Binding {
+        name: name.into(),
+        range: range(),
+    }])
+}
+impl OpQuery {
+    pub fn project<S: Into<String>>(
+        &self,
+        subject: impl Into<String>,
+        fields: impl IntoIterator<Item = (S, ReportExpr)>,
+    ) -> ReportQuery {
+        self.stage(Stage::Projection {
+            value: report::ParsedProjection::new(zirql::Projection {
+                subject: zirql::Located::new(subject.into(), 0..0),
+                fields: fields
+                    .into_iter()
+                    .map(|(name, value)| {
+                        (
+                            zirql::Located::new(name.into(), 0..0),
+                            value.into_expression(),
+                        )
+                    })
+                    .collect(),
+            }),
+            range: range(),
+        })
+    }
+}
+/// Construct a typed read-only report without requesting an emitter.
+pub fn report(value: ReportExpr) -> ReportQuery {
+    QueryExpr::start(vec![Stage::Comprehension {
+        value: value.value,
+        range: range(),
+    }])
+}
+macro_rules! report_query_conversion {
+    ($result:ty) => {
+        impl From<QueryExpr<$result>> for ReportExpr {
+            fn from(query: QueryExpr<$result>) -> Self {
+                Self::node(zirql::ValueExpressionKind::NativeQuery(Box::new(
+                    report::operand(&query.expression),
+                )))
+            }
+        }
+    };
+}
+report_query_conversion!(Vec<String>);
+report_query_conversion!(String);
+report_query_conversion!(usize);
+report_query_conversion!(ConstructedReport);
+impl From<i64> for ReportExpr {
+    fn from(value: i64) -> Self {
+        Self::integer(value)
+    }
+}
+impl From<bool> for ReportExpr {
+    fn from(value: bool) -> Self {
+        Self::boolean(value)
+    }
+}
+impl From<String> for ReportExpr {
+    fn from(value: String) -> Self {
+        Self::string(value)
+    }
+}
+impl From<&str> for ReportExpr {
+    fn from(value: &str) -> Self {
+        Self::string(value)
+    }
+}
+result!(ConstructedReport, QueryOutput::Native(NativeValue::Constructed(value))=>value);
+
+/// Compare an operation name with a checked shared string expression.
+pub fn op_expr(name: ReportExpr) -> Predicate {
+    Predicate::new(model::Predicate::OpValue {
+        name: name.value,
+        range: range(),
+    })
 }

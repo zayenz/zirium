@@ -72,13 +72,14 @@ pub(crate) fn parse_with_budget(
     initial_bindings: &[&str],
     limits: zirql::ProgramLimits,
 ) -> Parsed {
+    let mut budget = zirql::Budget::for_program(limits);
     let mut parser = Parser {
         source: lexed.source(),
         tokens: lexed.tokens(),
         cursor: 0,
         diagnostics: Vec::new(),
         nesting_limit,
-        budget: zirql::Budget::for_program(limits),
+        budget: &mut budget,
         bindings: initial_bindings
             .iter()
             .map(|name| (*name).to_owned())
@@ -93,17 +94,17 @@ pub(crate) fn parse_with_budget(
     }
 }
 
-struct Parser<'a> {
+struct Parser<'a, 'b> {
     source: &'a str,
     tokens: &'a [Token],
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
     nesting_limit: usize,
     bindings: HashSet<String>,
-    budget: zirql::Budget,
+    budget: &'b mut zirql::Budget,
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     fn program(&mut self) -> Option<Program> {
         self.skip_trivia();
         if self.at(TokenKind::Eof) {
@@ -134,6 +135,64 @@ impl Parser<'_> {
                 }
                 statements.push(Statement::Do(expression));
                 continue;
+            }
+            if self.at_identifier("let") || self.at_identifier("report") {
+                let mut reader = zirql::ArgumentReader::new(
+                    self.source,
+                    self.current().range().start() as usize,
+                )
+                .ok()?;
+                match zirql::read_statement_prefix(&mut reader, self.budget) {
+                    Ok(Some(zirql::CommonStatement::Let(name))) => {
+                        if is_reserved(&name.value) || self.bindings.contains(&name.value) {
+                            self.error("binding name is reserved or already defined");
+                            return None;
+                        }
+                        self.sync(reader.position());
+                        let expression = if self.starts_native() {
+                            self.expression(0)?
+                        } else {
+                            self.value_expression(0)?
+                        };
+                        if !expression.is_read_only() {
+                            self.error(
+                                "bindings cannot edit or emit; use a separate query statement",
+                            );
+                            return None;
+                        }
+                        self.expect(TokenKind::Semicolon, "expected `;` after binding")?;
+                        self.bindings.insert(name.value.clone());
+                        statements.push(Statement::Binding {
+                            name: name.value,
+                            expression,
+                        });
+                        continue;
+                    }
+                    Ok(Some(zirql::CommonStatement::Report)) => {
+                        self.sync(reader.position());
+                        let mut expression = self.value_expression(0)?;
+                        self.shared_suffix(&mut expression, 0)?;
+                        self.skip_trivia();
+                        if self.at(TokenKind::Semicolon) {
+                            self.bump();
+                            self.skip_trivia();
+                        }
+                        if self.at(TokenKind::Eof) {
+                            return Some(Program {
+                                statements,
+                                expression,
+                                emit_final_result: true,
+                            });
+                        }
+                        statements.push(Statement::Query(expression));
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.shared_error(error);
+                        return None;
+                    }
+                }
             }
             let next = self.tokens[self.cursor + 1..]
                 .iter()
@@ -176,6 +235,125 @@ impl Parser<'_> {
                 emit_final_result: true,
             });
         }
+    }
+
+    fn next_kind(&self) -> Option<TokenKind> {
+        self.tokens[self.cursor + 1..]
+            .iter()
+            .find(|token| token.kind() != TokenKind::Trivia)
+            .map(|token| token.kind())
+    }
+    fn sync(&mut self, position: usize) {
+        while self.current().kind() != TokenKind::Eof
+            && (self.current().range().start() as usize) < position
+        {
+            self.cursor += 1;
+        }
+    }
+    fn shared_error(&mut self, error: zirql::QueryError) {
+        let position = match error.location {
+            zirql::Location::Query(range) | zirql::Location::Source(range) => range.start,
+        };
+        let message = match error.message.as_str() {
+            "integer literal exceeds signed 64-bit range" => {
+                "integer literal exceeds signed 64-bit range"
+            }
+            "invalid JSON string escape or Unicode sequence" => {
+                "invalid JSON string escape or Unicode sequence"
+            }
+            "nonfinite float literal" => "nonfinite float literal",
+            "nonzero decimal literal rounded to zero" => "nonzero decimal literal rounded to zero",
+            "null is unsupported in constructed values" => {
+                "null is unsupported in positional comprehensions"
+            }
+            "value nesting limit exceeded" => "value nesting limit exceeded",
+            "work limit exceeded" => "query work limit exceeded during parsing",
+            "result limit exceeded" => "result limit exceeded during parsing",
+            _ => "invalid constructed report expression",
+        };
+        self.diagnostics.push(Diagnostic {
+            message,
+            range: TextRange::at(position as u32),
+        });
+    }
+    fn shared_value(&mut self, depth: usize) -> Option<super::comprehension::ParsedComprehension> {
+        let mut reader =
+            zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
+                .ok()?;
+        let mut host = NativeReader {
+            source: self.source,
+            tokens: self.tokens,
+            bindings: &self.bindings,
+            nesting: self.nesting_limit.saturating_sub(depth),
+        };
+        let nesting = host.nesting;
+        match zirql::read_value_expression(&mut reader, &mut host, self.budget, nesting) {
+            Ok(value) => {
+                self.sync(reader.position());
+                Some(super::comprehension::ParsedComprehension::new(value))
+            }
+            Err(error) => {
+                self.shared_error(error);
+                None
+            }
+        }
+    }
+    fn shared_projection(&mut self, depth: usize) -> Option<super::report::ParsedProjection> {
+        let mut reader =
+            zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
+                .ok()?;
+        let mut host = NativeReader {
+            source: self.source,
+            tokens: self.tokens,
+            bindings: &self.bindings,
+            nesting: self.nesting_limit.saturating_sub(depth),
+        };
+        let nesting = host.nesting;
+        match zirql::read_projection(&mut reader, &mut host, self.budget, nesting) {
+            Ok(value) => {
+                self.sync(reader.position());
+                Some(super::report::ParsedProjection::new(value))
+            }
+            Err(error) => {
+                self.shared_error(error);
+                None
+            }
+        }
+    }
+    fn starts_native(&mut self) -> bool {
+        self.skip_trivia();
+        if self.at(TokenKind::Identifier) {
+            let name = self.current_text();
+            is_native_stage(name)
+                || self.bindings.contains(name)
+                    && matches!(
+                        self.next_kind(),
+                        Some(TokenKind::Pipe | TokenKind::Semicolon | TokenKind::Eof)
+                    )
+        } else {
+            false
+        }
+    }
+    fn value_expression(&mut self, depth: usize) -> Option<Expression> {
+        let start = self.current().range().start();
+        let value = self.shared_value(depth)?;
+        Some(Expression {
+            first: vec![Stage::Comprehension {
+                value,
+                range: self.span(start),
+            }],
+            rest: vec![],
+            range: self.span(start),
+        })
+    }
+    fn shared_suffix(&mut self, expression: &mut Expression, depth: usize) -> Option<()> {
+        while self.at(TokenKind::Pipe) {
+            self.bump();
+            expression.first.push(self.stage(depth)?);
+            self.skip_trivia();
+        }
+        expression.range = self.span(expression.range.start());
+        Some(())
     }
 
     fn expression(&mut self, depth: usize) -> Option<Expression> {
@@ -237,29 +415,18 @@ impl Parser<'_> {
         if self.at(TokenKind::LBracket)
             && super::comprehension::starts(self.source, self.tokens, self.cursor)
         {
-            match super::comprehension::lower(
-                self.source,
-                self.tokens,
-                self.cursor,
-                &self.bindings,
-                &mut self.budget,
-                self.nesting_limit.saturating_sub(depth),
-            ) {
-                Ok((value, cursor)) => {
-                    self.cursor = cursor;
-                    return Some(Stage::Comprehension {
-                        value,
-                        range: self.span(start),
-                    });
-                }
-                Err(error) => {
-                    self.diagnostics.push(Diagnostic {
-                        message: error.message,
-                        range: TextRange::at(error.position as u32),
-                    });
-                    return None;
-                }
-            }
+            let value = self.shared_value(depth)?;
+            return Some(Stage::Comprehension {
+                value,
+                range: self.span(start),
+            });
+        }
+        if self.at_identifier("project") && self.next_kind() == Some(TokenKind::LParen) {
+            let value = self.shared_projection(depth)?;
+            return Some(Stage::Projection {
+                value,
+                range: self.span(start),
+            });
         }
         if self.at(TokenKind::LBrace) || self.at(TokenKind::LBracket) {
             let value = self.json_literal(depth + 1)?;
@@ -689,6 +856,15 @@ impl Parser<'_> {
                     return None;
                 }
                 self.expect(TokenKind::LParen, "expected `(` after op")?;
+                self.skip_trivia();
+                if !self.at(TokenKind::String) || self.next_kind() != Some(TokenKind::RParen) {
+                    let value = self.shared_value(depth + 1)?;
+                    self.expect(TokenKind::RParen, "expected `)` after operation name")?;
+                    return Some(Predicate::OpValue {
+                        name: value,
+                        range: self.span(start),
+                    });
+                }
                 let (name, range) = self.string("expected a quoted operation name")?;
                 self.expect(TokenKind::RParen, "expected `)` after operation name")?;
                 if name.is_empty() {
@@ -1119,7 +1295,57 @@ fn valid_attribute_name(name: &str) -> bool {
         })
 }
 
-fn is_reserved(name: &str) -> bool {
+fn is_native_stage(name: &str) -> bool {
+    matches!(
+        name,
+        "input"
+            | "filter"
+            | "reachable"
+            | "closure"
+            | "slice"
+            | "backward_slice"
+            | "forward_slice"
+            | "defs"
+            | "users"
+            | "parent"
+            | "children"
+            | "root"
+            | "subtree"
+            | "unique"
+            | "sort"
+            | "sort_by"
+            | "min_by"
+            | "min_all_by"
+            | "max_by"
+            | "max_all_by"
+            | "reverse"
+            | "head"
+            | "tail"
+            | "min"
+            | "min_all"
+            | "max"
+            | "max_all"
+            | "attr"
+            | "names"
+            | "result_types"
+            | "operand_types"
+            | "fixpoint"
+            | "set_attr"
+            | "remove_attr"
+            | "check"
+            | "count"
+            | "emit"
+            | "json"
+            | "markdown"
+            | "print"
+            | "tally"
+            | "value"
+            | "map_by"
+            | "project"
+    )
+}
+
+pub(super) fn is_reserved(name: &str) -> bool {
     matches!(
         name,
         "input"
@@ -1181,4 +1407,130 @@ fn is_reserved(name: &str) -> bool {
             | "has_attr"
             | "string_attr_eq"
     )
+}
+
+struct NativeReader<'a> {
+    source: &'a str,
+    tokens: &'a [Token],
+    bindings: &'a HashSet<String>,
+    nesting: usize,
+}
+impl NativeReader<'_> {
+    fn parser<'b>(&self, position: usize, budget: &'b mut zirql::Budget) -> Parser<'_, 'b> {
+        Parser {
+            source: self.source,
+            tokens: self.tokens,
+            cursor: self
+                .tokens
+                .partition_point(|token| (token.range().start() as usize) < position),
+            diagnostics: vec![],
+            nesting_limit: self.nesting,
+            bindings: self.bindings.clone(),
+            budget,
+        }
+    }
+    fn error(diagnostic: Diagnostic) -> zirql::QueryError {
+        zirql::QueryError::query(diagnostic.range.as_range(), diagnostic.message)
+    }
+}
+impl zirql::ValueReaderHost for NativeReader<'_> {
+    type Stage = Stage;
+    type SetOperator = SetOperator;
+    type Emitter = ();
+    type Predicate = Predicate;
+    fn is_binding(&self, name: &str) -> bool {
+        self.bindings.contains(name)
+    }
+    fn is_stage(&self, name: &str) -> bool {
+        is_native_stage(name)
+    }
+    fn parse_stage(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        budget: &mut zirql::Budget,
+    ) -> Result<zirql::ExpressionStep<Stage, ()>, zirql::QueryError> {
+        budget.charge(
+            self.bindings.iter().map(|name| name.len() + 1).sum(),
+            zirql::Location::Query(reader.position()..reader.position()),
+        )?;
+        let mut parser = self.parser(reader.position(), budget);
+        let result = parser.stage(0);
+        if let Some(diagnostic) = parser.diagnostics.first() {
+            return Err(Self::error(*diagnostic));
+        }
+        let stage = result.ok_or_else(|| reader.error("expected a native stage"))?;
+        reader.advance(stage.range().end() as usize - reader.position())?;
+        Ok(zirql::ExpressionStep::Stage(stage))
+    }
+    fn parse_predicate_leaf(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        budget: &mut zirql::Budget,
+    ) -> Result<Predicate, zirql::QueryError> {
+        budget.charge(
+            self.bindings.iter().map(|name| name.len() + 1).sum(),
+            zirql::Location::Query(reader.position()..reader.position()),
+        )?;
+        let mut parser = self.parser(reader.position(), budget);
+        let result = parser.primary_predicate(0);
+        if let Some(diagnostic) = parser.diagnostics.first() {
+            return Err(Self::error(*diagnostic));
+        }
+        let predicate = result.ok_or_else(|| reader.error("expected a native predicate"))?;
+        reader.advance(predicate.range().end() as usize - reader.position())?;
+        Ok(predicate)
+    }
+    fn filter(
+        &mut self,
+        predicate: zirql::Predicate<Predicate>,
+        range: std::ops::Range<usize>,
+    ) -> Stage {
+        Stage::Filter {
+            predicate: lower_shared_predicate(predicate),
+            range: TextRange::new(range.start as u32, range.end as u32)
+                .expect("ordered query range"),
+        }
+    }
+    fn projection(
+        &mut self,
+        projection: zirql::Projection<super::report::Operand>,
+        range: std::ops::Range<usize>,
+    ) -> Stage {
+        Stage::Projection {
+            value: super::report::ParsedProjection::new(projection),
+            range: TextRange::new(range.start as u32, range.end as u32)
+                .expect("ordered query range"),
+        }
+    }
+    fn set_operator(&self, word: &str) -> Option<SetOperator> {
+        match word {
+            "union" => Some(SetOperator::Union),
+            "intersect" => Some(SetOperator::Intersect),
+            "except" => Some(SetOperator::Except),
+            _ => None,
+        }
+    }
+}
+fn lower_shared_predicate(predicate: zirql::Predicate<Predicate>) -> Predicate {
+    let range = TextRange::new(predicate.range.start as u32, predicate.range.end as u32)
+        .expect("shared predicate ranges are ordered source offsets");
+    match predicate.value {
+        zirql::PredicateKind::Leaf(predicate) => predicate,
+        zirql::PredicateKind::Not(predicate) => Predicate::Not {
+            predicate: Box::new(lower_shared_predicate(*predicate)),
+            range,
+        },
+        zirql::PredicateKind::Group(predicate) => Predicate::Group {
+            predicate: Box::new(lower_shared_predicate(*predicate)),
+            range,
+        },
+        zirql::PredicateKind::And(predicates) => Predicate::And {
+            predicates: predicates.into_iter().map(lower_shared_predicate).collect(),
+            range,
+        },
+        zirql::PredicateKind::Or(predicates) => Predicate::Or {
+            predicates: predicates.into_iter().map(lower_shared_predicate).collect(),
+            range,
+        },
+    }
 }

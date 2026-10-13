@@ -170,3 +170,122 @@ def test_projection_errors_and_nested_native_results():
     assert_type(result, dict[str, dict[str, list[zirium.SemanticType]]])
     assert result["x"]["x"][0].spelling == "i32"
     assert doc.query(ops().filter(always(False)).map_by(key, input().count())) == {}
+
+
+def test_correlated_report_builders_return_ordered_python_data():
+    from pathlib import Path
+
+    from zirium.query import (
+        ReportExpr as E,
+    )
+    from zirium.query import (
+        ReportGenerator as G,
+    )
+    from zirium.query import (
+        bound_ops,
+        op_expr,
+        report,
+        require,
+    )
+
+    source = (
+        Path(__file__).parents[2] / "examples/cli/function-report.mlir"
+    ).read_text()
+    lowered = zirium.parse_text(
+        source, registry=zirium.DialectRegistry.baseline()
+    ).lower_strict()
+    assert lowered.document is not None
+    doc = lowered.document
+    f = bound_ops("f")
+    rows = (
+        ops()
+        .filter(op("func.func"))
+        .project(
+            "f",
+            {
+                "name": f.attr("sym_name").one(),
+                "operations": f.children().subtree().count(),
+                "matches": f.children()
+                .subtree()
+                .filter(op_expr(E.name("operation_name")))
+                .count(),
+                "kinds": f.children().subtree().names().unique(),
+            },
+        )
+    )
+    selected = E.comprehension(
+        E.name("r"),
+        [
+            G.in_values(
+                "r",
+                E.name("rows"),
+                E.name("r").field("operations") >= E.name("threshold"),
+            )
+        ],
+    )
+    total_ops = E.comprehension(
+        E.name("r").field("operations"), [G.in_values("r", E.name("selected"))]
+    ).sum()
+    total_matches = E.comprehension(
+        E.name("r").field("matches"), [G.in_values("r", E.name("selected"))]
+    ).sum()
+    query = report(
+        E.scope(
+            {
+                "operation_name": "arith.addi",
+                "minimum_ops": 2,
+                "threshold": require(
+                    E.name("minimum_ops") >= 0,
+                    E.name("minimum_ops"),
+                    "minimum_ops must be nonnegative",
+                ),
+                "rows": rows,
+                "selected": selected,
+            },
+            {
+                "functions": E.name("selected"),
+                "total_operations": total_ops,
+                "total_matches": total_matches,
+            },
+        )
+    )
+    assert isinstance(query, QueryExpr)
+    result = doc.query(query)
+    assert result == {
+        "functions": [
+            {
+                "name": "double",
+                "operations": 2,
+                "matches": 1,
+                "kinds": ["arith.addi", "func.return"],
+            },
+            {
+                "name": "mix",
+                "operations": 3,
+                "matches": 1,
+                "kinds": ["arith.muli", "arith.addi", "func.return"],
+            },
+        ],
+        "total_operations": 5,
+        "total_matches": 2,
+    }
+    assert isinstance(result, dict)
+    assert list(result) == ["functions", "total_operations", "total_matches"]
+    assert doc.query(report(require(True, [False, 1, 2.5, "x"], "stop"))) == [
+        False,
+        1,
+        2.5,
+        "x",
+    ]
+    with pytest.raises(Exception, match="stop"):
+        doc.query(
+            report(
+                require(
+                    False,
+                    ops().filter(op("func.func")).string_attr("absent").one(),
+                    "stop",
+                )
+            )
+        )
+    with pytest.raises(Exception, match="work limit"):
+        doc.query(query, max_work=1)

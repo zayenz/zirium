@@ -341,3 +341,27 @@ zirium --diff examples/cli/diff-before.mlir examples/cli/diff-after.mlir \
 
 The first command prints a human summary. The second emits the changed arith
 attribute records as `zirium.diff.v1` JSON.
+
+## Function report rows
+
+The [function fixture](../examples/cli/function-report.mlir) contains `double`,
+`mix` and `plain`. A short correlated report needs only the existing query
+argument:
+
+```sh
+zirium 'filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "n": f | children | count}) | json' examples/cli/function-report.mlir
+```
+
+The rows are `double: 2`, `mix: 3`, `plain: 1`, in input order. The
+[complete program](../examples/cli/function-report.zirql) filters rows by a
+literal-bound minimum count and summarizes body and matching-operation counts:
+
+```sh
+zirium -f examples/cli/function-report.zirql examples/cli/function-report.mlir
+```
+
+Its local `operation_name = "arith.addi"` and `minimum_ops = 2` produce two
+functions and totals 5/2. Passing the program text inline yields the same native
+report and JSON. See [the report language](query-language.md#correlated-constructed-reports)
+and [typed report builders](query-dsl.md#constructed-report-builders) for
+cardinality, scope and budget rules.

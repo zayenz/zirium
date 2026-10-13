@@ -24,12 +24,16 @@ pub mod lexer;
 mod model;
 pub use builder::*;
 pub use diff::*;
-pub use zirql::ProgramLimits;
+pub use zirql::{
+    Budget, ConstructedValue, Location as ValueLocation, ProgramLimits, ValueBinaryOperator,
+    ValueUnaryOperator, constructed_value_type,
+};
 mod literal;
 pub mod parser;
 mod pipeline;
 mod program;
 mod render;
+mod report;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
@@ -632,8 +636,18 @@ fn evaluate_host_stage(
             current = evaluate_structured(step, context, current, bindings, budget)?;
         }
         model::Stage::Comprehension { value, .. } => {
-            current = QueryOutput::Native(NativeValue::Constructed(comprehension::evaluate(
-                value, bindings, budget,
+            current = QueryOutput::Native(NativeValue::Constructed(report::evaluate(
+                value, context, current, bindings, budget,
+            )?));
+        }
+        model::Stage::Projection { value, range } => {
+            current = QueryOutput::Native(NativeValue::Constructed(report::project(
+                value,
+                context,
+                current,
+                bindings,
+                budget,
+                &program::range(*range),
             )?));
         }
         model::Stage::Literal { value, .. } => {
@@ -786,10 +800,17 @@ fn evaluate_host_stage(
         }
         model::Stage::Root { predicate, .. } => {
             let selected = take_operations(current, "root")?;
+            let resolved = if report::has_dynamic_predicate(predicate) {
+                Some(report::resolve_predicate(
+                    predicate, context, bindings, budget,
+                )?)
+            } else {
+                None
+            };
             current = QueryOutput::Operations(evaluate_root(
                 context.document,
                 &selected,
-                predicate,
+                resolved.as_ref().unwrap_or(predicate),
                 budget,
             )?);
         }

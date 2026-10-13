@@ -772,3 +772,265 @@ fn library_emissions_and_committed_edits_survive_a_later_failure() {
         ["edited"]
     );
 }
+
+const FUNCTION_REPORT_SOURCE: &str = include_str!("../../../examples/cli/function-report.mlir");
+const FUNCTION_REPORT_PROGRAM: &str = include_str!("../../../examples/cli/function-report.zirql");
+#[test]
+fn correlated_function_report_agrees_through_text_and_typed_native_data() {
+    use zirium::query::{
+        ConstructedValue as V, NativeValue, ReportExpr as E, ReportGenerator as G,
+        ValueBinaryOperator as B, bound_ops, op_expr, report,
+    };
+    let mut document = document_from(FUNCTION_REPORT_SOURCE);
+    let query = Query::parse(FUNCTION_REPORT_PROGRAM).unwrap();
+    let mut outputs = vec![];
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(parsed)) = &outputs[0] else {
+        panic!("native report data")
+    };
+    assert_eq!(outputs.len(), 1);
+    let f = bound_ops("f");
+    let rows = ops().filter(op("func.func")).project(
+        "f",
+        [
+            ("name", E::from(f.attr("sym_name").one())),
+            ("operations", E::from(f.children().subtree().count())),
+            (
+                "matches",
+                E::from(
+                    f.children()
+                        .subtree()
+                        .filter(op_expr(E::name("operation_name")))
+                        .count(),
+                ),
+            ),
+            ("kinds", E::from(f.children().subtree().names().unique())),
+        ],
+    );
+    let selected = E::comprehension(
+        E::name("r"),
+        [G::in_values(
+            "r",
+            E::name("rows"),
+            Some(
+                E::name("r")
+                    .field("operations")
+                    .binary(B::GreaterEqual, E::name("threshold")),
+            ),
+        )],
+    );
+    let total = |field: &str| {
+        E::comprehension(
+            E::name("r").field(field),
+            [G::in_values("r", E::name("selected"), None)],
+        )
+        .sum()
+    };
+    let typed = report(E::scope(
+        [
+            ("operation_name", E::string("arith.addi")),
+            ("minimum_ops", E::integer(2)),
+            (
+                "threshold",
+                E::require(
+                    E::name("minimum_ops").binary(B::GreaterEqual, E::integer(0)),
+                    E::name("minimum_ops"),
+                    "minimum_ops must be nonnegative",
+                ),
+            ),
+            ("rows", rows.into()),
+            ("selected", selected),
+        ],
+        E::record([
+            ("functions", E::name("selected")),
+            ("total_operations", total("operations")),
+            ("total_matches", total("matches")),
+        ]),
+    ));
+    let constructed = document.query(&typed).unwrap();
+    assert_eq!(constructed.value(), parsed.value());
+    let row = |name: &str, operations, matches, kinds: Vec<&str>| {
+        V::Record(vec![
+            ("name".into(), V::String(name.into())),
+            ("operations".into(), V::Integer(operations)),
+            ("matches".into(), V::Integer(matches)),
+            (
+                "kinds".into(),
+                V::Array(
+                    kinds
+                        .into_iter()
+                        .map(|name| V::String(name.into()))
+                        .collect(),
+                ),
+            ),
+        ])
+    };
+    assert_eq!(
+        parsed.value(),
+        &V::Record(vec![
+            (
+                "functions".into(),
+                V::Array(vec![
+                    row("double", 2, 1, vec!["arith.addi", "func.return"]),
+                    row("mix", 3, 1, vec!["arith.muli", "arith.addi", "func.return"])
+                ])
+            ),
+            ("total_operations".into(), V::Integer(5)),
+            ("total_matches".into(), V::Integer(2)),
+        ])
+    );
+    let mut empty = vec![];
+    Query::parse(&FUNCTION_REPORT_PROGRAM.replace("minimum_ops = 2", "minimum_ops = 4"))
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            empty.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(empty)) = &empty[0] else {
+        panic!("empty native report")
+    };
+    assert_eq!(
+        empty.value(),
+        &V::Record(vec![
+            ("functions".into(), V::Array(vec![])),
+            ("total_operations".into(), V::Integer(0)),
+            ("total_matches".into(), V::Integer(0))
+        ])
+    );
+    let printed = |document: &Document| {
+        let mut output = String::new();
+        document
+            .print(&mut output, zirium::printer::PrintLayout::Pretty)
+            .unwrap();
+        output
+    };
+    for source in [
+        r#"filter(false) | project(f, {"x": missing})"#,
+        r#"filter(false) | project(f, {"x": sum(f | names)})"#,
+        r#"filter(false) | project(f, {"x": f | set_attr("tag", "x") | names})"#,
+        r#"filter(false) | project(f, {"x": f | names | json})"#,
+    ] {
+        let before = printed(&document);
+        let error = Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .unwrap_err();
+        assert!(error.range().is_some());
+        assert_eq!(printed(&document), before);
+    }
+    let error = Query::parse(
+        r#"report require(false, filter(op("func.func")) | attr("absent") | one, "stop");"#,
+    )
+    .unwrap()
+    .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+    .unwrap_err();
+    assert_eq!(error.to_string(), "stop");
+    for source in [
+        r#"let = names; let"#,
+        r#"report = names; report"#,
+        r#"project = names; project"#,
+        r#"sum = names; sum"#,
+        r#"one = names; one"#,
+    ] {
+        Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .unwrap();
+    }
+    let reversed = ops()
+        .filter(op("func.func"))
+        .reverse()
+        .project("f", [("name", E::from(f.attr("sym_name").one()))]);
+    assert_eq!(
+        document.query(&reversed).unwrap().value(),
+        &V::Array(vec![
+            V::Record(vec![("name".into(), V::String("plain".into()))]),
+            V::Record(vec![("name".into(), V::String("mix".into()))]),
+            V::Record(vec![("name".into(), V::String("double".into()))])
+        ])
+    );
+    let mut scopes = document_from(
+        r#"
+"builtin.module"() ({ func.func @same() { func.return } }) {sym_name = "left"} : () -> ()
+"builtin.module"() ({ func.func @same() { func.return } }) {sym_name = "right"} : () -> ()
+"#,
+    );
+    let repeated = ops()
+        .filter(op("func.func"))
+        .project("f", [("name", E::from(f.attr("sym_name").one()))]);
+    assert_eq!(
+        scopes.query(&repeated).unwrap().value(),
+        &V::Array(vec![
+            V::Record(vec![("name".into(), V::String("same".into()))]),
+            V::Record(vec![("name".into(), V::String("same".into()))]),
+        ])
+    );
+    for (source, expected) in [
+        (
+            "let flag = false; report require(not flag, true, \"stop\");",
+            V::Boolean(true),
+        ),
+        (
+            "report [n # π\n for n in [1]];",
+            V::Array(vec![V::Integer(1)]),
+        ),
+        (
+            "[names for names in [1] if names == 1]",
+            V::Array(vec![V::Integer(1)]),
+        ),
+        (
+            "let operation_name = \"func.func\"; report filter(op(\"arith.addi\")) | root(op(operation_name)) | count;",
+            V::Integer(2),
+        ),
+    ] {
+        let mut result = vec![];
+        Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                result.push(value);
+                Ok(())
+            })
+            .unwrap();
+        let QueryOutput::Native(NativeValue::Constructed(value)) = &result[0] else {
+            panic!("native scalar result")
+        };
+        assert_eq!(value.value(), &expected);
+    }
+    let commented =
+        "filter(op(\"func.func\")) | project # π\n(f, {\"name\": f | attr(\"sym_name\") | one});";
+    let mut values = vec![];
+    Query::parse(commented)
+        .unwrap()
+        .evaluate(&mut scopes, DialectRegistry::baseline(), |_, value| {
+            values.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(value)) = &values[0] else {
+        panic!("native projection")
+    };
+    assert_eq!(value.value(), scopes.query(&repeated).unwrap().value());
+    let selector = input().attr("a".repeat(4_000)).one();
+    let bounded = ops()
+        .filter(op("func.func"))
+        .project("f", [("n", E::from(f.sort_by(&selector).count()))]);
+    let error = bounded
+        .evaluate_with_program_limits(
+            &document,
+            DialectRegistry::baseline(),
+            zirium::query::ProgramLimits {
+                work: 1_000,
+                results: 10_000,
+                nesting: 64,
+                stream_items: 100,
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("work limit"));
+}

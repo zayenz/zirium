@@ -2,9 +2,283 @@
 use super::*;
 use pyo3::{
     exceptions::PyTypeError,
-    types::{PyAny, PyDict, PyList},
+    types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyString},
 };
 use zirium::query as core;
+
+#[pyclass(frozen, module = "zirium.query")]
+#[derive(Clone)]
+pub(super) struct ReportExpr {
+    inner: core::ReportExpr,
+}
+#[pyclass(frozen, module = "zirium.query")]
+#[derive(Clone)]
+pub(super) struct ReportQuery {
+    inner: core::ReportQuery,
+}
+#[pyclass(frozen, module = "zirium.query")]
+#[derive(Clone)]
+pub(super) struct ReportGenerator {
+    name: String,
+    source: core::ReportExpr,
+    filter: Option<core::ReportExpr>,
+    bind: bool,
+}
+impl ReportGenerator {
+    fn clause(&self) -> core::ReportGenerator {
+        if self.bind {
+            core::ReportGenerator::bind(self.name.clone(), self.source.clone())
+        } else {
+            core::ReportGenerator::in_values(
+                self.name.clone(),
+                self.source.clone(),
+                self.filter.clone(),
+            )
+        }
+    }
+}
+fn report_expression(value: &Bound<'_, PyAny>) -> PyResult<core::ReportExpr> {
+    if let Ok(value) = value.extract::<PyRef<'_, ReportExpr>>() {
+        return Ok(value.inner.clone());
+    }
+    if let Ok(value) = value.extract::<PyRef<'_, StringQuery>>() {
+        return Ok(value.inner.clone().into());
+    }
+    if let Ok(value) = value.extract::<PyRef<'_, ScalarStringQuery>>() {
+        return Ok(value.inner.clone().into());
+    }
+    if let Ok(value) = value.extract::<PyRef<'_, CountQuery>>() {
+        return Ok(value.inner.clone().into());
+    }
+    if let Ok(value) = value.extract::<PyRef<'_, ReportQuery>>() {
+        return Ok(value.inner.clone().into());
+    }
+    if value.is_instance_of::<PyBool>() {
+        return Ok(core::ReportExpr::boolean(value.extract()?));
+    }
+    if value.is_instance_of::<PyInt>() {
+        return Ok(core::ReportExpr::integer(value.extract()?));
+    }
+    if value.is_instance_of::<PyFloat>() {
+        return core::ReportExpr::float(value.extract()?).map_err(py_error);
+    }
+    if value.is_instance_of::<PyString>() {
+        return Ok(core::ReportExpr::string(value.extract::<String>()?));
+    }
+    if let Ok(values) = value.cast::<PyList>() {
+        return Ok(core::ReportExpr::array(
+            values
+                .iter()
+                .map(|value| report_expression(&value))
+                .collect::<PyResult<Vec<_>>>()?,
+        ));
+    }
+    if let Ok(fields) = value.cast::<PyDict>() {
+        return Ok(core::ReportExpr::record(
+            fields
+                .iter()
+                .map(|(key, value)| Ok((key.extract::<String>()?, report_expression(&value)?)))
+                .collect::<PyResult<Vec<_>>>()?,
+        ));
+    }
+    Err(PyTypeError::new_err(
+        "expected a report scalar, list, string-keyed dict, or scalar report query",
+    ))
+}
+#[pymethods]
+impl ReportExpr {
+    #[new]
+    fn new(value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: report_expression(value)?,
+        })
+    }
+    #[staticmethod]
+    fn name(name: String) -> Self {
+        Self {
+            inner: core::ReportExpr::name(name),
+        }
+    }
+    #[staticmethod]
+    fn comprehension(
+        head: &Bound<'_, PyAny>,
+        clauses: Vec<PyRef<'_, ReportGenerator>>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: core::ReportExpr::comprehension(
+                report_expression(head)?,
+                clauses.iter().map(|clause| clause.clause()),
+            ),
+        })
+    }
+    #[staticmethod]
+    fn scope(bindings: &Bound<'_, PyDict>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: core::ReportExpr::scope(
+                bindings
+                    .iter()
+                    .map(|(key, value)| Ok((key.extract::<String>()?, report_expression(&value)?)))
+                    .collect::<PyResult<Vec<_>>>()?,
+                report_expression(value)?,
+            ),
+        })
+    }
+    fn field(&self, name: String) -> Self {
+        Self {
+            inner: self.inner.clone().field(name),
+        }
+    }
+    fn at(&self, index: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().at(report_expression(index)?),
+        })
+    }
+    fn one(&self) -> Self {
+        Self {
+            inner: self.inner.clone().one(),
+        }
+    }
+    fn length(&self) -> Self {
+        Self {
+            inner: self.inner.clone().length(),
+        }
+    }
+    fn sum(&self) -> Self {
+        Self {
+            inner: self.inner.clone().sum(),
+        }
+    }
+    fn forall(&self) -> Self {
+        Self {
+            inner: self.inner.clone().forall(),
+        }
+    }
+    fn exists(&self) -> Self {
+        Self {
+            inner: self.inner.clone().exists(),
+        }
+    }
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyTypeError::new_err(
+            "report expressions have no truth value; evaluate with document.query(report(expression))",
+        ))
+    }
+    fn __add__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::Add, other)
+    }
+    fn __sub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::Subtract, other)
+    }
+    fn __mul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::Multiply, other)
+    }
+    fn __truediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::Divide, other)
+    }
+    fn __ge__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::GreaterEqual, other)
+    }
+    fn __gt__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::Greater, other)
+    }
+    fn __le__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::LessEqual, other)
+    }
+    fn __lt__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::Less, other)
+    }
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::Equal, other)
+    }
+    fn __ne__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::NotEqual, other)
+    }
+    fn __and__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::And, other)
+    }
+    fn __or__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::Or, other)
+    }
+    fn __invert__(&self) -> Self {
+        Self {
+            inner: self.inner.clone().unary(core::ValueUnaryOperator::Not),
+        }
+    }
+}
+impl ReportExpr {
+    fn binary(
+        &self,
+        operator: core::ValueBinaryOperator,
+        other: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: self
+                .inner
+                .clone()
+                .binary(operator, report_expression(other)?),
+        })
+    }
+}
+#[pymethods]
+impl ReportQuery {
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyTypeError::new_err(
+            "query expressions have no truth value; evaluate with document.query(expression)",
+        ))
+    }
+}
+#[pymethods]
+impl ReportGenerator {
+    #[staticmethod]
+    #[pyo3(signature=(name,source,filter=None))]
+    fn in_values(
+        name: String,
+        source: &Bound<'_, PyAny>,
+        filter: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            name,
+            source: report_expression(source)?,
+            filter: filter.map(report_expression).transpose()?,
+            bind: false,
+        })
+    }
+    #[staticmethod]
+    fn bind(name: String, value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            name,
+            source: report_expression(value)?,
+            filter: None,
+            bind: true,
+        })
+    }
+}
+#[pyfunction]
+fn bound_ops(name: String) -> OpQuery {
+    OpQuery {
+        inner: core::bound_ops(name),
+    }
+}
+#[pyfunction]
+fn report(value: &Bound<'_, PyAny>) -> PyResult<ReportQuery> {
+    Ok(ReportQuery {
+        inner: core::report(report_expression(value)?),
+    })
+}
+#[pyfunction]
+fn require(
+    condition: &Bound<'_, PyAny>,
+    value: &Bound<'_, PyAny>,
+    message: String,
+) -> PyResult<ReportExpr> {
+    Ok(ReportExpr {
+        inner: core::ReportExpr::require(
+            report_expression(condition)?,
+            report_expression(value)?,
+            message,
+        ),
+    })
+}
 
 #[pyclass(frozen, module = "zirium.query")]
 #[derive(Clone)]
@@ -80,6 +354,18 @@ impl Predicate {
 
 #[pymethods]
 impl OpQuery {
+    fn project(&self, subject: String, fields: &Bound<'_, PyDict>) -> PyResult<ReportQuery> {
+        Ok(ReportQuery {
+            inner: self.inner.project(
+                subject,
+                fields
+                    .iter()
+                    .map(|(key, value)| Ok((key.extract::<String>()?, report_expression(&value)?)))
+                    .collect::<PyResult<Vec<_>>>()?,
+            ),
+        })
+    }
+
     fn __bool__(&self) -> PyResult<bool> {
         Err(PyTypeError::new_err(
             "query expressions have no truth value; evaluate with document.query(expression)",
@@ -136,6 +422,11 @@ impl OpQuery {
     fn string_attr(&self, name: String) -> StringQuery {
         StringQuery {
             inner: self.inner.string_attr(name),
+        }
+    }
+    fn attr(&self, name: String) -> StringQuery {
+        StringQuery {
+            inner: self.inner.attr(name),
         }
     }
     fn attributes(&self, name: String) -> AttributeQuery {
@@ -525,6 +816,9 @@ impl MapQuery {
 }
 
 fn extract(value: &Bound<'_, PyAny>) -> PyResult<core::QueryExpr<core::QueryOutput>> {
+    if let Ok(value) = value.extract::<PyRef<'_, ReportQuery>>() {
+        return Ok(value.inner.erased());
+    }
     if let Ok(value) = value.extract::<PyRef<'_, OpQuery>>() {
         return Ok(value.inner.erased());
     }
@@ -563,6 +857,12 @@ fn op(name: String) -> Predicate {
     Predicate {
         inner: core::op(name),
     }
+}
+#[pyfunction]
+fn op_expr(name: &Bound<'_, PyAny>) -> PyResult<Predicate> {
+    Ok(Predicate {
+        inner: core::op_expr(report_expression(name)?),
+    })
 }
 #[pyfunction]
 fn dialect(name: String) -> Predicate {
@@ -611,26 +911,29 @@ pub(super) fn evaluate(
         max_work: max_work.unwrap_or(defaults.max_work),
         max_items: max_items.unwrap_or(defaults.max_items),
     };
-    let output = py.detach(move || {
+    let mut budget = query.new_budget(limits);
+    let (output, mut budget) = py.detach(move || {
         let document = read_document(&state)?;
-        query
-            .evaluate_output_with_options(
+        let output = query
+            .evaluate_output_with_budget(
                 &document,
                 registry.registry(),
                 core::EvaluationOptions {
                     strict_unknown_references: strict,
                 },
-                limits,
+                &mut budget,
             )
-            .map_err(py_error)
+            .map_err(py_error)?;
+        Ok::<_, PyErr>((output, budget))
     })?;
-    native(py, &document.state, output)
+    native(py, &document.state, output, &mut budget)
 }
 
 fn native(
     py: Python<'_>,
     state: &SharedDocument,
     output: core::QueryOutput,
+    budget: &mut core::Budget,
 ) -> PyResult<Py<PyAny>> {
     use core::{NativeValue, QueryOutput};
     Ok(match output {
@@ -649,10 +952,14 @@ fn native(
         }
         QueryOutput::Values(values) => values.into_pyobject(py)?.into_any().unbind(),
         QueryOutput::Count(count) => count.into_pyobject(py)?.into_any().unbind(),
-        QueryOutput::Native(NativeValue::Constructed(_)) => {
-            return Err(py_error(
-                "constructed textual reports are not a typed builder result",
-            ));
+        QueryOutput::Native(NativeValue::Constructed(value)) => {
+            core::constructed_value_type(
+                value.value(),
+                budget,
+                core::ValueLocation::Query(value.range()),
+            )
+            .map_err(py_error)?;
+            constructed(py, value.value(), budget, &value.range())?
         }
         QueryOutput::Native(NativeValue::String(value)) => {
             value.into_pyobject(py)?.into_any().unbind()
@@ -691,7 +998,7 @@ fn native(
         QueryOutput::Native(NativeValue::Map(entries)) => {
             let dict = PyDict::new(py);
             for (key, value) in entries {
-                dict.set_item(key, native(py, state, value)?)?;
+                dict.set_item(key, native(py, state, value, budget)?)?;
             }
             dict.into_any().unbind()
         }
@@ -711,7 +1018,72 @@ fn native(
     })
 }
 
+fn constructed(
+    py: Python<'_>,
+    value: &core::ConstructedValue,
+    budget: &mut core::Budget,
+    range: &std::ops::Range<usize>,
+) -> PyResult<Py<PyAny>> {
+    use core::ConstructedValue as V;
+    budget.charge(1, zirql_location(range)).map_err(py_error)?;
+    budget
+        .charge_results(1, zirql_location(range))
+        .map_err(py_error)?;
+    Ok(match value {
+        V::Boolean(value) => value.into_pyobject(py)?.to_owned().into_any().unbind(),
+        V::Integer(value) => value.into_pyobject(py)?.into_any().unbind(),
+        V::Float(value) => value.into_pyobject(py)?.into_any().unbind(),
+        V::String(value) => {
+            budget
+                .charge(value.len(), zirql_location(range))
+                .map_err(py_error)?;
+            value.into_pyobject(py)?.into_any().unbind()
+        }
+        V::Array(values) => {
+            budget
+                .charge(values.len(), zirql_location(range))
+                .map_err(py_error)?;
+            budget
+                .charge_results(values.len(), zirql_location(range))
+                .map_err(py_error)?;
+            let result = PyList::empty(py);
+            for value in values {
+                result.append(constructed(py, value, budget, range)?)?;
+            }
+            result.into_any().unbind()
+        }
+        V::Record(fields) => {
+            budget
+                .charge(fields.len(), zirql_location(range))
+                .map_err(py_error)?;
+            budget
+                .charge_results(fields.len(), zirql_location(range))
+                .map_err(py_error)?;
+            let result = PyDict::new(py);
+            for (name, value) in fields {
+                budget
+                    .charge(name.len(), zirql_location(range))
+                    .map_err(py_error)?;
+                result.set_item(name, constructed(py, value, budget, range)?)?;
+            }
+            result.into_any().unbind()
+        }
+        V::Member(_) | V::KeyedArray { .. } | V::Tuple(_) | V::Set { .. } => {
+            return Err(PyTypeError::new_err("unsupported constructed report kind"));
+        }
+    })
+}
+fn zirql_location(range: &std::ops::Range<usize>) -> core::ValueLocation {
+    core::ValueLocation::Query(range.clone())
+}
+
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<ReportExpr>()?;
+    module.add_class::<ReportQuery>()?;
+    module.add_class::<ReportGenerator>()?;
+    module.add_function(wrap_pyfunction!(bound_ops, module)?)?;
+    module.add_function(wrap_pyfunction!(report, module)?)?;
+    module.add_function(wrap_pyfunction!(require, module)?)?;
     module.add_class::<OpQuery>()?;
     module.add_class::<StringQuery>()?;
     module.add_class::<CountQuery>()?;
@@ -723,6 +1095,7 @@ pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(ops, module)?)?;
     module.add_function(wrap_pyfunction!(input, module)?)?;
     module.add_function(wrap_pyfunction!(op, module)?)?;
+    module.add_function(wrap_pyfunction!(op_expr, module)?)?;
     module.add_function(wrap_pyfunction!(dialect, module)?)?;
     module.add_function(wrap_pyfunction!(has_attr, module)?)?;
     module.add_function(wrap_pyfunction!(result_type, module)?)?;

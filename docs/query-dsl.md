@@ -3,14 +3,15 @@
 Build queries with methods and predicates, then evaluate them against a semantic
 document. Rust and Python use the same expression tree and return native values.
 Queries are read-only; use the [textual language](query-language.md) for CLI
-edits and reports.
+queries and edits.
 
 Textual [positional comprehensions](query-language.md#positional-comprehensions)
 construct native Zirql values from explicit scalar projections. Rust callers
 can match `NativeValue::Constructed(report)` and inspect `report.value()` in a textual `Query`
 callback before rendering. The typed Rust and Python builders keep their
-existing operation handles, strings, counts, and maps; comprehension syntax is
-part of the textual frontend.
+existing operation handles, strings, counts, and maps. The
+[report builders](#constructed-report-builders) also construct shared values,
+comprehensions and correlated rows.
 
 ## Start a query
 
@@ -276,3 +277,57 @@ Use `diff_op_input()` to build a relative fixed-point body, for example
 `changed_ops.fixpoint(diff_op_input().slice())`. Diff value projections include
 `names()`, `attr(...)`, `result_types()`, and `operand_types()`.
 See [semantic diff](semantic-diff.md) for examples.
+
+## Constructed report builders
+
+`OpQuery::project` returns a `ReportQuery` whose native result is
+`ConstructedReport`. `bound_ops` names a saved native selection or a projection
+subject. `ReportExpr` contains the shared value tree; construction reads no
+document and accepts no query-source strings or evaluator callbacks.
+
+```rust
+use zirium::query::{ReportExpr, bound_ops, op, ops};
+let f = bound_ops("f");
+let rows = ops().filter(op("func.func")).project("f", [
+    ("name", ReportExpr::from(f.attr("sym_name").one())),
+    ("operations", ReportExpr::from(f.children().subtree().count())),
+]);
+let native_report = document.query(&rows)?;
+let value = native_report.value();
+```
+
+StringQuery, scalar-string queries, CountQuery and ReportQuery convert explicitly
+to ReportExpr. Scalar literals, arrays, records, field/index access, generator
+clauses, reducers and requirements all use the shared evaluator. `ReportGenerator`
+constructs `in` or immutable binding clauses. `ReportExpr::scope` binds values
+in order and returns one head through these same clauses. `op_expr` accepts a
+checked string expression while the ordinary `op("name")` builder remains
+available.
+`attr(name)` follows the textual attribute-spelling projection; `string_attr(name)`
+continues to require and decode a string attribute.
+
+Typed constructed requests select aggregate limits automatically.
+`evaluate_with_program_limits` accepts explicit limits, and
+`evaluate_output_with_budget` retains the caller's remaining allowance for
+conversion. Native handles stay document-owned; report values carry their query
+location. Render explicitly with ConstructedReport's budgeted JSON methods.
+
+Python mirrors this surface through `zirium.query`:
+
+```python
+from zirium.query import ReportExpr as E, bound_ops, op, ops, report, require
+f = bound_ops("f")
+rows = ops().filter(op("func.func")).project("f", {
+    "name": f.attr("sym_name").one(),
+    "operations": f.children().subtree().count(),
+})
+result = document.query(report(require(True, E(rows), "stop")))
+```
+
+Document.query returns Python bool/int/float/string/list/dict data directly,
+with record insertion order. ReportExpr also accepts scalar-query wrappers and
+nested list/dict construction. ReportGenerator and ReportExpr.comprehension
+supply value generators; `.sum()`, `.length()`, `.forall()` and `.exists()`
+reduce arrays. Python conversion spends the remaining request budget before
+allocating collections. Ordinary operation/type/attribute results retain their
+existing semantic wrappers.

@@ -160,6 +160,7 @@ pub(super) fn expressions<'q>(
             .iter()
             .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
         {
+            report::push_expressions(stage, &mut pending);
             match stage {
                 model::Stage::Group { expression, .. }
                 | model::Stage::Fixpoint { expression, .. } => pending.push(expression),
@@ -586,7 +587,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum Kind {
     Operations,
     Strings,
@@ -596,7 +597,7 @@ pub(super) enum Kind {
     String,
     Types,
     Attributes,
-    Constructed,
+    Constructed(std::sync::Arc<Vec<zirql::ValueType>>),
 }
 
 pub(super) fn validate(
@@ -629,9 +630,9 @@ pub(super) fn validate_expression(
     names: &BTreeMap<String, Kind>,
     budget: &mut zirql::Budget,
 ) -> Result<Kind, EvaluationError> {
-    let left = validate_stages(&expression.first, input, names, budget)?;
+    let left = validate_stages(&expression.first, input.clone(), names, budget)?;
     for (_, stages) in &expression.rest {
-        let right = validate_stages(stages, input, names, budget)?;
+        let right = validate_stages(stages, input.clone(), names, budget)?;
         if left != right || !matches!(left, Kind::Operations | Kind::Strings) {
             return Err(EvaluationError::new(
                 "set operands require operation or value streams of the same kind",
@@ -642,7 +643,7 @@ pub(super) fn validate_expression(
     Ok(left)
 }
 
-fn validate_stages(
+pub(super) fn validate_stages(
     stages: &[model::Stage],
     mut kind: Kind,
     names: &BTreeMap<String, Kind>,
@@ -655,15 +656,19 @@ fn validate_stages(
         match stage {
             S::Input { .. } => kind = Kind::Operations,
             S::Binding { name, .. } => {
-                kind = *names.get(name).ok_or_else(|| {
+                kind = names.get(name).cloned().ok_or_else(|| {
                     failure(&format!(
                         "binding `{name}` is unavailable in this evaluation context"
                     ))
                 })?
             }
             S::Comprehension { value, .. } => {
-                comprehension::validate(value, names, budget)?;
-                kind = Kind::Constructed;
+                let types = report::types(value, kind.clone(), names, budget)?;
+                kind = Kind::Constructed(std::sync::Arc::new(types));
+            }
+            S::Projection { value, .. } => {
+                let types = report::projection_types(value, kind.clone(), names, budget)?;
+                kind = Kind::Constructed(std::sync::Arc::new(types));
             }
             S::Literal { value, .. } => {
                 validate_literal(value, names).map_err(|error| error.at(range(stage.range())))?;
@@ -687,8 +692,14 @@ fn validate_stages(
                     "fixpoint requires an operation or value stream",
                 )?;
             }
-            S::Filter { .. }
-            | S::Reachable { .. }
+            S::Filter { predicate, .. } | S::Root { predicate, .. } => {
+                require(
+                    kind == Kind::Operations,
+                    "stage requires operations, but the current stream contains values",
+                )?;
+                report::validate_predicate(predicate, names, budget)?;
+            }
+            S::Reachable { .. }
             | S::Closure { .. }
             | S::Slice { .. }
             | S::ForwardSlice { .. }
@@ -696,7 +707,6 @@ fn validate_stages(
             | S::Users { .. }
             | S::Parent { .. }
             | S::Children { .. }
-            | S::Root { .. }
             | S::Subtree { .. }
             | S::SetAttr { .. }
             | S::RemoveAttr { .. } => require(
@@ -748,12 +758,12 @@ fn validate_stages(
                 )?;
             }
             S::Reverse { .. } | S::Head { .. } | S::Tail { .. } => require(
-                !matches!(kind, Kind::Count | Kind::String | Kind::Constructed),
+                !matches!(kind, Kind::Count | Kind::String | Kind::Constructed(_)),
                 "stage requires a stream, map, or array",
             )?,
             S::Count { .. } | S::Check { .. } => {
                 require(
-                    !matches!(kind, Kind::Count | Kind::String | Kind::Constructed),
+                    !matches!(kind, Kind::Count | Kind::String | Kind::Constructed(_)),
                     "stage requires a stream, map, or array",
                 )?;
                 if matches!(stage, S::Count { .. }) {

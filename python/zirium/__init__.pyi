@@ -334,7 +334,11 @@ class Document:
         max_items: int | None = None,
         strict: bool = False,
     ) -> _QueryResult:
-        """Evaluate a reusable expression, subject to optional work/item limits."""
+        """Evaluate a native query or constructed report with optional work/item limits.
+
+        ReportQuery returns bool/int/float/string/list/dict data in field order.
+        Evaluation and report conversion retain one request allowance.
+        """
     def operation_table(self, name: str | None = None) -> OperationTable: ...
     def statistics(self) -> SemanticStatistics: ...
     def edit(self) -> SemanticEdit:

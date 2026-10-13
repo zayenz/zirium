@@ -300,6 +300,8 @@ The supported expression forms are:
   numeric `<`, `<=`, `>`, `>=`; typed `==` (also `=`) and `!=`.
 - Boolean `and` and `or`; string or positional-array `++`; record access
   `r.field`, array access `a[i]`, and inclusive integer ranges `lo..hi`.
+- `length`, `sum`, `forall`, `exists`, `require`, and `one` calls;
+  explicitly projected native queries and correlated `project` rows.
 
 Array positions start at one. Integer arithmetic uses signed 64-bit values and
 refuses overflow or division by zero. Floats use finite binary64 values;
@@ -308,7 +310,7 @@ operations require exact integer-to-float conversion. Strings receive no numeric
 coercion. Boolean operands short-circuit, so `false and (1 div 0 == 1)` skips the
 runtime division. Every branch still receives scope and type validation before
 execution; a skipped branch cannot hide incompatible types or an unsupported
-call. All expression calls and unlisted forms are refused.
+call. Other expression calls and unlisted forms are refused.
 
 Use an explicit projection such as `names`, `attr`, or `count` before constructing
 scalar reports from operations. Native operation, type, and attribute handles
@@ -951,3 +953,70 @@ work and per-stream limits and rejects `--max-results`. Change streams support k
 ordering and `map_by`, and the document labels are available as
 `before_document` and `after_document` for interpolation. See
 [semantic diff](semantic-diff.md) for the full policy.
+
+## Correlated constructed reports
+
+`project(subject, {fields})` evaluates ordered fields for each native input
+operation. The subject is a singleton selection local to the body. Rows follow
+input order, and duplicate subjects or equal projected names remain separate
+rows. Native handles require explicit scalar projections such as `names`,
+`attr` or `count`.
+
+A small projection fits in the existing inline query argument:
+
+```sh
+zirium 'filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "n": f | children | count}) | json' examples/cli/function-report.mlir
+```
+
+`one` extracts exactly one projected string; zero or multiple values fail at
+that stage. A projected string sequence remains an array when `one` is omitted.
+Native counts remain unsigned counts in ordinary queries and become checked
+signed integers at the constructed boundary.
+
+`let name = expression;` adds immutable scalar, constructed or native bindings.
+`report expression;` requests the established result emission. A final `| json`
+suppresses duplicate implicit output and remains pass-through. Bare saved names
+`let`, `report`, `project`, `sum` and `one` keep their legacy meaning. Explicit
+new value bodies use shared scalar rules; ordinary JSON literals retain their
+interpolation and null behavior.
+
+This complete program uses local literal arguments:
+
+```text
+let operation_name = "arith.addi";
+let minimum_ops = 2;
+let threshold = require(minimum_ops >= 0, minimum_ops, "minimum_ops must be nonnegative");
+let functions = input | filter(op("func.func"));
+let rows = functions | project(f, {
+  "name": f | attr("sym_name") | one,
+  "operations": f | children | subtree | count,
+  "matches": f | children | subtree | filter(op(operation_name)) | count,
+  "kinds": f | children | subtree | names | unique
+});
+let selected = [r for r in rows if r.operations >= threshold];
+report {"functions": selected,
+        "total_operations": sum([r.operations for r in selected]),
+        "total_matches": sum([r.matches for r in selected])};
+```
+
+The [function fixture](../examples/cli/function-report.mlir) produces `double`
+and `mix`, with body counts 2 and 3, one matching addition each, and operation
+kinds in first-seen order. The totals are 5 and 2. `minimum_ops = 4` produces an
+empty function array and zero totals. Run the
+[saved program](../examples/cli/function-report.zirql) with `-f`, or pass the
+same text inline. Both modes use original query locations and one request
+allowance.
+
+`length`, `sum`, `forall` and `exists` reduce materialized arrays. Integer sum
+checks overflow; empty identities are 0, 0, true and false.
+`require(condition, value, "message")` preflights both operands, then evaluates
+its value only when the condition is true. On false it fails with the message.
+An unchosen value still receives scope, known-type and purity validation.
+
+Projection over an empty selection validates every field before returning an
+empty array. Known record schemas survive empty results, so later invalid sums
+or field operations are refused before native execution. Effects and emitters
+are forbidden in projection fields. Parsing, nested native queries, value
+generators, copies and rendering retain one work/result/nesting allowance.
+CLI output remains buffered until success; library callbacks retain their
+existing explicit buffering policy.

@@ -163,6 +163,7 @@ fn lower_predicate(predicate: &model::Predicate) -> zirql::Predicate<&model::Pre
         }
         P::Bool { .. }
         | P::Op { .. }
+        | P::OpValue { .. }
         | P::Dialect { .. }
         | P::ResultType { .. }
         | P::HasAttr { .. }
@@ -303,12 +304,23 @@ impl<'stage>
         leaf: &&'stage model::Predicate,
         item: &Row,
         context: &mut StreamContext<'_, '_, '_, '_>,
-        _: &mut Budget,
+        budget: &mut Budget,
         _: &Range<usize>,
     ) -> Result<Truth, zirql::EvaluationError<Self::Error>> {
         let Row::Operation(operation) = item else {
             unreachable!("filter preparation requires operations")
         };
+        if let model::Predicate::OpValue { name, .. } = leaf {
+            let name = super::report::op_name(name, context.evaluation, context.bindings, budget)
+                .map_err(zirql::EvaluationError::Host)?;
+            return Ok(
+                if context.evaluation.document.operation_name(*operation) == Some(&name) {
+                    Truth::True
+                } else {
+                    Truth::False
+                },
+            );
+        }
         Ok(evaluate_leaf(leaf, context.evaluation.document, *operation))
     }
 
@@ -366,6 +378,7 @@ fn evaluate_leaf(
     let value = match predicate {
         model::Predicate::Bool { value, .. } => *value,
         model::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
+        model::Predicate::OpValue {..}=>unreachable!("value arguments resolve with their active scope"),
         model::Predicate::Dialect { name, .. } => document.operation_name(operation).and_then(|op| op.split_once('.')).is_some_and(|(dialect, _)| dialect == name),
         model::Predicate::ResultType { spelling, .. } => document.result_types(operation).unwrap_or(&[]).iter().any(|&ty| document.type_spelling(ty) == Some(spelling)),
         model::Predicate::HasAttr { name, .. } => document.attribute_entries(operation).is_some_and(|mut entries| entries.any(|(attribute, _)| attribute == name)),

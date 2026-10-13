@@ -511,7 +511,7 @@ fn lower(stages: &[Stage]) -> Result<Expression, EvaluationError> {
                 diff_program::stream(Shared::Filter(lower_change(predicate)?), 0..0)?
             }
             Stage::OperationFilter(predicate) => diff_program::stream(
-                Shared::Filter(lower_operation(&predicate.checked_model()?)),
+                Shared::Filter(lower_operation(&predicate.checked_model()?)?),
                 0..0,
             )?,
             Stage::Project(side) => DiffStage::Project(*side),
@@ -522,7 +522,7 @@ fn lower(stages: &[Stage]) -> Result<Expression, EvaluationError> {
             Stage::Subtree => DiffStage::Subtree,
             Stage::Root(predicate) => {
                 let DiffStage::Stream(filter) = diff_program::stream(
-                    Shared::Filter(lower_operation(&predicate.checked_model()?)),
+                    Shared::Filter(lower_operation(&predicate.checked_model()?)?),
                     0..0,
                 )?
                 else {
@@ -572,7 +572,7 @@ fn lower_change_node(
         ChangePredicateNode::Kind(kind) => P::Leaf(Leaf::Change(*kind)),
         ChangePredicateNode::Field(field) => P::Leaf(Leaf::Changed(*field)),
         ChangePredicateNode::Operation(predicate) => {
-            return Ok(lower_operation(&predicate.checked_model()?));
+            return lower_operation(&predicate.checked_model()?);
         }
         ChangePredicateNode::Not(predicate) => P::Not(Box::new(lower_change_node(predicate)?)),
         ChangePredicateNode::And(predicates) => P::And(
@@ -590,9 +590,16 @@ fn lower_change_node(
     };
     Ok(zirql::Located::new(node, 0..0))
 }
-fn lower_operation(predicate: &model::Predicate) -> zirql::Predicate<Leaf> {
+fn lower_operation(
+    predicate: &model::Predicate,
+) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
     use zirql::PredicateKind as P;
     let node = match predicate {
+        model::Predicate::OpValue { .. } => {
+            return Err(EvaluationError::new(
+                "constructed value arguments are unavailable in diff queries",
+            ));
+        }
         model::Predicate::Bool { value, .. } => P::Leaf(Leaf::Bool(*value)),
         model::Predicate::Op { name, .. } => P::Leaf(Leaf::Op(name.clone())),
         model::Predicate::Dialect { name, .. } => P::Leaf(Leaf::Dialect(name.clone())),
@@ -603,14 +610,22 @@ fn lower_operation(predicate: &model::Predicate) -> zirql::Predicate<Leaf> {
         model::Predicate::Attr { name, value, .. } => {
             P::Leaf(Leaf::Attr(name.clone(), value.clone()))
         }
-        model::Predicate::Not { predicate, .. } => P::Not(Box::new(lower_operation(predicate))),
-        model::Predicate::Group { predicate, .. } => P::Group(Box::new(lower_operation(predicate))),
-        model::Predicate::And { predicates, .. } => {
-            P::And(predicates.iter().map(lower_operation).collect())
+        model::Predicate::Not { predicate, .. } => P::Not(Box::new(lower_operation(predicate)?)),
+        model::Predicate::Group { predicate, .. } => {
+            P::Group(Box::new(lower_operation(predicate)?))
         }
-        model::Predicate::Or { predicates, .. } => {
-            P::Or(predicates.iter().map(lower_operation).collect())
-        }
+        model::Predicate::And { predicates, .. } => P::And(
+            predicates
+                .iter()
+                .map(lower_operation)
+                .collect::<Result<_, _>>()?,
+        ),
+        model::Predicate::Or { predicates, .. } => P::Or(
+            predicates
+                .iter()
+                .map(lower_operation)
+                .collect::<Result<_, _>>()?,
+        ),
     };
-    zirql::Located::new(node, 0..0)
+    Ok(zirql::Located::new(node, 0..0))
 }
