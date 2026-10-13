@@ -606,15 +606,22 @@ fn run() -> Result<(), String> {
             strict,
         );
     }
-    let query = Query::parse_with_document_context(&query_text).map_err(|error| {
-        let message = format!("query error: {}", error.message);
-        source_diagnostic(
-            &query_name,
-            query_text.as_bytes(),
-            error.position..error.position,
-            &message,
-        )
-    })?;
+    let program_limits = zirql::ProgramLimits {
+        work: evaluation_limits.max_work,
+        results: max_results.unwrap_or(1_000_000),
+        nesting: 64,
+        stream_items: evaluation_limits.max_items,
+    };
+    let query = Query::parse_with_document_context_and_program_limits(&query_text, program_limits)
+        .map_err(|error| {
+            let message = format!("query error: {}", error.message);
+            source_diagnostic(
+                &query_name,
+                query_text.as_bytes(),
+                error.position..error.position,
+                &message,
+            )
+        })?;
     let inputs = if paths.is_empty() {
         vec![None]
     } else {
@@ -727,13 +734,32 @@ fn run() -> Result<(), String> {
                 format!("could not lower {name}:\n{detail}")
             })?;
         drop(parsed);
-        let emit = |document: &Document, output| {
+        let emit = |document: &Document, output, budget: &mut zirql::Budget| {
             if silent {
                 return Ok(());
             }
+            if let QueryOutput::Native(zirium::query::NativeValue::Constructed(value)) = &output {
+                let text = if ndjson {
+                    value.render_ndjson_with_budget(&name, budget)?
+                } else {
+                    value.render_json_with_budget(budget)?
+                };
+                budget
+                    .charge(text.len(), zirql::Location::Query(value.range()))
+                    .map_err(EvaluationError::from)?;
+                staged_output
+                    .write_all(text.as_bytes())
+                    .map_err(output_staging_error)?;
+                return Ok(());
+            }
             if ndjson {
+                let mut record = ReportWriter {
+                    output: &mut staged_output,
+                    budget: query.has_comprehensions().then_some(budget),
+                    range: 0..query_text.len(),
+                };
                 write_ndjson_record(
-                    &mut staged_output,
+                    &mut record,
                     document,
                     &name,
                     output,
@@ -742,112 +768,119 @@ fn run() -> Result<(), String> {
                 )?;
                 return Ok(());
             }
-            match output {
-                QueryOutput::Native(_) => {
-                    return Err(EvaluationError::new(
-                        "native query results require a library consumer",
-                    ));
-                }
-                QueryOutput::Operations(selected) => document
-                    .write_selection_with_scope(
-                        &mut staged_output,
-                        &selected,
-                        PrintLayout::Pretty,
-                        registry,
-                        fragment_scope,
-                    )
-                    .map_err(|error| {
-                        EvaluationError::new(format!("could not print {name}: {error}"))
-                    })?,
-                QueryOutput::Formatted {
-                    operations,
-                    options,
-                } => document
-                    .write_formatted_selection(
-                        &mut staged_output,
-                        &operations,
-                        registry,
-                        fragment_scope,
-                        options,
-                    )
-                    .map_err(|error| {
-                        EvaluationError::new(format!("could not format {name}: {error}"))
-                    })?,
-                QueryOutput::Count(count) => {
-                    use std::io::Write;
-                    writeln!(staged_output, "{count}").map_err(output_staging_error)?;
-                }
-                QueryOutput::Values(values) => {
-                    use std::io::Write;
-                    for value in values {
-                        writeln!(staged_output, "{value}").map_err(output_staging_error)?;
-                    }
-                }
-                QueryOutput::Array(values) => {
-                    serde_json::to_writer_pretty(&mut staged_output, &values)
-                        .map_err(|error| EvaluationError::new(error.to_string()))?;
-                    staged_output
-                        .write_all(b"\n")
-                        .map_err(output_staging_error)?;
-                }
-                QueryOutput::Map(values) => {
-                    serde_json::to_writer_pretty(&mut staged_output, &values)
-                        .map_err(|error| EvaluationError::new(error.to_string()))?;
-                    staged_output
-                        .write_all(b"\n")
-                        .map_err(output_staging_error)?;
-                }
-                QueryOutput::RankedMap(entries) => {
-                    use serde::ser::{SerializeMap, Serializer};
-                    let mut serializer = serde_json::Serializer::pretty(&mut staged_output);
-                    let mut map = serializer
-                        .serialize_map(Some(entries.len()))
-                        .map_err(|error| EvaluationError::new(error.to_string()))?;
-                    for (key, value) in entries {
-                        map.serialize_entry(&key, &value)
-                            .map_err(|error| EvaluationError::new(error.to_string()))?;
-                    }
-                    map.end()
-                        .map_err(|error| EvaluationError::new(error.to_string()))?;
-                    staged_output
-                        .write_all(b"\n")
-                        .map_err(output_staging_error)?;
-                }
-                QueryOutput::Json(json) | QueryOutput::Text(json) => {
-                    staged_output
-                        .write_all(json.as_bytes())
-                        .map_err(output_staging_error)?;
-                }
+            let range = 0..query_text.len();
+            if query.has_comprehensions() {
+                budget
+                    .charge_results(1, zirql::Location::Query(range.clone()))
+                    .map_err(EvaluationError::from)?;
             }
-            Ok(())
+            let mut report = ReportWriter {
+                output: &mut staged_output,
+                budget: query.has_comprehensions().then_some(budget),
+                range: range.clone(),
+            };
+            let result = (|| {
+                match output {
+                    QueryOutput::Native(_) => {
+                        return Err(EvaluationError::new(
+                            "native query results require a library consumer",
+                        ));
+                    }
+                    QueryOutput::Operations(selected) => document
+                        .write_selection_with_scope(
+                            &mut report,
+                            &selected,
+                            PrintLayout::Pretty,
+                            registry,
+                            fragment_scope,
+                        )
+                        .map_err(|error| {
+                            EvaluationError::new(format!("could not print {name}: {error}"))
+                        })?,
+                    QueryOutput::Formatted {
+                        operations,
+                        options,
+                    } => document
+                        .write_formatted_selection(
+                            &mut report,
+                            &operations,
+                            registry,
+                            fragment_scope,
+                            options,
+                        )
+                        .map_err(|error| {
+                            EvaluationError::new(format!("could not format {name}: {error}"))
+                        })?,
+                    QueryOutput::Count(count) => {
+                        use std::io::Write;
+                        writeln!(report, "{count}").map_err(output_staging_error)?;
+                    }
+                    QueryOutput::Values(values) => {
+                        use std::io::Write;
+                        for value in values {
+                            writeln!(report, "{value}").map_err(output_staging_error)?;
+                        }
+                    }
+                    QueryOutput::Array(values) => {
+                        serde_json::to_writer_pretty(&mut report, &values)
+                            .map_err(|error| EvaluationError::new(error.to_string()))?;
+                        report.write_all(b"\n").map_err(output_staging_error)?;
+                    }
+                    QueryOutput::Map(values) => {
+                        serde_json::to_writer_pretty(&mut report, &values)
+                            .map_err(|error| EvaluationError::new(error.to_string()))?;
+                        report.write_all(b"\n").map_err(output_staging_error)?;
+                    }
+                    QueryOutput::RankedMap(entries) => {
+                        use serde::ser::{SerializeMap, Serializer};
+                        let mut serializer = serde_json::Serializer::pretty(&mut report);
+                        let mut map = serializer
+                            .serialize_map(Some(entries.len()))
+                            .map_err(|error| EvaluationError::new(error.to_string()))?;
+                        for (key, value) in entries {
+                            map.serialize_entry(&key, &value)
+                                .map_err(|error| EvaluationError::new(error.to_string()))?;
+                        }
+                        map.end()
+                            .map_err(|error| EvaluationError::new(error.to_string()))?;
+                        report.write_all(b"\n").map_err(output_staging_error)?;
+                    }
+                    QueryOutput::Json(json) | QueryOutput::Text(json) => {
+                        report
+                            .write_all(json.as_bytes())
+                            .map_err(output_staging_error)?;
+                    }
+                }
+                Ok(())
+            })();
+            result.map_err(|error: EvaluationError| {
+                if query.has_comprehensions() {
+                    EvaluationError::from(zirql::QueryError::query(range, error.to_string()))
+                } else {
+                    error
+                }
+            })
         };
         let options = EvaluationOptions {
             strict_unknown_references: strict,
         };
-        let result = if let Some(results) = max_results {
-            query.evaluate_with_program_limits(
-                &mut document,
-                registry,
-                Some(&name),
-                options,
-                zirql::ProgramLimits {
-                    work: evaluation_limits.max_work,
-                    results,
-                    nesting: 64,
-                    stream_items: evaluation_limits.max_items,
-                },
-                emit,
-            )
+        let mut budget = if max_results.is_some() || query.has_comprehensions() {
+            zirql::Budget::for_program(program_limits)
         } else {
-            query.evaluate_with_context_options_and_limits(
-                &mut document,
-                registry,
-                Some(&name),
-                options,
-                evaluation_limits,
-                emit,
-            )
+            zirql::Budget::new(zirql::Limits {
+                work: evaluation_limits.max_work,
+                items: evaluation_limits.max_items,
+                nesting: 64,
+            })
         };
+        let result = query.evaluate_with_budget(
+            &mut document,
+            registry,
+            Some(&name),
+            options,
+            &mut budget,
+            emit,
+        );
         result.map_err(|error| {
             if let Some(range) = error.range() {
                 source_diagnostic(
@@ -2749,8 +2782,27 @@ fn write_diff_envelope(
     output.write_all(b"\n").map_err(|e| e.to_string())
 }
 
+struct ReportWriter<'a> {
+    output: &'a mut StagedOutput,
+    budget: Option<&'a mut zirql::Budget>,
+    range: std::ops::Range<usize>,
+}
+impl Write for ReportWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(budget) = &mut self.budget {
+            budget
+                .charge(bytes.len(), zirql::Location::Query(self.range.clone()))
+                .map_err(io::Error::other)?;
+        }
+        self.output.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
+}
+
 fn write_ndjson_record(
-    record: &mut impl Write,
+    record: &mut ReportWriter<'_>,
     document: &zirium::semantic::Document,
     name: &str,
     output: QueryOutput,
@@ -2758,102 +2810,117 @@ fn write_ndjson_record(
     fragment_scope: FragmentScope,
 ) -> Result<(), EvaluationError> {
     use serde::ser::{SerializeMap, Serializer};
-
-    record
-        .write_all(b"{\"document\":")
-        .map_err(output_staging_error)?;
-    serde_json::to_writer(&mut *record, name)
-        .map_err(|error| EvaluationError::new(error.to_string()))?;
-    record
-        .write_all(b",\"result\":")
-        .map_err(output_staging_error)?;
-    match output {
-        QueryOutput::Json(json) => {
-            // The emitter already produced valid JSON. Remove formatting outside
-            // strings without reparsing objects into lexically ordered maps.
-            let mut compact = Vec::with_capacity(8192);
-            let mut in_string = false;
-            let mut escaped = false;
-            for byte in json.bytes() {
-                if in_string {
-                    compact.push(byte);
-                    if escaped {
-                        escaped = false;
-                    } else if byte == b'\\' {
-                        escaped = true;
-                    } else if byte == b'"' {
-                        in_string = false;
-                    }
-                } else if !byte.is_ascii_whitespace() {
-                    compact.push(byte);
-                    in_string = byte == b'"';
-                }
-                if compact.len() == compact.capacity() {
-                    record.write_all(&compact).map_err(output_staging_error)?;
-                    compact.clear();
-                }
-            }
-            record.write_all(&compact).map_err(output_staging_error)?;
-        }
-        QueryOutput::RankedMap(entries) => {
-            let mut serializer = serde_json::Serializer::new(&mut *record);
-            let mut map = serializer
-                .serialize_map(Some(entries.len()))
-                .map_err(|error| EvaluationError::new(error.to_string()))?;
-            for (key, value) in entries {
-                map.serialize_entry(&key, &value)
-                    .map_err(|error| EvaluationError::new(error.to_string()))?;
-            }
-            map.end()
-                .map_err(|error| EvaluationError::new(error.to_string()))?;
-        }
-        QueryOutput::Operations(selected) => {
-            record.write_all(b"\"").map_err(output_staging_error)?;
-            {
-                let mut buffered = BufWriter::with_capacity(8192, &mut *record);
-                let mut writer = JsonStringWriter::new(&mut buffered);
-                document
-                    .write_selection_with_scope(
-                        &mut writer,
-                        &selected,
-                        PrintLayout::Pretty,
-                        registry,
-                        fragment_scope,
-                    )
-                    .map_err(|error| EvaluationError::new(error.to_string()))?;
-                writer.flush().map_err(output_staging_error)?;
-            }
-            record.write_all(b"\"").map_err(output_staging_error)?;
-        }
-        QueryOutput::Formatted {
-            operations,
-            options,
-        } => {
-            record.write_all(b"\"").map_err(output_staging_error)?;
-            {
-                let mut buffered = BufWriter::with_capacity(8192, &mut *record);
-                let mut writer = JsonStringWriter::new(&mut buffered);
-                document
-                    .write_formatted_selection(
-                        &mut writer,
-                        &operations,
-                        registry,
-                        fragment_scope,
-                        options,
-                    )
-                    .map_err(|error| EvaluationError::new(error.to_string()))?;
-                writer.flush().map_err(output_staging_error)?;
-            }
-            record.write_all(b"\"").map_err(output_staging_error)?;
-        }
-        output => {
-            let result = ndjson_value(output)?;
-            serde_json::to_writer(&mut *record, &result)
-                .map_err(|error| EvaluationError::new(error.to_string()))?;
+    let range = record.range.clone();
+    if let Some(budget) = &mut record.budget {
+        budget
+            .charge_results(1, zirql::Location::Query(range.clone()))
+            .map_err(EvaluationError::from)?;
+        if let QueryOutput::Json(json) = &output {
+            budget
+                .charge(json.len().min(8192), zirql::Location::Query(range.clone()))
+                .map_err(EvaluationError::from)?;
         }
     }
-    record.write_all(b"}\n").map_err(output_staging_error)?;
-    Ok(())
+    let result = (|| {
+        record
+            .write_all(b"{\"document\":")
+            .map_err(output_staging_error)?;
+        serde_json::to_writer(&mut *record, name)
+            .map_err(|error| EvaluationError::new(error.to_string()))?;
+        record
+            .write_all(b",\"result\":")
+            .map_err(output_staging_error)?;
+        match output {
+            QueryOutput::Json(json) => {
+                // The emitter already produced valid JSON. Remove formatting outside
+                // strings without reparsing objects into lexically ordered maps.
+                let mut compact = Vec::with_capacity(json.len().min(8192));
+                let mut in_string = false;
+                let mut escaped = false;
+                for byte in json.bytes() {
+                    if in_string {
+                        compact.push(byte);
+                        if escaped {
+                            escaped = false;
+                        } else if byte == b'\\' {
+                            escaped = true;
+                        } else if byte == b'"' {
+                            in_string = false;
+                        }
+                    } else if !byte.is_ascii_whitespace() {
+                        compact.push(byte);
+                        in_string = byte == b'"';
+                    }
+                    if compact.len() == compact.capacity() {
+                        record.write_all(&compact).map_err(output_staging_error)?;
+                        compact.clear();
+                    }
+                }
+                record.write_all(&compact).map_err(output_staging_error)?;
+            }
+            QueryOutput::RankedMap(entries) => {
+                let mut serializer = serde_json::Serializer::new(&mut *record);
+                let mut map = serializer
+                    .serialize_map(Some(entries.len()))
+                    .map_err(|error| EvaluationError::new(error.to_string()))?;
+                for (key, value) in entries {
+                    map.serialize_entry(&key, &value)
+                        .map_err(|error| EvaluationError::new(error.to_string()))?;
+                }
+                map.end()
+                    .map_err(|error| EvaluationError::new(error.to_string()))?;
+            }
+            QueryOutput::Operations(selected) => {
+                record.write_all(b"\"").map_err(output_staging_error)?;
+                {
+                    let mut buffered = BufWriter::with_capacity(8192, &mut *record);
+                    let mut writer = JsonStringWriter::new(&mut buffered);
+                    document
+                        .write_selection_with_scope(
+                            &mut writer,
+                            &selected,
+                            PrintLayout::Pretty,
+                            registry,
+                            fragment_scope,
+                        )
+                        .map_err(|error| EvaluationError::new(error.to_string()))?;
+                    writer.flush().map_err(output_staging_error)?;
+                }
+                record.write_all(b"\"").map_err(output_staging_error)?;
+            }
+            QueryOutput::Formatted {
+                operations,
+                options,
+            } => {
+                record.write_all(b"\"").map_err(output_staging_error)?;
+                {
+                    let mut buffered = BufWriter::with_capacity(8192, &mut *record);
+                    let mut writer = JsonStringWriter::new(&mut buffered);
+                    document
+                        .write_formatted_selection(
+                            &mut writer,
+                            &operations,
+                            registry,
+                            fragment_scope,
+                            options,
+                        )
+                        .map_err(|error| EvaluationError::new(error.to_string()))?;
+                    writer.flush().map_err(output_staging_error)?;
+                }
+                record.write_all(b"\"").map_err(output_staging_error)?;
+            }
+            output => {
+                let result = ndjson_value(output)?;
+                serde_json::to_writer(&mut *record, &result)
+                    .map_err(|error| EvaluationError::new(error.to_string()))?;
+            }
+        }
+        record.write_all(b"}\n").map_err(output_staging_error)?;
+        Ok(())
+    })();
+    result.map_err(|error: EvaluationError| {
+        EvaluationError::from(zirql::QueryError::query(range, error.to_string()))
+    })
 }
 
 struct JsonStringWriter<W> {

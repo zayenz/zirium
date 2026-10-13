@@ -3250,3 +3250,105 @@ fn aggregate_program_failure_is_located_and_keeps_stdout_empty() {
     assert!(diagnostic.contains("result limit"), "{diagnostic}");
     assert!(diagnostic.contains("query"), "{diagnostic}");
 }
+
+#[test]
+fn comprehension_reports_render_plain_json_and_document_records() {
+    use zirium::{
+        dialect::DialectRegistry,
+        parser::ParsedFile,
+        query::{EvaluationOptions, Query},
+        semantic::{LoweringMode, lower_with_dialect_registry},
+    };
+    let input = "\"alpha\"() : () -> ()\n\"beta\"() : () -> ()";
+    let report = r#"labels = names; [{"name": n, "label": "data:" ++ n} for n in labels]"#;
+    let expected = serde_json::json!([
+        {"name": "alpha", "label": "data:alpha"},
+        {"name": "beta", "label": "data:beta"}
+    ]);
+    let implicit = run_stdin(report, input);
+    assert!(implicit.status.success(), "{:?}", implicit.stderr);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&implicit.stdout).unwrap(),
+        expected
+    );
+    let explicit = run_stdin(&format!("{report} | json"), input);
+    assert!(explicit.status.success(), "{:?}", explicit.stderr);
+    assert_eq!(explicit.stdout, implicit.stdout);
+    let jsonl = run_stdin_with_options(&["--jsonl"], report, input);
+    assert!(jsonl.status.success(), "{:?}", jsonl.stderr);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&jsonl.stdout).unwrap(),
+        serde_json::json!({"document": "stdin", "result": expected})
+    );
+    let explicit_jsonl = run_stdin_with_options(&["--jsonl"], &format!("{report} | json"), input);
+    assert!(
+        explicit_jsonl.status.success(),
+        "{:?}",
+        explicit_jsonl.stderr
+    );
+    assert_eq!(explicit_jsonl.stdout, jsonl.stdout);
+
+    // Native evaluation leaves rendering to its callback. Give the CLI exactly
+    // that observed allowance, so embedding cannot bypass the rendering cost.
+    let registry = DialectRegistry::baseline();
+    let parsed = ParsedFile::parse_with_registry(input.as_bytes(), registry).unwrap();
+    let mut document = lower_with_dialect_registry(&parsed, LoweringMode::Strict, registry)
+        .document
+        .unwrap();
+    let limits = zirql::ProgramLimits {
+        work: 100_000,
+        results: 100_000,
+        nesting: 64,
+        stream_items: 10_000,
+    };
+    for (source, expected) in [
+        ("r = [n for n in [1]]; [r]", serde_json::json!([[1]])),
+        (
+            r#"r = [n for n in [1]]; {"rows": r}"#,
+            serde_json::json!({"rows": [1]}),
+        ),
+    ] {
+        let query = Query::parse_with_document_context_and_program_limits(source, limits).unwrap();
+        let mut budget = zirql::Budget::for_program(limits);
+        query
+            .evaluate_with_budget(
+                &mut document,
+                registry,
+                Some("stdin"),
+                EvaluationOptions::default(),
+                &mut budget,
+                |_, _, _| Ok(()),
+            )
+            .unwrap();
+        let native_work = (limits.work - budget.remaining_work()).to_string();
+        let limited = run_stdin_with_options(
+            &["--max-work", &native_work, "--max-results", "100000"],
+            source,
+            input,
+        );
+        assert!(!limited.status.success());
+        assert!(limited.stdout.is_empty());
+        let diagnostic = String::from_utf8_lossy(&limited.stderr);
+        assert!(diagnostic.contains("work limit exceeded"), "{diagnostic}");
+        assert!(diagnostic.contains(source), "{diagnostic}");
+        let accepted = run_stdin(source, input);
+        assert!(accepted.status.success(), "{:?}", accepted.stderr);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&accepted.stdout).unwrap(),
+            expected
+        );
+    }
+
+    let failure = run_stdin(r#"emit; [1 div 0 for n in [1]]"#, input);
+    assert!(!failure.status.success());
+    assert!(failure.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("division by zero"));
+    let limited = run_stdin_with_options(
+        &["--max-results", "1000"],
+        "[n for n in 1..100000 if false]",
+        input,
+    );
+    assert!(!limited.status.success());
+    assert!(limited.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&limited.stderr).contains("limit exceeded"));
+}

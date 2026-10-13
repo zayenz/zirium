@@ -5,6 +5,13 @@ document. Rust and Python use the same expression tree and return native values.
 Queries are read-only; use the [textual language](query-language.md) for CLI
 edits and reports.
 
+Textual [positional comprehensions](query-language.md#positional-comprehensions)
+construct native Zirql values from explicit scalar projections. Rust callers
+can match `NativeValue::Constructed(report)` and inspect `report.value()` in a textual `Query`
+callback before rendering. The typed Rust and Python builders keep their
+existing operation handles, strings, counts, and maps; comprehension syntax is
+part of the textual frontend.
+
 ## Start a query
 
 In Python, `Document.query()` returns the result described by the expression:

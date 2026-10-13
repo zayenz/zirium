@@ -29,6 +29,8 @@ impl Diagnostic {
 pub struct Parsed {
     program: Option<Program>,
     diagnostics: Vec<Diagnostic>,
+    pub(crate) parse_work: usize,
+    pub(crate) parse_results: usize,
 }
 
 impl Parsed {
@@ -56,12 +58,27 @@ pub(crate) fn parse_with_initial_bindings(
     nesting_limit: usize,
     initial_bindings: &[&str],
 ) -> Parsed {
+    parse_with_budget(
+        lexed,
+        nesting_limit,
+        initial_bindings,
+        super::comprehension::default_limits(),
+    )
+}
+
+pub(crate) fn parse_with_budget(
+    lexed: &Lexed<'_>,
+    nesting_limit: usize,
+    initial_bindings: &[&str],
+    limits: zirql::ProgramLimits,
+) -> Parsed {
     let mut parser = Parser {
         source: lexed.source(),
         tokens: lexed.tokens(),
         cursor: 0,
         diagnostics: Vec::new(),
         nesting_limit,
+        budget: zirql::Budget::for_program(limits),
         bindings: initial_bindings
             .iter()
             .map(|name| (*name).to_owned())
@@ -71,6 +88,8 @@ pub(crate) fn parse_with_initial_bindings(
     Parsed {
         program: parser.diagnostics.is_empty().then_some(program).flatten(),
         diagnostics: parser.diagnostics,
+        parse_work: limits.work - parser.budget.remaining_work(),
+        parse_results: limits.results - parser.budget.remaining_results().unwrap(),
     }
 }
 
@@ -81,6 +100,7 @@ struct Parser<'a> {
     diagnostics: Vec<Diagnostic>,
     nesting_limit: usize,
     bindings: HashSet<String>,
+    budget: zirql::Budget,
 }
 
 impl Parser<'_> {
@@ -214,6 +234,33 @@ impl Parser<'_> {
     fn stage(&mut self, depth: usize) -> Option<Stage> {
         self.skip_trivia();
         let start = self.current().range().start();
+        if self.at(TokenKind::LBracket)
+            && super::comprehension::starts(self.source, self.tokens, self.cursor)
+        {
+            match super::comprehension::lower(
+                self.source,
+                self.tokens,
+                self.cursor,
+                &self.bindings,
+                &mut self.budget,
+                self.nesting_limit.saturating_sub(depth),
+            ) {
+                Ok((value, cursor)) => {
+                    self.cursor = cursor;
+                    return Some(Stage::Comprehension {
+                        value,
+                        range: self.span(start),
+                    });
+                }
+                Err(error) => {
+                    self.diagnostics.push(Diagnostic {
+                        message: error.message,
+                        range: TextRange::at(error.position as u32),
+                    });
+                    return None;
+                }
+            }
+        }
         if self.at(TokenKind::LBrace) || self.at(TokenKind::LBracket) {
             let value = self.json_literal(depth + 1)?;
             return Some(Stage::Literal {
@@ -869,9 +916,20 @@ impl Parser<'_> {
                 let (value, _) = self.string("expected a string")?;
                 Some(JsonLiteral::String(self.print_parts(&value)?))
             }
-            TokenKind::Integer | TokenKind::Number => {
-                let Ok(value) = serde_json::from_str::<serde_json::Number>(self.current_text())
-                else {
+            TokenKind::Integer | TokenKind::Number | TokenKind::Operator => {
+                let start = self.current().range().start();
+                if self.current_text() == "-" {
+                    self.bump();
+                    if !matches!(
+                        self.current().kind(),
+                        TokenKind::Integer | TokenKind::Number
+                    ) {
+                        self.error("invalid or out-of-range JSON number");
+                        return None;
+                    }
+                }
+                let text = &self.source[start as usize..self.current().range().end() as usize];
+                let Ok(value) = serde_json::from_str::<serde_json::Number>(text) else {
                     self.error("invalid or out-of-range JSON number");
                     return None;
                 };

@@ -178,13 +178,14 @@ impl<T> QueryExpr<T> {
         charge(&mut budget, self.nodes)?;
         let selected = QueryOutput::Operations(collect(&mut budget, document.operations())?);
         let mut access = DocumentAccess::Shared(document);
-        let mut emit = |_: &Document, _: QueryOutput| {
+        let mut emit = |_: &Document, _: QueryOutput, _: &mut zirql::Budget| {
             Err(EvaluationError::new("cannot emit in a read-only query"))
         };
         program::validate_expression(
             &self.expression,
             program::Kind::Operations,
             &BTreeMap::new(),
+            &mut budget,
         )?;
         let expressions = program::expressions(std::iter::once(&self.expression));
         let mut context = EvaluationContext {

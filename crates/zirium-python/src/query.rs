@@ -649,6 +649,11 @@ fn native(
         }
         QueryOutput::Values(values) => values.into_pyobject(py)?.into_any().unbind(),
         QueryOutput::Count(count) => count.into_pyobject(py)?.into_any().unbind(),
+        QueryOutput::Native(NativeValue::Constructed(_)) => {
+            return Err(py_error(
+                "constructed textual reports are not a typed builder result",
+            ));
+        }
         QueryOutput::Native(NativeValue::String(value)) => {
             value.into_pyobject(py)?.into_any().unbind()
         }

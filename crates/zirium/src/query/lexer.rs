@@ -16,6 +16,7 @@ pub enum TokenKind {
     Comma,
     Pipe,
     Equals,
+    Operator,
     Semicolon,
     Trivia,
     Invalid,
@@ -132,18 +133,67 @@ pub fn lex(source: &str) -> Lexed<'_> {
                 }
                 TokenKind::Identifier
             }
-            b'-' | b'0'..=b'9' => {
+            byte if byte.is_ascii_digit()
+                || (byte == b'-'
+                    && bytes.get(position + 1).is_some_and(u8::is_ascii_digit)
+                    && tokens
+                        .iter()
+                        .rev()
+                        .find(|token: &&Token| token.kind != TokenKind::Trivia)
+                        .is_none_or(|token| {
+                            !matches!(
+                                token.kind,
+                                TokenKind::Identifier
+                                    | TokenKind::Integer
+                                    | TokenKind::Number
+                                    | TokenKind::String
+                                    | TokenKind::RParen
+                                    | TokenKind::RBracket
+                                    | TokenKind::RBrace
+                            )
+                        })) =>
+            {
                 position += 1;
-                while bytes.get(position).is_some_and(|byte| {
-                    byte.is_ascii_digit() || matches!(byte, b'.' | b'e' | b'E' | b'+' | b'-')
-                }) {
+                while bytes.get(position).is_some_and(u8::is_ascii_digit) {
                     position += 1;
+                }
+                if bytes.get(position) == Some(&b'.') && bytes.get(position + 1) != Some(&b'.') {
+                    position += 1;
+                    while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+                        position += 1;
+                    }
+                }
+                if bytes
+                    .get(position)
+                    .is_some_and(|b| matches!(b, b'e' | b'E'))
+                {
+                    position += 1;
+                    if bytes
+                        .get(position)
+                        .is_some_and(|b| matches!(b, b'+' | b'-'))
+                    {
+                        position += 1;
+                    }
+                    while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+                        position += 1;
+                    }
                 }
                 if bytes[start..position].iter().all(u8::is_ascii_digit) {
                     TokenKind::Integer
                 } else {
                     TokenKind::Number
                 }
+            }
+            b'+' | b'-' | b'*' | b'/' | b'<' | b'>' | b'!' | b'.' => {
+                let first = bytes[position];
+                position += 1;
+                if bytes.get(position).is_some_and(|b| {
+                    (*b == b'=' && matches!(first, b'<' | b'>' | b'!'))
+                        || (*b == first && matches!(first, b'+' | b'.'))
+                }) {
+                    position += 1;
+                }
+                TokenKind::Operator
             }
             b'{' => {
                 position += 1;
@@ -179,7 +229,12 @@ pub fn lex(source: &str) -> Lexed<'_> {
             }
             b'=' => {
                 position += 1;
-                TokenKind::Equals
+                if bytes.get(position) == Some(&b'=') {
+                    position += 1;
+                    TokenKind::Operator
+                } else {
+                    TokenKind::Equals
+                }
             }
             b';' => {
                 position += 1;

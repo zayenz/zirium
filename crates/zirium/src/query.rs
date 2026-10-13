@@ -14,6 +14,8 @@ use crate::{
 };
 
 mod builder;
+mod comprehension;
+pub use comprehension::{ConstructedReport, ParsedComprehension};
 mod diff;
 pub mod lexer;
 mod model;
@@ -31,6 +33,8 @@ pub struct Query {
     expression: model::Expression,
     statements: Vec<model::Statement>,
     emit_final_result: bool,
+    parse_work: usize,
+    parse_results: usize,
 }
 
 /// Bounds evaluation work and the number of items in any one stream.
@@ -65,7 +69,11 @@ struct EvaluationContext<'a, 'document, 'query> {
     expressions: &'a BTreeMap<usize, program::Expression<'query>>,
     options: EvaluationOptions,
     output: OutputMode,
-    emit: &'a mut dyn FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+    emit: &'a mut dyn FnMut(
+        &Document,
+        QueryOutput,
+        &mut zirql::Budget,
+    ) -> Result<(), EvaluationError>,
 }
 
 #[derive(Clone, Copy)]
@@ -169,7 +177,7 @@ pub fn evaluate_operation_traversal(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryOutput {
-    /// Native library results; textual programs do not construct these.
+    /// Native results, including constructed textual reports.
     Native(NativeValue),
     Operations(Vec<OperationId>),
     Values(Vec<String>),
@@ -186,9 +194,25 @@ pub enum QueryOutput {
     },
 }
 
+impl QueryOutput {
+    /// Materialize ordinary JSON under the active request allowance.
+    pub fn to_json_with_budget(
+        &self,
+        document: &Document,
+        budget: &mut zirql::Budget,
+    ) -> Result<serde_json::Value, EvaluationError> {
+        let range = match self {
+            Self::Native(NativeValue::Constructed(value)) => value.range(),
+            _ => 0..0,
+        };
+        program::to_json(document, self, budget, &range)
+    }
+}
+
 /// Structured query results that have no corresponding CLI stream kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeValue {
+    Constructed(ConstructedReport),
     String(String),
     Types(Vec<TypeId>),
     Attributes(Vec<(String, AttributeId)>),
@@ -229,6 +253,12 @@ impl fmt::Display for EvaluationError {
 
 impl std::error::Error for EvaluationError {}
 
+impl From<zirql::QueryError> for EvaluationError {
+    fn from(error: zirql::QueryError) -> Self {
+        core_error(error)
+    }
+}
+
 impl EvaluationError {
     /// Program byte range for a located runtime refusal.
     pub fn range(&self) -> Option<std::ops::Range<usize>> {
@@ -252,23 +282,76 @@ impl EvaluationError {
 
 impl Query {
     pub fn parse(source: &str) -> Result<Self, QueryError> {
-        Self::parse_with_initial_bindings(source, &[])
+        Self::parse_with_program_limits(source, comprehension::default_limits())
     }
 
     /// Parses a query with the reserved per-document binding available.
     pub fn parse_with_document_context(source: &str) -> Result<Self, QueryError> {
-        Self::parse_with_initial_bindings(source, &["document"])
+        Self::parse_with_document_context_and_program_limits(
+            source,
+            comprehension::default_limits(),
+        )
+    }
+
+    /// Parse with finite work/result bounds for comprehension lowering.
+    pub fn parse_with_program_limits(
+        source: &str,
+        limits: ProgramLimits,
+    ) -> Result<Self, QueryError> {
+        Self::parse_with_initial_bindings(source, &[], limits)
+    }
+
+    /// Parse with the reserved document binding and bounded comprehension lowering.
+    pub fn parse_with_document_context_and_program_limits(
+        source: &str,
+        limits: ProgramLimits,
+    ) -> Result<Self, QueryError> {
+        Self::parse_with_initial_bindings(source, &["document"], limits)
     }
 
     fn parse_with_initial_bindings(
         source: &str,
         initial_bindings: &[&str],
+        limits: ProgramLimits,
     ) -> Result<Self, QueryError> {
+        // Admit an upper bound for lexer storage before allocating tokens. Only
+        // actual comprehensions retain this spending for repeated evaluation.
+        let mut admission = zirql::Budget::for_program(limits);
+        if comprehension::has_syntax(source) {
+            let work = source
+                .len()
+                .checked_mul(2)
+                .and_then(|n| n.checked_add(1))
+                .ok_or(QueryError {
+                    position: 0,
+                    message: "query allocation size overflow",
+                })?;
+            admission
+                .charge(work, zirql::Location::Query(0..source.len()))
+                .map_err(|_| QueryError {
+                    position: 0,
+                    message: "query work limit exceeded during parsing",
+                })?;
+            admission
+                .charge_results(
+                    source.len().saturating_add(1),
+                    zirql::Location::Query(0..source.len()),
+                )
+                .map_err(|_| QueryError {
+                    position: 0,
+                    message: "result limit exceeded during parsing",
+                })?;
+        }
         let lexed = lexer::lex(source);
-        let parsed = parser::parse_with_initial_bindings(
+        let parsed = parser::parse_with_budget(
             &lexed,
-            parser::DEFAULT_NESTING_LIMIT,
+            limits.nesting,
             initial_bindings,
+            ProgramLimits {
+                work: admission.remaining_work(),
+                results: admission.remaining_results().unwrap(),
+                ..limits
+            },
         );
         let lexical = lexed.diagnostics().first().map(|diagnostic| {
             let message = match diagnostic.kind() {
@@ -293,6 +376,14 @@ impl Query {
                 message,
             });
         }
+        let (parse_work, parse_results) = if parsed.parse_results != 0 {
+            (
+                limits.work - admission.remaining_work() + parsed.parse_work,
+                limits.results - admission.remaining_results().unwrap() + parsed.parse_results,
+            )
+        } else {
+            (0, 0)
+        };
         let program = parsed
             .into_program()
             .expect("diagnostic-free query has a program");
@@ -300,6 +391,8 @@ impl Query {
             expression: program.expression,
             statements: program.statements,
             emit_final_result: program.emit_final_result,
+            parse_work,
+            parse_results,
         })
     }
 
@@ -366,8 +459,16 @@ impl Query {
             registry,
             document_name,
             options,
-            evaluation_budget(limits),
-            &mut emit,
+            &mut if self.has_comprehensions() {
+                zirql::Budget::for_program(ProgramLimits {
+                    work: limits.max_work,
+                    stream_items: limits.max_items,
+                    ..comprehension::default_limits()
+                })
+            } else {
+                evaluation_budget(limits)
+            },
+            |document, value, _| emit(document, value),
         )
     }
 
@@ -386,21 +487,46 @@ impl Query {
             registry,
             document_name,
             options,
-            zirql::Budget::for_program(limits),
-            &mut emit,
+            &mut zirql::Budget::for_program(limits),
+            |document, value, _| emit(document, value),
         )
     }
 
-    fn evaluate_with_budget(
+    /// Whether this parsed program uses the bounded constructed report path.
+    pub fn has_comprehensions(&self) -> bool {
+        self.parse_results != 0
+    }
+
+    /// Evaluate and render callbacks with one caller-owned request allowance.
+    /// Comprehensions require an aggregate result allowance. Callbacks may see
+    /// earlier emissions before a later error; buffer output when needed.
+    pub fn evaluate_with_budget(
         &self,
         document: &mut Document,
         registry: &DialectRegistry,
         document_name: Option<&str>,
         options: EvaluationOptions,
-        mut budget: zirql::Budget,
-        emit: &mut dyn FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+        budget: &mut zirql::Budget,
+        mut emit: impl FnMut(&Document, QueryOutput, &mut zirql::Budget) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
-        program::validate(self, document_name)?;
+        if self.has_comprehensions() && budget.remaining_results().is_none() {
+            return Err(EvaluationError::new(
+                "comprehensions require an aggregate result allowance",
+            ));
+        }
+        budget
+            .charge(
+                self.parse_work,
+                zirql::Location::Query(program::range(self.expression.range)),
+            )
+            .map_err(core_error)?;
+        budget
+            .charge_results(
+                self.parse_results,
+                zirql::Location::Query(program::range(self.expression.range)),
+            )
+            .map_err(core_error)?;
+        program::validate(self, document_name, budget)?;
         let expressions = program::expressions(
             self.statements
                 .iter()
@@ -413,10 +539,10 @@ impl Query {
         );
         let program = program::lower(self);
         let mut access = DocumentAccess::Mutable(document);
-        let input = QueryOutput::Operations(collect(&mut budget, access.operations())?);
+        let input = QueryOutput::Operations(collect(budget, access.operations())?);
         if let Some(name) = document_name {
-            program::charge_results(&mut budget, 1, &(0..0))?;
-            program::charge_bytes(&mut budget, name.len(), &(0..0))?;
+            program::charge_results(budget, 1, &(0..0))?;
+            program::charge_bytes(budget, name.len(), &(0..0))?;
         }
         let initial = document_name.map(|name| {
             (
@@ -431,7 +557,7 @@ impl Query {
             expressions: &expressions,
             options,
             output: OutputMode::Textual,
-            emit,
+            emit: &mut emit,
         };
         zirql::evaluate_program(
             &program,
@@ -439,7 +565,7 @@ impl Query {
             input,
             &mut context,
             bindings,
-            &mut budget,
+            budget,
         )
         .map_err(program::evaluation_error)?;
         Ok(())
@@ -501,6 +627,11 @@ fn evaluate_host_stage(
     match stage {
         model::Stage::Structured { step, .. } => {
             current = evaluate_structured(step, context, current, bindings, budget)?;
+        }
+        model::Stage::Comprehension { value, .. } => {
+            current = QueryOutput::Native(NativeValue::Constructed(comprehension::evaluate(
+                value, bindings, budget,
+            )?));
         }
         model::Stage::Literal { value, .. } => {
             let value = literal::evaluate(value, context.document, bindings, budget, &mut 0)?;
@@ -935,7 +1066,7 @@ fn evaluate_host_stage(
         model::Stage::Print { parts, .. } => {
             let mut text = render::interpolate(parts, bindings, budget)?;
             text.push('\n');
-            (context.emit)(context.document, QueryOutput::Text(text))?;
+            (context.emit)(context.document, QueryOutput::Text(text), budget)?;
         }
     }
     Ok(current)
@@ -972,7 +1103,8 @@ fn countable_len(output: &QueryOutput, stage: &str) -> Result<usize, EvaluationE
         QueryOutput::Native(NativeValue::Types(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Attributes(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Map(values)) => Ok(values.len()),
-        QueryOutput::Native(NativeValue::String(_))
+        QueryOutput::Native(NativeValue::Constructed(_))
+        | QueryOutput::Native(NativeValue::String(_))
         | QueryOutput::Count(_)
         | QueryOutput::Json(_)
         | QueryOutput::Text(_)
@@ -992,7 +1124,8 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Native(NativeValue::Types(values)) => values.len(),
         QueryOutput::Native(NativeValue::Attributes(values)) => values.len(),
         QueryOutput::Native(NativeValue::Map(values)) => values.len(),
-        QueryOutput::Native(NativeValue::String(_))
+        QueryOutput::Native(NativeValue::Constructed(_))
+        | QueryOutput::Native(NativeValue::String(_))
         | QueryOutput::Count(_)
         | QueryOutput::Json(_)
         | QueryOutput::Text(_)
@@ -1214,6 +1347,7 @@ fn json_size(value: &serde_json::Value) -> usize {
 
 fn output_size(output: &QueryOutput) -> usize {
     match output {
+        QueryOutput::Native(NativeValue::Constructed(value)) => value.size(),
         QueryOutput::Native(NativeValue::Map(entries)) => {
             entries.values().map(|value| 1 + output_size(value)).sum()
         }
@@ -1452,6 +1586,9 @@ fn evaluate_attr(
 fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value {
     match output {
         QueryOutput::Native(value) => match value {
+            NativeValue::Constructed(_) => {
+                unreachable!("constructed reports use bounded rendering")
+            }
             NativeValue::String(value) => serde_json::json!(value),
             NativeValue::Types(values) => serde_json::json!(
                 values

@@ -201,6 +201,10 @@ pub enum Stage {
         step: StructuredStage,
         range: TextRange,
     },
+    Comprehension {
+        value: super::comprehension::ParsedComprehension,
+        range: TextRange,
+    },
     Literal {
         value: JsonLiteral,
         range: TextRange,
@@ -369,7 +373,8 @@ pub enum Stage {
 impl Stage {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Structured { range, .. }
+            Self::Comprehension { range, .. }
+            | Self::Structured { range, .. }
             | Self::Literal { range, .. }
             | Self::Markdown { range }
             | Self::Print { range, .. }
@@ -426,7 +431,8 @@ impl Stage {
             | Self::Tally { .. }
             | Self::Value { .. }
             | Self::MapBy { .. }
-            | Self::Literal { .. } => false,
+            | Self::Literal { .. }
+            | Self::Comprehension { .. } => false,
             Self::Group { expression, .. } | Self::Fixpoint { expression, .. } => {
                 expression.is_selection_only()
             }

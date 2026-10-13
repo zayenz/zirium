@@ -250,6 +250,18 @@ pub(super) fn to_json(
     budget: &mut zirql::Budget,
     range: &Range<usize>,
 ) -> Result<serde_json::Value, EvaluationError> {
+    if let QueryOutput::Native(NativeValue::Constructed(value)) = value {
+        return value.to_json_with_budget(budget);
+    }
+    if let QueryOutput::Native(NativeValue::Map(entries)) = value {
+        charge_results(budget, 1 + entries.len(), range)?;
+        let mut result = serde_json::Map::new();
+        for (key, value) in entries {
+            charge_bytes(budget, key.len(), range)?;
+            result.insert(key.clone(), to_json(document, value, budget, range)?);
+        }
+        return Ok(serde_json::Value::Object(result));
+    }
     let (units, bytes) = json_allocation(document, value);
     charge_results(budget, units, range)?;
     charge_bytes(budget, bytes, range)?;
@@ -330,6 +342,30 @@ impl std::io::Write for BudgetWriter<'_> {
     }
 }
 
+pub(super) fn serialize_json(
+    value: &serde_json::Value,
+    budget: &mut zirql::Budget,
+    range: &Range<usize>,
+    pretty: bool,
+) -> Result<String, EvaluationError> {
+    let mut bytes = Vec::new();
+    let writer = BudgetWriter {
+        bytes: &mut bytes,
+        budget,
+        range,
+    };
+    let result = if pretty {
+        serde_json::to_writer_pretty(writer, value)
+    } else {
+        serde_json::to_writer(writer, value)
+    };
+    result.map_err(|error| EvaluationError::new(error.to_string()).at(range.clone()))?;
+    charge_results(budget, 1, range)?;
+    charge_bytes(budget, 1, range)?;
+    bytes.push(b'\n');
+    Ok(String::from_utf8(bytes).expect("JSON is UTF-8"))
+}
+
 fn json(
     document: &Document,
     value: &QueryOutput,
@@ -354,15 +390,7 @@ fn json(
         map.end().map_err(|e| EvaluationError::new(e.to_string()))?;
     } else {
         let value = to_json(document, value, budget, range)?;
-        serde_json::to_writer_pretty(
-            BudgetWriter {
-                bytes: &mut bytes,
-                budget,
-                range,
-            },
-            &value,
-        )
-        .map_err(|e| EvaluationError::new(e.to_string()))?;
+        return serialize_json(&value, budget, range, true);
     }
     charge_results(budget, 1, range)?;
     charge_bytes(budget, 1, range)?;
@@ -375,6 +403,20 @@ pub(super) fn copy_value(
     budget: &mut zirql::Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
+    if let QueryOutput::Native(NativeValue::Constructed(value)) = value {
+        return value
+            .copy(budget, range)
+            .map(|value| QueryOutput::Native(NativeValue::Constructed(value)));
+    }
+    if let QueryOutput::Native(NativeValue::Map(entries)) = value {
+        charge_results(budget, 1 + entries.len(), range)?;
+        let mut result = BTreeMap::new();
+        for (key, value) in entries {
+            charge_bytes(budget, key.len(), range)?;
+            result.insert(key.clone(), copy_value(value, budget, range)?);
+        }
+        return Ok(QueryOutput::Native(NativeValue::Map(result)));
+    }
     admit(value, budget, range)?;
     if budget.remaining_results().is_some() {
         budget
@@ -508,6 +550,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
             Emitter::Result => (context.emit)(
                 context.document,
                 copy_value(value, budget, range).map_err(zirql::EvaluationError::Host)?,
+                budget,
             )
             .map_err(zirql::EvaluationError::Host)?,
             Emitter::Written(stage) => {
@@ -534,7 +577,8 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
                     _ => unreachable!("written emitter"),
                 }
                 .map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))?;
-                (context.emit)(context.document, output).map_err(zirql::EvaluationError::Host)?;
+                (context.emit)(context.document, output, budget)
+                    .map_err(zirql::EvaluationError::Host)?;
             }
             Emitter::AlreadyEmitted => {}
         }
@@ -552,9 +596,14 @@ pub(super) enum Kind {
     String,
     Types,
     Attributes,
+    Constructed,
 }
 
-pub(super) fn validate(query: &Query, document_name: Option<&str>) -> Result<(), EvaluationError> {
+pub(super) fn validate(
+    query: &Query,
+    document_name: Option<&str>,
+    budget: &mut zirql::Budget,
+) -> Result<(), EvaluationError> {
     let mut names = BTreeMap::new();
     if document_name.is_some() {
         names.insert("document".to_owned(), Kind::Strings);
@@ -565,12 +614,12 @@ pub(super) fn validate(query: &Query, document_name: Option<&str>) -> Result<(),
             | model::Statement::Do(expression)
             | model::Statement::Query(expression) => expression,
         };
-        let kind = validate_expression(expression, Kind::Operations, &names)?;
+        let kind = validate_expression(expression, Kind::Operations, &names, budget)?;
         if let model::Statement::Binding { name, .. } = statement {
             names.insert(name.clone(), kind);
         }
     }
-    validate_expression(&query.expression, Kind::Operations, &names)?;
+    validate_expression(&query.expression, Kind::Operations, &names, budget)?;
     Ok(())
 }
 
@@ -578,10 +627,11 @@ pub(super) fn validate_expression(
     expression: &model::Expression,
     input: Kind,
     names: &BTreeMap<String, Kind>,
+    budget: &mut zirql::Budget,
 ) -> Result<Kind, EvaluationError> {
-    let left = validate_stages(&expression.first, input, names)?;
+    let left = validate_stages(&expression.first, input, names, budget)?;
     for (_, stages) in &expression.rest {
-        let right = validate_stages(stages, input, names)?;
+        let right = validate_stages(stages, input, names, budget)?;
         if left != right || !matches!(left, Kind::Operations | Kind::Strings) {
             return Err(EvaluationError::new(
                 "set operands require operation or value streams of the same kind",
@@ -596,6 +646,7 @@ fn validate_stages(
     stages: &[model::Stage],
     mut kind: Kind,
     names: &BTreeMap<String, Kind>,
+    budget: &mut zirql::Budget,
 ) -> Result<Kind, EvaluationError> {
     use model::{Stage as S, StructuredStage as N};
     for stage in stages {
@@ -610,6 +661,10 @@ fn validate_stages(
                     ))
                 })?
             }
+            S::Comprehension { value, .. } => {
+                comprehension::validate(value, names, budget)?;
+                kind = Kind::Constructed;
+            }
             S::Literal { value, .. } => {
                 validate_literal(value, names).map_err(|error| error.at(range(stage.range())))?;
                 kind = match value {
@@ -618,13 +673,15 @@ fn validate_stages(
                     _ => unreachable!(),
                 }
             }
-            S::Group { expression, .. } => kind = validate_expression(expression, kind, names)?,
+            S::Group { expression, .. } => {
+                kind = validate_expression(expression, kind, names, budget)?
+            }
             S::Fixpoint { expression, .. } => {
                 require(
                     matches!(kind, Kind::Operations | Kind::Strings),
                     "fixpoint requires an operation or value stream",
                 )?;
-                kind = validate_expression(expression, kind, names)?;
+                kind = validate_expression(expression, kind, names, budget)?;
                 require(
                     matches!(kind, Kind::Operations | Kind::Strings),
                     "fixpoint requires an operation or value stream",
@@ -684,19 +741,19 @@ fn validate_stages(
                     kind == Kind::Operations,
                     "ordering selector requires operations",
                 )?;
-                let selector = validate_expression(selector, Kind::Operations, names)?;
+                let selector = validate_expression(selector, Kind::Operations, names, budget)?;
                 require(
                     matches!(selector, Kind::Strings | Kind::String | Kind::Count),
                     "ordering selector must produce exactly one string or count per operation",
                 )?;
             }
             S::Reverse { .. } | S::Head { .. } | S::Tail { .. } => require(
-                !matches!(kind, Kind::Count | Kind::String),
+                !matches!(kind, Kind::Count | Kind::String | Kind::Constructed),
                 "stage requires a stream, map, or array",
             )?,
             S::Count { .. } | S::Check { .. } => {
                 require(
-                    !matches!(kind, Kind::Count | Kind::String),
+                    !matches!(kind, Kind::Count | Kind::String | Kind::Constructed),
                     "stage requires a stream, map, or array",
                 )?;
                 if matches!(stage, S::Count { .. }) {
@@ -706,10 +763,10 @@ fn validate_stages(
             S::MapBy { key, value, .. } => {
                 require(kind == Kind::Operations, "map_by requires operations")?;
                 require(
-                    validate_expression(key, Kind::Operations, names)? == Kind::Strings,
+                    validate_expression(key, Kind::Operations, names, budget)? == Kind::Strings,
                     "map_by key must produce exactly one string",
                 )?;
-                validate_expression(value, Kind::Operations, names)?;
+                validate_expression(value, Kind::Operations, names, budget)?;
                 kind = Kind::Map;
             }
             S::Structured { step, .. } => match step {
@@ -720,7 +777,7 @@ fn validate_stages(
                 N::WhereExists(expression) => {
                     require(kind == Kind::Operations, "where_exists requires operations")?;
                     require(
-                        validate_expression(expression, Kind::Operations, names)?
+                        validate_expression(expression, Kind::Operations, names, budget)?
                             == Kind::Operations,
                         "where_exists requires operations",
                     )?;
@@ -728,10 +785,10 @@ fn validate_stages(
                 N::MapBy { key, value } => {
                     require(kind == Kind::Operations, "map_by requires operations")?;
                     require(
-                        validate_expression(key, Kind::Operations, names)? == Kind::String,
+                        validate_expression(key, Kind::Operations, names, budget)? == Kind::String,
                         "map_by key must produce exactly one string",
                     )?;
-                    validate_expression(value, Kind::Operations, names)?;
+                    validate_expression(value, Kind::Operations, names, budget)?;
                     kind = Kind::Map;
                 }
                 N::StringAttr(_) => {

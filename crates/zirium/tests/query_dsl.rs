@@ -498,3 +498,247 @@ fn explicit_program_allowance_bounds_binding_copies_with_located_errors() {
     assert!(error.to_string().contains("result limit"));
     assert!(error.range().is_some());
 }
+
+#[test]
+fn contextual_comprehensions_keep_order_and_native_typed_values() {
+    use zirium::query::NativeValue;
+    use zirql::ConstructedValue as V;
+    let mut document = document_from("\"alpha\"() : () -> ()\n\"beta\"() : () -> ()");
+    let query = Query::parse(r#"labels = names; [{"name": n, "label": "data:" ++ s} for n in labels for s in [n, n ++ "!"] if s != "beta!"]"#).unwrap();
+    let mut result = None;
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            result = Some(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(report)) = result.unwrap() else {
+        panic!("expected native constructed report")
+    };
+    assert_eq!(
+        report.value(),
+        &V::Array(vec![
+            V::Record(vec![
+                ("name".into(), V::String("alpha".into())),
+                ("label".into(), V::String("data:alpha".into()))
+            ]),
+            V::Record(vec![
+                ("name".into(), V::String("alpha".into())),
+                ("label".into(), V::String("data:alpha!".into()))
+            ]),
+            V::Record(vec![
+                ("name".into(), V::String("beta".into())),
+                ("label".into(), V::String("data:beta".into()))
+            ]),
+        ])
+    );
+    assert_eq!(report.clone(), report);
+
+    // Contextual words stay bindable, and quoted labels are static strings.
+    let query = Query::parse(
+        r#"for = names; if = names; [for]; [if]; [{"{n}": n, "text": "{n}", "first": for[1]} for n in if] | json"#,
+    )
+    .unwrap();
+    let mut results = Vec::new();
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            results.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        results[0],
+        QueryOutput::Array(vec![serde_json::json!(["alpha", "beta"])])
+    );
+    assert_eq!(results[0], results[1]);
+    let QueryOutput::Json(json) = &results[2] else {
+        panic!("expected JSON")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(json).unwrap(),
+        serde_json::json!([
+            {"{n}": "alpha", "text": "{n}", "first": "alpha"},
+            {"{n}": "beta", "text": "{n}", "first": "alpha"}
+        ])
+    );
+
+    for (source, expected) in [
+        (
+            "if = count; [if-1 for n in [1]] | json",
+            serde_json::json!([1]),
+        ),
+        (
+            r#"[{"binder": if-1, "spaced": if - 1, "field": r.if-1, "operator_field": r.div-1} for if in [2] for r in [{"if": 2, "div": 2}]] | json"#,
+            serde_json::json!([{"binder": 1, "spaced": 1, "field": 1, "operator_field": 1}]),
+        ),
+    ] {
+        let query = Query::parse(source).unwrap();
+        query
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                let QueryOutput::Json(json) = value else {
+                    panic!("expected JSON")
+                };
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+                    expected
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn comprehension_refusals_and_skipped_runtime_errors_keep_query_locations() {
+    use zirium::query::NativeValue;
+    use zirql::ConstructedValue as V;
+    let mut document = document_from("\"alpha\"() : () -> ()");
+    let query = Query::parse(
+        r#"[[false and (1 div 0 == 1), true or {}.missing, [x * 2 for x in 1..n], - -1, -(-1), -9223372036854775808] for n in [2]]"#,
+    )
+    .unwrap();
+    let mut result = None;
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            result = Some(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(report)) = result.unwrap() else {
+        panic!("expected native value")
+    };
+    assert_eq!(
+        report.value(),
+        &V::Array(vec![V::Array(vec![
+            V::Boolean(false),
+            V::Boolean(true),
+            V::Array(vec![V::Integer(2), V::Integer(4)]),
+            V::Integer(1),
+            V::Integer(1),
+            V::Integer(i64::MIN)
+        ])])
+    );
+
+    let source = r#"do set_attr("tag", "changed"); labels = names; [n for n in labels if false and (1 + "bad" == 0)]"#;
+    let query = Query::parse(source).unwrap();
+    let error = query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    let range = error.range().unwrap();
+    assert_eq!(&source[range], r#"1 + "bad""#);
+    assert_eq!(document.query(&ops().attributes("tag")).unwrap().len(), 0);
+
+    for (source, responsible, message) in [
+        ("[missing for n in [1]]", "missing", "undefined binding"),
+        (
+            "labels = names; [labels for labels in labels]",
+            "labels for labels",
+            "shadows",
+        ),
+        (
+            "[9223372036854775807 + 1 for n in [1]]",
+            "9223372036854775807 + 1",
+            "overflow",
+        ),
+        (
+            "[- -9223372036854775808 for n in [1]]",
+            "- -9223372036854775808",
+            "overflow",
+        ),
+        (
+            "native = input; [n for n in native]",
+            "native",
+            "explicit scalar projection",
+        ),
+        ("a = [null]; [n for n in a]", "a", "null"),
+    ] {
+        let error = Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .unwrap_err();
+        assert!(error.to_string().contains(message), "{source}: {error}");
+        let range = error.range().unwrap();
+        assert!(
+            source[range].contains(responsible.split(' ').next().unwrap()),
+            "{source}"
+        );
+    }
+    for source in [
+        "[1e999 for n in [1]]",
+        "[1e-999 for n in [1]]",
+        "[unknown(n) for n in [1] if false]",
+    ] {
+        assert!(Query::parse(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn comprehension_requests_share_parse_expansion_snapshot_and_render_allowances() {
+    use zirium::query::{EvaluationOptions, ProgramLimits};
+    let mut document = document_from("\"alpha\"() : () -> ()");
+    let source = "[n for n in 1..100000 if false]";
+    let query = Query::parse(source).unwrap();
+    let limits = ProgramLimits {
+        work: 10_000,
+        results: 2_000,
+        nesting: 64,
+        stream_items: 1_000,
+    };
+    let error = query
+        .evaluate_with_program_limits(
+            &mut document,
+            DialectRegistry::baseline(),
+            None,
+            EvaluationOptions::default(),
+            limits,
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("limit exceeded"));
+    assert_eq!(&source[error.range().unwrap()], "1..100000");
+
+    let query = Query::parse("labels = names; [n for n in labels]").unwrap();
+    let mut budget = zirql::Budget::for_program(ProgramLimits {
+        work: 50_000,
+        results: 10_000,
+        ..limits
+    });
+    for _ in 0..2 {
+        query
+            .evaluate_with_budget(
+                &mut document,
+                DialectRegistry::baseline(),
+                None,
+                EvaluationOptions::default(),
+                &mut budget,
+                |document, output, budget| {
+                    let value = output.to_json_with_budget(document, budget)?;
+                    assert_eq!(value, serde_json::json!(["alpha"]));
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+    let before = budget.remaining_work();
+    assert!(before < 50_000);
+    let mut small = zirql::Budget::for_program(ProgramLimits {
+        work: 1,
+        results: 10_000,
+        ..limits
+    });
+    let error = query
+        .evaluate_with_budget(
+            &mut document,
+            DialectRegistry::baseline(),
+            None,
+            EvaluationOptions::default(),
+            &mut small,
+            |_, _, _| Ok(()),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("work limit exceeded"));
+    assert!(
+        Query::parse_with_program_limits("[n for n in [1]]", ProgramLimits { work: 1, ..limits })
+            .is_err()
+    );
+}

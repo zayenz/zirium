@@ -242,6 +242,100 @@ Inserted copies count toward the resulting structure's size, and empty
 containers count too. Numbers use the JSON representation's integer and
 floating-point ranges; use strings for numbers requiring arbitrary precision.
 
+## Positional comprehensions
+
+Use `[expression for name in source if condition]` to construct a report from
+projected values. The filter is optional. For this complete input:
+
+```mlir
+"alpha"() : () -> ()
+"beta"() : () -> ()
+```
+
+this query projects operation names, constructs records, then emits JSON:
+
+```zirium
+labels = names;
+[{"name": n, "label": "data:" ++ n} for n in labels] | json
+```
+
+The output is:
+
+```json
+[
+  {"label": "data:alpha", "name": "alpha"},
+  {"label": "data:beta", "name": "beta"}
+]
+```
+
+Repeated `for` clauses can depend on earlier bindings. The rightmost generator
+varies fastest; each `if` filters its own clause before later clauses run:
+
+```zirium
+labels = names;
+[{"name": n, "label": "data:" ++ s}
+ for n in labels
+ for s in [n, n ++ "!"] if s != "beta!"] | json
+```
+
+The rows have labels `data:alpha`, `data:alpha!`, and `data:beta`, in that order.
+A generator sees earlier names in its source, then installs its binder for its
+filter and the head. Duplicate binders, shadowing, forward references, and
+undefined names fail at their query locations. `_` discards a value and cannot
+be read. Nested comprehensions retain their own array shape.
+
+Inside a comprehension, object labels are static quoted strings and bare names
+are values. `{"n": n}` uses the label `n` and the bound value of `n`.
+Strings are decoded literals: `"{n}"` contains braces and the letter `n`.
+Outside comprehensions, plain JSON-shaped literals keep their existing binding
+and interpolation rules. `for` and `if` remain ordinary binding names elsewhere,
+including a literal such as `[for]` when `for` is bound.
+
+The supported expression forms are:
+
+- Boolean, signed integer, finite decimal float, and string literals; earlier
+  bindings and generator names; grouping with parentheses.
+- Positional arrays, records with quoted labels, and nested array comprehensions.
+- Numeric sign, `not`, checked `+`, `-`, `*`, `/`, integer `div` and `mod`;
+  numeric `<`, `<=`, `>`, `>=`; typed `==` (also `=`) and `!=`.
+- Boolean `and` and `or`; string or positional-array `++`; record access
+  `r.field`, array access `a[i]`, and inclusive integer ranges `lo..hi`.
+
+Array positions start at one. Integer arithmetic uses signed 64-bit values and
+refuses overflow or division by zero. Floats use finite binary64 values;
+nonzero literals or arithmetic results rounded to zero fail. Mixed numeric
+operations require exact integer-to-float conversion. Strings receive no numeric
+coercion. Boolean operands short-circuit, so `false and (1 div 0 == 1)` skips the
+runtime division. Every branch still receives scope and type validation before
+execution; a skipped branch cannot hide incompatible types or an unsupported
+call. All expression calls and unlisted forms are refused.
+
+Use an explicit projection such as `names`, `attr`, or `count` before constructing
+scalar reports from operations. Native operation, type, and attribute handles
+retain their identity and cannot become comprehension values through their
+printed spelling. Saved JSON arrays and objects can supply scalar or structured
+values; `null` and integers outside `i64` fail when projected into this subset.
+
+Rust callbacks receive `QueryOutput::Native(NativeValue::Constructed(report))`
+before rendering. `report.value()` borrows the ordered Zirql value, including
+record field order. `Clone` shares this immutable result. Evaluator binding reads
+and emission snapshots use charged copies. `report.render_json_with_budget()`
+and `report.render_ndjson_with_budget()` render under the active allowance;
+`Query::evaluate_with_budget()` supplies that allowance to callbacks. The CLI
+prints constructed values as JSON and supports the usual `--jsonl` envelope.
+`json` and `emit` pass the constructed value onward. MLIR and collection stages
+that do not support this report kind fail before execution.
+
+Comprehension requests use one budget for bounded parsing/lowering, validation,
+source projections, candidates before filters, nested construction, copies,
+snapshots, and JSON rendering. The default aggregate allowance is 1,000,000
+produced or copied entries; `--max-results` changes it. `--max-work` and
+`--max-items` retain their work and per-stream bounds. Reusing a parsed Rust
+query charges its retained parse spending on each evaluation. Rust callers can
+bound parsing with `Query::parse_with_program_limits()` and choose execution
+bounds with `Query::evaluate_with_program_limits()`; callbacks that render can
+use `Query::evaluate_with_budget()` with `Budget::for_program()`.
+
 ## Writing reports with Markdown and text
 
 Use `markdown` to emit a table from a histogram or a map of histograms.
@@ -647,7 +741,9 @@ rendered report storage. It is separate from the per-stream `--max-items` ceilin
 With this option, copied strings and encoded JSON/Markdown also consume work;
 escaped Markdown reserves a byte bound before construction. Rust callers can use
 `Query::evaluate_with_program_limits` with `zirium::query::ProgramLimits`. Existing
-`EvaluationLimits` APIs keep their established work and stream limits. An
+`EvaluationLimits` APIs keep their established work and stream limits for
+programs without comprehensions. Comprehension requests also use the default
+aggregate report allowance described above. An
 aggregate failure carries a query range and follows the same no-stdout CLI rule.
 Native MLIR printing remains a caller-owned emission boundary.
 
