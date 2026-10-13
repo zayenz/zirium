@@ -136,6 +136,11 @@ impl Expression {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Predicate {
+    SameValue {
+        left: super::capture::ParsedOperand,
+        right: super::capture::ParsedOperand,
+        range: TextRange,
+    },
     Bool {
         value: bool,
         range: TextRange,
@@ -190,7 +195,8 @@ pub enum Predicate {
 impl Predicate {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Bool { range, .. }
+            Self::SameValue { range, .. }
+            | Self::Bool { range, .. }
             | Self::Op { range, .. }
             | Self::OpValue { range, .. }
             | Self::Computed { range, .. }
@@ -284,6 +290,19 @@ impl ComputedStage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
+    Match {
+        value: super::capture::ParsedMatch,
+        range: TextRange,
+    },
+    Native {
+        value: super::capture::ParsedOperand,
+        range: TextRange,
+    },
+    Operand {
+        operation: super::capture::ParsedOperand,
+        index: usize,
+        range: TextRange,
+    },
     Computed {
         value: ComputedStage,
         range: TextRange,
@@ -469,7 +488,10 @@ pub enum Stage {
 impl Stage {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Computed { range, .. }
+            Self::Match { range, .. }
+            | Self::Native { range, .. }
+            | Self::Operand { range, .. }
+            | Self::Computed { range, .. }
             | Self::Projection { range, .. }
             | Self::Comprehension { range, .. }
             | Self::Structured { range, .. }
@@ -523,7 +545,10 @@ impl Stage {
     }
     fn is_selection_only(&self) -> bool {
         match self {
-            Self::SetAttr { .. }
+            Self::Match { .. }
+            | Self::Native { .. }
+            | Self::Operand { .. }
+            | Self::SetAttr { .. }
             | Self::RemoveAttr { .. }
             | Self::Count { .. }
             | Self::Tally { .. }

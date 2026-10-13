@@ -1005,7 +1005,8 @@ ordering and `map_by`, and the document labels are available as
 ## Correlated constructed reports
 
 `project(subject, {fields})` evaluates ordered fields for each native input
-operation. The subject is a singleton selection local to the body. Rows follow
+operation or capture record. The subject is local to the body: a singleton
+operation selection or one capture record. Rows follow
 input order, and duplicate subjects or equal projected names remain separate
 rows. Native handles require explicit scalar projections such as `names`,
 `attr` or `count`.
@@ -1068,3 +1069,63 @@ are forbidden in projection fields. Parsing, nested native queries, value
 generators, copies and rendering retain one work/result/nesting allowance.
 CLI output remains buffered until success; library callbacks retain their
 existing explicit buffering policy.
+
+## Native SSA captures
+
+The development Git API supports ordered native captures with `match`. This
+program selects additions whose two operands are the same SSA value, then
+projects a scalar report:
+
+```text
+let matches = match {
+  from add in (input | filter(op("arith.addi")));
+  bind lhs = operand(add, 0);
+  bind rhs = operand(add, 1);
+  where same_value(lhs, rhs);
+};
+let rows = matches | project(m, {
+  "function": m.add | root(op("func.func")) | attr("sym_name") | one,
+  "operation": m.add | names | one
+});
+report {"matches": rows, "count": length(rows)};
+```
+
+With the original [function fixture](../examples/cli/function-report.mlir), the
+result is `{"matches":[{"function":"double","operation":"arith.addi"}],"count":1}`.
+Run the [saved capture program](../examples/cli/native-captures.zirql) with
+`zirium --program-file examples/cli/native-captures.zirql examples/cli/function-report.mlir`,
+or pass the same text inline.
+
+For native descriptions alone, the short form needs no declarations:
+
+```sh
+zirium 'match { from add in (input | filter(op("arith.addi"))); bind lhs = operand(add, 0); bind rhs = operand(add, 1); where same_value(lhs, rhs); } | json' examples/cli/function-report.mlir
+```
+
+`from` enumerates a finite native selection in order. Later clauses see earlier
+captures; a name is absent from its own source or binding expression. Captures
+cannot shadow an ambient binding or repeat a name. Dependent `from` clauses
+enumerate in depth-first order, with the rightmost source varying fastest.
+`bind` requires exactly one native value. Records retain all capture fields in
+written order, including operations and exact SSA handles.
+
+`operand(operation, index)` requires one operation and a zero-based operand
+index. It refuses an absent, unresolved or invalid operand. `same_value(left,
+right)` compares the complete SSA identities, including result or block-argument
+position. Two results from the same defining operation are different values.
+Names, source spelling and rendered descriptions do not determine equality.
+Guards combine with the usual Boolean operators; unavailable required operands
+and unknown final truth fail at their query location.
+
+`m.add` selects the native operation field of a capture record. Use explicit
+projections such as `names`, `attr` and `one` before constructing scalar reports.
+An empty match retains its field schema, so an invalid field, type or effect is
+still refused. Every clause and Boolean branch receives scope, type and purity
+validation before enumeration. Candidate work is charged before filtering;
+matching, field copies, projection and rendering share the request allowance.
+
+Rust retains native capture rows and SSA handles; Python returns dictionaries
+containing the existing semantic wrappers. The explicit JSON boundary describes
+SSA values with `kind`, zero-based `index` and optional `type`, alongside the
+existing operation description. See [native capture builders](query-dsl.md#native-capture-builders).
+This matching surface is read-only and does not support diff queries or rewrites.

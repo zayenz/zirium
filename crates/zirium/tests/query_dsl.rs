@@ -1175,3 +1175,288 @@ fn parameter_arguments_keep_ordered_scope_and_preflight() {
         .unwrap_err();
     assert_eq!(&invalid[error.range().unwrap()], "n");
 }
+
+const NATIVE_CAPTURE_PROGRAM: &str = include_str!("../../../examples/cli/native-captures.zirql");
+const NATIVE_CAPTURE_MATCH: &str = r#"match { from add in (input | filter(op("arith.addi"))); bind lhs = operand(add, 0); bind rhs = operand(add, 1); where same_value(lhs, rhs); }"#;
+fn same_ssa_matches() -> zirium::query::CaptureQuery {
+    use zirium::query::{bound_ops, bound_ssa, matches, same_value};
+    matches()
+        .from("add", &ops().filter(op("arith.addi")))
+        .bind("lhs", &bound_ops("add").operand(0))
+        .bind("rhs", &bound_ops("add").operand(1))
+        .where_(&same_value(&bound_ssa("lhs"), &bound_ssa("rhs")))
+        .build()
+}
+
+#[test]
+fn exact_ssa_captures_agree_in_parsed_typed_nested_and_erased_reports() {
+    use zirium::{
+        query::{ConstructedValue as V, NativeValue, ReportExpr as E, capture_ops, report},
+        semantic::{ValueId, ValueReference},
+    };
+    let mut document = document_from(FUNCTION_REPORT_SOURCE);
+    let captures = same_ssa_matches();
+    let native = document.query(&captures).unwrap();
+    assert_eq!(native.len(), 1);
+    let record = &native.rows()[0];
+    assert_eq!(
+        record
+            .fields
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["add", "lhs", "rhs"]
+    );
+    let QueryOutput::Operations(add) = &record.fields[0].1 else {
+        panic!("native operation")
+    };
+    assert_eq!(add.len(), 1);
+    let QueryOutput::Native(NativeValue::Ssa(lhs)) = record.fields[1].1 else {
+        panic!("exact SSA")
+    };
+    let QueryOutput::Native(NativeValue::Ssa(rhs)) = record.fields[2].1 else {
+        panic!("exact SSA")
+    };
+    assert_eq!(lhs, rhs);
+    assert!(matches!(lhs, ValueId::BlockArgument { argument: 0, .. }));
+    assert_eq!(
+        document.operands(add[0]).unwrap(),
+        [ValueReference::Resolved(lhs), ValueReference::Resolved(rhs)]
+    );
+    document.check_value(lhs).unwrap();
+    let mut outputs = vec![];
+    Query::parse(NATIVE_CAPTURE_MATCH)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Captures(parsed)) = &outputs[0] else {
+        panic!("native parsed rows")
+    };
+    assert_eq!(parsed.rows(), native.rows());
+    assert_eq!(
+        document.query(&captures.erased()).unwrap(),
+        QueryOutput::Native(NativeValue::Captures(native.clone()))
+    );
+    let add = capture_ops("m", "add");
+    let rows = captures.project(
+        "m",
+        [
+            (
+                "function",
+                E::from(add.root(op("func.func")).attr("sym_name").one()),
+            ),
+            ("operation", E::from(add.names().one())),
+        ],
+    );
+    let typed = report(E::scope(
+        [("rows", rows.into())],
+        E::record([
+            ("matches", E::name("rows")),
+            ("count", E::name("rows").length()),
+        ]),
+    ));
+    let expected = V::Record(vec![
+        (
+            "matches".into(),
+            V::Array(vec![V::Record(vec![
+                ("function".into(), V::String("double".into())),
+                ("operation".into(), V::String("arith.addi".into())),
+            ])]),
+        ),
+        ("count".into(), V::Integer(1)),
+    ]);
+    assert_eq!(document.query(&typed).unwrap().value(), &expected);
+    assert_eq!(
+        document.query(&typed.clone().erased()).unwrap(),
+        document.query(&typed.erased()).unwrap()
+    );
+    outputs.clear();
+    Query::parse(NATIVE_CAPTURE_PROGRAM)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(parsed)) = &outputs[0] else {
+        panic!("native scalar report")
+    };
+    assert_eq!(parsed.value(), &expected);
+    // The new field wrapper also retains parameter declarations through projection.
+    let parameterized = captures.with_parameters(vec![zirium::query::ParameterDeclaration {
+        name: zirium::query::Located::new("label".into(), 0..0),
+        ty: zirium::query::Located::new(zirium::query::ParameterType::String, 0..0),
+    }]);
+    let projected = parameterized.project(
+        "m",
+        [("name", E::from(capture_ops("m", "add").names().one()))],
+    );
+    assert_eq!(projected.parameters(), parameterized.parameters());
+    assert!(
+        projected
+            .erased()
+            .evaluate_with_parameters(
+                &document,
+                DialectRegistry::baseline(),
+                &[("label".into(), V::String("test".into()))],
+                EvaluationLimits::default()
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn same_value_distinguishes_two_results_with_one_owning_operation() {
+    use zirium::semantic::{ValueId, ValueReference};
+    let source = r#"func.func @different() -> i32 {
+      %left, %right = "test.pair"() : () -> (i32, i32)
+      %sum = arith.addi %left, %right : i32
+      func.return %sum : i32
+    }"#;
+    let document = document_from(source);
+    let add = document.query(&ops().filter(op("arith.addi"))).unwrap()[0];
+    let [
+        ValueReference::Resolved(ValueId::OperationResult {
+            operation: left,
+            result: 0,
+        }),
+        ValueReference::Resolved(ValueId::OperationResult {
+            operation: right,
+            result: 1,
+        }),
+    ] = document.operands(add).unwrap()
+    else {
+        panic!("two native result positions")
+    };
+    assert_eq!(left, right);
+    assert_ne!(
+        document
+            .query(&ops().filter(op("arith.addi")).operand(0))
+            .unwrap(),
+        document
+            .query(&ops().filter(op("arith.addi")).operand(1))
+            .unwrap()
+    );
+    assert!(document.query(&same_ssa_matches()).unwrap().is_empty());
+}
+
+#[test]
+fn native_capture_scope_empty_preflight_and_required_operands_share_limits() {
+    use zirium::query::{
+        NativeValue, ProgramLimits, ReportExpr as E, bound_ops, bound_ssa, capture_ops, matches,
+        same_value,
+    };
+    let mut document = document_from(FUNCTION_REPORT_SOURCE);
+    let ordered = matches()
+        .from("outer", &ops().filter(op("arith.addi")))
+        .from("inner", &bound_ops("outer"))
+        .build();
+    let rows = document.query(&ordered).unwrap();
+    assert_eq!(rows.len(), 2);
+    for row in rows.rows() {
+        assert_eq!(row.fields[0].1, row.fields[1].1);
+    }
+    for source in [
+        "match { from x in x; }",
+        "match { from x in input; bind x = operand(x, 0); }",
+        "match { from x in (input | filter(false)); where same_value(x,x); }",
+        "match { from x in (input | filter(false)); bind value = operand((input | count),0); }",
+        "match { from x in (input | filter(false)); where false; bind value = operand((input | set_attr(\"tag\",\"x\")),0); }",
+        "match { from x in (input | filter(false)); } | project(m, {\"x\": m.missing | names})",
+        "match { from x in (input | filter(false)); bind lhs = operand(x,0); } | project(m, {\"x\": m.lhs | count})",
+        "let rows = match { from x in (input | filter(false)); }; rows.x | names",
+    ] {
+        let query = Query::parse(source).unwrap();
+        let mut outputs = vec![];
+        assert!(
+            query
+                .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                    outputs.push(value);
+                    Ok(())
+                })
+                .is_err(),
+            "{source}"
+        );
+        assert!(outputs.is_empty());
+    }
+    let unavailable = ops().filter(op("func.return")).head(1).operand(1);
+    assert!(
+        document
+            .query(&unavailable)
+            .unwrap_err()
+            .to_string()
+            .contains("unavailable")
+    );
+    let empty = matches()
+        .from("add", &ops().filter(op("absent")))
+        .bind("lhs", &bound_ops("add").operand(0))
+        .build();
+    assert!(
+        document
+            .query(&empty.project(
+                "m",
+                [("name", E::from(capture_ops("m", "add").names().one()))]
+            ))
+            .unwrap()
+            .value()
+            == &zirium::query::ConstructedValue::Array(vec![])
+    );
+    assert!(
+        document
+            .query(&empty.project(
+                "m",
+                [("wrong", E::from(capture_ops("m", "lhs").names().one()))]
+            ))
+            .is_err()
+    );
+    let filtered = matches()
+        .from("add", &ops().filter(op("arith.addi")))
+        .from("other", &input())
+        .bind("lhs", &bound_ops("add").operand(0))
+        .where_(&!same_value(&bound_ssa("lhs"), &bound_ssa("lhs")))
+        .build();
+    assert!(document.query(&filtered).unwrap().is_empty());
+    assert!(
+        filtered
+            .evaluate_with_program_limits(
+                &document,
+                DialectRegistry::baseline(),
+                ProgramLimits {
+                    work: 500,
+                    results: 100_000,
+                    nesting: 64,
+                    stream_items: 1_000
+                }
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("work limit")
+    );
+    let mut legacy = zirql::Budget::new(zirql::Limits {
+        work: 100_000,
+        items: 1_000,
+        nesting: 64,
+    });
+    assert!(
+        same_ssa_matches()
+            .evaluate_output_with_budget(
+                &document,
+                DialectRegistry::baseline(),
+                EvaluationOptions::default(),
+                &mut legacy
+            )
+            .is_err()
+    );
+    let native = document.query(&same_ssa_matches()).unwrap();
+    let output = QueryOutput::Native(NativeValue::Captures(native));
+    let mut scarce = zirql::Budget::for_program(ProgramLimits {
+        work: 100_000,
+        results: 2,
+        nesting: 64,
+        stream_items: 1_000,
+    });
+    assert!(output.to_json_with_budget(&document, &mut scarce).is_err());
+}

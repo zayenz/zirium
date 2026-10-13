@@ -279,6 +279,32 @@ pub(super) fn to_json(
     budget: &mut zirql::Budget,
     range: &Range<usize>,
 ) -> Result<serde_json::Value, EvaluationError> {
+    match value {
+        QueryOutput::Native(NativeValue::Ssa(value)) => {
+            capture::check_value(document, *value, range)?;
+            let (kind, index) = match value {
+                ValueId::OperationResult { result, .. } => ("operation_result", *result),
+                ValueId::BlockArgument { argument, .. } => ("block_argument", *argument),
+            };
+            let ty = document.value_type(ValueReference::Resolved(*value));
+            charge_results(budget, 7, range)?;
+            charge_bytes(budget, kind.len() + 15 + ty.map_or(0, str::len), range)?;
+            return Ok(serde_json::json!({"kind":kind,"index":index,"type":ty}));
+        }
+        QueryOutput::Native(NativeValue::Capture(record)) => {
+            return record_json(document, record, budget, range);
+        }
+        QueryOutput::Native(NativeValue::Captures(value)) => {
+            capture::slots::<serde_json::Value>(value.len(), budget, range)?;
+            charge_results(budget, value.len() + 1, range)?;
+            let mut rows = Vec::with_capacity(value.len());
+            for row in value.rows() {
+                rows.push(record_json(document, row, budget, range)?);
+            }
+            return Ok(serde_json::Value::Array(rows));
+        }
+        _ => {}
+    }
     if let QueryOutput::Native(NativeValue::Constructed(value)) = value {
         return value.to_json_with_budget(budget);
     }
@@ -295,6 +321,28 @@ pub(super) fn to_json(
     charge_results(budget, units, range)?;
     charge_bytes(budget, bytes, range)?;
     Ok(output_value(document, value))
+}
+
+fn record_json(
+    document: &Document,
+    record: &zirql::NativeCapture<QueryOutput>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<serde_json::Value, EvaluationError> {
+    capture::slots::<(String, serde_json::Value)>(record.fields.len(), budget, range)?;
+    charge_results(budget, record.fields.len() + 1, range)?;
+    let mut result = serde_json::Map::new();
+    for (name, value) in &record.fields {
+        charge_bytes(budget, name.len(), range)?;
+        let mut rendered = to_json(document, value, budget, range)?;
+        if matches!(value,QueryOutput::Operations(values) if values.len()==1)
+            && let serde_json::Value::Array(values) = &mut rendered
+        {
+            rendered = values.pop().expect("one operation descriptor");
+        }
+        result.insert(name.clone(), rendered);
+    }
+    Ok(serde_json::Value::Object(result))
 }
 
 fn json_allocation(document: &Document, value: &QueryOutput) -> (usize, usize) {
@@ -432,6 +480,15 @@ pub(super) fn copy_value(
     budget: &mut zirql::Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
+    if let QueryOutput::Native(NativeValue::Captures(value)) = value {
+        return value
+            .copy(budget, range)
+            .map(|value| QueryOutput::Native(NativeValue::Captures(value)));
+    }
+    if let QueryOutput::Native(NativeValue::Capture(value)) = value {
+        return capture::copy_record(value, budget, range)
+            .map(|value| QueryOutput::Native(NativeValue::Capture(value)));
+    }
     if let QueryOutput::Native(NativeValue::Constructed(value)) = value {
         return value
             .copy(budget, range)
@@ -563,14 +620,23 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
     }
     fn construct_record(
         &self,
-        _: Vec<(String, QueryOutput)>,
+        fields: Vec<(String, QueryOutput)>,
         _: &mut EvaluationContext<'_, '_, 'q>,
         _: &mut zirql::Budget,
-        range: &Range<usize>,
+        _: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
-        Err(zirql::EvaluationError::Host(
-            EvaluationError::new("text reports use Zirium JSON literals").at(range.clone()),
-        ))
+        Ok(QueryOutput::Native(NativeValue::Capture(
+            zirql::NativeCapture { fields },
+        )))
+    }
+    fn capture_record<'v>(
+        &self,
+        value: &'v QueryOutput,
+    ) -> Option<&'v zirql::NativeCapture<QueryOutput>> {
+        match value {
+            QueryOutput::Native(NativeValue::Capture(record)) => Some(record),
+            _ => None,
+        }
     }
     fn emit(
         &self,
@@ -620,9 +686,12 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
     Operations,
+    Ssa,
+    Capture(std::sync::Arc<zirql::NativeCapture<Kind>>),
+    Captures(std::sync::Arc<zirql::NativeCapture<Kind>>),
     Strings,
     Count,
     Map,
@@ -758,6 +827,20 @@ pub(super) fn validate_stages(
         let failure = |message: &str| EvaluationError::new(message).at(range(stage.range()));
         let require = |valid, message: &str| if valid { Ok(()) } else { Err(failure(message)) };
         match stage {
+            S::Match { value, .. } => {
+                let schema = capture::types(value, &kind, names, budget)?;
+                kind = Kind::Captures(std::sync::Arc::new(schema));
+            }
+            S::Native { value, .. } => {
+                kind = capture::operand_kind(value, &kind, names, budget)?;
+            }
+            S::Operand { operation, .. } => {
+                require(
+                    capture::operand_kind(operation, &kind, names, budget)? == Kind::Operations,
+                    "operand requires native operations",
+                )?;
+                kind = Kind::Ssa;
+            }
             S::Computed { value, range } => {
                 report::validate_argument(
                     value.operand(),
@@ -876,12 +959,27 @@ pub(super) fn validate_stages(
                 )?;
             }
             S::Reverse { .. } | S::Head { .. } | S::Tail { .. } => require(
-                !matches!(kind, Kind::Count | Kind::String | Kind::Constructed(_)),
+                !matches!(
+                    kind,
+                    Kind::Count
+                        | Kind::String
+                        | Kind::Ssa
+                        | Kind::Capture(_)
+                        | Kind::Captures(_)
+                        | Kind::Constructed(_)
+                ),
                 "stage requires a stream, map, or array",
             )?,
             S::Count { .. } | S::Check { .. } => {
                 require(
-                    !matches!(kind, Kind::Count | Kind::String | Kind::Constructed(_)),
+                    !matches!(
+                        kind,
+                        Kind::Count
+                            | Kind::String
+                            | Kind::Ssa
+                            | Kind::Capture(_)
+                            | Kind::Constructed(_)
+                    ),
                     "stage requires a stream, map, or array",
                 )?;
                 if matches!(stage, S::Count { .. }) {

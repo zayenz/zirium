@@ -161,7 +161,8 @@ fn lower_predicate(predicate: &model::Predicate) -> zirql::Predicate<&model::Pre
         P::Or { predicates, .. } => {
             PredicateKind::Or(predicates.iter().map(lower_predicate).collect())
         }
-        P::Bool { .. }
+        P::SameValue { .. }
+        | P::Bool { .. }
         | P::Op { .. }
         | P::OpValue { .. }
         | P::Computed { .. }
@@ -377,6 +378,7 @@ fn evaluate_leaf(
     operation: OperationId,
 ) -> Truth {
     let value = match predicate {
+        model::Predicate::SameValue { .. } => unreachable!("preflight refuses same_value outside native matches"),
         model::Predicate::Bool { value, .. } => *value,
         model::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
         model::Predicate::OpValue {..} | model::Predicate::Computed {..}=>unreachable!("value arguments resolve with their active scope"),

@@ -595,7 +595,9 @@ fn lower_operation(
 ) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
     use zirql::PredicateKind as P;
     let node = match predicate {
-        model::Predicate::OpValue { .. } | model::Predicate::Computed { .. } => {
+        model::Predicate::SameValue { .. }
+        | model::Predicate::OpValue { .. }
+        | model::Predicate::Computed { .. } => {
             return Err(EvaluationError::new(
                 "constructed value arguments are unavailable in diff queries",
             ));

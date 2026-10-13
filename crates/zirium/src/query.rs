@@ -14,6 +14,8 @@ use crate::{
 };
 
 mod builder;
+mod capture;
+pub use capture::{CaptureMatches, ParsedMatch, ParsedOperand};
 mod comprehension;
 pub use comprehension::{ConstructedReport, ParsedComprehension};
 mod diff;
@@ -25,9 +27,9 @@ mod model;
 pub use builder::*;
 pub use diff::*;
 pub use zirql::{
-    Budget, ConstructedValue, Located, Location as ValueLocation, ParameterDeclaration,
-    ParameterInputs, ParameterType, ProgramLimits, ValueBinaryOperator, ValueUnaryOperator,
-    constructed_value_type,
+    Budget, ConstructedValue, Located, Location as ValueLocation, NativeCapture,
+    ParameterDeclaration, ParameterInputs, ParameterType, ProgramLimits, ValueBinaryOperator,
+    ValueUnaryOperator, constructed_value_type,
 };
 mod literal;
 pub mod parser;
@@ -188,7 +190,7 @@ pub fn evaluate_operation_traversal(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryOutput {
-    /// Native results, including constructed textual reports.
+    /// Native results, including SSA captures and constructed reports.
     Native(NativeValue),
     Operations(Vec<OperationId>),
     Values(Vec<String>),
@@ -214,16 +216,20 @@ impl QueryOutput {
     ) -> Result<serde_json::Value, EvaluationError> {
         let range = match self {
             Self::Native(NativeValue::Constructed(value)) => value.range(),
+            Self::Native(NativeValue::Captures(value)) => value.range(),
             _ => 0..0,
         };
         program::to_json(document, self, budget, &range)
     }
 }
 
-/// Structured query results that have no corresponding CLI stream kind.
+/// Native structured data before explicit rendering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeValue {
     Constructed(ConstructedReport),
+    Ssa(ValueId),
+    Capture(zirql::NativeCapture<QueryOutput>),
+    Captures(CaptureMatches),
     String(String),
     Types(Vec<TypeId>),
     Attributes(Vec<(String, AttributeId)>),
@@ -713,6 +719,29 @@ fn evaluate_host_stage(
     budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     match stage {
+        model::Stage::Match { value, .. } => {
+            current = QueryOutput::Native(NativeValue::Captures(capture::evaluate(
+                value, context, current, bindings, budget,
+            )?));
+        }
+        model::Stage::Native { value, .. } => {
+            current = capture::evaluate_operand(value, context, current, bindings, budget)?;
+        }
+        model::Stage::Operand {
+            operation,
+            index,
+            range,
+        } => {
+            current = capture::operand(
+                operation,
+                *index,
+                context,
+                current,
+                bindings,
+                budget,
+                &program::range(*range),
+            )?;
+        }
         model::Stage::Computed { value, range } => {
             let stage = report::resolve_stage(value, *range, context, bindings, budget)?;
             return evaluate_host_stage(&stage, context, current, bindings, budget);
@@ -1211,6 +1240,10 @@ fn countable_len(output: &QueryOutput, stage: &str) -> Result<usize, EvaluationE
         QueryOutput::Array(values) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Types(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Attributes(values)) => Ok(values.len()),
+        QueryOutput::Native(NativeValue::Captures(values)) => Ok(values.len()),
+        QueryOutput::Native(NativeValue::Ssa(_) | NativeValue::Capture(_)) => Err(
+            EvaluationError::new(format!("{stage} requires a stream, map, or array")),
+        ),
         QueryOutput::Native(NativeValue::Map(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Constructed(_))
         | QueryOutput::Native(NativeValue::String(_))
@@ -1232,6 +1265,8 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Array(values) => values.len(),
         QueryOutput::Native(NativeValue::Types(values)) => values.len(),
         QueryOutput::Native(NativeValue::Attributes(values)) => values.len(),
+        QueryOutput::Native(NativeValue::Captures(values)) => values.len(),
+        QueryOutput::Native(NativeValue::Ssa(_) | NativeValue::Capture(_)) => 1,
         QueryOutput::Native(NativeValue::Map(values)) => values.len(),
         QueryOutput::Native(NativeValue::Constructed(_))
         | QueryOutput::Native(NativeValue::String(_))
@@ -1695,7 +1730,10 @@ fn evaluate_attr(
 fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value {
     match output {
         QueryOutput::Native(value) => match value {
-            NativeValue::Constructed(_) => {
+            NativeValue::Ssa(_)
+            | NativeValue::Capture(_)
+            | NativeValue::Captures(_)
+            | NativeValue::Constructed(_) => {
                 unreachable!("constructed reports use bounded rendering")
             }
             NativeValue::String(value) => serde_json::json!(value),

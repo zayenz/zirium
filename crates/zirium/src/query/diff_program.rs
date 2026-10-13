@@ -187,6 +187,7 @@ fn dispose_expression(expression: Expression) {
         match expression.value {
             ExpressionKind::Input | ExpressionKind::Binding(_) => {}
             ExpressionKind::Group(expression) => pending.push(*expression),
+            ExpressionKind::Field { value, .. } => pending.push(*value),
             ExpressionKind::Set { left, right, .. } => {
                 pending.push(*left);
                 pending.push(*right);
@@ -1662,7 +1663,7 @@ fn validate_expression(
             kind
         }
         ExpressionKind::Set { .. } => unreachable!("the flat set spine was removed"),
-        ExpressionKind::Record(_) => {
+        ExpressionKind::Record(_) | ExpressionKind::Field { .. } => {
             return Err(failure(
                 "records are unsupported in diff mode",
                 &first.range,

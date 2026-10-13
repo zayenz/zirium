@@ -370,11 +370,116 @@ impl Parser<'_, '_> {
             }
         }
     }
+    fn shared_native(
+        &mut self,
+        depth: usize,
+        field_only: bool,
+    ) -> Option<super::capture::ParsedOperand> {
+        let start = self.current().range().start() as usize;
+        let end = if field_only {
+            self.tokens[self.cursor..]
+                .iter()
+                .find(|token| {
+                    matches!(
+                        token.kind(),
+                        TokenKind::Pipe
+                            | TokenKind::Comma
+                            | TokenKind::Semicolon
+                            | TokenKind::RParen
+                            | TokenKind::RBrace
+                            | TokenKind::Eof
+                    )
+                })
+                .map_or(self.source.len(), |token| token.range().start() as usize)
+        } else {
+            self.source.len()
+        };
+        let mut reader = zirql::ArgumentReader::new(&self.source[..end], start).ok()?;
+        // Bare primitive arguments denote bindings, even when their capture
+        // name is also a stage word. Explicit input pipelines remain native.
+        if let Err(error) = self.budget.charge(
+            self.bindings.iter().map(|name| name.len() + 1).sum(),
+            zirql::Location::Query(start..start),
+        ) {
+            self.shared_error(error);
+            return None;
+        }
+        let mut bindings = self.bindings.clone();
+        if !field_only
+            && self.at(TokenKind::Identifier)
+            && matches!(
+                self.next_kind(),
+                Some(TokenKind::Comma | TokenKind::RParen | TokenKind::Operator)
+            )
+            && self.current_text() != "input"
+        {
+            if let Err(error) = self.budget.charge(
+                self.current_text().len() + 1,
+                zirql::Location::Query(start..start),
+            ) {
+                self.shared_error(error);
+                return None;
+            }
+            bindings.insert(self.current_text().to_owned());
+        }
+        let mut host = NativeReader {
+            source: self.source,
+            tokens: self.tokens,
+            bindings: &bindings,
+            nesting: self.nesting_limit.saturating_sub(depth),
+        };
+        let nesting = host.nesting;
+        match zirql::read_native_expression(&mut reader, &mut host, self.budget, nesting) {
+            Ok(value) => {
+                self.sync(reader.position());
+                Some(super::capture::ParsedOperand::new(value))
+            }
+            Err(error) => {
+                self.shared_error(error);
+                None
+            }
+        }
+    }
+    fn shared_match(&mut self, depth: usize) -> Option<super::capture::ParsedMatch> {
+        let mut reader =
+            zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
+                .ok()?;
+        let mut host = NativeReader {
+            source: self.source,
+            tokens: self.tokens,
+            bindings: &self.bindings,
+            nesting: self.nesting_limit.saturating_sub(depth),
+        };
+        let nesting = host.nesting;
+        match zirql::read_match(&mut reader, &mut host, self.budget, nesting) {
+            Ok(value) => {
+                self.sync(reader.position());
+                Some(super::capture::ParsedMatch::new(value))
+            }
+            Err(error) => {
+                self.shared_error(error);
+                None
+            }
+        }
+    }
     fn starts_native(&mut self) -> bool {
         self.skip_trivia();
         if self.at(TokenKind::Identifier) {
             let name = self.current_text();
-            is_native_stage(name)
+            (name == "match" && self.next_kind() == Some(TokenKind::LBrace))
+                || self.source[self.current().range().start() as usize..]
+                    .split_once('|')
+                    .is_some_and(|(source, _)| {
+                        let source = source.trim();
+                        source.contains('.')
+                            && source.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric()
+                                    || byte == b'_'
+                                    || byte == b'.'
+                                    || byte.is_ascii_whitespace()
+                            })
+                    })
+                || is_native_stage(name)
                 || self.bindings.contains(name)
                     && matches!(
                         self.next_kind(),
@@ -462,6 +567,25 @@ impl Parser<'_, '_> {
     fn stage(&mut self, depth: usize) -> Option<Stage> {
         self.skip_trivia();
         let start = self.current().range().start();
+        if self.at_identifier("match") && self.next_kind() == Some(TokenKind::LBrace) {
+            let value = self.shared_match(depth)?;
+            return Some(Stage::Match {
+                value,
+                range: self.span(start),
+            });
+        }
+        if self.at(TokenKind::Identifier) && self.next_kind() == Some(TokenKind::Operator) {
+            let next = self.tokens[self.cursor + 1..]
+                .iter()
+                .find(|token| token.kind() != TokenKind::Trivia)?;
+            if &self.source[next.range().as_range()] == "." {
+                let value = self.shared_native(depth, true)?;
+                return Some(Stage::Native {
+                    value,
+                    range: self.span(start),
+                });
+            }
+        }
         if self.at(TokenKind::LBracket)
             && super::comprehension::starts(self.source, self.tokens, self.cursor)
         {
@@ -500,6 +624,27 @@ impl Parser<'_, '_> {
         };
         let range = self.span(start);
         Some(match name.as_str() {
+            "operand" if self.at(TokenKind::LParen) => {
+                self.bump();
+                let operation = self.shared_native(depth + 1, false)?;
+                self.expect(TokenKind::Comma, "expected `,` before operand index")?;
+                self.skip_trivia();
+                if !self.at(TokenKind::Integer) {
+                    self.error("operand index must be a non-negative integer");
+                    return None;
+                }
+                let Ok(index) = self.current_text().parse::<usize>() else {
+                    self.error("operand index is too large");
+                    return None;
+                };
+                self.bump();
+                self.expect(TokenKind::RParen, "expected `)` after operand index")?;
+                Stage::Operand {
+                    operation,
+                    index,
+                    range: self.span(start),
+                }
+            }
             "reachable" => Stage::Reachable { range },
             "tally" => Stage::Tally { range },
             "value" => Stage::Value { range },
@@ -937,6 +1082,18 @@ impl Parser<'_, '_> {
                 }
                 Some(Predicate::Bool {
                     value: kind == "true",
+                    range: self.span(start),
+                })
+            }
+            "same_value" => {
+                self.expect(TokenKind::LParen, "expected `(` after same_value")?;
+                let left = self.shared_native(depth + 1, false)?;
+                self.expect(TokenKind::Comma, "expected `,` between same_value operands")?;
+                let right = self.shared_native(depth + 1, false)?;
+                self.expect(TokenKind::RParen, "expected `)` after same_value")?;
+                Some(Predicate::SameValue {
+                    left,
+                    right,
                     range: self.span(start),
                 })
             }
@@ -1450,6 +1607,7 @@ fn is_native_stage(name: &str) -> bool {
     matches!(
         name,
         "input"
+            | "operand"
             | "filter"
             | "reachable"
             | "closure"
@@ -1652,6 +1810,17 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
             range: TextRange::new(range.start as u32, range.end as u32)
                 .expect("ordered query range"),
         }
+    }
+    fn matching(
+        &mut self,
+        matching: zirql::NativeMatch<super::report::Operand, Predicate>,
+        range: std::ops::Range<usize>,
+    ) -> Result<Stage, zirql::QueryError> {
+        Ok(Stage::Match {
+            value: super::capture::ParsedMatch::new(matching),
+            range: TextRange::new(range.start as u32, range.end as u32)
+                .expect("ordered query range"),
+        })
     }
     fn set_operator(&self, word: &str) -> Option<SetOperator> {
         match word {

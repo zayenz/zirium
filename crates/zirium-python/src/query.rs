@@ -8,6 +8,138 @@ use zirium::query as core;
 
 #[pyclass(frozen, module = "zirium.query")]
 #[derive(Clone)]
+pub(super) struct SsaQuery {
+    inner: core::SsaQuery,
+}
+#[pyclass(frozen, module = "zirium.query")]
+#[derive(Clone)]
+pub(super) struct CaptureQuery {
+    inner: core::CaptureQuery,
+}
+#[pyclass(frozen, module = "zirium.query")]
+#[derive(Clone)]
+pub(super) struct MatchBuilder {
+    inner: core::MatchBuilder,
+}
+#[pyclass(frozen, module = "zirium.query")]
+#[derive(Clone)]
+pub(super) struct MatchPredicate {
+    inner: core::MatchPredicate,
+}
+#[pymethods]
+impl MatchBuilder {
+    fn from_(&self, name: String, source: &OpQuery) -> Self {
+        Self {
+            inner: self.inner.clone().from(name, &source.inner),
+        }
+    }
+    fn bind(&self, name: String, value: &SsaQuery) -> Self {
+        Self {
+            inner: self.inner.clone().bind(name, &value.inner),
+        }
+    }
+    fn where_(&self, predicate: &MatchPredicate) -> Self {
+        Self {
+            inner: self.inner.clone().where_(&predicate.inner),
+        }
+    }
+    fn build(&self) -> CaptureQuery {
+        CaptureQuery {
+            inner: self.inner.clone().build(),
+        }
+    }
+}
+#[pymethods]
+impl MatchPredicate {
+    fn __and__(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.clone() & other.inner.clone(),
+        }
+    }
+    fn __or__(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.clone() | other.inner.clone(),
+        }
+    }
+    fn __invert__(&self) -> Self {
+        Self {
+            inner: !self.inner.clone(),
+        }
+    }
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyTypeError::new_err(
+            "match predicates have no truth value; use &, |, and ~",
+        ))
+    }
+}
+#[pymethods]
+impl SsaQuery {
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyTypeError::new_err(
+            "evaluate SSA queries with document.query(expression)",
+        ))
+    }
+}
+#[pymethods]
+impl CaptureQuery {
+    fn with_parameters(&self, declarations: &Bound<'_, PyDict>) -> PyResult<Self> {
+        let mut budget = self.inner.new_budget(core::EvaluationLimits::default());
+        Ok(Self {
+            inner: self
+                .inner
+                .with_parameters(query_parameters(declarations, &mut budget)?),
+        })
+    }
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyTypeError::new_err(
+            "evaluate capture queries with document.query(expression)",
+        ))
+    }
+    fn project(&self, subject: String, fields: &Bound<'_, PyDict>) -> PyResult<ReportQuery> {
+        Ok(ReportQuery {
+            inner: self.inner.project(
+                subject,
+                fields
+                    .iter()
+                    .map(|(key, value)| Ok((key.extract::<String>()?, report_expression(&value)?)))
+                    .collect::<PyResult<Vec<_>>>()?,
+            ),
+        })
+    }
+}
+#[pyfunction]
+fn matches() -> MatchBuilder {
+    MatchBuilder {
+        inner: core::matches(),
+    }
+}
+#[pyfunction]
+fn bound_ssa(name: String) -> SsaQuery {
+    SsaQuery {
+        inner: core::bound_ssa(name),
+    }
+}
+#[pyfunction]
+fn capture_ops(subject: String, field: String) -> OpQuery {
+    OpQuery {
+        inner: core::capture_ops(subject, field),
+    }
+}
+#[pyfunction]
+fn capture_ssa(subject: String, field: String) -> SsaQuery {
+    SsaQuery {
+        inner: core::capture_ssa(subject, field),
+    }
+}
+#[pyfunction]
+fn same_value(left: &SsaQuery, right: &SsaQuery) -> MatchPredicate {
+    MatchPredicate {
+        inner: core::same_value(&left.inner, &right.inner),
+    }
+}
+
+#[pyclass(frozen, module = "zirium.query")]
+#[derive(Clone)]
 pub(super) struct ReportExpr {
     inner: core::ReportExpr,
 }
@@ -219,36 +351,43 @@ impl ReportExpr {
         })
     }
 }
+fn query_parameters(
+    declarations: &Bound<'_, PyDict>,
+    budget: &mut core::Budget,
+) -> PyResult<Vec<core::ParameterDeclaration>> {
+    budget
+        .charge(declarations.len(), core::ValueLocation::Query(0..0))
+        .map_err(py_error)?;
+    budget
+        .charge_results(declarations.len() + 1, core::ValueLocation::Query(0..0))
+        .map_err(py_error)?;
+    let mut parameters = Vec::with_capacity(declarations.len());
+    for (name, ty) in declarations.iter() {
+        let name = parameter_string(&name, budget)?;
+        let ty = parameter_string(&ty, budget)?;
+        let ty = match ty.as_str() {
+            "int" => core::ParameterType::Int,
+            "string" => core::ParameterType::String,
+            "bool" => core::ParameterType::Bool,
+            _ => {
+                return Err(PyTypeError::new_err(
+                    "parameter type must be int, string or bool",
+                ));
+            }
+        };
+        parameters.push(core::ParameterDeclaration {
+            name: core::Located::new(name, 0..0),
+            ty: core::Located::new(ty, 0..0),
+        });
+    }
+    Ok(parameters)
+}
 #[pymethods]
 impl ReportQuery {
     /// Attach required int/string/bool input declarations to this immutable request.
     fn with_parameters(&self, declarations: &Bound<'_, PyDict>) -> PyResult<Self> {
         let mut budget = self.inner.new_budget(core::EvaluationLimits::default());
-        budget
-            .charge(declarations.len(), core::ValueLocation::Query(0..0))
-            .map_err(py_error)?;
-        budget
-            .charge_results(declarations.len() + 1, core::ValueLocation::Query(0..0))
-            .map_err(py_error)?;
-        let mut parameters = Vec::with_capacity(declarations.len());
-        for (name, ty) in declarations.iter() {
-            let name = parameter_string(&name, &mut budget)?;
-            let ty = parameter_string(&ty, &mut budget)?;
-            let ty = match ty.as_str() {
-                "int" => core::ParameterType::Int,
-                "string" => core::ParameterType::String,
-                "bool" => core::ParameterType::Bool,
-                _ => {
-                    return Err(PyTypeError::new_err(
-                        "parameter type must be int, string or bool",
-                    ));
-                }
-            };
-            parameters.push(core::ParameterDeclaration {
-                name: core::Located::new(name, 0..0),
-                ty: core::Located::new(ty, 0..0),
-            });
-        }
+        let parameters = query_parameters(declarations, &mut budget)?;
         Ok(Self {
             inner: self.inner.with_parameters(parameters),
         })
@@ -386,6 +525,11 @@ impl Predicate {
 
 #[pymethods]
 impl OpQuery {
+    fn operand(&self, index: usize) -> SsaQuery {
+        SsaQuery {
+            inner: self.inner.operand(index),
+        }
+    }
     fn project(&self, subject: String, fields: &Bound<'_, PyDict>) -> PyResult<ReportQuery> {
         Ok(ReportQuery {
             inner: self.inner.project(
@@ -848,6 +992,12 @@ impl MapQuery {
 }
 
 fn extract(value: &Bound<'_, PyAny>) -> PyResult<core::QueryExpr<core::QueryOutput>> {
+    if let Ok(value) = value.extract::<PyRef<'_, SsaQuery>>() {
+        return Ok(value.inner.erased());
+    }
+    if let Ok(value) = value.extract::<PyRef<'_, CaptureQuery>>() {
+        return Ok(value.inner.erased());
+    }
     if let Ok(value) = value.extract::<PyRef<'_, ReportQuery>>() {
         return Ok(value.inner.erased());
     }
@@ -1024,6 +1174,44 @@ fn native(
 ) -> PyResult<Py<PyAny>> {
     use core::{NativeValue, QueryOutput};
     Ok(match output {
+        QueryOutput::Native(NativeValue::Ssa(value)) => {
+            budget
+                .charge(1, zirql_location(&(0..0)))
+                .map_err(py_error)?;
+            budget
+                .charge_results(1, zirql_location(&(0..0)))
+                .map_err(py_error)?;
+            read_document(state)?
+                .check_value(value)
+                .map_err(edit_error)?;
+            Py::new(
+                py,
+                SemanticValue {
+                    state: state.clone(),
+                    value: ValueReference::Resolved(value),
+                },
+            )?
+            .into_any()
+        }
+        QueryOutput::Native(NativeValue::Capture(record)) => {
+            capture_record_ref(py, state, &record, budget, &(0..0))?
+        }
+        QueryOutput::Native(NativeValue::Captures(value)) => {
+            let range = value.range();
+            budget
+                .charge(value.len() + 1, zirql_location(&range))
+                .map_err(py_error)?;
+            budget
+                .charge_results(value.len() + 1, zirql_location(&range))
+                .map_err(py_error)?;
+            let list = PyList::empty(py);
+            for row in value.rows() {
+                // Rust captures were already admitted. Convert borrowed fields directly
+                // so native handles do not pass through an uncharged Rust snapshot.
+                list.append(capture_record_ref(py, state, row, budget, &range)?)?;
+            }
+            list.into_any().unbind()
+        }
         QueryOutput::Operations(ids) => {
             let list = PyList::empty(py);
             for id in ids {
@@ -1105,6 +1293,72 @@ fn native(
     })
 }
 
+fn capture_record_ref(
+    py: Python<'_>,
+    state: &SharedDocument,
+    record: &core::NativeCapture<core::QueryOutput>,
+    budget: &mut core::Budget,
+    range: &std::ops::Range<usize>,
+) -> PyResult<Py<PyAny>> {
+    budget
+        .charge(record.fields.len() + 1, zirql_location(range))
+        .map_err(py_error)?;
+    budget
+        .charge_results(record.fields.len() + 1, zirql_location(range))
+        .map_err(py_error)?;
+    let dict = PyDict::new(py);
+    for (name, value) in &record.fields {
+        budget
+            .charge(name.len(), zirql_location(range))
+            .map_err(py_error)?;
+        budget
+            .charge_results(1, zirql_location(range))
+            .map_err(py_error)?;
+        let value = match value {
+            core::QueryOutput::Operations(ids) if ids.len() == 1 => {
+                budget.charge(1, zirql_location(range)).map_err(py_error)?;
+                budget
+                    .charge_results(1, zirql_location(range))
+                    .map_err(py_error)?;
+                read_document(state)?
+                    .check_operation(ids[0])
+                    .map_err(edit_error)?;
+                Py::new(
+                    py,
+                    SemanticOperation {
+                        state: state.clone(),
+                        id: ids[0],
+                    },
+                )?
+                .into_any()
+            }
+            core::QueryOutput::Native(core::NativeValue::Ssa(value)) => {
+                budget.charge(1, zirql_location(range)).map_err(py_error)?;
+                budget
+                    .charge_results(1, zirql_location(range))
+                    .map_err(py_error)?;
+                read_document(state)?
+                    .check_value(*value)
+                    .map_err(edit_error)?;
+                Py::new(
+                    py,
+                    SemanticValue {
+                        state: state.clone(),
+                        value: ValueReference::Resolved(*value),
+                    },
+                )?
+                .into_any()
+            }
+            core::QueryOutput::Native(core::NativeValue::Capture(record)) => {
+                capture_record_ref(py, state, record, budget, range)?
+            }
+            _ => return Err(py_error("unexpected native capture field")),
+        };
+        dict.set_item(name, value)?;
+    }
+    Ok(dict.into_any().unbind())
+}
+
 fn constructed(
     py: Python<'_>,
     value: &core::ConstructedValue,
@@ -1165,6 +1419,15 @@ fn zirql_location(range: &std::ops::Range<usize>) -> core::ValueLocation {
 }
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<SsaQuery>()?;
+    module.add_class::<CaptureQuery>()?;
+    module.add_class::<MatchBuilder>()?;
+    module.add_class::<MatchPredicate>()?;
+    module.add_function(wrap_pyfunction!(matches, module)?)?;
+    module.add_function(wrap_pyfunction!(bound_ssa, module)?)?;
+    module.add_function(wrap_pyfunction!(capture_ops, module)?)?;
+    module.add_function(wrap_pyfunction!(capture_ssa, module)?)?;
+    module.add_function(wrap_pyfunction!(same_value, module)?)?;
     module.add_class::<ReportExpr>()?;
     module.add_class::<ReportQuery>()?;
     module.add_class::<ReportGenerator>()?;

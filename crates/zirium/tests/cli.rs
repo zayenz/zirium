@@ -3483,3 +3483,79 @@ fn correlated_reports_agree_inline_file_and_explicit_emission() {
     assert!(failed.stdout.is_empty());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("stop"));
 }
+
+#[test]
+fn native_capture_reports_agree_inline_file_short_json_and_buffer_failures() {
+    let input = include_str!("../../../examples/cli/function-report.mlir");
+    let program = include_str!("../../../examples/cli/native-captures.zirql");
+    let inline = run_stdin(program, input);
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&inline.stdout).unwrap(),
+        serde_json::json!({"matches":[{"function":"double","operation":"arith.addi"}],"count":1})
+    );
+    let path = temporary_path("native-captures", "zirql");
+    fs::write(&path, program).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--program-file", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let file = child.wait_with_output().unwrap();
+    fs::remove_file(&path).unwrap();
+    assert!(
+        file.status.success(),
+        "{}",
+        String::from_utf8_lossy(&file.stderr)
+    );
+    assert_eq!(file.stdout, inline.stdout);
+    let short = run_stdin(
+        r#"match { from add in (input | filter(op("arith.addi"))); bind lhs = operand(add,0); bind rhs = operand(add,1); where same_value(lhs,rhs); } | json"#,
+        input,
+    );
+    assert!(
+        short.status.success(),
+        "{}",
+        String::from_utf8_lossy(&short.stderr)
+    );
+    let native: serde_json::Value = serde_json::from_slice(&short.stdout).unwrap();
+    assert_eq!(native.as_array().unwrap().len(), 1);
+    assert_eq!(native[0]["add"]["name"], "arith.addi");
+    assert_eq!(
+        native[0]["lhs"],
+        serde_json::json!({"kind":"block_argument","index":0,"type":"i32"})
+    );
+    assert_eq!(native[0]["lhs"], native[0]["rhs"]);
+    let missing = run_stdin(
+        r#"emit; match { from add in (input | filter(op("arith.addi"))); bind bad = operand(add,99); } | json"#,
+        input,
+    );
+    assert!(!missing.status.success());
+    assert!(missing.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("unavailable"));
+    let filtered = "match { from x in input; from y in input; where false; } | json";
+    let limited = run_stdin_with_options(&["--max-work", "1000"], filtered, input);
+    assert!(!limited.status.success());
+    assert!(limited.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&limited.stderr).contains("work limit"));
+    let accepted = run_stdin(filtered, input);
+    assert!(accepted.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&accepted.stdout).unwrap(),
+        serde_json::json!([])
+    );
+    let contextual = run_stdin("let match = input; match | count", input);
+    assert!(contextual.status.success());
+}

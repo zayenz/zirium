@@ -121,15 +121,6 @@ pub(super) fn projection_types(
                 .clone()),
         );
     }
-    if input != program::Kind::Operations {
-        return Err(
-            EvaluationError::new("project requires native operations").at(value
-                .projection
-                .subject
-                .range
-                .clone()),
-        );
-    }
     let names = copy_kinds(names, budget, &value.projection.subject.range)?;
     zirql::projection_types::<EvaluationContext<'_, '_, '_>, _>(
         &value.projection,
@@ -148,7 +139,8 @@ pub(super) fn evaluate(
     budget: &mut Budget,
 ) -> Result<comprehension::ConstructedReport, EvaluationError> {
     let names = runtime_kinds(bindings, budget, &value.expression.range)?;
-    let declared = types(value, program::Kind::Operations, &names, budget)?;
+    let input_kind = output_kind(&input, budget, &value.expression.range)?;
+    let declared = types(value, input_kind, &names, budget)?;
     let result = zirql::evaluate_native_value(
         &value.expression,
         &ReportHost,
@@ -174,7 +166,8 @@ pub(super) fn project(
     range: &Range<usize>,
 ) -> Result<comprehension::ConstructedReport, EvaluationError> {
     let names = runtime_kinds(bindings, budget, &value.projection.subject.range)?;
-    let declared = projection_types(value, program::Kind::Operations, &names, budget)?;
+    let input_kind = output_kind(&input, budget, range)?;
+    let declared = projection_types(value, input_kind, &names, budget)?;
     let result = zirql::evaluate_projection(
         &value.projection,
         &ReportHost,
@@ -186,7 +179,7 @@ pub(super) fn project(
     .map_err(program::evaluation_error)?;
     comprehension::ConstructedReport::with_types(result, declared, range.clone(), budget)
 }
-fn runtime_kinds(
+pub(super) fn runtime_kinds(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
     range: &Range<usize>,
@@ -194,13 +187,28 @@ fn runtime_kinds(
     let mut names = BTreeMap::new();
     for (name, value) in bindings.iter() {
         program::charge_bytes(budget, name.len() + 1, range)?;
-        names.insert(name.to_owned(), output_kind(value));
+        names.insert(name.to_owned(), output_kind(value, budget, range)?);
     }
     Ok(names)
 }
-fn output_kind(value: &QueryOutput) -> program::Kind {
+pub(super) fn output_kind(
+    value: &QueryOutput,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<program::Kind, EvaluationError> {
     use program::Kind as K;
-    match value {
+    Ok(match value {
+        QueryOutput::Native(NativeValue::Ssa(_)) => K::Ssa,
+        QueryOutput::Native(NativeValue::Captures(value)) => K::Captures(Arc::clone(&value.schema)),
+        QueryOutput::Native(NativeValue::Capture(record)) => {
+            capture::slots::<(String, K)>(record.fields.len(), budget, range)?;
+            let mut fields = Vec::with_capacity(record.fields.len());
+            for (name, value) in &record.fields {
+                program::charge_bytes(budget, name.len(), range)?;
+                fields.push((name.clone(), output_kind(value, budget, range)?));
+            }
+            K::Capture(Arc::new(zirql::NativeCapture { fields }))
+        }
         QueryOutput::Operations(_) => K::Operations,
         QueryOutput::Values(_) => K::Strings,
         QueryOutput::Count(_) => K::Count,
@@ -215,7 +223,7 @@ fn output_kind(value: &QueryOutput) -> program::Kind {
             K::Constructed(Arc::clone(&value.types))
         }
         _ => K::Operations,
-    }
+    })
 }
 
 pub(super) struct ReportHost;
@@ -273,6 +281,15 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost {
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
         program::NativeHost.construct_record(fields, context, budget, range)
     }
+    fn capture_record<'v>(
+        &self,
+        value: &'v QueryOutput,
+    ) -> Option<&'v zirql::NativeCapture<QueryOutput>> {
+        match value {
+            QueryOutput::Native(NativeValue::Capture(record)) => Some(record),
+            _ => None,
+        }
+    }
     fn emit(
         &self,
         _: &(),
@@ -289,10 +306,10 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost {
     fn kind(
         &self,
         value: &QueryOutput,
-        _: &mut Budget,
-        _: &Range<usize>,
+        budget: &mut Budget,
+        range: &Range<usize>,
     ) -> Result<program::Kind, zirql::QueryError> {
-        Ok(output_kind(value))
+        output_kind(value, budget, range).map_err(query_error)
     }
     fn scalar_types(
         &self,
@@ -303,7 +320,9 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost {
         use program::Kind as K;
         budget.charge(1, Location::Query(range.clone()))?;
         Ok(match kind {
-            K::Operations | K::Types | K::Attributes => None,
+            K::Operations | K::Ssa | K::Capture(_) | K::Captures(_) | K::Types | K::Attributes => {
+                None
+            }
             K::Strings => Some(vec![ValueType::Array(zirql::ArrayType::Elements(vec![
                 ValueType::String,
             ]))]),
@@ -363,20 +382,65 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Vec<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
-        let QueryOutput::Operations(operations) = input else {
-            return Err(zirql::QueryError::query(
-                range.clone(),
-                "project requires native operations",
-            )
-            .into());
+        let values = match input {
+            QueryOutput::Operations(operations) => {
+                capture::slots::<QueryOutput>(operations.len(), budget, range)
+                    .map_err(zirql::EvaluationError::Host)?;
+                budget.check_items(operations.len(), Location::Query(range.clone()))?;
+                budget.charge_results(operations.len() * 2 + 1, Location::Query(range.clone()))?;
+                operations
+                    .into_iter()
+                    .map(|operation| QueryOutput::Operations(vec![operation]))
+                    .collect()
+            }
+            QueryOutput::Native(NativeValue::Captures(value)) => {
+                capture::slots::<QueryOutput>(value.len(), budget, range)
+                    .map_err(zirql::EvaluationError::Host)?;
+                budget.charge_results(value.len() + 1, Location::Query(range.clone()))?;
+                value
+                    .into_rows()
+                    .into_iter()
+                    .map(|record| QueryOutput::Native(NativeValue::Capture(record)))
+                    .collect()
+            }
+            value @ QueryOutput::Native(NativeValue::Ssa(_) | NativeValue::Capture(_)) => {
+                budget.charge_results(2, Location::Query(range.clone()))?;
+                vec![value]
+            }
+            _ => {
+                return Err(zirql::QueryError::query(
+                    range.clone(),
+                    "native enumeration requires operations, SSA or captures",
+                )
+                .into());
+            }
         };
-        budget.check_items(operations.len(), Location::Query(range.clone()))?;
-        budget.charge(operations.len(), Location::Query(range.clone()))?;
-        budget.charge_results(operations.len(), Location::Query(range.clone()))?;
-        Ok(operations
-            .into_iter()
-            .map(|operation| QueryOutput::Operations(vec![operation]))
-            .collect())
+        Ok(values)
+    }
+    fn subject_kind(
+        &self,
+        input: &program::Kind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<program::Kind, zirql::QueryError> {
+        use program::Kind as K;
+        match input {
+            K::Operations | K::Ssa | K::Capture(_) => Ok(input.clone()),
+            K::Captures(schema) => Ok(K::Capture(Arc::clone(schema))),
+            _ => Err(zirql::QueryError::query(
+                range.clone(),
+                "native enumeration requires operations, SSA or captures",
+            )),
+        }
+    }
+    fn capture_record_kind<'k>(
+        &self,
+        kind: &'k program::Kind,
+    ) -> Option<&'k zirql::NativeCapture<program::Kind>> {
+        match kind {
+            program::Kind::Capture(schema) => Some(schema),
+            _ => None,
+        }
     }
     fn project_value(
         &self,
@@ -420,7 +484,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost {
             .map_err(zirql::EvaluationError::Host)
     }
 }
-fn query_error(error: EvaluationError) -> zirql::QueryError {
+pub(super) fn query_error(error: EvaluationError) -> zirql::QueryError {
     zirql::QueryError::query(error.range.unwrap_or(0..0), error.message)
 }
 fn nested(stage: &model::Stage) -> Vec<&model::Expression> {
@@ -653,6 +717,12 @@ pub(super) fn validate_predicate(
     budget: &mut Budget,
 ) -> Result<(), EvaluationError> {
     match predicate {
+        model::Predicate::SameValue { range, .. } => {
+            return Err(EvaluationError::new(
+                "same_value is only supported in native match guards",
+            )
+            .at(program::range(*range)));
+        }
         model::Predicate::Computed { value, .. } => {
             for operand in value.operands() {
                 validate_argument(operand, ValueType::String, names, budget)?;
@@ -709,6 +779,23 @@ pub(super) fn push_expressions<'a>(
     pending: &mut Vec<&'a model::Expression>,
 ) {
     match stage {
+        model::Stage::Native { value, .. }
+        | model::Stage::Operand {
+            operation: value, ..
+        } => visit_operand(&value.expression, pending),
+        model::Stage::Match { value, .. } => {
+            for clause in &value.matching.clauses {
+                match &clause.value {
+                    zirql::MatchClause::From { source, .. }
+                    | zirql::MatchClause::Bind { value: source, .. } => {
+                        visit_operand(source, pending)
+                    }
+                    zirql::MatchClause::Where { predicate } => {
+                        visit_match_predicate(predicate, pending)
+                    }
+                }
+            }
+        }
         model::Stage::Computed { value, .. } => visit_value(&value.operand().expression, pending),
         model::Stage::Comprehension { value, .. } => visit_value(&value.expression, pending),
         model::Stage::Projection { value, .. } => {
@@ -724,6 +811,10 @@ pub(super) fn push_expressions<'a>(
 }
 fn visit_predicate<'a>(predicate: &'a model::Predicate, pending: &mut Vec<&'a model::Expression>) {
     match predicate {
+        model::Predicate::SameValue { left, right, .. } => {
+            visit_operand(&left.expression, pending);
+            visit_operand(&right.expression, pending);
+        }
         model::Predicate::Computed { value, .. } => {
             for operand in value.operands() {
                 visit_value(&operand.expression, pending);
@@ -741,11 +832,28 @@ fn visit_predicate<'a>(predicate: &'a model::Predicate, pending: &mut Vec<&'a mo
         _ => {}
     }
 }
+fn visit_match_predicate<'a>(
+    predicate: &'a zirql::Predicate<model::Predicate>,
+    pending: &mut Vec<&'a model::Expression>,
+) {
+    match &predicate.value {
+        zirql::PredicateKind::Leaf(guard) => visit_predicate(guard, pending),
+        zirql::PredicateKind::Not(child) | zirql::PredicateKind::Group(child) => {
+            visit_match_predicate(child, pending)
+        }
+        zirql::PredicateKind::And(children) | zirql::PredicateKind::Or(children) => {
+            for child in children {
+                visit_match_predicate(child, pending);
+            }
+        }
+    }
+}
 fn visit_operand<'a>(query: &'a Operand, pending: &mut Vec<&'a model::Expression>) {
     let mut queries = vec![query];
     while let Some(query) = queries.pop() {
         match &query.value {
             X::Input | X::Binding(_) => {}
+            X::Field { value, .. } => queries.push(value),
             X::Group(query) => queries.push(query),
             X::Sequence { input, steps } => {
                 queries.push(input);
@@ -936,7 +1044,7 @@ pub(super) fn has_constructed(expression: &model::Expression) -> bool {
         .any(|stage| {
             matches!(
                 stage,
-                model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
+                model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
             ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
             || nested(stage).into_iter().any(has_constructed)
         })

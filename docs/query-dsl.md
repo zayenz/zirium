@@ -11,7 +11,8 @@ can match `NativeValue::Constructed(report)` and inspect `report.value()` in a t
 callback before rendering. The typed Rust and Python builders keep their
 existing operation handles, strings, counts, and maps. The
 [report builders](#constructed-report-builders) also construct shared values,
-comprehensions and correlated rows.
+comprehensions and correlated rows. [Native capture builders](#native-capture-builders)
+retain operations and exact SSA values before an explicit scalar projection.
 
 ## Start a query
 
@@ -389,3 +390,94 @@ supply value generators; `.sum()`, `.length()`, `.forall()` and `.exists()`
 reduce arrays. Python conversion spends the remaining request budget before
 allocating collections. Ordinary operation/type/attribute results retain their
 existing semantic wrappers.
+
+## Native capture builders
+
+The development Git API adds `SsaQuery` and `CaptureQuery`. `OpQuery::operand`
+returns one exact `ValueId`; `CaptureQuery` returns `CaptureMatches`, whose
+`rows()` expose ordered native records and whose `range()` retains the query
+location. Neither result is a constructed scalar value.
+
+Build the [native capture example](query-language.md#native-ssa-captures) with
+concrete immutable clauses:
+
+```rust
+use zirium::query::{bound_ops, bound_ssa, capture_ops, matches, op, ops,
+    same_value, ReportExpr as E, report};
+
+let captures = matches()
+    .from("add", &ops().filter(op("arith.addi")))
+    .bind("lhs", &bound_ops("add").operand(0))
+    .bind("rhs", &bound_ops("add").operand(1))
+    .where_(&same_value(&bound_ssa("lhs"), &bound_ssa("rhs")))
+    .build();
+let native = document.query(&captures)?;
+
+let add = capture_ops("m", "add");
+let rows = captures.project("m", [
+    ("function", E::from(add.root(op("func.func")).attr("sym_name").one())),
+    ("operation", E::from(add.names().one())),
+]);
+let full = report(E::scope(
+    [("rows", rows.into())],
+    E::record([
+        ("matches", E::name("rows")),
+        ("count", E::name("rows").length()),
+    ]),
+));
+let result = document.query(&full)?;
+```
+
+On the original function fixture, `native` contains one row with fields `add`,
+`lhs` and `rhs`; the SSA handles are equal. `result` contains only the `double`
+addition and count 1. `bound_ops` and `bound_ssa` refer to earlier captures.
+`capture_ops(subject, field)` and `capture_ssa(subject, field)` select a field
+from a projection's native record and check its promised kind, even when the
+capture collection is empty. Match guards combine with `&`, `|` and `!` in Rust.
+
+Python mirrors these builders with `.from_` and `.where_`:
+
+```python
+from zirium.query import (
+    ReportExpr as E, bound_ops, bound_ssa, capture_ops,
+    matches, op, ops, report, same_value,
+)
+
+captures = (
+    matches()
+    .from_("add", ops().filter(op("arith.addi")))
+    .bind("lhs", bound_ops("add").operand(0))
+    .bind("rhs", bound_ops("add").operand(1))
+    .where_(same_value(bound_ssa("lhs"), bound_ssa("rhs")))
+    .build()
+)
+native = document.query(captures)
+assert native[0]["lhs"] == native[0]["rhs"]
+
+add = capture_ops("m", "add")
+rows = captures.project("m", {
+    "function": add.root(op("func.func")).attr("sym_name").one(),
+    "operation": add.names().one(),
+})
+full = report(E.scope(
+    {"rows": rows},
+    {"matches": E.name("rows"), "count": E.name("rows").length()},
+))
+result = document.query(full)
+```
+
+Python returns a list of dictionaries in capture-field order. Operation fields
+are `SemanticOperation` wrappers and SSA fields are existing `SemanticValue`
+wrappers, retaining their owning document. A standalone `SsaQuery` returns one
+`SemanticValue`. Match guards combine with `&`, `|` and `~`; converting one to
+`bool` raises `TypeError`.
+
+Capture builders retain root parameter declarations through reuse, erasure,
+nesting and projection. Attach declarations with `CaptureQuery.with_parameters`
+and supply values through the existing evaluation methods. Parsing, matching,
+native copies, scalar projection and Python conversion spend one request
+allowance. Invalid scope, native types, fields and effects fail before
+enumeration, including for empty sources and unchosen Boolean branches.
+`operand` requires one operation and a resolved operand; `same_value` compares
+the full result or block-argument identity rather than its defining operation.
+Native captures remain read-only and are unavailable on the diff surface.

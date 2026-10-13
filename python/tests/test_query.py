@@ -327,3 +327,138 @@ def test_correlated_report_builders_return_ordered_python_data():
         )
     with pytest.raises(Exception, match="work limit"):
         doc.query(query, max_work=1)
+
+
+def test_native_ssa_capture_builders_project_the_original_function_report():
+    from pathlib import Path
+
+    from zirium.query import (
+        CaptureQuery,
+        bound_ops,
+        bound_ssa,
+        capture_ops,
+        matches,
+        op_expr,
+        report,
+        same_value,
+    )
+    from zirium.query import (
+        ReportExpr as E,
+    )
+
+    source = (
+        Path(__file__).parents[2] / "examples/cli/function-report.mlir"
+    ).read_text()
+    lowered = zirium.parse_text(
+        source, registry=zirium.DialectRegistry.baseline()
+    ).lower_strict()
+    assert lowered.document is not None
+    doc = lowered.document
+    lhs, rhs = bound_ssa("lhs"), bound_ssa("rhs")
+    captures = (
+        matches()
+        .from_("add", ops().filter(op("arith.addi")))
+        .bind("lhs", bound_ops("add").operand(0))
+        .bind("rhs", bound_ops("add").operand(1))
+        .where_(same_value(lhs, rhs) & ~~same_value(lhs, rhs))
+        .build()
+    )
+    assert isinstance(captures, CaptureQuery)
+    assert isinstance(captures, QueryExpr)
+    result = doc.query(captures)
+    assert_type(
+        result, list[dict[str, zirium.SemanticOperation | zirium.SemanticValue]]
+    )
+    assert len(result) == 1
+    assert list(result[0]) == ["add", "lhs", "rhs"]
+    add, left, right = result[0]["add"], result[0]["lhs"], result[0]["rhs"]
+    assert isinstance(add, zirium.SemanticOperation)
+    assert isinstance(left, zirium.SemanticValue)
+    assert isinstance(right, zirium.SemanticValue)
+    assert add.name == "arith.addi"
+    assert left == right == add.operand(0) == add.operand(1)
+    assert left.kind == "block_argument"
+    assert left.valid
+    assert left.type_value is not None
+    assert left.type_value.spelling == "i32"
+    subject = capture_ops("m", "add")
+    rows = captures.project(
+        "m",
+        {
+            "function": subject.root(op("func.func")).attr("sym_name").one(),
+            "operation": subject.names().one(),
+        },
+    )
+    full = report(
+        E.scope(
+            {"rows": rows},
+            {"matches": E.name("rows"), "count": E.name("rows").length()},
+        )
+    )
+    assert doc.query(full) == {
+        "matches": [{"function": "double", "operation": "arith.addi"}],
+        "count": 1,
+    }
+    parameterized = (
+        matches()
+        .from_("add", ops().filter(op_expr(E.name("selected"))))
+        .bind("lhs", bound_ops("add").operand(0))
+        .bind("rhs", bound_ops("add").operand(1))
+        .where_(same_value(lhs, rhs))
+        .build()
+        .with_parameters({"selected": "string"})
+    )
+    assert len(doc.query(parameterized, parameters={"selected": "arith.addi"})) == 1
+    assert doc.query(
+        parameterized.project("m", {"name": capture_ops("m", "add").names().one()}),
+        parameters={"selected": "arith.addi"},
+    ) == [{"name": "arith.addi"}]
+    with pytest.raises(TypeError, match="truth value"):
+        bool(same_value(lhs, rhs))
+    with pytest.raises(ValueError, match="unavailable"):
+        doc.query(ops().filter(op("func.return")).head(1).operand(1))
+    # The returned handles retain their owner after the Document wrapper is gone.
+    del doc, lowered
+    assert add.name == "arith.addi"
+    assert left.valid
+
+
+def test_native_ssa_same_owner_counterexample_and_empty_field_preflight():
+    from zirium.query import (
+        bound_ops,
+        bound_ssa,
+        capture_ops,
+        matches,
+        same_value,
+    )
+
+    source = """func.func @different() -> i32 {
+      %left, %right = "test.pair"() : () -> (i32, i32)
+      %sum = arith.addi %left, %right : i32
+      func.return %sum : i32
+    }"""
+    lowered = zirium.parse_text(
+        source, registry=zirium.DialectRegistry.baseline()
+    ).lower_strict()
+    assert lowered.document is not None
+    doc = lowered.document
+    adds = ops().filter(op("arith.addi"))
+    left, right = doc.query(adds.operand(0)), doc.query(adds.operand(1))
+    assert_type(left, zirium.SemanticValue)
+    assert left.defining_operation == right.defining_operation
+    assert left != right
+    query = (
+        matches()
+        .from_("add", adds)
+        .bind("lhs", bound_ops("add").operand(0))
+        .bind("rhs", bound_ops("add").operand(1))
+        .where_(same_value(bound_ssa("lhs"), bound_ssa("rhs")))
+        .build()
+    )
+    assert doc.query(query) == []
+    assert (
+        doc.query(query.project("m", {"name": capture_ops("m", "add").names().one()}))
+        == []
+    )
+    with pytest.raises(ValueError, match="incompatible native kind"):
+        doc.query(query.project("m", {"bad": capture_ops("m", "lhs").names().one()}))

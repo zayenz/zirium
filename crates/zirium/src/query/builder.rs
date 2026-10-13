@@ -1267,24 +1267,24 @@ pub fn bound_ops(name: impl Into<String>) -> OpQuery {
         range: range(),
     }])
 }
-impl OpQuery {
-    pub fn project<S: Into<String>>(
-        &self,
-        subject: impl Into<String>,
-        fields: impl IntoIterator<Item = (S, ReportExpr)>,
-    ) -> ReportQuery {
-        let mut parameters = Vec::new();
-        let fields = fields
-            .into_iter()
-            .map(|(name, value)| {
-                parameters = merge_parameters(&parameters, &value.parameters);
-                (
-                    zirql::Located::new(name.into(), 0..0),
-                    value.into_expression(),
-                )
-            })
-            .collect();
-        self.stage(Stage::Projection {
+fn project_rows<T, S: Into<String>>(
+    query: &QueryExpr<T>,
+    subject: impl Into<String>,
+    fields: impl IntoIterator<Item = (S, ReportExpr)>,
+) -> ReportQuery {
+    let mut parameters = Vec::new();
+    let fields = fields
+        .into_iter()
+        .map(|(name, value)| {
+            parameters = merge_parameters(&parameters, &value.parameters);
+            (
+                zirql::Located::new(name.into(), 0..0),
+                value.into_expression(),
+            )
+        })
+        .collect();
+    query
+        .stage(Stage::Projection {
             value: report::ParsedProjection::new(zirql::Projection {
                 subject: zirql::Located::new(subject.into(), 0..0),
                 fields,
@@ -1292,6 +1292,14 @@ impl OpQuery {
             range: range(),
         })
         .with_parameters(parameters)
+}
+impl OpQuery {
+    pub fn project<S: Into<String>>(
+        &self,
+        subject: impl Into<String>,
+        fields: impl IntoIterator<Item = (S, ReportExpr)>,
+    ) -> ReportQuery {
+        project_rows(self, subject, fields)
     }
 }
 /// Construct a typed read-only report without requesting an emitter.
@@ -1349,4 +1357,306 @@ pub fn op_expr(name: ReportExpr) -> Predicate {
     });
     predicate.parameters = parameters;
     predicate
+}
+/// A query returning one exact document-owned SSA value.
+pub type SsaQuery = QueryExpr<ValueId>;
+/// A query returning ordered native capture records, with an empty-result schema.
+pub type CaptureQuery = QueryExpr<CaptureMatches>;
+result!(ValueId, QueryOutput::Native(NativeValue::Ssa(value)) => value);
+result!(CaptureMatches, QueryOutput::Native(NativeValue::Captures(value)) => value);
+
+impl OpQuery {
+    /// Read a required zero-based operand from exactly one selected operation.
+    pub fn operand(&self, index: usize) -> SsaQuery {
+        let mut query = QueryExpr::start(vec![Stage::Operand {
+            operation: capture::ParsedOperand::new(report::operand(&self.expression)),
+            index,
+            range: range(),
+        }])
+        .with_parameters(self.parameters.clone());
+        query.depth = self.depth.saturating_add(1);
+        query.nodes = self.nodes.saturating_add(1);
+        query.invalid = self
+            .invalid
+            .or((query.depth > parser::DEFAULT_NESTING_LIMIT)
+                .then_some("query nesting limit exceeded"));
+        query
+    }
+}
+/// Read a previously captured SSA value in a later clause.
+pub fn bound_ssa(name: impl Into<String>) -> SsaQuery {
+    QueryExpr::start(vec![Stage::Binding {
+        name: name.into(),
+        range: range(),
+    }])
+}
+/// Select a native operation field from one named capture record.
+pub fn capture_ops(subject: impl Into<String>, field: impl Into<String>) -> OpQuery {
+    QueryExpr::start(vec![Stage::Native {
+        value: capture::ParsedOperand::field(
+            subject.into(),
+            field.into(),
+            capture::NativeKind::Operations,
+        ),
+        range: range(),
+    }])
+}
+/// Select an exact SSA field from one named capture record.
+pub fn capture_ssa(subject: impl Into<String>, field: impl Into<String>) -> SsaQuery {
+    QueryExpr::start(vec![Stage::Native {
+        value: capture::ParsedOperand::field(
+            subject.into(),
+            field.into(),
+            capture::NativeKind::Ssa,
+        ),
+        range: range(),
+    }])
+}
+
+/// Immutable Boolean guard over native SSA queries. Use `&`, `|` and `!` to compose.
+#[derive(Clone, Debug)]
+pub struct MatchPredicate {
+    inner: zirql::Predicate<model::Predicate>,
+    parameters: Vec<ParameterDeclaration>,
+    depth: usize,
+    nodes: usize,
+    invalid: Option<&'static str>,
+}
+/// Compare full checked ValueId identities, including result/argument position.
+pub fn same_value(left: &SsaQuery, right: &SsaQuery) -> MatchPredicate {
+    MatchPredicate {
+        inner: zirql::Located::new(
+            zirql::PredicateKind::Leaf(model::Predicate::SameValue {
+                left: capture::ParsedOperand::new(report::operand(&left.expression)),
+                right: capture::ParsedOperand::new(report::operand(&right.expression)),
+                range: range(),
+            }),
+            0..0,
+        ),
+        parameters: merge_parameters(&left.parameters, &right.parameters),
+        depth: left.depth.max(right.depth).saturating_add(1),
+        nodes: left.nodes.saturating_add(right.nodes).saturating_add(1),
+        invalid: left.invalid.or(right.invalid),
+    }
+}
+impl MatchPredicate {
+    fn combine(self, other: Self, conjunction: bool) -> Self {
+        let depth = self.depth.max(other.depth).saturating_add(1);
+        let invalid = self
+            .invalid
+            .or(other.invalid)
+            .or((depth > parser::DEFAULT_NESTING_LIMIT).then_some("query nesting limit exceeded"));
+        let parameters = merge_parameters(&self.parameters, &other.parameters);
+        let nodes = self.nodes.saturating_add(other.nodes).saturating_add(1);
+        let inner = if invalid.is_some() {
+            zirql::PredicateKind::Leaf(model::Predicate::Bool {
+                value: false,
+                range: range(),
+            })
+        } else if conjunction {
+            zirql::PredicateKind::And(vec![self.inner, other.inner])
+        } else {
+            zirql::PredicateKind::Or(vec![self.inner, other.inner])
+        };
+        Self {
+            inner: zirql::Located::new(inner, 0..0),
+            parameters,
+            depth,
+            nodes,
+            invalid,
+        }
+    }
+}
+impl BitAnd for MatchPredicate {
+    type Output = Self;
+    fn bitand(self, other: Self) -> Self {
+        self.combine(other, true)
+    }
+}
+impl BitOr for MatchPredicate {
+    type Output = Self;
+    fn bitor(self, other: Self) -> Self {
+        self.combine(other, false)
+    }
+}
+impl Not for MatchPredicate {
+    type Output = Self;
+    fn not(self) -> Self {
+        let depth = self.depth.saturating_add(1);
+        let invalid = self
+            .invalid
+            .or((depth > parser::DEFAULT_NESTING_LIMIT).then_some("query nesting limit exceeded"));
+        let inner = if invalid.is_some() {
+            zirql::PredicateKind::Leaf(model::Predicate::Bool {
+                value: false,
+                range: range(),
+            })
+        } else {
+            zirql::PredicateKind::Not(Box::new(self.inner))
+        };
+        Self {
+            inner: zirql::Located::new(inner, 0..0),
+            parameters: self.parameters,
+            depth,
+            nodes: self.nodes.saturating_add(1),
+            invalid,
+        }
+    }
+}
+
+/// Build required native captures in written clause order. Construction reads no document.
+#[derive(Debug)]
+pub struct MatchBuilder {
+    clauses: Vec<zirql::Located<zirql::MatchClause<capture::ParsedOperand, model::Predicate>>>,
+    parameters: Vec<ParameterDeclaration>,
+    depth: usize,
+    nodes: usize,
+    invalid: Option<&'static str>,
+}
+impl Clone for MatchBuilder {
+    fn clone(&self) -> Self {
+        let clauses = self
+            .clauses
+            .iter()
+            .map(|clause| {
+                zirql::Located::new(
+                    match &clause.value {
+                        zirql::MatchClause::From { name, source } => zirql::MatchClause::From {
+                            name: name.clone(),
+                            source: source.clone(),
+                        },
+                        zirql::MatchClause::Bind { name, value } => zirql::MatchClause::Bind {
+                            name: name.clone(),
+                            value: value.clone(),
+                        },
+                        zirql::MatchClause::Where { predicate } => zirql::MatchClause::Where {
+                            predicate: predicate.clone(),
+                        },
+                    },
+                    clause.range.clone(),
+                )
+            })
+            .collect();
+        Self {
+            clauses,
+            parameters: self.parameters.clone(),
+            depth: self.depth,
+            nodes: self.nodes,
+            invalid: self.invalid,
+        }
+    }
+}
+/// Start an empty finite native match chain.
+pub fn matches() -> MatchBuilder {
+    MatchBuilder {
+        clauses: vec![],
+        parameters: vec![],
+        depth: 1,
+        nodes: 1,
+        invalid: None,
+    }
+}
+impl MatchBuilder {
+    fn operand<T>(mut self, name: String, query: &QueryExpr<T>, binding: bool) -> Self {
+        self.parameters = merge_parameters(&self.parameters, &query.parameters);
+        self.depth = self.depth.max(query.depth.saturating_add(1));
+        self.nodes = self.nodes.saturating_add(query.nodes).saturating_add(1);
+        self.invalid = self.invalid.or(query.invalid);
+        let source = capture::ParsedOperand::new(report::operand(&query.expression));
+        let name = zirql::Located::new(name, 0..0);
+        let clause = if binding {
+            zirql::MatchClause::Bind {
+                name,
+                value: source,
+            }
+        } else {
+            zirql::MatchClause::From { name, source }
+        };
+        self.clauses.push(zirql::Located::new(clause, 0..0));
+        self
+    }
+    pub fn from(self, name: impl Into<String>, source: &OpQuery) -> Self {
+        self.operand(name.into(), source, false)
+    }
+    pub fn bind(self, name: impl Into<String>, value: &SsaQuery) -> Self {
+        self.operand(name.into(), value, true)
+    }
+    pub fn where_(mut self, guard: &MatchPredicate) -> Self {
+        self.parameters = merge_parameters(&self.parameters, &guard.parameters);
+        self.depth = self.depth.max(guard.depth.saturating_add(1));
+        self.nodes = self.nodes.saturating_add(guard.nodes).saturating_add(1);
+        self.invalid = self.invalid.or(guard.invalid);
+        self.clauses.push(zirql::Located::new(
+            zirql::MatchClause::Where {
+                predicate: guard.inner.clone(),
+            },
+            0..0,
+        ));
+        self
+    }
+    pub fn build(self) -> CaptureQuery {
+        let native = |value: capture::ParsedOperand| {
+            zirql::Located::new(
+                zirql::ExpressionKind::Sequence {
+                    input: Box::new(zirql::Located::new(zirql::ExpressionKind::Input, 0..0)),
+                    steps: vec![zirql::Located::new(
+                        zirql::ExpressionStep::Stage(Stage::Native {
+                            value,
+                            range: range(),
+                        }),
+                        0..0,
+                    )],
+                },
+                0..0,
+            )
+        };
+        let count = self.clauses.len();
+        let clauses = self
+            .clauses
+            .into_iter()
+            .map(|clause| {
+                zirql::Located::new(
+                    match clause.value {
+                        zirql::MatchClause::From { name, source } => zirql::MatchClause::From {
+                            name,
+                            source: native(source),
+                        },
+                        zirql::MatchClause::Bind { name, value } => zirql::MatchClause::Bind {
+                            name,
+                            value: native(value),
+                        },
+                        zirql::MatchClause::Where { predicate } => {
+                            zirql::MatchClause::Where { predicate }
+                        }
+                    },
+                    clause.range,
+                )
+            })
+            .collect();
+        let mut query = QueryExpr::start(vec![Stage::Match {
+            value: capture::ParsedMatch::new(zirql::NativeMatch {
+                clauses,
+                range: 0..0,
+            }),
+            range: range(),
+        }])
+        .with_parameters(self.parameters);
+        query.depth = self.depth.max(count.saturating_add(1));
+        query.nodes = self.nodes;
+        query.invalid = self
+            .invalid
+            .or((query.depth > parser::DEFAULT_NESTING_LIMIT)
+                .then_some("query nesting limit exceeded"));
+        query
+    }
+}
+impl CaptureQuery {
+    /// Explicitly project native capture fields into ordered scalar report rows.
+    pub fn project<S: Into<String>>(
+        &self,
+        subject: impl Into<String>,
+        fields: impl IntoIterator<Item = (S, ReportExpr)>,
+    ) -> ReportQuery {
+        project_rows(self, subject, fields)
+    }
 }

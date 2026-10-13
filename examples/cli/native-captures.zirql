@@ -1,0 +1,13 @@
+let matches = match {
+  from add in (input | filter(op("arith.addi")));
+  bind lhs = operand(add, 0);
+  bind rhs = operand(add, 1);
+  where same_value(lhs, rhs);
+};
+
+let rows = matches | project(m, {
+  "function": m.add | root(op("func.func")) | attr("sym_name") | one,
+  "operation": m.add | names | one
+});
+
+report {"matches": rows, "count": length(rows)};
