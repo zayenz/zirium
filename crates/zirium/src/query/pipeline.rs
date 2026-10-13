@@ -1,4 +1,4 @@
-//! Native stream segments; statement and nested-expression coordination stays in Zirium.
+//! Native stream segments adapted to Zirql's collection and predicate execution.
 
 use std::ops::Range;
 

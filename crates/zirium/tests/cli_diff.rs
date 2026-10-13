@@ -486,4 +486,29 @@ fn diff_print_interpolates_document_labels_and_scalar_bindings() {
         .unwrap();
     assert!(output.status.success());
     assert_eq!(output.stdout, b"arith.constant\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--diff")
+        .arg(&before)
+        .arg(&after)
+        .arg(r#"do names | emit; saved = names | emit | json; saved"#)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!(["arith.constant"])
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--diff")
+        .arg(&before)
+        .arg(&after)
+        .arg(r#"names | emit | json | count"#)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
 }

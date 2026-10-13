@@ -614,6 +614,118 @@ impl Diff<'_> {
         Ok(serde_json::to_string_pretty(&changes)?)
     }
 
+    // Query rendering admits the report before allocating copied endpoints and
+    // details. These counts describe JSON data, independently of a query budget.
+    pub(crate) fn selection_report_size(
+        &self,
+        ids: &[ChangeId],
+    ) -> Result<(usize, usize), DiffError> {
+        fn json_size(value: &serde_json::Value) -> (usize, usize) {
+            match value {
+                serde_json::Value::String(text) => (1, text.len()),
+                serde_json::Value::Array(values) => {
+                    values.iter().fold((1, 0), |(units, bytes), value| {
+                        let (u, b) = json_size(value);
+                        (units.saturating_add(u), bytes.saturating_add(b))
+                    })
+                }
+                serde_json::Value::Object(entries) => {
+                    entries.iter().fold((1, 0), |(units, bytes), (key, value)| {
+                        let (u, b) = json_size(value);
+                        (
+                            units.saturating_add(1).saturating_add(u),
+                            bytes.saturating_add(key.len()).saturating_add(b),
+                        )
+                    })
+                }
+                _ => (1, 0),
+            }
+        }
+        let mut units = 1usize;
+        let mut bytes = 0usize;
+        for &id in ids {
+            let change = self.change(id)?;
+            units = units.saturating_add(17).saturating_add(change.fields.len());
+            bytes = bytes
+                .saturating_add(48)
+                .saturating_add(change.kind.as_str().len());
+            for field in &change.fields {
+                bytes = bytes.saturating_add(field.as_str().len());
+            }
+            for detail in &change.details {
+                units = units.saturating_add(13);
+                bytes = bytes
+                    .saturating_add(41)
+                    .saturating_add(detail.path.len())
+                    .saturating_add(detail.comparison.len());
+                for value in [&detail.before.value, &detail.after.value]
+                    .into_iter()
+                    .flatten()
+                {
+                    let (u, b) = json_size(value);
+                    units = units.saturating_add(1).saturating_add(u);
+                    bytes = bytes.saturating_add(5).saturating_add(b);
+                }
+            }
+            for (side, operation) in [
+                (DiffSide::Before, change.before),
+                (DiffSide::After, change.after),
+            ] {
+                let Some(mut operation) = operation else {
+                    continue;
+                };
+                let document = self.document(side);
+                let paths = match side {
+                    DiffSide::Before => &self.before_paths,
+                    DiffSide::After => &self.after_paths,
+                };
+                units = units.saturating_add(11);
+                if document.operation_source_range(operation).is_some() {
+                    units = units.saturating_add(2);
+                }
+                bytes = bytes
+                    .saturating_add(24)
+                    .saturating_add(document.operation_name(operation).map_or(9, str::len))
+                    .saturating_add(paths.get(&operation).map_or(0, String::len));
+                loop {
+                    if let Some(id) = document.attribute_id(operation, "sym_name") {
+                        // Retained spelling bounds the decoded symbol copied by endpoint().
+                        units = units.saturating_add(1);
+                        bytes = bytes.saturating_add(
+                            document.attribute_spelling_value(id).map_or(0, str::len),
+                        );
+                    }
+                    let Some(parent) = document
+                        .operation(operation)
+                        .and_then(|operation| operation.parent_block())
+                        .and_then(|block| document.block(block))
+                        .and_then(|block| document.region(block.parent_region()))
+                        .map(|region| region.parent_operation())
+                    else {
+                        break;
+                    };
+                    operation = parent;
+                }
+            }
+        }
+        Ok((units, bytes))
+    }
+
+    pub(crate) fn write_selection_json(
+        &self,
+        output: impl std::io::Write,
+        ids: &[ChangeId],
+    ) -> Result<(), serde_json::Error> {
+        use serde::ser::{SerializeSeq, Serializer};
+        let mut serializer = serde_json::Serializer::pretty(output);
+        let mut sequence = serializer.serialize_seq(Some(ids.len()))?;
+        for &id in ids {
+            let change = self.change(id).map_err(serde::ser::Error::custom)?;
+            sequence.serialize_element(&self.serializable_change(change))?;
+        }
+        sequence.end()
+    }
+
     pub fn to_text(&self) -> String {
         if self.changes.is_empty() {
             return "No structural changes.\n".to_owned();

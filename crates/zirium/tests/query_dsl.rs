@@ -742,3 +742,33 @@ fn comprehension_requests_share_parse_expansion_snapshot_and_render_allowances()
             .is_err()
     );
 }
+
+#[test]
+fn library_emissions_and_committed_edits_survive_a_later_failure() {
+    let mut document = document();
+    let retained = document.query(&ops().filter(op("test.seed"))).unwrap();
+    let source = r#"kept = filter(op("test.seed")); saved = kept | attr("tag"); do kept | set_attr("tag", "edited"); saved; kept | attr("tag") | emit | check(2)"#;
+    let mut emitted = Vec::new();
+    let error = Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            emitted.push(value);
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("check failed"));
+    assert_eq!(
+        emitted,
+        [
+            QueryOutput::Values(vec!["start".to_owned()]),
+            QueryOutput::Values(vec!["edited".to_owned()])
+        ]
+    );
+    assert_eq!(document.operation_name(retained[0]), Some("test.seed"));
+    assert_eq!(
+        document
+            .query(&ops().filter(op("test.seed")).string_attr("tag"))
+            .unwrap(),
+        ["edited"]
+    );
+}

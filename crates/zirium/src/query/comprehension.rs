@@ -141,7 +141,17 @@ fn value_size(value: &V) -> usize {
         V::Record(fields) => fields.iter().fold(1usize, |n, (_, v)| {
             n.saturating_add(1).saturating_add(value_size(v))
         }),
-        V::Boolean(_) | V::Integer(_) | V::Float(_) | V::String(_) => 1,
+        V::KeyedArray { axes, entries } => {
+            let axes_size = axes.iter().fold(1usize, |size, axis| {
+                size.saturating_add(1).saturating_add(axis.keys.len())
+            });
+            entries.iter().fold(axes_size, |size, entry| {
+                size.saturating_add(1)
+                    .saturating_add(entry.key.len())
+                    .saturating_add(value_size(&entry.value))
+            })
+        }
+        V::Boolean(_) | V::Integer(_) | V::Float(_) | V::String(_) | V::Member(_) => 1,
     }
 }
 
@@ -863,6 +873,12 @@ fn to_json(
     }
     admit(budget, 1, 0, range)?;
     Ok(match value {
+        V::Member(_) | V::KeyedArray { .. } => {
+            return Err(EvaluationError::new(
+                "nominal and keyed values are unsupported in Zirium reports",
+            )
+            .at(range.clone()));
+        }
         V::Boolean(v) => serde_json::Value::Bool(*v),
         V::Integer(v) => serde_json::Value::Number((*v).into()),
         V::Float(v) => serde_json::Value::Number(

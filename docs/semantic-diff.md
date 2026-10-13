@@ -57,6 +57,19 @@ sets, `sort_by(...)`, keyed extrema, and `map_by(...)`. `names`, `attr`,
 `sort`, extrema, `tally`, JSON, and Markdown. Nested expressions start from the
 current record or selection, while explicit `input` resets to all changes.
 
+Text programs and typed builders use one native diff host with Zirql's statement,
+expression, predicate and collection execution. Nested fixed-point bodies,
+selectors and navigation share the active work, item and nesting allowance.
+Fixed points compare ordered selections, including duplicates, and refuse cycles
+or a change of side. The initial change stream must fit the item ceiling before
+filtering. Flat pipelines and set chains do not add a nesting level per term.
+
+Diff output follows its statement-end policy: `emit` passes the value through
+without writing, while `json`, `markdown` and `print` transform the value.
+A query statement writes its final value once. A binding or `do` statement
+writes nothing. Ordinary operation programs emit at each written emitter.
+The CLI stages all output until the complete program succeeds.
+
 Bindings retain their stream side. The reserved scalar bindings
 `before_document` and `after_document` contain the two CLI labels for
 `print("{before_document} -> {after_document}")` and similar reports.
@@ -79,7 +92,17 @@ let after_ops = delta.query(
 ```
 
 `Diff` borrows both immutable documents. Its handles are scoped to that
-comparison and side.
+comparison and side, including empty projected selections. Surviving handles
+remain native through bindings; strings and counts are evaluated values.
+
+`DiffProgram::parse(source)` provides the same text program as a library API.
+`evaluate` accepts a comparison, both document labels, `EvaluationLimits`,
+`EvaluationOptions` and an emission callback receiving native `DiffProgramOutput` values.
+`evaluate_with_budget` accepts a caller-owned `zirql::Budget`, including an
+explicit `Budget::for_program` aggregate allowance. Binding copies, projections,
+nested traversal and report construction spend that same allowance. The CLI
+retains its legacy limits and rejects `--max-results` in diff mode. JSON conversion
+and MLIR printing remain explicit rendering boundaries.
 
 ## Python
 

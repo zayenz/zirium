@@ -1,27 +1,25 @@
 //! Typed, immutable queries over diff records and projected operations.
 
-use std::{collections::HashSet, marker::PhantomData};
+use std::marker::PhantomData;
 
-use crate::{
-    diff::{ChangeField, ChangeId, ChangeKind, Diff, DiffOperation, DiffSide},
-    semantic::{AttributeValue, OperationId, UseSite, ValueId, ValueReference},
-};
+use crate::diff::{ChangeField, ChangeId, ChangeKind, Diff, DiffOperation, DiffSide};
 
 use super::{
     EvaluationError, EvaluationLimits, EvaluationOptions, OperationTraversal, Predicate,
-    evaluate_operation_traversal, model,
+    diff_program::{self, DiffProgramOutput, DiffStage, Expression, Leaf},
+    evaluation_budget, model,
 };
 
 #[derive(Clone, Debug)]
 enum Stage {
     ChangeFilter(ChangePredicate),
     Project(DiffSide),
-    OperationFilter(model::Predicate),
+    OperationFilter(Predicate),
     Users(Option<usize>),
     Defs(Option<usize>),
     Parent,
     Children,
-    Root(model::Predicate),
+    Root(Predicate),
     Subtree,
     Reachable,
     Closure,
@@ -45,6 +43,8 @@ enum Stage {
 #[derive(Clone, Debug)]
 pub struct DiffQueryExpr<T> {
     stages: Vec<Stage>,
+    depth: usize,
+    invalid: Option<&'static str>,
     result: PhantomData<fn() -> T>,
 }
 
@@ -78,14 +78,67 @@ impl DiffOperationSelection {
 enum ChangePredicateNode {
     Kind(ChangeKind),
     Field(ChangeField),
-    Operation(model::Predicate),
+    Operation(Predicate),
     Not(Box<Self>),
     And(Vec<Self>),
     Or(Vec<Self>),
 }
 
 #[derive(Clone, Debug)]
-pub struct ChangePredicate(ChangePredicateNode);
+pub struct ChangePredicate {
+    node: ChangePredicateNode,
+    depth: usize,
+    invalid: Option<&'static str>,
+}
+impl ChangePredicate {
+    fn new(node: ChangePredicateNode) -> Self {
+        Self {
+            node,
+            depth: 1,
+            invalid: None,
+        }
+    }
+    fn combine(self, right: Self, and: bool) -> Self {
+        let flat = |node: &ChangePredicateNode| {
+            matches!(
+                (and, node),
+                (true, ChangePredicateNode::And(_)) | (false, ChangePredicateNode::Or(_))
+            )
+        };
+        let depth = (self.depth - usize::from(flat(&self.node)))
+            .max(right.depth - usize::from(flat(&right.node)))
+            .saturating_add(1);
+        let invalid = self
+            .invalid
+            .or(right.invalid)
+            .or((depth >= super::parser::DEFAULT_NESTING_LIMIT)
+                .then_some("predicate nesting limit exceeded"));
+        if invalid.is_some() {
+            return Self {
+                node: ChangePredicateNode::And(Vec::new()),
+                depth,
+                invalid,
+            };
+        }
+        let mut predicates = Vec::new();
+        for node in [self.node, right.node] {
+            match node {
+                ChangePredicateNode::And(nodes) if and => predicates.extend(nodes),
+                ChangePredicateNode::Or(nodes) if !and => predicates.extend(nodes),
+                node => predicates.push(node),
+            }
+        }
+        Self {
+            node: if and {
+                ChangePredicateNode::And(predicates)
+            } else {
+                ChangePredicateNode::Or(predicates)
+            },
+            depth,
+            invalid,
+        }
+    }
+}
 
 pub fn changes() -> ChangeQuery {
     DiffQueryExpr::new()
@@ -100,10 +153,10 @@ pub fn diff_op_input_for_side(side: DiffSide) -> DiffOpQuery {
     DiffQueryExpr::<Vec<ChangeId>>::new().append(Stage::Project(side))
 }
 pub fn change(kind: ChangeKind) -> ChangePredicate {
-    ChangePredicate(ChangePredicateNode::Kind(kind))
+    ChangePredicate::new(ChangePredicateNode::Kind(kind))
 }
 pub fn changed(field: ChangeField) -> ChangePredicate {
-    ChangePredicate(ChangePredicateNode::Field(field))
+    ChangePredicate::new(ChangePredicateNode::Field(field))
 }
 
 pub trait IntoChangePredicate {
@@ -116,14 +169,14 @@ impl IntoChangePredicate for ChangePredicate {
 }
 impl IntoChangePredicate for Predicate {
     fn into_change_predicate(self) -> ChangePredicate {
-        ChangePredicate(ChangePredicateNode::Operation(self.model()))
+        ChangePredicate::new(ChangePredicateNode::Operation(self))
     }
 }
 
 impl std::ops::BitAnd for ChangePredicate {
     type Output = Self;
     fn bitand(self, right: Self) -> Self {
-        Self(ChangePredicateNode::And(vec![self.0, right.0]))
+        self.combine(right, true)
     }
 }
 impl std::ops::BitAnd<Predicate> for ChangePredicate {
@@ -135,7 +188,7 @@ impl std::ops::BitAnd<Predicate> for ChangePredicate {
 impl std::ops::BitOr for ChangePredicate {
     type Output = Self;
     fn bitor(self, right: Self) -> Self {
-        Self(ChangePredicateNode::Or(vec![self.0, right.0]))
+        self.combine(right, false)
     }
 }
 impl std::ops::BitOr<Predicate> for ChangePredicate {
@@ -147,7 +200,21 @@ impl std::ops::BitOr<Predicate> for ChangePredicate {
 impl std::ops::Not for ChangePredicate {
     type Output = Self;
     fn not(self) -> Self {
-        Self(ChangePredicateNode::Not(Box::new(self.0)))
+        let depth = self.depth.saturating_add(1);
+        let invalid = self
+            .invalid
+            .or((depth >= super::parser::DEFAULT_NESTING_LIMIT)
+                .then_some("predicate nesting limit exceeded"));
+        let node = if invalid.is_some() {
+            ChangePredicateNode::And(Vec::new())
+        } else {
+            ChangePredicateNode::Not(Box::new(self.node))
+        };
+        Self {
+            node,
+            depth,
+            invalid,
+        }
     }
 }
 
@@ -192,7 +259,7 @@ impl ChangeQuery {
 
 impl DiffOpQuery {
     pub fn filter(&self, predicate: Predicate) -> Self {
-        self.append(Stage::OperationFilter(predicate.model()))
+        self.append(Stage::OperationFilter(predicate))
     }
     pub fn users(&self) -> Self {
         self.append(Stage::Users(None))
@@ -213,7 +280,7 @@ impl DiffOpQuery {
         self.append(Stage::Children)
     }
     pub fn root(&self, predicate: Predicate) -> Self {
-        self.append(Stage::Root(predicate.model()))
+        self.append(Stage::Root(predicate))
     }
     pub fn subtree(&self) -> Self {
         self.append(Stage::Subtree)
@@ -234,7 +301,23 @@ impl DiffOpQuery {
         self.append(Stage::ForwardSlice)
     }
     pub fn fixpoint(&self, body: &DiffOpQuery) -> Self {
-        self.append(Stage::Fixpoint(body.stages.clone()))
+        let depth = self.depth.max(body.depth.saturating_add(1));
+        let invalid = self
+            .invalid
+            .or(body.invalid)
+            .or((depth > super::parser::DEFAULT_NESTING_LIMIT)
+                .then_some("query nesting limit exceeded"));
+        if invalid.is_some() {
+            return Self {
+                stages: Vec::new(),
+                depth,
+                invalid,
+                result: PhantomData,
+            };
+        }
+        let mut result = self.append(Stage::Fixpoint(body.stages.clone()));
+        result.depth = depth;
+        result
     }
     pub fn unique(&self) -> Self {
         self.append(Stage::Unique)
@@ -302,14 +385,24 @@ impl<T> DiffQueryExpr<T> {
     fn new() -> Self {
         Self {
             stages: Vec::new(),
+            depth: 1,
+            invalid: None,
             result: PhantomData,
         }
     }
     fn append<U>(&self, stage: Stage) -> DiffQueryExpr<U> {
-        let mut stages = self.stages.clone();
-        stages.push(stage);
+        let mut stages = if self.invalid.is_some() {
+            Vec::new()
+        } else {
+            self.stages.clone()
+        };
+        if self.invalid.is_none() {
+            stages.push(stage);
+        }
         DiffQueryExpr {
             stages,
+            depth: self.depth,
+            invalid: self.invalid,
             result: PhantomData,
         }
     }
@@ -329,14 +422,29 @@ impl<T> DiffQueryExpr<T> {
     where
         T: DiffQueryResult,
     {
-        if self.stages.len() > limits.max_work {
-            return Err(EvaluationError::new("query work limit exceeded"));
+        if let Some(error) = self.invalid {
+            return Err(EvaluationError::new(error));
         }
-        let mut work = self.stages.len();
-        let mut value = Runtime::Changes(diff.change_ids().collect());
-        for stage in &self.stages {
-            value = evaluate_stage(diff, value, stage, &mut work, limits, options)?;
-        }
+        let expression = lower(&self.stages)?;
+        let value = diff_program::evaluate_typed(
+            &expression,
+            diff,
+            options,
+            &mut evaluation_budget(limits),
+        )?;
+        let value = match value {
+            DiffProgramOutput::Changes(items) => Runtime::Changes(items),
+            DiffProgramOutput::Operations(side, items) => Runtime::Operations(side, items),
+            DiffProgramOutput::Strings(items) => Runtime::Strings(items),
+            DiffProgramOutput::Count(count) => Runtime::Count(count),
+            DiffProgramOutput::Map(_)
+            | DiffProgramOutput::Json(_, _)
+            | DiffProgramOutput::Text(_) => {
+                return Err(EvaluationError::new(
+                    "typed diff queries cannot return report values",
+                ));
+            }
+        };
         T::from_runtime(value)
     }
 }
@@ -394,562 +502,115 @@ impl DiffQueryResult for usize {
     }
 }
 
-fn evaluate_stage(
-    diff: &Diff<'_>,
-    value: Runtime,
-    stage: &Stage,
-    work: &mut usize,
-    limits: EvaluationLimits,
-    options: EvaluationOptions,
-) -> Result<Runtime, EvaluationError> {
-    match stage {
-        Stage::ChangeFilter(predicate) => {
-            let Runtime::Changes(items) = value else {
-                return Err(EvaluationError::new("change predicate requires changes"));
-            };
-            let mut result = Vec::new();
-            for id in items {
-                charge(work, 1, limits)?;
-                if matches_change(diff, id, &predicate.0)? {
-                    result.push(id);
-                }
+fn lower(stages: &[Stage]) -> Result<Expression, EvaluationError> {
+    use zirql::{Located, Stage as Shared};
+    let mut lowered = Vec::new();
+    for stage in stages {
+        let native = match stage {
+            Stage::ChangeFilter(predicate) => {
+                diff_program::stream(Shared::Filter(lower_change(predicate)?), 0..0)?
             }
-            Ok(Runtime::Changes(result))
-        }
-        Stage::Project(side) => {
-            let Runtime::Changes(items) = value else {
-                return Err(EvaluationError::new("side projection requires changes"));
-            };
-            let operations = items
-                .into_iter()
-                .filter_map(|id| {
-                    match side {
-                        DiffSide::Before => diff.before_operation(id),
-                        DiffSide::After => diff.after_operation(id),
-                    }
-                    .ok()
-                    .flatten()
-                })
-                .collect();
-            Ok(Runtime::Operations(*side, operations))
-        }
-        Stage::OperationFilter(predicate) => {
-            let Runtime::Operations(side, items) = value else {
-                return Err(EvaluationError::new(
-                    "operation filter requires a projected side",
-                ));
-            };
-            let result = items
-                .into_iter()
-                .filter(|item| {
-                    matches_operation(
-                        predicate,
-                        diff.document(side),
-                        diff.operation_id(*item).ok(),
-                    )
-                    .unwrap_or(false)
-                })
-                .collect();
-            Ok(Runtime::Operations(side, result))
-        }
-        Stage::Users(index) => navigate(diff, value, work, limits, |document, operation| {
-            let count = document.result_types(operation).map_or(0, <[_]>::len);
-            (0..count)
-                .filter(|result| index.is_none_or(|wanted| wanted == *result))
-                .flat_map(|result| {
-                    document.uses(ValueId::OperationResult {
-                        operation,
-                        result: result as u32,
-                    })
-                })
-                .map(|site| match site {
-                    UseSite::Operand { operation, .. }
-                    | UseSite::SuccessorArgument { operation, .. } => operation,
-                })
-                .collect()
-        }),
-        Stage::Defs(index) => navigate(diff, value, work, limits, |document, operation| {
-            document
-                .operands(operation)
-                .unwrap_or(&[])
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| index.is_none_or(|wanted| wanted == *i))
-                .filter_map(|(_, value)| match value {
-                    ValueReference::Resolved(ValueId::OperationResult { operation, .. }) => {
-                        Some(*operation)
-                    }
-                    _ => None,
-                })
-                .collect()
-        }),
-        Stage::Parent => navigate(diff, value, work, limits, |document, operation| {
-            parent_operation(document, operation).into_iter().collect()
-        }),
-        Stage::Children => navigate(diff, value, work, limits, operation_children),
-        Stage::Root(predicate) => navigate(diff, value, work, limits, |document, operation| {
-            let mut current = Some(operation);
-            while let Some(operation) = current {
-                if matches_operation(predicate, document, Some(operation)).unwrap_or(false) {
-                    return vec![operation];
-                }
-                current = parent_operation(document, operation);
-            }
-            Vec::new()
-        }),
-        Stage::Subtree => navigate(diff, value, work, limits, |document, operation| {
-            let mut result = vec![operation];
-            let mut cursor = 0;
-            while cursor < result.len() {
-                result.extend(operation_children(document, result[cursor]));
-                cursor += 1;
-            }
-            result
-        }),
-        Stage::Reachable => graph_traversal(
-            diff,
-            value,
-            work,
-            limits,
-            options,
-            OperationTraversal::Reachable,
-        ),
-        Stage::Closure => graph_traversal(
-            diff,
-            value,
-            work,
-            limits,
-            options,
-            OperationTraversal::Closure,
-        ),
-        Stage::Slice => graph_traversal(
-            diff,
-            value,
-            work,
-            limits,
-            options,
-            OperationTraversal::Slice,
-        ),
-        Stage::ForwardSlice => graph_traversal(
-            diff,
-            value,
-            work,
-            limits,
-            options,
-            OperationTraversal::ForwardSlice,
-        ),
-        Stage::Fixpoint(stages) => {
-            let Runtime::Operations(side, mut current) = value else {
-                return Err(EvaluationError::new(
-                    "fixpoint requires projected operations",
-                ));
-            };
-            let mut checkpoint = current.clone();
-            let mut power = 1usize;
-            let mut distance = 0usize;
-            loop {
-                let mut next = Runtime::Operations(side, current.clone());
-                for stage in stages {
-                    next = evaluate_stage(diff, next, stage, work, limits, options)?;
-                }
-                let Runtime::Operations(next_side, next) = next else {
-                    return Err(EvaluationError::new("fixpoint body must return operations"));
+            Stage::OperationFilter(predicate) => diff_program::stream(
+                Shared::Filter(lower_operation(&predicate.checked_model()?)),
+                0..0,
+            )?,
+            Stage::Project(side) => DiffStage::Project(*side),
+            Stage::Users(index) => DiffStage::Users(*index),
+            Stage::Defs(index) => DiffStage::Defs(*index),
+            Stage::Parent => DiffStage::Parent,
+            Stage::Children => DiffStage::Children,
+            Stage::Subtree => DiffStage::Subtree,
+            Stage::Root(predicate) => {
+                let DiffStage::Stream(filter) = diff_program::stream(
+                    Shared::Filter(lower_operation(&predicate.checked_model()?)),
+                    0..0,
+                )?
+                else {
+                    unreachable!("stream builds a native pipeline")
                 };
-                if next_side != side {
-                    return Err(EvaluationError::new(
-                        "fixpoint body must preserve the projected diff side",
-                    ));
-                }
-                charge(work, 1, limits)?;
-                if next == current {
-                    break;
-                }
-                if next == checkpoint {
-                    return Err(EvaluationError::new(
-                        "fixpoint query cycles without reaching an unchanged selection",
-                    ));
-                }
-                current = next;
-                distance += 1;
-                if distance == power {
-                    checkpoint = current.clone();
-                    power = power.saturating_mul(2);
-                    distance = 0;
-                }
+                DiffStage::Root(filter)
             }
-            Ok(Runtime::Operations(side, current))
-        }
-        Stage::Unique => match value {
-            Runtime::Changes(v) => Ok(Runtime::Changes(dedup(v))),
-            Runtime::Operations(s, v) => Ok(Runtime::Operations(s, dedup(v))),
-            Runtime::Strings(v) => Ok(Runtime::Strings(dedup(v))),
-            Runtime::Count(_) => Err(EvaluationError::new("unique requires a stream")),
-        },
-        Stage::Reverse => match value {
-            Runtime::Changes(mut values) => {
-                values.reverse();
-                Ok(Runtime::Changes(values))
-            }
-            Runtime::Operations(side, mut values) => {
-                values.reverse();
-                Ok(Runtime::Operations(side, values))
-            }
-            Runtime::Strings(mut values) => {
-                values.reverse();
-                Ok(Runtime::Strings(values))
-            }
-            Runtime::Count(_) => Err(EvaluationError::new("reverse requires a stream")),
-        },
-        Stage::Head(count) => bound(value, *count, true),
-        Stage::Tail(count) => bound(value, *count, false),
-        Stage::Names => match value {
-            Runtime::Changes(v) => Ok(Runtime::Strings(
-                v.into_iter()
-                    .filter_map(|id| {
-                        let (side, op) = diff.representative_id(id).ok()?;
-                        diff.document(side).operation_name(op).map(str::to_owned)
-                    })
-                    .collect(),
-            )),
-            Runtime::Operations(side, v) => Ok(Runtime::Strings(
-                v.into_iter()
-                    .filter_map(|item| {
-                        diff.document(side)
-                            .operation_name(diff.operation_id(item).ok()?)
-                            .map(str::to_owned)
-                    })
-                    .collect(),
-            )),
-            _ => Err(EvaluationError::new("names requires changes or operations")),
-        },
-        Stage::Attr(name) => project_strings(diff, value, |document, operation| {
-            document.attribute_id(operation, name).and_then(|id| {
-                let value = document.attribute_value(id)?;
-                Some(match value {
-                    AttributeValue::String(_) => value.decoded_string()?,
-                    AttributeValue::Symbol(path) => path.join("::"),
-                    _ => document.attribute_spelling_value(id)?.to_owned(),
-                })
-            })
-        }),
-        Stage::ResultTypes => project_many_strings(diff, value, |document, operation| {
-            document
-                .result_types(operation)
-                .unwrap_or(&[])
-                .iter()
-                .filter_map(|id| document.type_spelling(*id).map(str::to_owned))
-                .collect()
-        }),
-        Stage::OperandTypes => project_many_strings(diff, value, |document, operation| {
-            document
-                .operands(operation)
-                .unwrap_or(&[])
-                .iter()
-                .filter_map(|value| document.value_type(*value).map(str::to_owned))
-                .collect()
-        }),
-        Stage::Sort => {
-            let Runtime::Strings(mut values) = value else {
-                return Err(EvaluationError::new("sort requires strings"));
-            };
-            values.sort();
-            Ok(Runtime::Strings(values))
-        }
-        Stage::Min(all) => extreme(value, false, *all),
-        Stage::Max(all) => extreme(value, true, *all),
-        Stage::Count => match value {
-            Runtime::Changes(v) => Ok(Runtime::Count(v.len())),
-            Runtime::Operations(_, v) => Ok(Runtime::Count(v.len())),
-            Runtime::Strings(v) => Ok(Runtime::Count(v.len())),
-            Runtime::Count(_) => Err(EvaluationError::new("count requires a stream")),
-        },
+            Stage::Reachable => DiffStage::Graph(OperationTraversal::Reachable),
+            Stage::Closure => DiffStage::Graph(OperationTraversal::Closure),
+            Stage::Slice => DiffStage::Graph(OperationTraversal::Slice),
+            Stage::ForwardSlice => DiffStage::Graph(OperationTraversal::ForwardSlice),
+            Stage::Fixpoint(body) => DiffStage::Fixpoint(diff_program::nested(lower(body)?)),
+            Stage::Unique => diff_program::stream(Shared::Unique, 0..0)?,
+            Stage::Head(count) => diff_program::stream(Shared::Head(*count), 0..0)?,
+            Stage::Count => diff_program::stream(Shared::Count, 0..0)?,
+            Stage::Reverse => DiffStage::Reverse,
+            Stage::Tail(count) => DiffStage::Tail(*count),
+            Stage::Names => DiffStage::Names,
+            Stage::Attr(name) => DiffStage::Attr(name.clone()),
+            Stage::ResultTypes => DiffStage::ResultTypes,
+            Stage::OperandTypes => DiffStage::OperandTypes,
+            Stage::Sort => DiffStage::Sort,
+            Stage::Min(all) => DiffStage::Extreme {
+                maximum: false,
+                all: *all,
+            },
+            Stage::Max(all) => DiffStage::Extreme {
+                maximum: true,
+                all: *all,
+            },
+        };
+        lowered.push(Located::new(native, 0..0));
     }
+    Ok(diff_program::sequence(lowered, 0..0))
 }
-
-fn bound(value: Runtime, count: usize, head: bool) -> Result<Runtime, EvaluationError> {
-    fn values<T>(mut values: Vec<T>, count: usize, head: bool) -> Vec<T> {
-        if head {
-            values.truncate(count);
-        } else if values.len() > count {
-            values.drain(..values.len() - count);
-        }
-        values
+fn lower_change(predicate: &ChangePredicate) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
+    if let Some(error) = predicate.invalid {
+        return Err(EvaluationError::new(error));
     }
-    Ok(match value {
-        Runtime::Changes(items) => Runtime::Changes(values(items, count, head)),
-        Runtime::Operations(side, items) => Runtime::Operations(side, values(items, count, head)),
-        Runtime::Strings(items) => Runtime::Strings(values(items, count, head)),
-        Runtime::Count(_) => return Err(EvaluationError::new("head and tail require a stream")),
-    })
+    lower_change_node(&predicate.node)
 }
-
-fn project_strings(
-    diff: &Diff<'_>,
-    value: Runtime,
-    project: impl Fn(&crate::semantic::Document, OperationId) -> Option<String>,
-) -> Result<Runtime, EvaluationError> {
-    project_many_strings(diff, value, |document, operation| {
-        project(document, operation).into_iter().collect()
-    })
-}
-
-fn project_many_strings(
-    diff: &Diff<'_>,
-    value: Runtime,
-    project: impl Fn(&crate::semantic::Document, OperationId) -> Vec<String>,
-) -> Result<Runtime, EvaluationError> {
-    let values = match value {
-        Runtime::Changes(items) => items
-            .into_iter()
-            .flat_map(|id| {
-                diff.representative_id(id)
-                    .ok()
-                    .into_iter()
-                    .flat_map(|(side, operation)| project(diff.document(side), operation))
-            })
-            .collect(),
-        Runtime::Operations(side, items) => items
-            .into_iter()
-            .flat_map(|item| {
-                diff.operation_id(item)
-                    .ok()
-                    .into_iter()
-                    .flat_map(|operation| project(diff.document(side), operation))
-            })
-            .collect(),
-        _ => {
-            return Err(EvaluationError::new(
-                "projection requires changes or operations",
-            ));
-        }
-    };
-    Ok(Runtime::Strings(values))
-}
-
-fn extreme(value: Runtime, maximum: bool, all: bool) -> Result<Runtime, EvaluationError> {
-    let Runtime::Strings(values) = value else {
-        return Err(EvaluationError::new("extrema require strings"));
-    };
-    let Some(selected) = (if maximum {
-        values.iter().max()
-    } else {
-        values.iter().min()
-    })
-    .cloned() else {
-        return Ok(Runtime::Strings(Vec::new()));
-    };
-    Ok(Runtime::Strings(if all {
-        values
-            .into_iter()
-            .filter(|value| value == &selected)
-            .collect()
-    } else {
-        vec![selected]
-    }))
-}
-
-fn parent_operation(
-    document: &crate::semantic::Document,
-    operation: OperationId,
-) -> Option<OperationId> {
-    let block = document.operation(operation)?.parent_block()?;
-    let region = document.block(block)?.parent_region();
-    Some(document.region(region)?.parent_operation())
-}
-
-fn operation_children(
-    document: &crate::semantic::Document,
-    operation: OperationId,
-) -> Vec<OperationId> {
-    document
-        .operation_regions(operation)
-        .unwrap_or(&[])
-        .iter()
-        .flat_map(|region| {
-            document
-                .region(*region)
-                .and_then(|region| region.blocks(document))
-                .unwrap_or(&[])
-        })
-        .flat_map(|block| document.block_operations(*block).unwrap_or(&[]))
-        .copied()
-        .collect()
-}
-
-fn navigate(
-    diff: &Diff<'_>,
-    value: Runtime,
-    work: &mut usize,
-    limits: EvaluationLimits,
-    step: impl Fn(&crate::semantic::Document, OperationId) -> Vec<OperationId>,
-) -> Result<Runtime, EvaluationError> {
-    let Runtime::Operations(side, items) = value else {
-        return Err(EvaluationError::new(
-            "navigation requires projected operations",
-        ));
-    };
-    let mut result = Vec::new();
-    for item in items {
-        let ids = step(
-            diff.document(side),
-            diff.operation_id(item)
-                .map_err(|e| EvaluationError::new(e.to_string()))?,
-        );
-        charge(work, ids.len(), limits)?;
-        for operation in ids {
-            result.push(
-                diff.scoped_operation(side, operation)
-                    .map_err(|e| EvaluationError::new(e.to_string()))?,
-            );
-        }
-    }
-    if result.len() > limits.max_items {
-        return Err(EvaluationError::new("query stream size limit exceeded"));
-    }
-    Ok(Runtime::Operations(side, result))
-}
-
-fn graph_traversal(
-    diff: &Diff<'_>,
-    value: Runtime,
-    work: &mut usize,
-    limits: EvaluationLimits,
-    options: EvaluationOptions,
-    traversal: OperationTraversal,
-) -> Result<Runtime, EvaluationError> {
-    let Runtime::Operations(side, items) = value else {
-        return Err(EvaluationError::new(
-            "graph traversal requires projected operations",
-        ));
-    };
-    let operations = items
-        .into_iter()
-        .map(|item| {
-            diff.operation_id(item)
-                .map_err(|error| EvaluationError::new(error.to_string()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let remaining = limits
-        .max_work
-        .checked_sub(*work)
-        .ok_or_else(|| EvaluationError::new("query work limit exceeded"))?;
-    let (operations, used) = evaluate_operation_traversal(
-        diff.document(side),
-        operations,
-        diff.registry(),
-        traversal,
-        EvaluationLimits {
-            max_work: remaining,
-            max_items: limits.max_items,
-        },
-        options,
-    )?;
-    *work += used;
-    Ok(Runtime::Operations(
-        side,
-        operations
-            .into_iter()
-            .map(|operation| {
-                diff.scoped_operation(side, operation)
-                    .map_err(|error| EvaluationError::new(error.to_string()))
-            })
-            .collect::<Result<_, _>>()?,
-    ))
-}
-
-fn matches_change(
-    diff: &Diff<'_>,
-    id: ChangeId,
+fn lower_change_node(
     predicate: &ChangePredicateNode,
-) -> Result<bool, EvaluationError> {
-    let record = diff
-        .change(id)
-        .map_err(|e| EvaluationError::new(e.to_string()))?;
-    Ok(match predicate {
-        ChangePredicateNode::Kind(kind) => {
-            if *kind == ChangeKind::Moved {
-                record.moved()
-            } else {
-                record.kind() == *kind
-            }
-        }
-        ChangePredicateNode::Field(field) => record.fields().contains(field),
+) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
+    use zirql::PredicateKind as P;
+    let node = match predicate {
+        ChangePredicateNode::Kind(kind) => P::Leaf(Leaf::Change(*kind)),
+        ChangePredicateNode::Field(field) => P::Leaf(Leaf::Changed(*field)),
         ChangePredicateNode::Operation(predicate) => {
-            let (side, op) = diff
-                .representative_id(id)
-                .map_err(|e| EvaluationError::new(e.to_string()))?;
-            matches_operation(predicate, diff.document(side), Some(op))?
+            return Ok(lower_operation(&predicate.checked_model()?));
         }
-        ChangePredicateNode::Not(p) => !matches_change(diff, id, p)?,
-        ChangePredicateNode::And(ps) => ps
-            .iter()
-            .all(|p| matches_change(diff, id, p).unwrap_or(false)),
-        ChangePredicateNode::Or(ps) => ps
-            .iter()
-            .any(|p| matches_change(diff, id, p).unwrap_or(false)),
-    })
-}
-
-fn matches_operation(
-    predicate: &model::Predicate,
-    document: &crate::semantic::Document,
-    operation: Option<OperationId>,
-) -> Result<bool, EvaluationError> {
-    let Some(operation) = operation else {
-        return Ok(false);
+        ChangePredicateNode::Not(predicate) => P::Not(Box::new(lower_change_node(predicate)?)),
+        ChangePredicateNode::And(predicates) => P::And(
+            predicates
+                .iter()
+                .map(lower_change_node)
+                .collect::<Result<_, _>>()?,
+        ),
+        ChangePredicateNode::Or(predicates) => P::Or(
+            predicates
+                .iter()
+                .map(lower_change_node)
+                .collect::<Result<_, _>>()?,
+        ),
     };
-    Ok(match predicate {
-        model::Predicate::Bool { value, .. } => *value,
-        model::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
-        model::Predicate::Dialect { name, .. } => document
-            .operation_name(operation)
-            .and_then(|value| value.split_once('.'))
-            .is_some_and(|(dialect, _)| dialect == name),
-        model::Predicate::ResultType { spelling, .. } => document
-            .result_types(operation)
-            .unwrap_or(&[])
-            .iter()
-            .any(|id| document.type_spelling(*id) == Some(spelling)),
-        model::Predicate::HasAttr { name, .. } => document.attribute_id(operation, name).is_some(),
+    Ok(zirql::Located::new(node, 0..0))
+}
+fn lower_operation(predicate: &model::Predicate) -> zirql::Predicate<Leaf> {
+    use zirql::PredicateKind as P;
+    let node = match predicate {
+        model::Predicate::Bool { value, .. } => P::Leaf(Leaf::Bool(*value)),
+        model::Predicate::Op { name, .. } => P::Leaf(Leaf::Op(name.clone())),
+        model::Predicate::Dialect { name, .. } => P::Leaf(Leaf::Dialect(name.clone())),
+        model::Predicate::ResultType { spelling, .. } => {
+            P::Leaf(Leaf::ResultType(spelling.clone()))
+        }
+        model::Predicate::HasAttr { name, .. } => P::Leaf(Leaf::HasAttr(name.clone())),
         model::Predicate::Attr { name, value, .. } => {
-            document
-                .attribute_id(operation, name)
-                .and_then(|id| document.attribute_value(id))
-                .and_then(crate::semantic::AttributeValue::decoded_string)
-                .as_deref()
-                == Some(value)
+            P::Leaf(Leaf::Attr(name.clone(), value.clone()))
         }
-        model::Predicate::Not { predicate, .. } => {
-            !matches_operation(predicate, document, Some(operation))?
+        model::Predicate::Not { predicate, .. } => P::Not(Box::new(lower_operation(predicate))),
+        model::Predicate::Group { predicate, .. } => P::Group(Box::new(lower_operation(predicate))),
+        model::Predicate::And { predicates, .. } => {
+            P::And(predicates.iter().map(lower_operation).collect())
         }
-        model::Predicate::And { predicates, .. } => predicates
-            .iter()
-            .all(|p| matches_operation(p, document, Some(operation)).unwrap_or(false)),
-        model::Predicate::Or { predicates, .. } => predicates
-            .iter()
-            .any(|p| matches_operation(p, document, Some(operation)).unwrap_or(false)),
-        model::Predicate::Group { predicate, .. } => {
-            matches_operation(predicate, document, Some(operation))?
+        model::Predicate::Or { predicates, .. } => {
+            P::Or(predicates.iter().map(lower_operation).collect())
         }
-    })
-}
-
-fn charge(
-    work: &mut usize,
-    amount: usize,
-    limits: EvaluationLimits,
-) -> Result<(), EvaluationError> {
-    *work = work.saturating_add(amount);
-    if *work > limits.max_work {
-        Err(EvaluationError::new("query work limit exceeded"))
-    } else {
-        Ok(())
-    }
-}
-fn dedup<T: Clone + Eq + std::hash::Hash>(items: Vec<T>) -> Vec<T> {
-    let mut seen = HashSet::new();
-    items
-        .into_iter()
-        .filter(|item| seen.insert(item.clone()))
-        .collect()
+    };
+    zirql::Located::new(node, 0..0)
 }

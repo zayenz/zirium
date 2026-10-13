@@ -862,7 +862,10 @@ spacing, or a delimiter. Counts are plain lines. The CLI buffers all emissions
 across all input files until processing succeeds: a query, evaluation, or
 printing error produces no standard output. Input files are never overwritten.
 Rust callers use the `Query::evaluate` emission callback and can choose their
-own buffering policy.
+own buffering policy. Each edit stage commits its own transaction. A later
+library evaluation failure preserves earlier committed edits and callbacks;
+saved scalar results retain their values, while retained native handles observe
+the edited document.
 
 Pass `--jsonl` to emit one compact JSON object per result in input and
 statement order. Each record has `document` and `result` fields. A `json`
@@ -940,7 +943,11 @@ or the before endpoint for removals. Use `before` or `after` before operation
 navigation. The two sides remain distinct even for an empty selection, and diff
 programs reject edits. Nested expressions keep their current input; explicit
 `input` resets to every change record. Projected operations support the ordinary
-graph traversals and same-side fixed points. Change streams support keyed
+graph traversals and same-side fixed points. Those bodies and traversals share
+the active evaluation allowance. Diff `emit` is a no-op; `json`, `markdown` and
+`print` transform the value written once at the end of a query statement.
+Bindings and `do` suppress that statement output. Diff mode retains its legacy
+work and per-stream limits and rejects `--max-results`. Change streams support keyed
 ordering and `map_by`, and the document labels are available as
 `before_document` and `after_document` for interpolation. See
 [semantic diff](semantic-diff.md) for the full policy.

@@ -495,6 +495,13 @@ impl Predicate {
         self.inner.clone()
     }
 
+    pub(super) fn checked_model(&self) -> Result<model::Predicate, EvaluationError> {
+        if let Some(error) = self.invalid {
+            return Err(EvaluationError::new(error));
+        }
+        Ok(self.model())
+    }
+
     fn new(inner: model::Predicate) -> Self {
         Self {
             inner,

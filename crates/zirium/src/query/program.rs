@@ -326,10 +326,10 @@ fn json_allocation(document: &Document, value: &QueryOutput) -> (usize, usize) {
     }
 }
 
-struct BudgetWriter<'a> {
-    bytes: &'a mut Vec<u8>,
-    budget: &'a mut zirql::Budget,
-    range: &'a Range<usize>,
+pub(super) struct BudgetWriter<'a> {
+    pub(super) bytes: &'a mut Vec<u8>,
+    pub(super) budget: &'a mut zirql::Budget,
+    pub(super) range: &'a Range<usize>,
 }
 impl std::io::Write for BudgetWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
