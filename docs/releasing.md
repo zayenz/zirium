@@ -73,9 +73,10 @@ Do not use `git push --tags`. This repository may contain local tags that are
 not part of the public release history.
 
 Release verifies that the tag names a commit on `main` and matches all package
-versions. Quality checks the Rust package, builds and installs a source
-distribution, and builds version-specific wheels for conventional CPython
-3.11 through 3.14 on Linux x86_64 (manylinux) and macOS arm64. PyPI publishes
+versions. Release enables registry package verification in Quality. Quality also
+builds and installs a source distribution, and builds version-specific wheels
+for conventional CPython 3.11 through 3.14 on Linux x86_64 (manylinux) and macOS
+arm64. PyPI publishes
 those artifacts directly; no stable-ABI wheels are produced.
 
 When these checks pass, open the workflow run, select **Review deployments**,

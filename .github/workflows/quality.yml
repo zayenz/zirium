@@ -10,6 +10,10 @@ on:
         description: Exact commit to check
         required: true
         type: string
+      registry_package:
+        description: Verify the crates.io package for a release
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -38,7 +42,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   rust-format-and-docs:
-    name: Rust format, docs, and package
+    name: Rust format and docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -51,7 +55,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo test --doc --workspace --all-features
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
-      - run: cargo package -p zirium --locked
+      - name: Verify registry package
+        if: inputs.registry_package
+        run: cargo package -p zirium --locked
 
   python:
     name: Python ${{ matrix.python-version }}

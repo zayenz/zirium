@@ -101,6 +101,7 @@ jobs:
     uses: ./.github/workflows/quality.yml
     with:
       source_ref: ${{ needs.validate.outputs.commit }}
+      registry_package: true
 
   publish-crates:
     name: Publish to crates.io

@@ -29,8 +29,13 @@ cargo +stable test --workspace --all-targets --all-features
 cargo +stable clippy --workspace --all-targets --all-features -- -D warnings
 cargo +stable test --doc --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo +stable doc --workspace --all-features --no-deps
-cargo +stable package -p zirium --locked
 ```
+
+Development checks use the pinned Git dependency on Zirql. Registry package
+verification belongs to release preparation: Cargo replaces Git dependencies
+with their published versions when verifying a crate archive. Run
+`cargo +stable package -p zirium --locked` once the required Zirql version is
+published. The release workflow enables this check before publication.
 
 ## CPython compatibility
 
