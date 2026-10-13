@@ -3482,6 +3482,46 @@ fn correlated_reports_agree_inline_file_and_explicit_emission() {
     assert!(!failed.status.success());
     assert!(failed.stdout.is_empty());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("stop"));
+
+    let groups = include_str!("../../../examples/cli/function-groups.zirql");
+    let grouped = run_stdin(groups, input);
+    assert!(
+        grouped.status.success() && grouped.stderr.is_empty(),
+        "{grouped:?}"
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&grouped.stdout).unwrap(),
+        serde_json::json!([
+            {"key":1,"items":[{"name":"double","matches":1},{"name":"mix","matches":1}]},
+            {"key":0,"items":[{"name":"plain","matches":0}]},
+        ])
+    );
+    fs::write(&path, groups).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["-f", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let file = child.wait_with_output().unwrap();
+    fs::remove_file(&path).unwrap();
+    assert!(file.status.success() && file.stderr.is_empty(), "{file:?}");
+    assert_eq!(file.stdout, grouped.stdout);
+    let source = r#"report 7; group_by([{"matches": 1}], "absent") | json;"#;
+    let failed = run_stdin(source, input);
+    assert!(!failed.status.success() && failed.stdout.is_empty());
+    let diagnostic = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        diagnostic.contains("missing record field: absent") && diagnostic.contains("<query>:1:38:"),
+        "{diagnostic}"
+    );
 }
 
 #[test]

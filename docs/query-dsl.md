@@ -350,6 +350,7 @@ let f = bound_ops("f");
 let rows = ops().filter(op("func.func")).project("f", [
     ("name", ReportExpr::from(f.attr("sym_name").one())),
     ("operations", ReportExpr::from(f.children().subtree().count())),
+    ("matches", ReportExpr::from(f.children().subtree().filter(op("arith.addi")).count())),
 ]);
 let native_report = document.query(&rows)?;
 let value = native_report.value();
@@ -379,6 +380,7 @@ f = bound_ops("f")
 rows = ops().filter(op("func.func")).project("f", {
     "name": f.attr("sym_name").one(),
     "operations": f.children().subtree().count(),
+    "matches": f.children().subtree().filter(op("arith.addi")).count(),
 })
 result = document.query(report(require(True, E(rows), "stop")))
 ```
@@ -387,7 +389,29 @@ Document.query returns Python bool/int/float/string/list/dict data directly,
 with record insertion order. ReportExpr also accepts scalar-query wrappers and
 nested list/dict construction. ReportGenerator and ReportExpr.comprehension
 supply value generators; `.sum()`, `.length()`, `.forall()` and `.exists()`
-reduce arrays. Python conversion spends the remaining request budget before
+reduce arrays. `ReportExpr::group_by("field")` in Rust and `.group_by("field")`
+in Python group positional records through the shared evaluator. Groups contain
+`key` and `items`, with first-seen keys and original row order and duplicates.
+The [grouping language reference](query-language.md#stable-record-groups) defines
+supported keys and failures.
+
+Reuse the function rows above, whose `matches` field counts `arith.addi`
+operations. Rust returns a native `ConstructedReport`:
+
+```rust
+let grouped = document.query(&zirium::query::report(ReportExpr::from(rows).group_by("matches")))?;
+let value = grouped.value();
+```
+
+The corresponding Python call returns ordered list/dict data:
+
+```python
+result = document.query(report(E(rows).group_by("matches")))
+```
+
+With the [function fixture](cli-examples.md#group-functions-by-match-count),
+both obtain key `1` with `double`/`mix`, then key `0` with `plain`.
+Python conversion spends the remaining request budget before
 allocating collections. Ordinary operation/type/attribute results retain their
 existing semantic wrappers.
 

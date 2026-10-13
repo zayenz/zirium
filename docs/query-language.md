@@ -348,7 +348,7 @@ The supported expression forms are:
   numeric `<`, `<=`, `>`, `>=`; typed `==` (also `=`) and `!=`.
 - Boolean `and` and `or`; string or positional-array `++`; record access
   `r.field`, array access `a[i]`, and inclusive integer ranges `lo..hi`.
-- `length`, `sum`, `forall`, `exists`, `require`, and `one` calls;
+- `length`, `sum`, `forall`, `exists`, `require`, `group_by`, and `one` calls;
   explicitly projected native queries and correlated `project` rows.
 
 Array positions start at one. Integer arithmetic uses signed 64-bit values and
@@ -385,6 +385,40 @@ query charges its retained parse spending on each evaluation. Rust callers can
 bound parsing with `Query::parse_with_program_limits()` and choose execution
 bounds with `Query::evaluate_with_program_limits()`; callbacks that render can
 use `Query::evaluate_with_budget()` with `Budget::for_program()`.
+
+## Stable record groups
+
+`group_by(rows, "field")` accepts a positional record array and a literal string
+selector. Keys must be homogeneous integers, strings or nominal members of one
+type. It returns records with `key` then `items`, preserving first-seen group
+order and every row's order and duplicates. Empty input returns an empty array;
+other record fields may differ. Keyed arrays need an explicit positional
+conversion. Keys retain typed identity and receive no string coercion.
+
+For the [function fixture](../examples/cli/function-report.mlir), this short
+program groups functions by their represented `arith.addi` count:
+
+```zirium
+let rows = filter(op("func.func")) | project(f, {
+  "name": f | attr("sym_name") | one,
+  "matches": f | children | subtree | filter(op("arith.addi")) | count
+});
+group_by(rows, "matches") | json;
+```
+
+The first group has key `1` and items `double`, `mix`; the second has key `0`
+and item `plain`. The [CLI example](cli-examples.md#group-functions-by-match-count)
+executes the same inline and saved forms. [Typed report builders](query-dsl.md#constructed-report-builders)
+return the native ordered data before explicit rendering.
+
+Preflight checks known key types even in skipped branches. Missing fields fail
+when executed; missing or incompatible keys point to the selector, while
+non-array input and non-record rows point to the call. Child failures retain
+their query or source locations. Grouping evaluates rows once and charges scans,
+comparisons, nominal metadata, new containers/slots and copied keys/labels under
+the active budget. Rows move into items without another deep copy. Snapshots,
+Python conversion and rendering retain that allowance and existing completeness
+rules. A grouping error leaves CLI stdout empty after earlier reports too.
 
 ## Writing reports with Markdown and text
 

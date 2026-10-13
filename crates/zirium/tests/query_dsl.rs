@@ -776,6 +776,62 @@ fn library_emissions_and_committed_edits_survive_a_later_failure() {
 const FUNCTION_REPORT_SOURCE: &str = include_str!("../../../examples/cli/function-report.mlir");
 const FUNCTION_REPORT_PROGRAM: &str = include_str!("../../../examples/cli/function-report.zirql");
 #[test]
+fn function_groups_agree_through_text_and_rust_native_values() {
+    use zirium::query::{ConstructedValue as V, NativeValue, ReportExpr as E, bound_ops, report};
+    let mut document = document_from(FUNCTION_REPORT_SOURCE);
+    let program = include_str!("../../../examples/cli/function-groups.zirql");
+    // Inspect the native value before the saved program's explicit JSON boundary.
+    let native_program = format!("{};", program.trim_end().strip_suffix(" | json;").unwrap());
+    let query = Query::parse(&native_program).unwrap();
+    let mut outputs = vec![];
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(parsed)) = &outputs[0] else {
+        panic!("native groups")
+    };
+    let row = |name: &str, matches| {
+        V::Record(vec![
+            ("name".into(), V::String(name.into())),
+            ("matches".into(), V::Integer(matches)),
+        ])
+    };
+    assert_eq!(
+        parsed.value(),
+        &V::Array(vec![
+            V::Record(vec![
+                ("key".into(), V::Integer(1)),
+                (
+                    "items".into(),
+                    V::Array(vec![row("double", 1), row("mix", 1)])
+                )
+            ]),
+            V::Record(vec![
+                ("key".into(), V::Integer(0)),
+                ("items".into(), V::Array(vec![row("plain", 0)]))
+            ]),
+        ])
+    );
+    let f = bound_ops("f");
+    let rows = ops().filter(op("func.func")).project(
+        "f",
+        [
+            ("name", E::from(f.attr("sym_name").one())),
+            (
+                "matches",
+                E::from(f.children().subtree().filter(op("arith.addi")).count()),
+            ),
+        ],
+    );
+    let typed = document
+        .query(&report(E::from(rows).group_by("matches")))
+        .unwrap();
+    assert_eq!(typed.value(), parsed.value());
+}
+#[test]
 fn correlated_function_report_agrees_through_text_and_typed_native_data() {
     use zirium::query::{
         ConstructedValue as V, NativeValue, ReportExpr as E, ReportGenerator as G,

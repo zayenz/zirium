@@ -290,6 +290,11 @@ impl ReportExpr {
             inner: self.inner.clone().exists(),
         }
     }
+    fn group_by(&self, field: String) -> Self {
+        Self {
+            inner: self.inner.clone().group_by(field),
+        }
+    }
     fn __bool__(&self) -> PyResult<bool> {
         Err(PyTypeError::new_err(
             "report expressions have no truth value; evaluate with document.query(report(expression))",

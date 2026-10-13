@@ -175,6 +175,40 @@ def test_projection_errors_and_nested_native_results():
     assert doc.query(ops().filter(always(False)).map_by(key, input().count())) == {}
 
 
+def test_grouped_report_builder_returns_first_seen_function_groups():
+    from pathlib import Path
+
+    from zirium.query import ReportExpr as E
+    from zirium.query import bound_ops, report
+
+    source = (
+        Path(__file__).parents[2] / "examples/cli/function-report.mlir"
+    ).read_text()
+    lowered = zirium.parse_text(
+        source, registry=zirium.DialectRegistry.baseline()
+    ).lower_strict()
+    assert lowered.document is not None
+    f = bound_ops("f")
+    rows = (
+        ops()
+        .filter(op("func.func"))
+        .project(
+            "f",
+            {
+                "name": f.attr("sym_name").one(),
+                "matches": f.children().subtree().filter(op("arith.addi")).count(),
+            },
+        )
+    )
+    assert lowered.document.query(report(E(rows).group_by("matches"))) == [
+        {
+            "key": 1,
+            "items": [{"name": "double", "matches": 1}, {"name": "mix", "matches": 1}],
+        },
+        {"key": 0, "items": [{"name": "plain", "matches": 0}]},
+    ]
+
+
 def test_correlated_report_builders_return_ordered_python_data():
     from pathlib import Path
 

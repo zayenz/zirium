@@ -365,3 +365,29 @@ functions and totals 5/2. Passing the program text inline yields the same native
 report and JSON. See [the report language](query-language.md#correlated-constructed-reports)
 and [typed report builders](query-dsl.md#constructed-report-builders) for
 cardinality, scope and budget rules.
+
+## Group functions by match count
+
+Group the same three functions by the number of represented `arith.addi`
+operations. This complete short program uses literal arguments:
+
+```sh
+zirium 'let rows = filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "matches": f | children | subtree | filter(op("arith.addi")) | count}); group_by(rows, "matches") | json;' examples/cli/function-report.mlir
+zirium -f examples/cli/function-groups.zirql examples/cli/function-report.mlir
+```
+
+The [saved program](../examples/cli/function-groups.zirql) returns the same JSON:
+
+```json
+[
+  {"key": 1, "items": [{"name": "double", "matches": 1}, {"name": "mix", "matches": 1}]},
+  {"key": 0, "items": [{"name": "plain", "matches": 0}]}
+]
+```
+
+Groups follow first occurrence, so key `1` precedes `0`. Items retain function
+order. Rust and Python callers use `ReportExpr::from(rows).group_by("matches")`
+and `E(rows).group_by("matches")` respectively; the
+[builder guide](query-dsl.md#constructed-report-builders) describes their native
+results. [Grouping rules](query-language.md#stable-record-groups) preserve the
+existing rendering, diagnostic and budget boundaries.

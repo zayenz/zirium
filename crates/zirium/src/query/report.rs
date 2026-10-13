@@ -907,6 +907,7 @@ fn visit_value<'a>(
         | K::Unary { operand: value, .. }
         | K::Field { value, .. }
         | K::TupleAccess { value, .. }
+        | K::GroupBy { rows: value, .. }
         | K::Reduce { array: value, .. } => visit_value(value, pending),
         K::Array(values) | K::Tuple(values) | K::Set(values) => {
             for value in values {
@@ -1079,6 +1080,7 @@ pub(super) fn dispose_value(value: zirql::ValueExpressionKind<Operand>) {
             | K::Unary { operand: value, .. }
             | K::Field { value, .. }
             | K::TupleAccess { value, .. }
+            | K::GroupBy { rows: value, .. }
             | K::Reduce { array: value, .. } => pending.push(*value),
             K::Array(values) | K::Tuple(values) | K::Set(values) => pending.extend(values),
             K::Record(fields) => pending.extend(fields.into_iter().map(|(_, value)| value)),

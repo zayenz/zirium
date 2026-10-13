@@ -1,0 +1,5 @@
+let rows = filter(op("func.func")) | project(f, {
+  "name": f | attr("sym_name") | one,
+  "matches": f | children | subtree | filter(op("arith.addi")) | count
+});
+group_by(rows, "matches") | json;

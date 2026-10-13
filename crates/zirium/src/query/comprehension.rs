@@ -271,8 +271,10 @@ pub(super) fn has_syntax(source: &str) -> bool {
                         return true;
                     }
                 }
-                if matches!(word, "sum" | "length" | "forall" | "exists" | "require")
-                    && rest.starts_with('(')
+                if matches!(
+                    word,
+                    "sum" | "length" | "forall" | "exists" | "require" | "group_by"
+                ) && rest.starts_with('(')
                 {
                     return true;
                 }

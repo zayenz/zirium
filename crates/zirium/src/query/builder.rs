@@ -1177,6 +1177,16 @@ impl ReportExpr {
     pub fn exists(self) -> Self {
         self.reduce(zirql::ValueReducer::Exists)
     }
+    /// Group positional records by a static field, preserving first-seen keys
+    /// and every row's order. Evaluation requires homogeneous supported keys.
+    pub fn group_by(self, field: impl Into<String>) -> Self {
+        let parameters = self.parameters.clone();
+        Self::node(zirql::ValueExpressionKind::GroupBy {
+            rows: Box::new(self.into_expression()),
+            field: zirql::Located::new(field.into(), 0..0),
+        })
+        .with_metadata(parameters)
+    }
     pub fn require(condition: Self, value: Self, message: impl Into<String>) -> Self {
         let parameters = merge_parameters(&condition.parameters, &value.parameters);
         Self::node(zirql::ValueExpressionKind::Require {
