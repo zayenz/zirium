@@ -40,6 +40,7 @@ fn expression(stages: Vec<Stage>) -> Expression {
 /// ```
 #[derive(Clone, Debug)]
 pub struct QueryExpr<T> {
+    parameters: Vec<ParameterDeclaration>,
     expression: Expression,
     depth: usize,
     nodes: usize,
@@ -54,10 +55,63 @@ pub type MapQuery<T> = QueryExpr<BTreeMap<String, T>>;
 pub type TypeQuery = QueryExpr<Vec<TypeId>>;
 pub type AttributeQuery = QueryExpr<Vec<AttributeId>>;
 
+fn merge_parameters(
+    left: &[ParameterDeclaration],
+    right: &[ParameterDeclaration],
+) -> Vec<ParameterDeclaration> {
+    let mut parameters = left.to_vec();
+    parameters.extend(
+        right
+            .iter()
+            .filter(|declaration| !left.contains(declaration))
+            .cloned(),
+    );
+    parameters
+}
+
 impl<T> QueryExpr<T> {
+    /// Attach immutable required declarations to this root request.
+    /// Composition shares identical declarations and retains conflicting declarations
+    /// for admission to refuse; existing evaluation methods supply no caller inputs.
+    pub fn with_parameters(&self, declarations: Vec<ParameterDeclaration>) -> Self {
+        Self {
+            parameters: merge_parameters(&self.parameters, &declarations),
+            expression: self.expression.clone(),
+            depth: self.depth,
+            nodes: self.nodes,
+            invalid: self.invalid,
+            result: PhantomData,
+        }
+    }
+    pub fn parameters(&self) -> &[ParameterDeclaration] {
+        &self.parameters
+    }
+
+    /// Evaluate exact typed scalar caller inputs to the query's native result type.
+    pub fn evaluate_with_parameters(
+        &self,
+        document: &Document,
+        registry: &DialectRegistry,
+        parameters: &[(String, ConstructedValue)],
+        limits: EvaluationLimits,
+    ) -> Result<T, EvaluationError>
+    where
+        T: QueryResult,
+    {
+        let mut budget = self.new_budget(limits);
+        T::from_query_output(self.evaluate_output_with_parameters_and_budget(
+            document,
+            registry,
+            EvaluationOptions::default(),
+            ParameterInputs::Typed(parameters),
+            &mut budget,
+        )?)
+    }
+
     /// Erase the static result type for language bindings. The expression stays read-only.
     pub fn erased(&self) -> QueryExpr<QueryOutput> {
         QueryExpr {
+            parameters: self.parameters.clone(),
             expression: self.expression.clone(),
             depth: self.depth,
             nodes: self.nodes,
@@ -67,6 +121,7 @@ impl<T> QueryExpr<T> {
     }
     fn start(stages: Vec<Stage>) -> Self {
         Self {
+            parameters: Vec::new(),
             nodes: stages.len(),
             expression: expression(stages),
             depth: 1,
@@ -96,6 +151,7 @@ impl<T> QueryExpr<T> {
             expression.first.push(stage);
         }
         QueryExpr {
+            parameters: self.parameters.clone(),
             expression,
             depth,
             nodes: self.nodes.saturating_add(nodes),
@@ -119,6 +175,7 @@ impl<T> QueryExpr<T> {
             other.nodes.saturating_add(1),
             other.invalid,
         )
+        .with_parameters(other.parameters.clone())
     }
     /// Execute with a specific registry and evaluation budget, returning native data.
     ///
@@ -176,7 +233,7 @@ impl<T> QueryExpr<T> {
     }
     /// Create this request's allowance, retaining legacy policy for ordinary queries.
     pub fn new_budget(&self, limits: EvaluationLimits) -> zirql::Budget {
-        if report::has_constructed(&self.expression) {
+        if !self.parameters.is_empty() || report::has_constructed(&self.expression) {
             zirql::Budget::for_program(ProgramLimits {
                 work: limits.max_work,
                 stream_items: limits.max_items,
@@ -194,21 +251,40 @@ impl<T> QueryExpr<T> {
         options: EvaluationOptions,
         budget: &mut zirql::Budget,
     ) -> Result<QueryOutput, EvaluationError> {
+        self.evaluate_output_with_parameters_and_budget(
+            document,
+            registry,
+            options,
+            ParameterInputs::Typed(&[]),
+            budget,
+        )
+    }
+
+    /// Admit, preflight and execute with the caller's allowance, retaining it for conversion.
+    pub fn evaluate_output_with_parameters_and_budget(
+        &self,
+        document: &Document,
+        registry: &DialectRegistry,
+        options: EvaluationOptions,
+        parameters: ParameterInputs<'_>,
+        budget: &mut Budget,
+    ) -> Result<QueryOutput, EvaluationError> {
         if let Some(message) = self.invalid {
             return Err(EvaluationError::new(message));
         }
-        if report::has_constructed(&self.expression) && budget.remaining_results().is_none() {
+        if (!self.parameters.is_empty() || report::has_constructed(&self.expression))
+            && budget.remaining_results().is_none()
+        {
             return Err(EvaluationError::new(
                 "constructed reports require an aggregate result allowance",
             ));
         }
+        let admitted =
+            program::admit_parameters(&self.parameters, parameters, &["document"], 0..0, budget)?;
+        let bindings = zirql::Bindings::new(admitted).map_err(core_error)?;
+        let names = program::parameter_names(&self.parameters, budget)?;
         charge(budget, self.nodes)?;
-        program::validate_expression(
-            &self.expression,
-            program::Kind::Operations,
-            &BTreeMap::new(),
-            budget,
-        )?;
+        program::validate_expression(&self.expression, program::Kind::Operations, &names, budget)?;
         let selected = QueryOutput::Operations(collect(budget, document.operations())?);
         let mut access = DocumentAccess::Shared(document);
         let mut emit = |_: &Document, _: QueryOutput, _: &mut zirql::Budget| {
@@ -219,17 +295,12 @@ impl<T> QueryExpr<T> {
             document: &mut access,
             registry,
             expressions: &expressions,
+            parameters: Vec::new(),
             options,
             output: OutputMode::Native,
             emit: &mut emit,
         };
-        evaluate_expression(
-            &self.expression,
-            &mut context,
-            selected,
-            &zirql::Bindings::default(),
-            budget,
-        )
+        evaluate_expression(&self.expression, &mut context, selected, &bindings, budget)
     }
     /// Execute a constructed request with explicit aggregate and stream bounds.
     pub fn evaluate_with_program_limits(
@@ -288,6 +359,7 @@ impl Document {
 
 impl OpQuery {
     pub fn filter(&self, predicate: Predicate) -> Self {
+        let parameters = predicate.parameters.clone();
         self.append(
             Stage::Filter {
                 predicate: predicate.inner,
@@ -297,8 +369,10 @@ impl OpQuery {
             predicate.nodes + 1,
             predicate.invalid,
         )
+        .with_parameters(parameters)
     }
     pub fn root(&self, predicate: Predicate) -> Self {
+        let parameters = predicate.parameters.clone();
         self.append(
             Stage::Root {
                 predicate: predicate.inner,
@@ -308,6 +382,7 @@ impl OpQuery {
             predicate.nodes + 1,
             predicate.invalid,
         )
+        .with_parameters(parameters)
     }
     pub fn defs(&self) -> Self {
         self.stage(Stage::Defs {
@@ -361,11 +436,33 @@ impl OpQuery {
             key.nodes.saturating_add(value.nodes).saturating_add(1),
             key.invalid.or(value.invalid),
         )
+        .with_parameters(merge_parameters(&key.parameters, &value.parameters))
     }
     pub fn string_attr(&self, name: impl Into<String>) -> StringQuery {
         self.structured(StructuredStage::StringAttr(name.into()))
     }
     /// Project attribute spellings using the textual `attr` stage's rules.
+    pub fn attr_expr(&self, name: ReportExpr) -> StringQuery {
+        self.stage(Stage::Computed {
+            value: model::ComputedStage::Attr(name.value),
+            range: range(),
+        })
+        .with_parameters(name.parameters)
+    }
+    pub fn defs_at_expr(&self, index: ReportExpr) -> Self {
+        self.stage(Stage::Computed {
+            value: model::ComputedStage::Defs(index.value),
+            range: range(),
+        })
+        .with_parameters(index.parameters)
+    }
+    pub fn users_at_expr(&self, index: ReportExpr) -> Self {
+        self.stage(Stage::Computed {
+            value: model::ComputedStage::Users(index.value),
+            range: range(),
+        })
+        .with_parameters(index.parameters)
+    }
     pub fn attr(&self, name: impl Into<String>) -> StringQuery {
         self.stage(Stage::Attr {
             name: name.into(),
@@ -431,6 +528,8 @@ macro_rules! stream {
         impl $ty {
             pub fn head(&self, count: usize) -> Self { self.stage(Stage::Head { count, range: range() }) }
             pub fn tail(&self, count: usize) -> Self { self.stage(Stage::Tail { count, range: range() }) }
+            pub fn head_expr(&self, count: ReportExpr) -> Self { self.stage(Stage::Computed {value:model::ComputedStage::Head(count.value),range:range()}).with_parameters(count.parameters) }
+            pub fn tail_expr(&self, count: ReportExpr) -> Self { self.stage(Stage::Computed {value:model::ComputedStage::Tail(count.value),range:range()}).with_parameters(count.parameters) }
         }
     };
 }
@@ -443,6 +542,7 @@ impl<T> MapQuery<T> {
     #[doc(hidden)]
     pub fn map_values_erased(&self) -> MapQuery<QueryOutput> {
         QueryExpr {
+            parameters: self.parameters.clone(),
             expression: self.expression.clone(),
             depth: self.depth,
             nodes: self.nodes,
@@ -536,6 +636,7 @@ ordering!(sort_by => SortBy, min_by => MinBy, max_by => MaxBy, min_all_by => Min
 /// An operation predicate. Combine with `&`, `|`, and `!`.
 #[derive(Clone, Debug)]
 pub struct Predicate {
+    parameters: Vec<ParameterDeclaration>,
     inner: model::Predicate,
     depth: usize,
     nodes: usize,
@@ -550,11 +651,17 @@ impl Predicate {
         if let Some(error) = self.invalid {
             return Err(EvaluationError::new(error));
         }
+        if !self.parameters.is_empty() {
+            return Err(EvaluationError::new(
+                "parameterized predicate needs a program scope",
+            ));
+        }
         Ok(self.model())
     }
 
     fn new(inner: model::Predicate) -> Self {
         Self {
+            parameters: Vec::new(),
             inner,
             depth: 1,
             nodes: 1,
@@ -562,6 +669,7 @@ impl Predicate {
         }
     }
     fn combine(self, right: Self, and: bool) -> Self {
+        let parameters = merge_parameters(&self.parameters, &right.parameters);
         let flatten = |predicate: &model::Predicate| {
             matches!(
                 (and, predicate),
@@ -579,6 +687,7 @@ impl Predicate {
         let nodes = self.nodes.saturating_add(right.nodes).saturating_add(1);
         if invalid.is_some() {
             return Self {
+                parameters,
                 inner: model::Predicate::Bool {
                     value: false,
                     range: range(),
@@ -603,6 +712,7 @@ impl Predicate {
             }
         }
         Self {
+            parameters,
             inner: if and {
                 model::Predicate::And {
                     predicates,
@@ -651,6 +761,7 @@ impl Not for Predicate {
             }
         };
         Self {
+            parameters: self.parameters,
             inner,
             depth: self.depth.saturating_add(1),
             nodes: self.nodes.saturating_add(1),
@@ -919,11 +1030,18 @@ pub type ReportOperand = zirql::Expression<parser::Stage, parser::SetOperator, (
 /// Immutable shared value expression. Native leaves retain typed query trees.
 #[derive(Clone, Debug)]
 pub struct ReportExpr {
+    parameters: Vec<ParameterDeclaration>,
     value: ParsedComprehension,
 }
 impl ReportExpr {
+    fn with_metadata(mut self, parameters: Vec<ParameterDeclaration>) -> Self {
+        self.parameters = parameters;
+        self
+    }
+
     fn node(value: zirql::ValueExpressionKind<ReportOperand>) -> Self {
         Self {
+            parameters: Vec::new(),
             value: ParsedComprehension::new(zirql::Located::new(value, 0..0)),
         }
     }
@@ -975,58 +1093,77 @@ impl ReportExpr {
         Self::node(zirql::ValueExpressionKind::Name(name.into()))
     }
     pub fn array(values: impl IntoIterator<Item = Self>) -> Self {
-        Self::node(zirql::ValueExpressionKind::Array(
-            values.into_iter().map(Self::into_expression).collect(),
-        ))
+        let mut parameters = Vec::new();
+        let values = values
+            .into_iter()
+            .map(|value| {
+                parameters = merge_parameters(&parameters, &value.parameters);
+                value.into_expression()
+            })
+            .collect();
+        Self::node(zirql::ValueExpressionKind::Array(values)).with_metadata(parameters)
     }
     pub fn record<S: Into<String>>(fields: impl IntoIterator<Item = (S, Self)>) -> Self {
-        Self::node(zirql::ValueExpressionKind::Record(
-            fields
-                .into_iter()
-                .map(|(name, value)| {
-                    (
-                        zirql::Located::new(name.into(), 0..0),
-                        value.into_expression(),
-                    )
-                })
-                .collect(),
-        ))
+        let mut parameters = Vec::new();
+        let fields = fields
+            .into_iter()
+            .map(|(name, value)| {
+                parameters = merge_parameters(&parameters, &value.parameters);
+                (
+                    zirql::Located::new(name.into(), 0..0),
+                    value.into_expression(),
+                )
+            })
+            .collect();
+        Self::node(zirql::ValueExpressionKind::Record(fields)).with_metadata(parameters)
     }
     pub fn field(self, name: impl Into<String>) -> Self {
+        let parameters = self.parameters.clone();
         Self::node(zirql::ValueExpressionKind::Field {
             value: Box::new(self.into_expression()),
             field: zirql::Located::new(name.into(), 0..0),
         })
+        .with_metadata(parameters)
     }
     pub fn at(self, index: Self) -> Self {
+        let parameters = merge_parameters(&self.parameters, &index.parameters);
         Self::node(zirql::ValueExpressionKind::ArrayAccess {
             array: Box::new(self.into_expression()),
             index: Box::new(index.into_expression()),
         })
+        .with_metadata(parameters)
     }
     pub fn unary(self, operator: zirql::ValueUnaryOperator) -> Self {
+        let parameters = self.parameters.clone();
         Self::node(zirql::ValueExpressionKind::Unary {
             operator,
             operand: Box::new(self.into_expression()),
         })
+        .with_metadata(parameters)
     }
     pub fn binary(self, operator: zirql::ValueBinaryOperator, right: Self) -> Self {
+        let parameters = merge_parameters(&self.parameters, &right.parameters);
         Self::node(zirql::ValueExpressionKind::Binary {
             operator,
             left: Box::new(self.into_expression()),
             right: Box::new(right.into_expression()),
         })
+        .with_metadata(parameters)
     }
     pub fn one(self) -> Self {
+        let parameters = self.parameters.clone();
         Self::node(zirql::ValueExpressionKind::One(Box::new(
             self.into_expression(),
         )))
+        .with_metadata(parameters)
     }
     pub fn reduce(self, operator: zirql::ValueReducer) -> Self {
+        let parameters = self.parameters.clone();
         Self::node(zirql::ValueExpressionKind::Reduce {
             operator,
             array: Box::new(self.into_expression()),
         })
+        .with_metadata(parameters)
     }
     pub fn length(self) -> Self {
         self.reduce(zirql::ValueReducer::Length)
@@ -1041,18 +1178,29 @@ impl ReportExpr {
         self.reduce(zirql::ValueReducer::Exists)
     }
     pub fn require(condition: Self, value: Self, message: impl Into<String>) -> Self {
+        let parameters = merge_parameters(&condition.parameters, &value.parameters);
         Self::node(zirql::ValueExpressionKind::Require {
             condition: Box::new(condition.into_expression()),
             value: Box::new(value.into_expression()),
             message: zirql::Located::new(message.into(), 0..0),
         })
+        .with_metadata(parameters)
     }
     pub fn comprehension(head: Self, clauses: impl IntoIterator<Item = ReportGenerator>) -> Self {
+        let mut parameters = head.parameters.clone();
+        let clauses = clauses
+            .into_iter()
+            .map(|clause| {
+                parameters = merge_parameters(&parameters, &clause.parameters);
+                clause.clause
+            })
+            .collect();
         Self::node(zirql::ValueExpressionKind::Comprehension {
             constructor: zirql::ValueConstructor::Array,
-            clauses: clauses.into_iter().map(|clause| clause.clause).collect(),
+            clauses,
             head: Box::new(head.into_expression()),
         })
+        .with_metadata(parameters)
     }
     /// Evaluate immutable local bindings in order, then return one constructed value.
     pub fn scope<S: Into<String>>(
@@ -1070,6 +1218,7 @@ impl ReportExpr {
 }
 /// A shared generator clause, with immutable binding and optional known-Boolean filter.
 pub struct ReportGenerator {
+    parameters: Vec<ParameterDeclaration>,
     clause: zirql::Located<zirql::ValueGenerator<ReportOperand>>,
 }
 impl ReportGenerator {
@@ -1078,7 +1227,15 @@ impl ReportGenerator {
         source: ReportExpr,
         filter: Option<ReportExpr>,
     ) -> Self {
+        let parameters = merge_parameters(
+            &source.parameters,
+            &filter
+                .as_ref()
+                .map(|value| value.parameters.clone())
+                .unwrap_or_default(),
+        );
         Self {
+            parameters,
             clause: zirql::Located::new(
                 zirql::ValueGenerator::In {
                     binders: vec![zirql::Located::new(Some(name.into()), 0..0)],
@@ -1091,6 +1248,7 @@ impl ReportGenerator {
     }
     pub fn bind(name: impl Into<String>, value: ReportExpr) -> Self {
         Self {
+            parameters: value.parameters.clone(),
             clause: zirql::Located::new(
                 zirql::ValueGenerator::Bind {
                     binder: zirql::Located::new(Some(name.into()), 0..0),
@@ -1115,21 +1273,25 @@ impl OpQuery {
         subject: impl Into<String>,
         fields: impl IntoIterator<Item = (S, ReportExpr)>,
     ) -> ReportQuery {
+        let mut parameters = Vec::new();
+        let fields = fields
+            .into_iter()
+            .map(|(name, value)| {
+                parameters = merge_parameters(&parameters, &value.parameters);
+                (
+                    zirql::Located::new(name.into(), 0..0),
+                    value.into_expression(),
+                )
+            })
+            .collect();
         self.stage(Stage::Projection {
             value: report::ParsedProjection::new(zirql::Projection {
                 subject: zirql::Located::new(subject.into(), 0..0),
-                fields: fields
-                    .into_iter()
-                    .map(|(name, value)| {
-                        (
-                            zirql::Located::new(name.into(), 0..0),
-                            value.into_expression(),
-                        )
-                    })
-                    .collect(),
+                fields,
             }),
             range: range(),
         })
+        .with_parameters(parameters)
     }
 }
 /// Construct a typed read-only report without requesting an emitter.
@@ -1138,6 +1300,7 @@ pub fn report(value: ReportExpr) -> ReportQuery {
         value: value.value,
         range: range(),
     }])
+    .with_parameters(value.parameters)
 }
 macro_rules! report_query_conversion {
     ($result:ty) => {
@@ -1146,6 +1309,7 @@ macro_rules! report_query_conversion {
                 Self::node(zirql::ValueExpressionKind::NativeQuery(Box::new(
                     report::operand(&query.expression),
                 )))
+                .with_metadata(query.parameters)
             }
         }
     };
@@ -1178,8 +1342,11 @@ result!(ConstructedReport, QueryOutput::Native(NativeValue::Constructed(value))=
 
 /// Compare an operation name with a checked shared string expression.
 pub fn op_expr(name: ReportExpr) -> Predicate {
-    Predicate::new(model::Predicate::OpValue {
+    let parameters = name.parameters;
+    let mut predicate = Predicate::new(model::Predicate::OpValue {
         name: name.value,
         range: range(),
-    })
+    });
+    predicate.parameters = parameters;
+    predicate
 }

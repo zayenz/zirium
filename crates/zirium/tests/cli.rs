@@ -3401,6 +3401,67 @@ fn correlated_reports_agree_inline_file_and_explicit_emission() {
         String::from_utf8_lossy(&file.stderr)
     );
     assert_eq!(file.stdout, inline.stdout);
+    let parameter_program = include_str!("../../../examples/cli/function-report-parameters.zirql");
+    let arguments = [
+        "--param",
+        "operation_name=arith.addi",
+        "--param",
+        "minimum_ops=+2",
+    ];
+    let parameter_inline = run_stdin_with_options(&arguments, parameter_program, input);
+    assert!(parameter_inline.status.success(), "{parameter_inline:?}");
+    assert_eq!(parameter_inline.stdout, inline.stdout);
+    fs::write(&path, parameter_program).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(arguments)
+        .args(["-f", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let parameter_file = child.wait_with_output().unwrap();
+    fs::remove_file(&path).unwrap();
+    assert!(parameter_file.status.success(), "{parameter_file:?}");
+    assert_eq!(parameter_file.stdout, inline.stdout);
+    for bad in [
+        vec!["operation_name=arith.addi"],
+        vec![
+            "operation_name=arith.addi",
+            "minimum_ops=2",
+            "minimum_ops=2",
+        ],
+        vec!["operation_name=arith.addi", "minimum_ops=2", "extra=1"],
+        vec!["operation_name=arith.addi", "minimum_ops=2.0"],
+    ] {
+        let arguments: Vec<_> = bad.iter().flat_map(|value| ["--param", *value]).collect();
+        let refused = run_stdin_with_options(&arguments, parameter_program, input);
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty());
+    }
+    let exact = run_stdin_with_options(
+        &["--param", "text=  \"x\"=\\  "],
+        "param text: string; report text;",
+        input,
+    );
+    assert!(exact.status.success(), "{exact:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&exact.stdout).unwrap(),
+        "  \"x\"=\\  "
+    );
+    let refused = run_stdin_with_options(
+        &["--param", "flag=True"],
+        "param flag: bool; report flag;",
+        input,
+    );
+    assert!(!refused.status.success() && refused.stdout.is_empty());
+
     let short = run_stdin(
         r#"filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "n": f | children | count}) | json"#,
         input,

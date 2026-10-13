@@ -50,6 +50,7 @@ Options:
   --max-registry-files N  Maximum unique registry files (default 1024)
   --max-registry-edges N  Maximum declared registry imports (default 4096)
   --max-registry-bytes N  Maximum aggregate registry bytes (default 16777216)
+  --param name=value     Supply one required int, string or bool input (repeatable)
   -f, --program-file FILE Read the query from a file instead of an argument
   --strict                Reject incomplete parsing and unknown reachable references
   --diff BEFORE AFTER     Compare two complete semantic MLIR documents
@@ -386,6 +387,7 @@ fn run() -> Result<(), String> {
     let mut parse_limits = ParseLimits::default();
     let mut registry_limits = RegistryLoadOptions::default();
     let mut program_path = None;
+    let mut parameters = Vec::new();
     let mut inline_query = None;
     let mut paths = Vec::new();
     let mut diff_paths: Option<(OsString, OsString)> = None;
@@ -402,6 +404,7 @@ fn run() -> Result<(), String> {
                     "--preset"
                         | "--registry"
                         | "--program-file"
+                        | "--param"
                         | "--fragment-scope"
                         | "--max-file-bytes"
                         | "--max-work"
@@ -523,6 +526,13 @@ fn run() -> Result<(), String> {
                 }
                 registry_paths.push(path);
             }
+            "--param" => {
+                parameters.push(
+                    option_value!("missing name=value after --param")
+                        .into_string()
+                        .map_err(|_| "parameter argument must be UTF-8")?,
+                );
+            }
             "-f" | "--program-file" => {
                 if program_path.is_some() || inline_query.is_some() {
                     return Err("supply one inline query or one program file".into());
@@ -588,6 +598,21 @@ fn run() -> Result<(), String> {
     }
     if max_results.is_some() && diff_paths.is_some() {
         return Err("--max-results applies to document query programs".into());
+    }
+    if diff_paths.is_some() && !parameters.is_empty() {
+        zirql::admit_parameters(
+            &[],
+            zirql::ParameterInputs::Cli(&parameters),
+            &[],
+            0..query_text.len(),
+            &mut zirql::Budget::for_program(zirql::ProgramLimits {
+                work: evaluation_limits.max_work,
+                results: max_results.unwrap_or(1_000_000),
+                nesting: 64,
+                stream_items: evaluation_limits.max_items,
+            }),
+        )
+        .map_err(|error| format!("{query_name}: {error}"))?;
     }
     if let Some((before, after)) = diff_paths {
         if !paths.is_empty() {
@@ -876,11 +901,12 @@ fn run() -> Result<(), String> {
                 nesting: 64,
             })
         };
-        let result = query.evaluate_with_budget(
+        let result = query.evaluate_with_parameters_and_budget(
             &mut document,
             registry,
             Some(&name),
             options,
+            zirql::ParameterInputs::Cli(&parameters),
             &mut budget,
             emit,
         );

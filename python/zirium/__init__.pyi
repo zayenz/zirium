@@ -330,6 +330,7 @@ class Document:
         self,
         expression: QueryExpr[_QueryResult],
         *,
+        parameters: dict[str, bool | int | str] | None = None,
         max_work: int | None = None,
         max_items: int | None = None,
         strict: bool = False,

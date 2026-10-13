@@ -257,6 +257,13 @@ pub(super) fn has_syntax(source: &str) -> bool {
                 {
                     return true;
                 }
+                if statement_start && word == "param" {
+                    let mut probe =
+                        zirql::ArgumentReader::new(source, cursor).expect("source byte boundary");
+                    if probe.word().is_ok() && probe.consume(':') {
+                        return true;
+                    }
+                }
                 if statement_start && word == "let" {
                     let mut probe =
                         zirql::ArgumentReader::new(source, cursor).expect("source byte boundary");

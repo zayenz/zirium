@@ -54,6 +54,64 @@ use `document.query_with_registry(&expression, &registry)`, passing the registry
 used to parse and lower the document. Python retains that registry in the document
 and uses it automatically.
 
+## Required scalar inputs
+
+A typed request carries root declarations through composition, erasure and
+conversion to a report expression. Attach declarations with `with_parameters`
+and supply native scalar values at evaluation:
+
+```rust
+use zirium::query::{ConstructedValue, EvaluationLimits, Located,
+    ParameterDeclaration, ParameterType, ReportExpr, report};
+
+let query = report(ReportExpr::name("minimum_ops")).with_parameters(vec![
+    ParameterDeclaration {
+        name: Located::new("minimum_ops".to_owned(), 0..0),
+        ty: Located::new(ParameterType::Int, 0..0),
+    },
+]);
+let result = query.evaluate_with_parameters(
+    &document, &registry,
+    &[("minimum_ops".to_owned(), ConstructedValue::Integer(2))],
+    EvaluationLimits::default(),
+)?;
+assert_eq!(result.value(), &ConstructedValue::Integer(2));
+```
+
+Root declarations are visible throughout the builder request. Identical
+metadata shared by composed expressions is retained once; conflicting
+metadata reaches admission and fails. A local scope or projection cannot
+shadow a root declaration. `op_expr(ReportExpr::name("operation_name"))`
+checks a supplied string. Rust also has `head_expr`, `tail_expr`, `attr_expr`,
+`defs_at_expr` and `users_at_expr` for shared scalar expressions.
+
+Python report requests use the same declarations and admission:
+
+```python
+from zirium.query import ReportExpr, report
+
+query = report(ReportExpr.name("minimum_ops")).with_parameters(
+    {"minimum_ops": "int"}
+)
+assert document.query(query, parameters={"minimum_ops": 2}) == 2
+```
+
+Declaration types are `"int"`, `"string"` and `"bool"`; inputs are actual Python
+`int`, `str` and `bool` values. Booleans remain Boolean values rather than integer
+inputs. Integers must fit signed 64 bits; overflow raises `OverflowError`.
+Unsupported value kinds raise `TypeError`. Strings remain exact data.
+Conversion, admission, evaluation and native result conversion spend the same
+request allowance, including input names and string bytes.
+
+Every declaration needs one input; missing or extra inputs and type mismatches
+fail before native document work. Existing evaluation methods supply an empty
+input set. For parsed Rust requests, `Query::parameters()` exposes declarations,
+`Query::evaluate_with_parameters` accepts typed scalar pairs, and
+`evaluate_with_parameters_and_budget` accepts `ParameterInputs::Typed` or
+`ParameterInputs::Cli` with the caller's budget. Library emission callbacks
+retain their existing behavior; callers buffer emissions when a later failure
+must discard earlier output. The CLI already buffers complete requests.
+
 ## Compose predicates and streams
 
 Available predicates are `op(name)`, `dialect(name)`, `has_attr(name)`,

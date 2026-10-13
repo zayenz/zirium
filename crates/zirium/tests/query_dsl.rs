@@ -831,29 +831,95 @@ fn correlated_function_report_agrees_through_text_and_typed_native_data() {
         )
         .sum()
     };
-    let typed = report(E::scope(
-        [
-            ("operation_name", E::string("arith.addi")),
-            ("minimum_ops", E::integer(2)),
-            (
-                "threshold",
-                E::require(
-                    E::name("minimum_ops").binary(B::GreaterEqual, E::integer(0)),
-                    E::name("minimum_ops"),
-                    "minimum_ops must be nonnegative",
-                ),
+    let bindings = vec![
+        ("operation_name", E::string("arith.addi")),
+        ("minimum_ops", E::integer(2)),
+        (
+            "threshold",
+            E::require(
+                E::name("minimum_ops").binary(B::GreaterEqual, E::integer(0)),
+                E::name("minimum_ops"),
+                "minimum_ops must be nonnegative",
             ),
-            ("rows", rows.into()),
-            ("selected", selected),
-        ],
-        E::record([
-            ("functions", E::name("selected")),
-            ("total_operations", total("operations")),
-            ("total_matches", total("matches")),
-        ]),
-    ));
+        ),
+        ("rows", rows.into()),
+        ("selected", selected),
+    ];
+    let result = E::record([
+        ("functions", E::name("selected")),
+        ("total_operations", total("operations")),
+        ("total_matches", total("matches")),
+    ]);
+    let typed = report(E::scope(bindings.clone(), result.clone()));
+
     let constructed = document.query(&typed).unwrap();
     assert_eq!(constructed.value(), parsed.value());
+    let parameter_query = Query::parse(include_str!(
+        "../../../examples/cli/function-report-parameters.zirql"
+    ))
+    .unwrap();
+    let parameters = vec![
+        ("operation_name".into(), V::String("arith.addi".into())),
+        ("minimum_ops".into(), V::Integer(2)),
+    ];
+    let mut parameter_outputs = vec![];
+    parameter_query
+        .evaluate_with_parameters(
+            &mut document,
+            DialectRegistry::baseline(),
+            &parameters,
+            |_, value| {
+                parameter_outputs.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(parameter_value)) = &parameter_outputs[0]
+    else {
+        panic!("native parameter report")
+    };
+    assert_eq!(parameter_outputs.len(), 1);
+    assert_eq!(parameter_value.value(), parsed.value());
+    let parameter_builder = report(E::scope(bindings.into_iter().skip(2), result))
+        .with_parameters(parameter_query.parameters().to_vec());
+    let parameter_result = parameter_builder
+        .evaluate_with_parameters(
+            &document,
+            DialectRegistry::baseline(),
+            &parameters,
+            EvaluationLimits::default(),
+        )
+        .unwrap();
+    assert_eq!(parameter_result.value(), parsed.value());
+    let erased = parameter_builder.erased();
+    assert_eq!(erased.parameters(), parameter_query.parameters());
+    let QueryOutput::Native(NativeValue::Constructed(erased_value)) = erased
+        .evaluate_with_parameters(
+            &document,
+            DialectRegistry::baseline(),
+            &parameters,
+            EvaluationLimits::default(),
+        )
+        .unwrap()
+    else {
+        panic!("erased native report")
+    };
+    assert_eq!(erased_value.value(), parsed.value());
+    let nested = report(E::from(parameter_builder.clone()));
+    assert_eq!(nested.parameters(), parameter_query.parameters());
+    assert_eq!(
+        nested
+            .evaluate_with_parameters(
+                &document,
+                DialectRegistry::baseline(),
+                &parameters,
+                EvaluationLimits::default()
+            )
+            .unwrap()
+            .value(),
+        parsed.value()
+    );
+
     let row = |name: &str, operations, matches, kinds: Vec<&str>| {
         V::Record(vec![
             ("name".into(), V::String(name.into())),
@@ -1033,4 +1099,79 @@ fn correlated_function_report_agrees_through_text_and_typed_native_data() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("work limit"));
+}
+
+#[test]
+fn parameter_arguments_keep_ordered_scope_and_preflight() {
+    use zirium::query::{ConstructedValue as V, NativeValue};
+    let mut document = document();
+    let parameters = vec![("factor".into(), V::Integer(2))];
+    let source = "report [factor for factor in [1]]; param factor: int; report factor;";
+    let mut outputs = vec![];
+    Query::parse(source)
+        .unwrap()
+        .evaluate_with_parameters(
+            &mut document,
+            DialectRegistry::baseline(),
+            &parameters,
+            |_, value| {
+                outputs.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(&outputs[0], QueryOutput::Native(NativeValue::Constructed(v)) if v.value()==&V::Array(vec![V::Integer(1)]))
+    );
+    assert!(
+        matches!(&outputs[1], QueryOutput::Native(NativeValue::Constructed(v)) if v.value()==&V::Integer(2))
+    );
+    for source in [
+        "report factor; param factor: int; report factor;",
+        "param factor: int; report [factor for factor in [1]];",
+        "param document: string; names",
+        "param factor: int; factor = count; names",
+    ] {
+        assert!(
+            Query::parse(source)
+                .map(|query| query
+                    .evaluate_with_parameters(
+                        &mut document,
+                        DialectRegistry::baseline(),
+                        &parameters,
+                        |_, _| Ok(())
+                    )
+                    .is_err())
+                .unwrap_or(true),
+            "{source}"
+        );
+    }
+    let mut output = vec![];
+    Query::parse("param kind: string; param n: int; filter(op(kind)) | head(n) | names")
+        .unwrap()
+        .evaluate_with_parameters(
+            &mut document,
+            DialectRegistry::baseline(),
+            &[
+                ("kind".into(), V::String("test.seed".into())),
+                ("n".into(), V::Integer(1)),
+            ],
+            |_, value| {
+                output.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(output, vec![QueryOutput::Values(vec!["test.seed".into()])]);
+    let invalid = "param n: int; filter(false) | filter(op(n)) | names";
+    let error = Query::parse(invalid)
+        .unwrap()
+        .evaluate_with_parameters(
+            &mut document,
+            DialectRegistry::baseline(),
+            &[("n".into(), V::Integer(1))],
+            |_, _| panic!("preflight before output"),
+        )
+        .unwrap_err();
+    assert_eq!(&invalid[error.range().unwrap()], "n");
 }

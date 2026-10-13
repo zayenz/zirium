@@ -198,7 +198,10 @@ ReportInput: TypeAlias = (
     | dict[str, ReportInput]
 )
 
-class ReportQuery(QueryExpr[ReportValue]): ...
+class ReportQuery(QueryExpr[ReportValue]):
+    def with_parameters(
+        self, declarations: dict[str, Literal["int", "string", "bool"]]
+    ) -> ReportQuery: ...
 
 class ReportExpr:
     def __init__(self, value: ReportInput) -> None: ...

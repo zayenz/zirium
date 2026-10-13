@@ -25,8 +25,9 @@ mod model;
 pub use builder::*;
 pub use diff::*;
 pub use zirql::{
-    Budget, ConstructedValue, Location as ValueLocation, ProgramLimits, ValueBinaryOperator,
-    ValueUnaryOperator, constructed_value_type,
+    Budget, ConstructedValue, Located, Location as ValueLocation, ParameterDeclaration,
+    ParameterInputs, ParameterType, ProgramLimits, ValueBinaryOperator, ValueUnaryOperator,
+    constructed_value_type,
 };
 mod literal;
 pub mod parser;
@@ -37,6 +38,8 @@ mod report;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
+    parameters: Vec<ParameterDeclaration>,
+    parameter_positions: Vec<usize>,
     expression: model::Expression,
     statements: Vec<model::Statement>,
     emit_final_result: bool,
@@ -74,6 +77,7 @@ struct EvaluationContext<'a, 'document, 'query> {
     document: &'a mut DocumentAccess<'document>,
     registry: &'a DialectRegistry,
     expressions: &'a BTreeMap<usize, program::Expression<'query>>,
+    parameters: Vec<Option<QueryOutput>>,
     options: EvaluationOptions,
     output: OutputMode,
     emit: &'a mut dyn FnMut(
@@ -395,6 +399,8 @@ impl Query {
             .into_program()
             .expect("diagnostic-free query has a program");
         Ok(Self {
+            parameters: program.parameters,
+            parameter_positions: program.parameter_positions,
             expression: program.expression,
             statements: program.statements,
             emit_final_result: program.emit_final_result,
@@ -514,7 +520,65 @@ impl Query {
         document_name: Option<&str>,
         options: EvaluationOptions,
         budget: &mut zirql::Budget,
-        mut emit: impl FnMut(&Document, QueryOutput, &mut zirql::Budget) -> Result<(), EvaluationError>,
+        emit: impl FnMut(&Document, QueryOutput, &mut zirql::Budget) -> Result<(), EvaluationError>,
+    ) -> Result<(), EvaluationError> {
+        self.evaluate_with_parameters_and_budget(
+            document,
+            registry,
+            document_name,
+            options,
+            ParameterInputs::Typed(&[]),
+            budget,
+            emit,
+        )
+    }
+
+    /// Required declarations retained by this text program.
+    pub fn parameters(&self) -> &[ParameterDeclaration] {
+        &self.parameters
+    }
+
+    /// Evaluate typed caller inputs with the default request bounds.
+    pub fn evaluate_with_parameters(
+        &self,
+        document: &mut Document,
+        registry: &DialectRegistry,
+        parameters: &[(String, ConstructedValue)],
+        mut emit: impl FnMut(&Document, QueryOutput) -> Result<(), EvaluationError>,
+    ) -> Result<(), EvaluationError> {
+        let limits = EvaluationLimits::default();
+        let mut budget = if self.has_comprehensions() {
+            Budget::for_program(ProgramLimits {
+                work: limits.max_work,
+                stream_items: limits.max_items,
+                ..comprehension::default_limits()
+            })
+        } else {
+            evaluation_budget(limits)
+        };
+        self.evaluate_with_parameters_and_budget(
+            document,
+            registry,
+            None,
+            EvaluationOptions::default(),
+            ParameterInputs::Typed(parameters),
+            &mut budget,
+            |document, value, _| emit(document, value),
+        )
+    }
+
+    /// Admit the full argument set, preflight and execute with one request allowance.
+    /// Buffer library emissions if a later failure must discard earlier output.
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_with_parameters_and_budget(
+        &self,
+        document: &mut Document,
+        registry: &DialectRegistry,
+        document_name: Option<&str>,
+        options: EvaluationOptions,
+        parameters: ParameterInputs<'_>,
+        budget: &mut Budget,
+        mut emit: impl FnMut(&Document, QueryOutput, &mut Budget) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
         if self.has_comprehensions() && budget.remaining_results().is_none() {
             return Err(EvaluationError::new(
@@ -533,6 +597,13 @@ impl Query {
                 zirql::Location::Query(program::range(self.expression.range)),
             )
             .map_err(core_error)?;
+        let admitted = program::admit_parameters(
+            &self.parameters,
+            parameters,
+            &["document"],
+            program::range(self.expression.range),
+            budget,
+        )?;
         program::validate(self, document_name, budget)?;
         let expressions = program::expressions(
             self.statements
@@ -544,7 +615,16 @@ impl Query {
                 })
                 .chain(std::iter::once(&self.expression)),
         );
-        let program = program::lower(self);
+        program::charge_results(
+            budget,
+            5 * admitted.len(),
+            &program::range(self.expression.range),
+        )?;
+        let (parameter_names, parameter_values): (Vec<_>, Vec<_>) = admitted
+            .into_iter()
+            .map(|(name, value)| (name, Some(value)))
+            .unzip();
+        let program = program::lower(self, parameter_names);
         let mut access = DocumentAccess::Mutable(document);
         let input = QueryOutput::Operations(collect(budget, access.operations())?);
         if let Some(name) = document_name {
@@ -562,6 +642,7 @@ impl Query {
             document: &mut access,
             registry,
             expressions: &expressions,
+            parameters: parameter_values,
             options,
             output: OutputMode::Textual,
             emit: &mut emit,
@@ -632,6 +713,10 @@ fn evaluate_host_stage(
     budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     match stage {
+        model::Stage::Computed { value, range } => {
+            let stage = report::resolve_stage(value, *range, context, bindings, budget)?;
+            return evaluate_host_stage(&stage, context, current, bindings, budget);
+        }
         model::Stage::Structured { step, .. } => {
             current = evaluate_structured(step, context, current, bindings, budget)?;
         }

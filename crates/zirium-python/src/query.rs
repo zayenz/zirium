@@ -221,6 +221,38 @@ impl ReportExpr {
 }
 #[pymethods]
 impl ReportQuery {
+    /// Attach required int/string/bool input declarations to this immutable request.
+    fn with_parameters(&self, declarations: &Bound<'_, PyDict>) -> PyResult<Self> {
+        let mut budget = self.inner.new_budget(core::EvaluationLimits::default());
+        budget
+            .charge(declarations.len(), core::ValueLocation::Query(0..0))
+            .map_err(py_error)?;
+        budget
+            .charge_results(declarations.len() + 1, core::ValueLocation::Query(0..0))
+            .map_err(py_error)?;
+        let mut parameters = Vec::with_capacity(declarations.len());
+        for (name, ty) in declarations.iter() {
+            let name = parameter_string(&name, &mut budget)?;
+            let ty = parameter_string(&ty, &mut budget)?;
+            let ty = match ty.as_str() {
+                "int" => core::ParameterType::Int,
+                "string" => core::ParameterType::String,
+                "bool" => core::ParameterType::Bool,
+                _ => {
+                    return Err(PyTypeError::new_err(
+                        "parameter type must be int, string or bool",
+                    ));
+                }
+            };
+            parameters.push(core::ParameterDeclaration {
+                name: core::Located::new(name, 0..0),
+                ty: core::Located::new(ty, 0..0),
+            });
+        }
+        Ok(Self {
+            inner: self.inner.with_parameters(parameters),
+        })
+    }
     fn __bool__(&self) -> PyResult<bool> {
         Err(PyTypeError::new_err(
             "query expressions have no truth value; evaluate with document.query(expression)",
@@ -895,10 +927,63 @@ fn always(value: bool) -> Predicate {
     }
 }
 
+fn parameter_string(value: &Bound<'_, PyAny>, budget: &mut core::Budget) -> PyResult<String> {
+    let value = value.cast::<PyString>().map_err(|_| {
+        PyTypeError::new_err("parameter names, types and string values must be str")
+    })?;
+    let bytes = value
+        .len()?
+        .checked_mul(4)
+        .ok_or_else(|| PyTypeError::new_err("parameter string size overflow"))?;
+    budget
+        .charge(bytes, core::ValueLocation::Query(0..0))
+        .map_err(py_error)?;
+    let text = value.to_str()?;
+    budget
+        .charge(text.len(), core::ValueLocation::Query(0..0))
+        .map_err(py_error)?;
+    Ok(text.to_owned())
+}
+fn parameter_values(
+    parameters: Option<&Bound<'_, PyDict>>,
+    budget: &mut core::Budget,
+) -> PyResult<Vec<(String, core::ConstructedValue)>> {
+    let Some(parameters) = parameters else {
+        return Ok(Vec::new());
+    };
+    budget
+        .charge(parameters.len(), core::ValueLocation::Query(0..0))
+        .map_err(py_error)?;
+    budget
+        .charge_results(parameters.len() + 1, core::ValueLocation::Query(0..0))
+        .map_err(py_error)?;
+    let mut values = Vec::with_capacity(parameters.len());
+    for (name, value) in parameters.iter() {
+        let name = parameter_string(&name, budget)?;
+        budget
+            .charge_results(1, core::ValueLocation::Query(0..0))
+            .map_err(py_error)?;
+        let value = if value.is_instance_of::<PyBool>() {
+            core::ConstructedValue::Boolean(value.extract()?)
+        } else if value.is_instance_of::<PyInt>() {
+            core::ConstructedValue::Integer(value.extract::<i64>()?)
+        } else if value.is_instance_of::<PyString>() {
+            core::ConstructedValue::String(parameter_string(&value, budget)?)
+        } else {
+            return Err(PyTypeError::new_err(
+                "parameter values must be bool, int fitting i64 or str",
+            ));
+        };
+        values.push((name, value));
+    }
+    Ok(values)
+}
+
 pub(super) fn evaluate(
     py: Python<'_>,
     document: &Document,
     expression: &Bound<'_, PyAny>,
+    parameters: Option<&Bound<'_, PyDict>>,
     max_work: Option<usize>,
     max_items: Option<usize>,
     strict: bool,
@@ -912,15 +997,17 @@ pub(super) fn evaluate(
         max_items: max_items.unwrap_or(defaults.max_items),
     };
     let mut budget = query.new_budget(limits);
+    let parameters = parameter_values(parameters, &mut budget)?;
     let (output, mut budget) = py.detach(move || {
         let document = read_document(&state)?;
         let output = query
-            .evaluate_output_with_budget(
+            .evaluate_output_with_parameters_and_budget(
                 &document,
                 registry.registry(),
                 core::EvaluationOptions {
                     strict_unknown_references: strict,
                 },
+                core::ParameterInputs::Typed(&parameters),
                 &mut budget,
             )
             .map_err(py_error)?;

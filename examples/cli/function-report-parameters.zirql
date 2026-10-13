@@ -1,0 +1,14 @@
+param operation_name: string;
+param minimum_ops: int;
+let threshold = require(minimum_ops >= 0, minimum_ops, "minimum_ops must be nonnegative");
+let functions = input | filter(op("func.func"));
+let rows = functions | project(f, {
+  "name": f | attr("sym_name") | one,
+  "operations": f | children | subtree | count,
+  "matches": f | children | subtree | filter(op(operation_name)) | count,
+  "kinds": f | children | subtree | names | unique
+});
+let selected = [r for r in rows if r.operations >= threshold];
+report {"functions": selected,
+        "total_operations": sum([r.operations for r in selected]),
+        "total_matches": sum([r.matches for r in selected])};

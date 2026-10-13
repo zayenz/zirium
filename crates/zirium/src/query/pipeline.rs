@@ -164,6 +164,7 @@ fn lower_predicate(predicate: &model::Predicate) -> zirql::Predicate<&model::Pre
         P::Bool { .. }
         | P::Op { .. }
         | P::OpValue { .. }
+        | P::Computed { .. }
         | P::Dialect { .. }
         | P::ResultType { .. }
         | P::HasAttr { .. }
@@ -378,7 +379,7 @@ fn evaluate_leaf(
     let value = match predicate {
         model::Predicate::Bool { value, .. } => *value,
         model::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
-        model::Predicate::OpValue {..}=>unreachable!("value arguments resolve with their active scope"),
+        model::Predicate::OpValue {..} | model::Predicate::Computed {..}=>unreachable!("value arguments resolve with their active scope"),
         model::Predicate::Dialect { name, .. } => document.operation_name(operation).and_then(|op| op.split_once('.')).is_some_and(|(dialect, _)| dialect == name),
         model::Predicate::ResultType { spelling, .. } => document.result_types(operation).unwrap_or(&[]).iter().any(|&ty| document.type_spelling(ty) == Some(spelling)),
         model::Predicate::HasAttr { name, .. } => document.attribute_entries(operation).is_some_and(|mut entries| entries.any(|(attribute, _)| attribute == name)),

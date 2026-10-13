@@ -6,9 +6,12 @@ use zirql::{Bindings, EmissionPolicy, ExpressionKind, ExpressionStep, Located, P
 pub(super) type Expression<'q> = zirql::Expression<Stages<'q>, model::SetOperator, Emitter<'q>>;
 
 #[derive(Debug)]
-pub(super) struct Stages<'q> {
-    native: &'q model::Stage,
-    pipeline: Option<pipeline::NativePipeline<'q>>,
+pub(super) enum Stages<'q> {
+    Native {
+        native: &'q model::Stage,
+        pipeline: Option<pipeline::NativePipeline<'q>>,
+    },
+    Parameter(usize),
 }
 #[derive(Debug)]
 pub(super) enum Emitter<'q> {
@@ -21,44 +24,69 @@ pub(super) fn range(range: crate::source::TextRange) -> Range<usize> {
     range.start() as usize..range.end() as usize
 }
 
-pub(super) fn lower(query: &Query) -> zirql::Program<Stages<'_>, model::SetOperator, Emitter<'_>> {
-    let statements = query
-        .statements
-        .iter()
-        .map(|statement| {
-            let (expression, statement) = match statement {
-                model::Statement::Binding { name, expression } => (
-                    expression,
-                    zirql::Statement::Bind {
-                        name: Located::new(name.clone(), range(expression.range)),
-                        expression: lower_expression(expression),
-                    },
-                ),
-                model::Statement::Do(expression) => (
-                    expression,
-                    zirql::Statement::Evaluate {
-                        expression: lower_expression(expression),
-                        implicit_output: None,
-                    },
-                ),
-                model::Statement::Query(expression) => (
-                    expression,
-                    zirql::Statement::Evaluate {
-                        expression: lower_expression(expression),
-                        implicit_output: Some(Emitter::Result),
-                    },
-                ),
-            };
-            Located::new(statement, range(expression.range))
-        })
-        .chain(std::iter::once(Located::new(
-            zirql::Statement::Evaluate {
-                expression: lower_expression(&query.expression),
-                implicit_output: query.emit_final_result.then_some(Emitter::Result),
-            },
-            range(query.expression.range),
-        )))
-        .collect();
+pub(super) fn lower(
+    query: &Query,
+    parameter_names: Vec<Located<String>>,
+) -> zirql::Program<Stages<'_>, model::SetOperator, Emitter<'_>> {
+    let mut statements = Vec::new();
+    let mut parameters = parameter_names.into_iter().enumerate().peekable();
+    for position in 0..=query.statements.len() {
+        while parameters
+            .peek()
+            .is_some_and(|(index, _)| query.parameter_positions[*index] == position)
+        {
+            let (index, name) = parameters.next().expect("parameter position was checked");
+            let location = name.range.clone();
+            let expression = Located::new(
+                ExpressionKind::Sequence {
+                    input: Box::new(Located::new(ExpressionKind::Input, location.clone())),
+                    steps: vec![Located::new(
+                        ExpressionStep::Stage(Stages::Parameter(index)),
+                        location.clone(),
+                    )],
+                },
+                location.clone(),
+            );
+            statements.push(Located::new(
+                zirql::Statement::Bind { name, expression },
+                location,
+            ));
+        }
+        let Some(statement) = query.statements.get(position) else {
+            break;
+        };
+        let (expression, statement) = match statement {
+            model::Statement::Binding { name, expression } => (
+                expression,
+                zirql::Statement::Bind {
+                    name: Located::new(name.clone(), range(expression.range)),
+                    expression: lower_expression(expression),
+                },
+            ),
+            model::Statement::Do(expression) => (
+                expression,
+                zirql::Statement::Evaluate {
+                    expression: lower_expression(expression),
+                    implicit_output: None,
+                },
+            ),
+            model::Statement::Query(expression) => (
+                expression,
+                zirql::Statement::Evaluate {
+                    expression: lower_expression(expression),
+                    implicit_output: Some(Emitter::Result),
+                },
+            ),
+        };
+        statements.push(Located::new(statement, range(expression.range)));
+    }
+    statements.push(Located::new(
+        zirql::Statement::Evaluate {
+            expression: lower_expression(&query.expression),
+            implicit_output: query.emit_final_result.then_some(Emitter::Result),
+        },
+        range(query.expression.range),
+    ));
     zirql::Program::new(statements, range(query.expression.range))
 }
 
@@ -112,7 +140,7 @@ fn lower_stages(stages: &[model::Stage], location: crate::source::TextRange) -> 
                 .expect("frontend stage nesting was validated")
         });
         steps.push(Located::new(
-            ExpressionStep::Stage(Stages {
+            ExpressionStep::Stage(Stages::Native {
                 native: stage,
                 pipeline,
             }),
@@ -490,13 +518,18 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
         budget: &mut zirql::Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
-        let result = if let Some(pipeline) = &stage.pipeline
-            && pipeline::is_stream(&input)
-        {
-            pipeline::evaluate(pipeline, context, input, bindings, budget)
-        } else {
-            charge(budget, output_size(&input).max(1))
-                .and_then(|()| evaluate_host_stage(stage.native, context, input, bindings, budget))
+        let result = match stage {
+            Stages::Parameter(index) => Ok(context.parameters[*index]
+                .take()
+                .expect("admitted parameter is bound once")),
+            Stages::Native {
+                pipeline: Some(pipeline),
+                ..
+            } if pipeline::is_stream(&input) => {
+                pipeline::evaluate(pipeline, context, input, bindings, budget)
+            }
+            Stages::Native { native, .. } => charge(budget, output_size(&input).max(1))
+                .and_then(|()| evaluate_host_stage(native, context, input, bindings, budget)),
         };
         let value =
             result.map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))?;
@@ -600,6 +633,62 @@ pub(super) enum Kind {
     Constructed(std::sync::Arc<Vec<zirql::ValueType>>),
 }
 
+pub(super) fn parameter_names(
+    declarations: &[ParameterDeclaration],
+    budget: &mut Budget,
+) -> Result<BTreeMap<String, Kind>, EvaluationError> {
+    let mut names = BTreeMap::new();
+    for declaration in declarations {
+        charge_bytes(
+            budget,
+            declaration.name.value.len() + 3,
+            &declaration.name.range,
+        )?;
+        charge_results(budget, 3, &declaration.name.range)?;
+        names.insert(
+            declaration.name.value.clone(),
+            Kind::Constructed(std::sync::Arc::new(vec![declaration.ty.value.into()])),
+        );
+    }
+    Ok(names)
+}
+
+pub(super) fn admit_parameters(
+    declarations: &[ParameterDeclaration],
+    parameters: ParameterInputs<'_>,
+    ambient: &[&str],
+    range: Range<usize>,
+    budget: &mut Budget,
+) -> Result<Vec<(Located<String>, QueryOutput)>, EvaluationError> {
+    for declaration in declarations {
+        charge_bytes(
+            budget,
+            declaration.name.value.len() + 1,
+            &declaration.name.range,
+        )?;
+        let mut name = declaration.name.value.bytes();
+        if !name
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+            || !name.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            || parser::is_reserved(&declaration.name.value)
+        {
+            return Err(EvaluationError::new(
+                "parameter name is reserved or not an ASCII identifier",
+            )
+            .at(declaration.name.range.clone()));
+        }
+    }
+    zirql::admit_parameters(declarations, parameters, ambient, range, budget)
+        .map_err(core_error)?
+        .into_iter()
+        .map(|(name, value)| {
+            let report = ConstructedReport::new(value, name.range.clone(), budget)?;
+            Ok((name, QueryOutput::Native(NativeValue::Constructed(report))))
+        })
+        .collect()
+}
+
 pub(super) fn validate(
     query: &Query,
     document_name: Option<&str>,
@@ -609,7 +698,19 @@ pub(super) fn validate(
     if document_name.is_some() {
         names.insert("document".to_owned(), Kind::Strings);
     }
-    for statement in &query.statements {
+    let mut parameters = query
+        .parameters
+        .iter()
+        .zip(&query.parameter_positions)
+        .peekable();
+    for (index, statement) in query.statements.iter().enumerate() {
+        while parameters
+            .peek()
+            .is_some_and(|(_, position)| **position == index)
+        {
+            let (declaration, _) = parameters.next().unwrap();
+            names.extend(parameter_names(std::slice::from_ref(declaration), budget)?);
+        }
         let expression = match statement {
             model::Statement::Binding { expression, .. }
             | model::Statement::Do(expression)
@@ -619,6 +720,9 @@ pub(super) fn validate(
         if let model::Statement::Binding { name, .. } = statement {
             names.insert(name.clone(), kind);
         }
+    }
+    for (declaration, _) in parameters {
+        names.extend(parameter_names(std::slice::from_ref(declaration), budget)?);
     }
     validate_expression(&query.expression, Kind::Operations, &names, budget)?;
     Ok(())
@@ -654,6 +758,20 @@ pub(super) fn validate_stages(
         let failure = |message: &str| EvaluationError::new(message).at(range(stage.range()));
         let require = |valid, message: &str| if valid { Ok(()) } else { Err(failure(message)) };
         match stage {
+            S::Computed { value, range } => {
+                report::validate_argument(
+                    value.operand(),
+                    value.parameter_type().into(),
+                    names,
+                    budget,
+                )?;
+                kind = validate_stages(
+                    std::slice::from_ref(&value.placeholder(*range)),
+                    kind,
+                    names,
+                    budget,
+                )?;
+            }
             S::Input { .. } => kind = Kind::Operations,
             S::Binding { name, .. } => {
                 kind = names.get(name).cloned().ok_or_else(|| {

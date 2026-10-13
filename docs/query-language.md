@@ -75,6 +75,54 @@ Closing an output pipe early (for example with `head`) exits quietly.
 The selected-fragment printer may change formatting even when printing the
 whole input. Use the library's original-output API to reproduce input bytes.
 
+## Required query parameters
+
+Declare caller inputs before using them:
+
+```zirium
+param operation_name: string;
+param minimum_ops: int;
+filter(op(operation_name)) | head(minimum_ops) | names | json
+```
+
+Pass each required value with a repeated `--param name=value` option. Inline
+programs and program files use the same admission rules:
+
+```sh
+zirium --param operation_name=arith.addi --param minimum_ops=2 'param operation_name: string; param minimum_ops: int; filter(op(operation_name)) | head(minimum_ops) | names | json' examples/cli/function-report.mlir
+zirium --param operation_name=arith.addi --param minimum_ops=2 -f examples/cli/function-report-parameters.zirql examples/cli/function-report.mlir
+```
+
+Types are exactly `int`, `string` and `bool`. Integers are signed 64-bit decimal
+values with an optional `+` or `-`; whitespace, fractions and overflow fail.
+Booleans are exactly `true` or `false`. A string is every character after the
+first `=`, including an empty value, whitespace, quotes, backslashes or further
+`=` characters. Shell quoting protects the argument; query string syntax is
+not applied to its contents.
+
+Every declaration requires one input. Duplicate declarations or inputs,
+missing inputs, extra names and type mismatches fail before operations are
+selected or edited. Declarations have no defaults. Names use the existing
+binding identifier rules, cannot shadow reserved names or earlier bindings,
+and become visible at their written declaration. A comprehension-local name
+in an earlier statement may precede a later declaration of the same name.
+Forward references and shadowing visible declarations fail at the name.
+`param` remains contextual: an existing binding such as `param = names; param`
+keeps its meaning.
+
+Parameters are immutable shared scalar values. Pure expressions and checked
+primitive arguments use the same scope and request allowance. String predicates
+(`op`, `dialect`, `has_attr`, `result_type`, `string_attr_eq`), `attr`, integer
+`head`/`tail`/indexed `defs`/`users`, and `check` counts accept checked expressions.
+Their native name, nonnegative count and index rules still apply. Known wrong
+types fail even in an empty stream or unchosen predicate branch. Inputs are
+never inserted into query source. Diff queries reject supplied parameters.
+
+The [parameterized function report](../examples/cli/function-report-parameters.zirql)
+keeps the literal report's `double` and `mix` rows, total operations `5` and total
+matches `2` for the values above. The [literal program](../examples/cli/function-report.zirql)
+and shorter commands remain usable without declarations or `--param`.
+
 ## Naming intermediate results
 
 Bindings make a longer query easier to read and let several parts reuse the same

@@ -1,8 +1,11 @@
-from typing import assert_type
+from typing import TYPE_CHECKING, assert_type
 
 import pytest
 import zirium
 from zirium.query import QueryExpr, always, has_attr, input, op, ops
+
+if TYPE_CHECKING:
+    from zirium.query import ReportInput
 
 SOURCE = """
 "test.scope"() ({
@@ -229,26 +232,23 @@ def test_correlated_report_builders_return_ordered_python_data():
     total_matches = E.comprehension(
         E.name("r").field("matches"), [G.in_values("r", E.name("selected"))]
     ).sum()
-    query = report(
-        E.scope(
-            {
-                "operation_name": "arith.addi",
-                "minimum_ops": 2,
-                "threshold": require(
-                    E.name("minimum_ops") >= 0,
-                    E.name("minimum_ops"),
-                    "minimum_ops must be nonnegative",
-                ),
-                "rows": rows,
-                "selected": selected,
-            },
-            {
-                "functions": E.name("selected"),
-                "total_operations": total_ops,
-                "total_matches": total_matches,
-            },
-        )
-    )
+    bindings: dict[str, ReportInput] = {
+        "operation_name": "arith.addi",
+        "minimum_ops": 2,
+        "threshold": require(
+            E.name("minimum_ops") >= 0,
+            E.name("minimum_ops"),
+            "minimum_ops must be nonnegative",
+        ),
+        "rows": rows,
+        "selected": selected,
+    }
+    result_expression = {
+        "functions": E.name("selected"),
+        "total_operations": total_ops,
+        "total_matches": total_matches,
+    }
+    query = report(E.scope(bindings, result_expression))
     assert isinstance(query, QueryExpr)
     result = doc.query(query)
     assert result == {
@@ -271,6 +271,44 @@ def test_correlated_report_builders_return_ordered_python_data():
     }
     assert isinstance(result, dict)
     assert list(result) == ["functions", "total_operations", "total_matches"]
+    parameter_bindings = dict(bindings)
+    del parameter_bindings["operation_name"]
+    del parameter_bindings["minimum_ops"]
+    parameter_query = report(
+        E.scope(parameter_bindings, result_expression)
+    ).with_parameters({"operation_name": "string", "minimum_ops": "int"})
+    assert (
+        doc.query(
+            parameter_query,
+            parameters={"operation_name": "arith.addi", "minimum_ops": 2},
+        )
+        == result
+    )
+    bad_arguments: tuple[dict[str, bool | int | str], ...] = (
+        {"operation_name": "arith.addi"},
+        {"operation_name": "arith.addi", "minimum_ops": True},
+        {"operation_name": "arith.addi", "minimum_ops": 2, "extra": 0},
+    )
+    for arguments in bad_arguments:
+        with pytest.raises(ValueError):
+            doc.query(parameter_query, parameters=arguments)
+    for bad, error_type in (
+        (2**100, OverflowError),
+        (1.5, TypeError),
+        ([2], TypeError),
+    ):
+        with pytest.raises(error_type):
+            doc.query(
+                parameter_query,
+                parameters={"operation_name": "arith.addi", "minimum_ops": bad},  # ty: ignore[invalid-argument-type]
+            )
+    flags = report(E.name("flag")).with_parameters({"flag": "bool"})
+    assert doc.query(flags, parameters={"flag": True}) is True
+    exact = report(E.name("text")).with_parameters({"text": "string"})
+    assert doc.query(exact, parameters={"text": '  "x"=\\  '}) == '  "x"=\\  '
+    with pytest.raises(Exception, match="limit exceeded"):
+        doc.query(exact, parameters={"text": "x" * 10000}, max_work=100)
+
     assert doc.query(report(require(True, [False, 1, 2.5, "x"], "stop"))) == [
         False,
         1,

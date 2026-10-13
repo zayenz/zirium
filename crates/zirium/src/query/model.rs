@@ -12,6 +12,8 @@ pub enum SetOperator {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
+    pub parameters: Vec<zirql::ParameterDeclaration>,
+    pub(crate) parameter_positions: Vec<usize>,
     pub statements: Vec<Statement>,
     pub(crate) expression: Expression,
     pub(crate) emit_final_result: bool,
@@ -138,6 +140,10 @@ pub enum Predicate {
         value: bool,
         range: TextRange,
     },
+    Computed {
+        value: ComputedPredicate,
+        range: TextRange,
+    },
     OpValue {
         name: super::comprehension::ParsedComprehension,
         range: TextRange,
@@ -187,6 +193,7 @@ impl Predicate {
             Self::Bool { range, .. }
             | Self::Op { range, .. }
             | Self::OpValue { range, .. }
+            | Self::Computed { range, .. }
             | Self::Dialect { range, .. }
             | Self::ResultType { range, .. }
             | Self::HasAttr { range, .. }
@@ -200,7 +207,87 @@ impl Predicate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ComputedPredicate {
+    Dialect(super::comprehension::ParsedComprehension),
+    ResultType(super::comprehension::ParsedComprehension),
+    HasAttr(super::comprehension::ParsedComprehension),
+    Attr {
+        name: super::comprehension::ParsedComprehension,
+        value: super::comprehension::ParsedComprehension,
+    },
+}
+impl ComputedPredicate {
+    pub(super) fn operands(
+        &self,
+    ) -> impl Iterator<Item = &super::comprehension::ParsedComprehension> {
+        let values = match self {
+            Self::Dialect(value) | Self::ResultType(value) | Self::HasAttr(value) => {
+                [Some(value), None]
+            }
+            Self::Attr { name, value } => [Some(name), Some(value)],
+        };
+        values.into_iter().flatten()
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ComputedStage {
+    Head(super::comprehension::ParsedComprehension),
+    Tail(super::comprehension::ParsedComprehension),
+    Defs(super::comprehension::ParsedComprehension),
+    Users(super::comprehension::ParsedComprehension),
+    Check(super::comprehension::ParsedComprehension),
+    Attr(super::comprehension::ParsedComprehension),
+}
+impl ComputedStage {
+    pub(super) fn operand(&self) -> &super::comprehension::ParsedComprehension {
+        match self {
+            Self::Head(value)
+            | Self::Tail(value)
+            | Self::Defs(value)
+            | Self::Users(value)
+            | Self::Check(value)
+            | Self::Attr(value) => value,
+        }
+    }
+    pub(super) fn parameter_type(&self) -> zirql::ParameterType {
+        match self {
+            Self::Attr(_) => zirql::ParameterType::String,
+            Self::Head(_) | Self::Tail(_) | Self::Defs(_) | Self::Users(_) | Self::Check(_) => {
+                zirql::ParameterType::Int
+            }
+        }
+    }
+    pub(super) fn placeholder(&self, range: TextRange) -> Stage {
+        match self {
+            Self::Head(_) => Stage::Head { count: 0, range },
+            Self::Tail(_) => Stage::Tail { count: 0, range },
+            Self::Defs(_) => Stage::Defs {
+                index: Some(0),
+                range,
+            },
+            Self::Users(_) => Stage::Users {
+                index: Some(0),
+                range,
+            },
+            Self::Check(_) => Stage::Check {
+                expected: Some(0),
+                message: None,
+                range,
+            },
+            Self::Attr(_) => Stage::Attr {
+                name: String::new(),
+                range,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
+    Computed {
+        value: ComputedStage,
+        range: TextRange,
+    },
     /// Library-only operations with native results.
     Structured {
         step: StructuredStage,
@@ -382,7 +469,8 @@ pub enum Stage {
 impl Stage {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Projection { range, .. }
+            Self::Computed { range, .. }
+            | Self::Projection { range, .. }
             | Self::Comprehension { range, .. }
             | Self::Structured { range, .. }
             | Self::Literal { range, .. }

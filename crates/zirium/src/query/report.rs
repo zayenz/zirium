@@ -503,12 +503,161 @@ fn predicate_size(predicate: &model::Predicate) -> usize {
         .saturating_add(children)
 }
 
+pub(super) fn validate_argument(
+    value: &comprehension::ParsedComprehension,
+    expected: ValueType,
+    names: &BTreeMap<String, program::Kind>,
+    budget: &mut Budget,
+) -> Result<(), EvaluationError> {
+    if types(value, program::Kind::Operations, names, budget)?
+        .iter()
+        .any(|ty| *ty != expected)
+    {
+        return Err(
+            EvaluationError::new("primitive argument has an incompatible scalar type")
+                .at(value.expression.range.clone()),
+        );
+    }
+    Ok(())
+}
+fn scalar_argument(
+    value: &comprehension::ParsedComprehension,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+) -> Result<V, EvaluationError> {
+    evaluate(
+        value,
+        context,
+        QueryOutput::Operations(vec![]),
+        bindings,
+        budget,
+    )?
+    .into_value(budget, &value.expression.range)
+}
+fn string_argument(
+    value: &comprehension::ParsedComprehension,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+) -> Result<String, EvaluationError> {
+    let V::String(text) = scalar_argument(value, context, bindings, budget)? else {
+        return Err(EvaluationError::new("primitive argument needs a string")
+            .at(value.expression.range.clone()));
+    };
+    Ok(text)
+}
+fn attribute_argument(
+    value: &comprehension::ParsedComprehension,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+) -> Result<String, EvaluationError> {
+    let text = string_argument(value, context, bindings, budget)?;
+    if !parser::valid_attribute_name(&text) {
+        return Err(
+            EvaluationError::new("attribute name must be a dotted ASCII identifier")
+                .at(value.expression.range.clone()),
+        );
+    }
+    Ok(text)
+}
+pub(super) fn resolve_stage(
+    value: &model::ComputedStage,
+    range: crate::source::TextRange,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+) -> Result<model::Stage, EvaluationError> {
+    use model::{ComputedStage as C, Stage as S};
+    if let C::Attr(value) = value {
+        return Ok(S::Attr {
+            name: attribute_argument(value, context, bindings, budget)?,
+            range,
+        });
+    }
+    let V::Integer(integer) = scalar_argument(value.operand(), context, bindings, budget)? else {
+        return Err(
+            EvaluationError::new("primitive argument needs an int").at(value
+                .operand()
+                .expression
+                .range
+                .clone()),
+        );
+    };
+    let count =
+        usize::try_from(integer).map_err(|_| {
+            EvaluationError::new("primitive argument needs a non-negative int fitting usize")
+                .at(value.operand().expression.range.clone())
+        })?;
+    Ok(match value {
+        C::Head(_) => S::Head { count, range },
+        C::Tail(_) => S::Tail { count, range },
+        C::Defs(_) => S::Defs {
+            index: Some(count),
+            range,
+        },
+        C::Users(_) => S::Users {
+            index: Some(count),
+            range,
+        },
+        C::Check(_) => S::Check {
+            expected: Some(count),
+            message: None,
+            range,
+        },
+        C::Attr(_) => unreachable!("attribute operand resolved above"),
+    })
+}
+fn resolve_computed_predicate(
+    value: &model::ComputedPredicate,
+    range: crate::source::TextRange,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+) -> Result<model::Predicate, EvaluationError> {
+    use model::{ComputedPredicate as C, Predicate as P};
+    let name = |value: &comprehension::ParsedComprehension,
+                context: &mut EvaluationContext<'_, '_, '_>,
+                budget: &mut Budget| {
+        let text = string_argument(value, context, bindings, budget)?;
+        if text.is_empty() {
+            return Err(EvaluationError::new("name or type must not be empty")
+                .at(value.expression.range.clone()));
+        }
+        Ok(text)
+    };
+    Ok(match value {
+        C::Dialect(value) => P::Dialect {
+            name: name(value, context, budget)?,
+            range,
+        },
+        C::ResultType(value) => P::ResultType {
+            spelling: name(value, context, budget)?,
+            range,
+        },
+        C::HasAttr(value) => P::HasAttr {
+            name: attribute_argument(value, context, bindings, budget)?,
+            range,
+        },
+        C::Attr { name, value } => P::Attr {
+            name: attribute_argument(name, context, bindings, budget)?,
+            value: string_argument(value, context, bindings, budget)?,
+            range,
+        },
+    })
+}
 pub(super) fn validate_predicate(
     predicate: &model::Predicate,
     names: &BTreeMap<String, program::Kind>,
     budget: &mut Budget,
 ) -> Result<(), EvaluationError> {
     match predicate {
+        model::Predicate::Computed { value, .. } => {
+            for operand in value.operands() {
+                validate_argument(operand, ValueType::String, names, budget)?;
+            }
+        }
         model::Predicate::OpValue { name, .. } => {
             if types(name, program::Kind::Operations, names, budget)?
                 .iter()
@@ -560,6 +709,7 @@ pub(super) fn push_expressions<'a>(
     pending: &mut Vec<&'a model::Expression>,
 ) {
     match stage {
+        model::Stage::Computed { value, .. } => visit_value(&value.operand().expression, pending),
         model::Stage::Comprehension { value, .. } => visit_value(&value.expression, pending),
         model::Stage::Projection { value, .. } => {
             for (_, expression) in &value.projection.fields {
@@ -574,6 +724,11 @@ pub(super) fn push_expressions<'a>(
 }
 fn visit_predicate<'a>(predicate: &'a model::Predicate, pending: &mut Vec<&'a model::Expression>) {
     match predicate {
+        model::Predicate::Computed { value, .. } => {
+            for operand in value.operands() {
+                visit_value(&operand.expression, pending);
+            }
+        }
         model::Predicate::OpValue { name, .. } => visit_value(&name.expression, pending),
         model::Predicate::Not { predicate, .. } | model::Predicate::Group { predicate, .. } => {
             visit_predicate(predicate, pending)
@@ -728,6 +883,9 @@ pub(super) fn resolve_predicate(
         &program::range(range),
     )?;
     Ok(match predicate {
+        P::Computed { value, .. } => {
+            resolve_computed_predicate(value, range, context, bindings, budget)?
+        }
         P::OpValue { name, .. } => P::Op {
             name: op_name(name, context, bindings, budget)?,
             range,
@@ -761,7 +919,7 @@ pub(super) fn resolve_predicate(
 pub(super) fn has_dynamic_predicate(predicate: &model::Predicate) -> bool {
     use model::Predicate as P;
     match predicate {
-        P::OpValue { .. } => true,
+        P::OpValue { .. } | P::Computed { .. } => true,
         P::Not { predicate, .. } | P::Group { predicate, .. } => has_dynamic_predicate(predicate),
         P::And { predicates, .. } | P::Or { predicates, .. } => {
             predicates.iter().any(has_dynamic_predicate)
@@ -778,7 +936,7 @@ pub(super) fn has_constructed(expression: &model::Expression) -> bool {
         .any(|stage| {
             matches!(
                 stage,
-                model::Stage::Comprehension { .. } | model::Stage::Projection { .. }
+                model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
             ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
             || nested(stage).into_iter().any(has_constructed)
         })

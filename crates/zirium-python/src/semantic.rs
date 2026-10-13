@@ -123,16 +123,19 @@ impl Document {
     /// and duplicates unless the expression changes them. `max_work` and
     /// `max_items` bound its cost. Returned operation handles remain live views
     /// and can later become stale.
-    #[pyo3(signature = (expression, *, max_work=None, max_items=None, strict=false))]
+    #[pyo3(signature = (expression, *, parameters=None, max_work=None, max_items=None, strict=false))]
     fn query(
         &self,
         py: Python<'_>,
         expression: &Bound<'_, pyo3::types::PyAny>,
+        parameters: Option<&Bound<'_, pyo3::types::PyDict>>,
         max_work: Option<usize>,
         max_items: Option<usize>,
         strict: bool,
     ) -> PyResult<Py<pyo3::types::PyAny>> {
-        super::query::evaluate(py, self, expression, max_work, max_items, strict)
+        super::query::evaluate(
+            py, self, expression, parameters, max_work, max_items, strict,
+        )
     }
     #[getter]
     fn semantically_complete(&self) -> PyResult<bool> {

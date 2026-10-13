@@ -107,8 +107,12 @@ struct Parser<'a, 'b> {
 impl Parser<'_, '_> {
     fn program(&mut self) -> Option<Program> {
         self.skip_trivia();
+        let mut parameters = Vec::new();
+        let mut parameter_positions = Vec::new();
         if self.at(TokenKind::Eof) {
             return Some(Program {
+                parameters,
+                parameter_positions,
                 statements: Vec::new(),
                 expression: Expression {
                     first: Vec::new(),
@@ -128,6 +132,8 @@ impl Parser<'_, '_> {
                 self.skip_trivia();
                 if self.at(TokenKind::Eof) {
                     return Some(Program {
+                        parameters,
+                        parameter_positions,
                         statements,
                         expression,
                         emit_final_result: false,
@@ -136,13 +142,50 @@ impl Parser<'_, '_> {
                 statements.push(Statement::Do(expression));
                 continue;
             }
-            if self.at_identifier("let") || self.at_identifier("report") {
+            if self.at_identifier("let")
+                || self.at_identifier("report")
+                || self.at_identifier("param")
+            {
                 let mut reader = zirql::ArgumentReader::new(
                     self.source,
                     self.current().range().start() as usize,
                 )
                 .ok()?;
                 match zirql::read_statement_prefix(&mut reader, self.budget) {
+                    Ok(Some(zirql::CommonStatement::Param(declaration))) => {
+                        if is_reserved(&declaration.name.value)
+                            || self.bindings.contains(&declaration.name.value)
+                        {
+                            self.sync(declaration.name.range.start);
+                            self.error("parameter name is reserved or already defined");
+                            return None;
+                        }
+                        self.sync(reader.position());
+                        self.expect(
+                            TokenKind::Semicolon,
+                            "expected `;` after parameter declaration",
+                        )?;
+                        let admission = self
+                            .budget
+                            .charge(
+                                declaration.name.value.len() + 2,
+                                zirql::Location::Query(declaration.name.range.clone()),
+                            )
+                            .and_then(|_| {
+                                self.budget.charge_results(
+                                    2,
+                                    zirql::Location::Query(declaration.name.range.clone()),
+                                )
+                            });
+                        if let Err(error) = admission {
+                            self.shared_error(error);
+                            return None;
+                        }
+                        self.bindings.insert(declaration.name.value.clone());
+                        parameter_positions.push(statements.len());
+                        parameters.push(declaration);
+                        continue;
+                    }
                     Ok(Some(zirql::CommonStatement::Let(name))) => {
                         if is_reserved(&name.value) || self.bindings.contains(&name.value) {
                             self.error("binding name is reserved or already defined");
@@ -179,6 +222,8 @@ impl Parser<'_, '_> {
                         }
                         if self.at(TokenKind::Eof) {
                             return Some(Program {
+                                parameters,
+                                parameter_positions,
                                 statements,
                                 expression,
                                 emit_final_result: true,
@@ -230,6 +275,8 @@ impl Parser<'_, '_> {
                 self.error("expected `|`, a set operator, `;`, or end of query");
             }
             return Some(Program {
+                parameters,
+                parameter_positions,
                 statements,
                 expression,
                 emit_final_result: true,
@@ -255,6 +302,9 @@ impl Parser<'_, '_> {
             zirql::Location::Query(range) | zirql::Location::Source(range) => range.start,
         };
         let message = match error.message.as_str() {
+            "parameter type must be int, string or bool" => {
+                "parameter type must be int, string or bool"
+            }
             "integer literal exceeds signed 64-bit range" => {
                 "integer literal exceeds signed 64-bit range"
             }
@@ -481,6 +531,18 @@ impl Parser<'_, '_> {
                 let index = if self.at(TokenKind::LParen) {
                     self.bump();
                     self.skip_trivia();
+                    if !self.at(TokenKind::Integer) || self.next_kind() != Some(TokenKind::RParen) {
+                        let value = self.shared_value(depth + 1)?;
+                        self.expect(TokenKind::RParen, "expected `)` after index")?;
+                        return Some(Stage::Computed {
+                            value: if name == "defs" {
+                                ComputedStage::Defs(value)
+                            } else {
+                                ComputedStage::Users(value)
+                            },
+                            range: self.span(start),
+                        });
+                    }
                     if !self.at(TokenKind::Integer) {
                         self.error("expected a non-negative operand or result index");
                         return None;
@@ -533,6 +595,23 @@ impl Parser<'_, '_> {
             "head" | "tail" => {
                 self.expect(TokenKind::LParen, "expected `(` after head or tail")?;
                 self.skip_trivia();
+                if !self.at(TokenKind::Integer) || self.next_kind() != Some(TokenKind::RParen) {
+                    let value = self.shared_value(depth + 1)?;
+                    if matches!(&value.expression.value, zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Integer(integer)) if *integer < 0)
+                    {
+                        self.error("expected a non-negative item count");
+                        return None;
+                    }
+                    self.expect(TokenKind::RParen, "expected `)` after item count")?;
+                    return Some(Stage::Computed {
+                        value: if name == "head" {
+                            ComputedStage::Head(value)
+                        } else {
+                            ComputedStage::Tail(value)
+                        },
+                        range: self.span(start),
+                    });
+                }
                 if !self.at(TokenKind::Integer) {
                     self.error("expected a non-negative item count");
                     return None;
@@ -564,6 +643,17 @@ impl Parser<'_, '_> {
                         self.expect(TokenKind::RParen, "expected `)` after check message")?;
                         (None, Some(message))
                     } else {
+                        if !self.at(TokenKind::Integer)
+                            || self.next_kind() != Some(TokenKind::RParen)
+                                && self.next_kind() != Some(TokenKind::Comma)
+                        {
+                            let value = self.shared_value(depth + 1)?;
+                            self.expect(TokenKind::RParen, "expected `)` after check count")?;
+                            return Some(Stage::Computed {
+                                value: ComputedStage::Check(value),
+                                range: self.span(start),
+                            });
+                        }
                         if !self.at(TokenKind::Integer) {
                             self.error("expected a non-negative item count or check message");
                             return None;
@@ -884,6 +974,19 @@ impl Parser<'_, '_> {
                     return None;
                 }
                 self.expect(TokenKind::LParen, "expected `(` after predicate")?;
+                self.skip_trivia();
+                if !self.at(TokenKind::String) || self.next_kind() != Some(TokenKind::RParen) {
+                    let value = self.shared_value(depth + 1)?;
+                    self.expect(TokenKind::RParen, "expected `)` after predicate argument")?;
+                    return Some(Predicate::Computed {
+                        value: if kind == "dialect" {
+                            ComputedPredicate::Dialect(value)
+                        } else {
+                            ComputedPredicate::ResultType(value)
+                        },
+                        range: self.span(start),
+                    });
+                }
                 let (value, value_range) = self.string("expected a quoted name or type")?;
                 self.expect(TokenKind::RParen, "expected `)` after predicate argument")?;
                 if value.is_empty() {
@@ -910,6 +1013,15 @@ impl Parser<'_, '_> {
                     return None;
                 }
                 self.expect(TokenKind::LParen, "expected `(` after has_attr")?;
+                self.skip_trivia();
+                if !self.at(TokenKind::String) || self.next_kind() != Some(TokenKind::RParen) {
+                    let value = self.shared_value(depth + 1)?;
+                    self.expect(TokenKind::RParen, "expected `)` after attribute name")?;
+                    return Some(Predicate::Computed {
+                        value: ComputedPredicate::HasAttr(value),
+                        range: self.span(start),
+                    });
+                }
                 let (name, range) = self.string("expected a quoted attribute name")?;
                 self.expect(TokenKind::RParen, "expected `)` after attribute name")?;
                 self.check_attribute_name(&name, range);
@@ -924,6 +1036,20 @@ impl Parser<'_, '_> {
                     return None;
                 }
                 self.expect(TokenKind::LParen, "expected `(` after string_attr_eq")?;
+                self.skip_trivia();
+                if !self.at(TokenKind::String) || self.next_kind() != Some(TokenKind::Comma) {
+                    let name = self.shared_value(depth + 1)?;
+                    self.expect(TokenKind::Comma, "expected `,` in string_attr_eq")?;
+                    let value = self.shared_value(depth + 1)?;
+                    self.expect(
+                        TokenKind::RParen,
+                        "expected `)` after string_attr_eq arguments",
+                    )?;
+                    return Some(Predicate::Computed {
+                        value: ComputedPredicate::Attr { name, value },
+                        range: self.span(start),
+                    });
+                }
                 let (name, name_range) = self.string("expected a quoted attribute name")?;
                 self.expect_recover(
                     TokenKind::Comma,
@@ -935,6 +1061,22 @@ impl Parser<'_, '_> {
                         TokenKind::Eof,
                     ],
                 )?;
+                self.skip_trivia();
+                if !self.at(TokenKind::String) || self.next_kind() != Some(TokenKind::RParen) {
+                    let value = self.shared_value(depth + 1)?;
+                    self.expect(
+                        TokenKind::RParen,
+                        "expected `)` after string_attr_eq arguments",
+                    )?;
+                    let name = super::comprehension::ParsedComprehension::new(zirql::Located::new(
+                        zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::String(name)),
+                        name_range.as_range(),
+                    ));
+                    return Some(Predicate::Computed {
+                        value: ComputedPredicate::Attr { name, value },
+                        range: self.span(start),
+                    });
+                }
                 let (value, _) = self.string("expected a quoted attribute value")?;
                 self.expect_recover(
                     TokenKind::RParen,
@@ -1031,6 +1173,15 @@ impl Parser<'_, '_> {
             return None;
         }
         self.expect(TokenKind::LParen, "expected `(` after attr")?;
+        self.skip_trivia();
+        if !self.at(TokenKind::String) || self.next_kind() != Some(TokenKind::RParen) {
+            let value = self.shared_value(depth)?;
+            self.expect(TokenKind::RParen, "expected `)` after attr argument")?;
+            return Some(Stage::Computed {
+                value: ComputedStage::Attr(value),
+                range: self.span(start),
+            });
+        }
         let (name, name_range) = self.string("expected a quoted attribute name")?;
         self.expect_recover(
             TokenKind::RParen,
@@ -1284,7 +1435,7 @@ impl Parser<'_, '_> {
     }
 }
 
-fn valid_attribute_name(name: &str) -> bool {
+pub(super) fn valid_attribute_name(name: &str) -> bool {
     !name.is_empty()
         && name.split('.').all(|component| {
             let mut chars = component.chars();
