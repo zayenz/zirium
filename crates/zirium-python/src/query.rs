@@ -293,6 +293,15 @@ impl ReportExpr {
             inner: self.inner.clone().default(report_expression(fallback)?),
         })
     }
+    fn contains(&self, fragment: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::Contains, fragment)
+    }
+    fn starts_with(&self, prefix: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::StartsWith, prefix)
+    }
+    fn ends_with(&self, suffix: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary(core::ValueBinaryOperator::EndsWith, suffix)
+    }
     fn one(&self) -> Self {
         Self {
             inner: self.inner.clone().one(),

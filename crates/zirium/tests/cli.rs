@@ -3772,3 +3772,50 @@ fn typed_functions_agree_inline_file_and_buffer_later_runtime_failure() {
     assert!(malformed.stdout.is_empty());
     assert!(String::from_utf8_lossy(&malformed.stderr).contains("cost annotation"));
 }
+
+#[test]
+fn string_matching_agrees_inline_file_and_buffers_later_errors() {
+    let input = include_str!("../../../examples/cli/function-report.mlir");
+    let source = include_str!("../../../examples/cli/string-matching.zirql");
+    let inline = run_stdin(source, input);
+    assert!(inline.status.success(), "{inline:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&inline.stdout).unwrap(),
+        serde_json::json!({"names":["mix"], "controls":[true,false,true,false,true]})
+    );
+    let path = temporary_path("string-matching", "zirql");
+    for (program, successful) in [
+        (source.to_owned(), true),
+        (
+            format!("{source} report contains(\"x\", [\"z\"][2]);"),
+            false,
+        ),
+    ] {
+        fs::write(&path, &program).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args(["--program-file", path.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let file = child.wait_with_output().unwrap();
+        if successful {
+            assert!(file.status.success(), "{file:?}");
+            assert_eq!(file.stdout, inline.stdout);
+        } else {
+            assert!(!file.status.success());
+            assert!(file.stdout.is_empty());
+            let failed = run_stdin(&program, input);
+            assert!(!failed.status.success());
+            assert!(failed.stdout.is_empty());
+        }
+    }
+    fs::remove_file(path).unwrap();
+}

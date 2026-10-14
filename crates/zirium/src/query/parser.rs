@@ -459,6 +459,9 @@ impl Parser<'_, '_> {
                                     | "has_key"
                                     | "group_by"
                                     | "zip_exact"
+                                    | "contains"
+                                    | "starts_with"
+                                    | "ends_with"
                                     | "require"
                                     | "length"
                                     | "sum"
@@ -796,7 +799,11 @@ impl Parser<'_, '_> {
             }
         }
         if super::comprehension::starts(self.source, self.tokens, self.cursor)
-            || (self.at_identifier("group_by") && self.next_kind() == Some(TokenKind::LParen))
+            || ((self.at_identifier("group_by")
+                || self.at_identifier("contains")
+                || self.at_identifier("starts_with")
+                || self.at_identifier("ends_with"))
+                && self.next_kind() == Some(TokenKind::LParen))
         {
             let value = self.shared_value(depth)?;
             return Some(Stage::Comprehension {

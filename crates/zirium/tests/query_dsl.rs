@@ -2193,3 +2193,113 @@ fn function_runtime_failures_retain_explicit_library_emission_events() {
     assert_eq!(emitted, vec![QueryOutput::Json("1\n".to_owned())]);
     assert!(error.range().is_some());
 }
+
+#[test]
+fn exact_string_matching_agrees_in_text_and_typed_projected_names() {
+    use zirium::query::{
+        ConstructedValue as V, NativeValue, ReportExpr as E, ReportGenerator as G,
+        ValueBinaryOperator as B, report,
+    };
+    let mut document = document_from(FUNCTION_REPORT_SOURCE);
+    let source = include_str!("../../../examples/cli/string-matching.zirql");
+    let native_source = source.trim_end().strip_suffix(" | json;").unwrap();
+    let mut outputs = Vec::new();
+    Query::parse(native_source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(parsed)) = &outputs[0] else {
+        panic!("native report")
+    };
+    let n = E::name("n");
+    let typed = report(E::record([
+        (
+            "names",
+            E::comprehension(
+                n.clone(),
+                [G::in_values(
+                    "n",
+                    E::from(ops().filter(op("func.func")).attr("sym_name")),
+                    Some(
+                        n.clone()
+                            .contains(E::string("i"))
+                            .binary(B::And, n.clone().starts_with(E::string("m")))
+                            .binary(B::And, n.ends_with(E::string("x"))),
+                    ),
+                )],
+            ),
+        ),
+        (
+            "controls",
+            E::array([
+                E::string("Ångström").contains(E::string("ström")),
+                E::string("Ångström").starts_with(E::string("ång")),
+                E::string("Ångström").ends_with(E::string("")),
+                E::string("é").contains(E::string("é")),
+                E::string("").starts_with(E::string("")),
+            ]),
+        ),
+    ]));
+    let actual = document.query(&typed).unwrap();
+    assert_eq!(actual.value(), parsed.value());
+    assert_eq!(
+        actual.value(),
+        &V::Record(vec![
+            ("names".into(), V::Array(vec![V::String("mix".into())])),
+            (
+                "controls".into(),
+                V::Array(
+                    vec![true, false, true, false, true]
+                        .into_iter()
+                        .map(V::Boolean)
+                        .collect()
+                )
+            ),
+        ])
+    );
+    assert!(
+        document
+            .query(&report(E::string("x").contains(E::integer(1))))
+            .is_err()
+    );
+    let source = r#"report if false {contains("x",1)} else {false};"#;
+    let refusal = Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert_eq!(&source[refusal.range().unwrap()], r#"contains("x",1)"#);
+    let mut function_outputs = Vec::new();
+    Query::parse(
+        r#"fn has_part(text:string)->bool { contains(text,"str") } report has_part("Ångström");"#,
+    )
+    .unwrap()
+    .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+        function_outputs.push(value);
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        matches!(&function_outputs[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Boolean(true))
+    );
+    assert!(
+        Query::parse("fn contains(text:string)->bool {true} report true;")
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .is_err()
+    );
+    let long = "a".repeat(4_000);
+    let limits = zirium::query::EvaluationLimits {
+        max_work: 6_000,
+        ..Default::default()
+    };
+    report(E::string(long.clone()).starts_with(E::string("a")))
+        .evaluate(&document, DialectRegistry::baseline(), limits)
+        .unwrap();
+    let refusal = report(E::string(long).contains(E::string("z")))
+        .evaluate(&document, DialectRegistry::baseline(), limits)
+        .unwrap_err();
+    assert!(refusal.to_string().contains("work limit"));
+}

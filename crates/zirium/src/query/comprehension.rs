@@ -305,6 +305,9 @@ pub(super) fn has_syntax(source: &str) -> bool {
                         | "exists"
                         | "require"
                         | "group_by"
+                        | "contains"
+                        | "starts_with"
+                        | "ends_with"
                         | "occurs"
                         | "absent"
                         | "lookup"
@@ -396,7 +399,13 @@ pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
             T::Identifier
                 if matches!(
                     &source[token.range().as_range()],
-                    "occurs" | "absent" | "lookup" | "has_key"
+                    "occurs"
+                        | "absent"
+                        | "lookup"
+                        | "has_key"
+                        | "contains"
+                        | "starts_with"
+                        | "ends_with"
                 ) && tokens[i + 1..]
                     .iter()
                     .find(|t| t.kind() != T::Trivia)

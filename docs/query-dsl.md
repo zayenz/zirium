@@ -670,3 +670,28 @@ unchanged constructed data shares its immutable owner; constructing a new row
 or rendering output still pays for the produced data. External parameters keep
 their existing int/string/bool transport. Python keeps its existing query builders and native result conversion; there
 is no Python function builder API.
+
+## Match projected strings
+
+Rust `ReportExpr` and Python `ReportExpr` provide `contains`, `starts_with` and
+`ends_with`. Each method accepts another report expression; Python also accepts
+ordinary string arguments. Matching is exact and case-sensitive, empty searches
+match, and both operands must evaluate to strings. Unicode text is compared
+without normalization. Scans and failure diagnostics use the query budget.
+
+```rust
+use zirium::query::{ReportExpr as E, report};
+let query = report(E::string("Ångström").contains(E::string("ström")));
+```
+
+```python
+from zirium.query import ReportExpr as E, op, ops, report
+
+label = E(ops().filter(op("func.func")).attr("sym_name").one())
+result = document.query(report(label.starts_with("work")))
+```
+
+Select exactly one function before using `one()`. Use `ReportGenerator` to
+filter several projected names; the [string-matching example](../examples/cli/string-matching.zirql)
+shows the equivalent text program and Unicode controls. Domain name extraction
+continues to use native projections such as `attr("sym_name")` and `names`.

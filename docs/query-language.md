@@ -349,8 +349,31 @@ The supported expression forms are:
 - Boolean `and` and `or`; string or positional-array `++`; record access
   `r.field`, array access `a[i]`, and inclusive integer ranges `lo..hi`.
 - `length`, `sum`, `forall`, `exists`, `require`, `group_by`, `one`,
-  `occurs`, `absent`, `lookup` and `has_key` calls; lazy `default`;
+  `occurs`, `absent`, `lookup`, `has_key`, `contains`, `starts_with` and
+  `ends_with` calls; lazy `default`;
   explicitly projected native queries and correlated `project` rows.
+
+`contains(text, fragment)`, `starts_with(text, prefix)` and
+`ends_with(text, suffix)` each take two strings and return a fixed Boolean.
+Matching is exact and case-sensitive, with no coercion, regex, case folding or
+Unicode normalization. An empty search matches every string. For example,
+`contains("Ångström", "ström")` is true, `starts_with("Ångström", "ång")` is
+false, and `ends_with("Ångström", "")` is true. Precomposed `é` does not contain
+decomposed `é`. Both operands evaluate in written order. Known non-string
+operands fail before execution, including in skipped branches. Scans and
+failure diagnostics use the continuing query budget; matching borrows existing
+text without substring or normalization copies.
+
+Project a domain name first, then apply the helpers to that string:
+
+```text
+let labels = filter(op("func.func")) | attr("sym_name");
+[n for n in labels if starts_with(n, "m") and ends_with(n, "x")] | json;
+```
+
+The native `op(...)` and `string_attr_eq(...)` selectors retain their existing
+host semantics. These helpers also work in typed function bodies and native
+expression arguments. Inline and file programs use the same evaluator.
 
 Array positions start at one. Integer arithmetic uses signed 64-bit values and
 refuses overflow or division by zero. Floats use finite binary64 values;

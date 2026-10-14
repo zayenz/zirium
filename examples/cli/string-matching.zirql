@@ -1,0 +1,4 @@
+let labels = filter(op("func.func")) | attr("sym_name");
+report {"names": [n for n in labels if contains(n, "i") and starts_with(n, "m") and ends_with(n, "x")],
+        "controls": [contains("Ångström", "ström"), starts_with("Ångström", "ång"),
+                     ends_with("Ångström", ""), contains("é", "é"), starts_with("", "")]} | json;

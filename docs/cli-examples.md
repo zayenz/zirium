@@ -429,3 +429,17 @@ one activation; work and produced data remain bounded by `--max-work` and
 `--max-results`. The compiled Rust example also sets an active limit of one.
 See [typed functions](query-language.md#typed-recursive-functions) for signature
 syntax, lexical scope, purity and independent limits.
+
+## Filter projected names with exact string matching
+
+```sh
+zirium 'let labels = filter(op("func.func")) | attr("sym_name"); [n for n in labels if contains(n, "i") and starts_with(n, "m") and ends_with(n, "x")] | json;' examples/cli/function-report.mlir
+zirium --program-file examples/cli/string-matching.zirql examples/cli/function-report.mlir
+```
+
+The short query returns `["mix"]`. The saved program adds Unicode and empty
+search controls. Matching is case-sensitive and does not normalize Unicode or
+interpret regex. All three helpers require strings; empty searches match.
+Inline and file programs share located errors, the query budget and output
+buffering when a later expression fails. Rust and Python callers use the
+[same helpers on `ReportExpr`](query-dsl.md#match-projected-strings).

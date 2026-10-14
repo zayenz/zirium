@@ -1347,6 +1347,18 @@ impl ReportExpr {
         })
         .with_metadata(parameters, functions)
     }
+    /// Match an exact case-sensitive substring. An empty fragment matches.
+    pub fn contains(self, fragment: Self) -> Self {
+        self.binary(zirql::ValueBinaryOperator::Contains, fragment)
+    }
+    /// Match an exact case-sensitive prefix. An empty prefix matches.
+    pub fn starts_with(self, prefix: Self) -> Self {
+        self.binary(zirql::ValueBinaryOperator::StartsWith, prefix)
+    }
+    /// Match an exact case-sensitive suffix. An empty suffix matches.
+    pub fn ends_with(self, suffix: Self) -> Self {
+        self.binary(zirql::ValueBinaryOperator::EndsWith, suffix)
+    }
     pub fn one(self) -> Self {
         let functions = self.functions.clone();
         let parameters = self.parameters.clone();

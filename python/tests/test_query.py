@@ -618,3 +618,51 @@ def test_optional_report_builders_preserve_none_membership_and_lazy_defaults():
     )
     with pytest.raises(TypeError):
         doc.query(required, parameters={"fallback": None})  # ty: ignore[invalid-argument-type]
+
+
+def test_exact_string_matching_filters_projected_names():
+    from pathlib import Path
+
+    from zirium.query import ReportExpr as E
+    from zirium.query import ReportGenerator as G
+    from zirium.query import report
+
+    source = (
+        Path(__file__).parents[2] / "examples/cli/function-report.mlir"
+    ).read_text()
+    lowered = zirium.parse_text(
+        source, registry=zirium.DialectRegistry.baseline()
+    ).lower_strict()
+    assert lowered.document is not None
+    doc = lowered.document
+    n = E.name("n")
+    query = report(
+        {
+            "names": E.comprehension(
+                n,
+                [
+                    G.in_values(
+                        "n",
+                        ops().filter(op("func.func")).attr("sym_name"),
+                        n.contains("i") & n.starts_with("m") & n.ends_with("x"),
+                    )
+                ],
+            ),
+            "controls": [
+                E("Ångström").contains("ström"),
+                E("Ångström").starts_with("ång"),
+                E("Ångström").ends_with(""),
+                E("é").contains("é"),
+                E("").starts_with(""),
+            ],
+        }
+    )
+    assert doc.query(query) == {
+        "names": ["mix"],
+        "controls": [True, False, True, False, True],
+    }
+    with pytest.raises(ValueError, match="two strings"):
+        doc.query(report(E("x").contains(1)))
+    with pytest.raises(ValueError, match="work limit"):
+        doc.query(report(E("a" * 4000).contains("z")), max_work=6000)
+    assert doc.query(report(E("a" * 4000).starts_with("a")), max_work=6000)
