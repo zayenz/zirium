@@ -3819,3 +3819,58 @@ fn string_matching_agrees_inline_file_and_buffers_later_errors() {
     }
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn report_ordering_inline_file_and_later_failure_keep_output_buffering() {
+    let input = include_str!("../../../examples/cli/function-report.mlir");
+    let source = include_str!("../../../examples/cli/report-ordering.zirql");
+    let inline = run_stdin(source, input);
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&inline.stdout).unwrap();
+    assert_eq!(
+        json["ascending"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["B", "D", "A", "C"]
+    );
+    assert_eq!(json["descending"][1]["id"], "C");
+    assert_eq!(json["minimum"]["id"], "B");
+    assert_eq!(json["maximum"]["id"], "A");
+    assert!(json["empty_min"].is_null());
+    let path = temporary_path("report-ordering", "zirql");
+    fs::write(&path, source).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--program-file", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let file = child.wait_with_output().unwrap();
+    assert!(
+        file.status.success(),
+        "{}",
+        String::from_utf8_lossy(&file.stderr)
+    );
+    assert_eq!(file.stdout, inline.stdout);
+    let failure = run_stdin(
+        &format!(r#"{source} report min_by([{{"score":1}},{{"other":2}}],"score");"#),
+        input,
+    );
+    assert!(!failure.status.success() && failure.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("missing ordering field"));
+    fs::remove_file(path).unwrap();
+}

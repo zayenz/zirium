@@ -327,6 +327,38 @@ impl ReportExpr {
             inner: self.inner.clone().exists(),
         }
     }
+    #[pyo3(signature = (*, descending=false))]
+    fn sort(&self, descending: bool) -> Self {
+        Self {
+            inner: self.inner.clone().sort(descending),
+        }
+    }
+    #[pyo3(signature = (field, *, descending=false))]
+    fn sort_by(&self, field: String, descending: bool) -> Self {
+        Self {
+            inner: self.inner.clone().sort_by(field, descending),
+        }
+    }
+    fn min(&self) -> Self {
+        Self {
+            inner: self.inner.clone().min(),
+        }
+    }
+    fn max(&self) -> Self {
+        Self {
+            inner: self.inner.clone().max(),
+        }
+    }
+    fn min_by(&self, field: String) -> Self {
+        Self {
+            inner: self.inner.clone().min_by(field),
+        }
+    }
+    fn max_by(&self, field: String) -> Self {
+        Self {
+            inner: self.inner.clone().max_by(field),
+        }
+    }
     fn group_by(&self, field: String) -> Self {
         Self {
             inner: self.inner.clone().group_by(field),

@@ -348,9 +348,9 @@ The supported expression forms are:
   numeric `<`, `<=`, `>`, `>=`; typed `==` (also `=`) and `!=`.
 - Boolean `and` and `or`; string or positional-array `++`; record access
   `r.field`, array access `a[i]`, and inclusive integer ranges `lo..hi`.
-- `length`, `sum`, `forall`, `exists`, `require`, `group_by`, `one`,
-  `occurs`, `absent`, `lookup`, `has_key`, `contains`, `starts_with` and
-  `ends_with` calls; lazy `default`;
+- `length`, `sum`, `forall`, `exists`, `require`, `group_by`, `sort`, `sort_by`,
+  `min`, `max`, `min_by`, `max_by`, `one`, `occurs`, `absent`, `lookup`, `has_key`,
+  `contains`, `starts_with` and `ends_with` calls; lazy `default`;
   explicitly projected native queries and correlated `project` rows.
 
 `contains(text, fragment)`, `starts_with(text, prefix)` and
@@ -447,6 +447,42 @@ query charges its retained parse spending on each evaluation. Rust callers can
 bound parsing with `Query::parse_with_program_limits()` and choose execution
 bounds with `Query::evaluate_with_program_limits()`; callbacks that render can
 use `Query::evaluate_with_budget()` with `Budget::for_program()`.
+
+## Sort constructed rows and select extrema
+
+`sort(xs)` sorts positional scalar values, and `sort_by(rows, "field")` sorts
+records by a static string label. Both are ascending and stable. Add
+`descending=true` to reverse key order while keeping input order within ties;
+`descending=false` is the default. The original records, field order,
+declarations and nominal identities survive.
+
+`min(xs)` and `max(xs)` return one scalar; `min_by(rows, "field")` and
+`max_by(rows, "field")` return one original record. Empty input is `null`, and
+the first input wins a tie. Use `min([]) default 0` for an explicit empty policy.
+Keys must be present homogeneous integers, finite floats, exact strings or
+members of one nominal type. Integer/float mixing and Boolean/native keys fail.
+Nominal members use declaration order. Missing, absent or incompatible fields
+fail at the selector; scalar failures use the call range. A later bad key still
+fails an extremum request. Project `lookup(row, "score") default 0` into a
+field first when that default is intended. Keyed inputs need an explicit
+positional value projection.
+
+The [report example](../examples/cli/report-ordering.zirql) uses scores
+`[2,1,2,1]` on rows A, B, C and D. Ascending IDs are B, D, A, C;
+descending IDs are A, C, B, D. Min selects B and max selects A:
+
+```sh
+zirium -f examples/cli/report-ordering.zirql examples/cli/function-report.mlir
+```
+
+These calls construct report values. Existing native operation/map stages,
+including bare `sort`, `sort_by(selector)` and `sort_by(value)`, keep their
+current semantics. Sorting extracts each key once, admits O(n) temporary slots,
+and performs fallible O(n log n) comparisons. Descending equality keeps the left
+merge input. Extrema scan every key once without sorting or copying the entire
+input. Shared owned-output copies, field/string/nominal inspection, scratch and
+comparisons spend the continuing request budget; limits fail without partial
+output. CLI output stays buffered until the full program succeeds.
 
 ## Stable record groups
 

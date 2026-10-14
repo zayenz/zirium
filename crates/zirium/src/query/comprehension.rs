@@ -266,7 +266,7 @@ pub(super) fn has_syntax(source: &str) -> bool {
                     zirql::ArgumentReader::new(source, cursor).expect("source byte boundary");
                 lookahead.skip_whitespace();
                 let rest = lookahead.remaining();
-                if word == "project" && rest.starts_with('(') {
+                if ordering_call(source, start) || word == "project" && rest.starts_with('(') {
                     return true;
                 }
                 if statement_start
@@ -362,7 +362,56 @@ pub(super) fn has_syntax(source: &str) -> bool {
     false
 }
 
+// Constructed calls and native stages share names. A *_by helper has an
+// array and static field; the existing native selector call has one argument.
+pub(super) fn ordering_call(source: &str, position: usize) -> bool {
+    let Ok(mut reader) = zirql::ArgumentReader::new(source, position) else {
+        return false;
+    };
+    let Ok(word) = reader.word() else {
+        return false;
+    };
+    if !matches!(
+        word.value,
+        "sort" | "min" | "max" | "sort_by" | "min_by" | "max_by"
+    ) || !reader.consume('(')
+    {
+        return false;
+    }
+    if matches!(word.value, "sort" | "min" | "max") {
+        return true;
+    }
+    let (mut depth, mut quoted, mut escaped, mut comment) = (0usize, false, false, false);
+    for ch in reader.remaining().chars() {
+        if comment {
+            comment = ch != '\n';
+        } else if quoted {
+            if !escaped && ch == '"' {
+                quoted = false;
+            }
+            escaped = !escaped && ch == '\\';
+        } else {
+            match ch {
+                '#' => comment = true,
+                '"' => quoted = true,
+                '(' | '[' | '{' => depth += 1,
+                ')' if depth == 0 => return false,
+                ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
+    if tokens
+        .get(cursor)
+        .is_some_and(|token| ordering_call(source, token.range().start() as usize))
+    {
+        return true;
+    }
     let mut depth = 0usize;
     let mut previous = T::LBracket;
     for (i, token) in tokens.iter().enumerate().skip(cursor) {
@@ -413,6 +462,7 @@ pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
             {
                 return true;
             }
+            T::Identifier if ordering_call(source, token.range().start() as usize) => return true,
             T::Trivia => continue,
             T::Identifier
                 if depth == 1

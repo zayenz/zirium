@@ -1388,6 +1388,50 @@ impl ReportExpr {
     pub fn exists(self) -> Self {
         self.reduce(zirql::ValueReducer::Exists)
     }
+    /// Stably sort scalar values. Descending order keeps input order for ties.
+    pub fn sort(self, descending: bool) -> Self {
+        self.sort_field(None, descending)
+    }
+    /// Stably sort records by a static field, retaining original rows and ties.
+    pub fn sort_by(self, field: impl Into<String>, descending: bool) -> Self {
+        self.sort_field(Some(field.into()), descending)
+    }
+    fn sort_field(self, field: Option<String>, descending: bool) -> Self {
+        let functions = self.functions.clone();
+        let parameters = self.parameters.clone();
+        Self::node(zirql::ValueExpressionKind::Sort {
+            array: Box::new(self.into_expression()),
+            field: field.map(|field| zirql::Located::new(field, 0..0)),
+            descending,
+        })
+        .with_metadata(parameters, functions)
+    }
+    /// Smallest scalar, or absence for empty input; first input wins ties.
+    pub fn min(self) -> Self {
+        self.extremum(zirql::ValueExtremum::Min, None)
+    }
+    /// Largest scalar, or absence for empty input; first input wins ties.
+    pub fn max(self) -> Self {
+        self.extremum(zirql::ValueExtremum::Max, None)
+    }
+    /// Original record with the smallest field; empty is absent and ties keep first.
+    pub fn min_by(self, field: impl Into<String>) -> Self {
+        self.extremum(zirql::ValueExtremum::Min, Some(field.into()))
+    }
+    /// Original record with the largest field; empty is absent and ties keep first.
+    pub fn max_by(self, field: impl Into<String>) -> Self {
+        self.extremum(zirql::ValueExtremum::Max, Some(field.into()))
+    }
+    fn extremum(self, operator: zirql::ValueExtremum, field: Option<String>) -> Self {
+        let functions = self.functions.clone();
+        let parameters = self.parameters.clone();
+        Self::node(zirql::ValueExpressionKind::Extremum {
+            operator,
+            array: Box::new(self.into_expression()),
+            field: field.map(|field| zirql::Located::new(field, 0..0)),
+        })
+        .with_metadata(parameters, functions)
+    }
     /// Group positional records by a static field, preserving first-seen keys
     /// and every row's order. Evaluation requires homogeneous supported keys.
     pub fn group_by(self, field: impl Into<String>) -> Self {

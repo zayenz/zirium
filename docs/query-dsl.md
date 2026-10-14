@@ -473,6 +473,43 @@ Python conversion. Library callers can retain an explicit
 per-stream and work ceilings. Paths remain read-only and are unavailable on diff
 queries.
 
+## Order constructed values
+
+`ReportExpr::sort(descending)` and `sort_by(field, descending)` stably order
+positional scalars or records. Pass `false` for ascending and `true` for
+descending; ties keep input order in both directions. Python provides the same
+methods with keyword-only `descending=False`. The four extrema methods are
+`.min()`, `.max()`, `.min_by("field")` and `.max_by("field")`. Empty input returns
+absence (`None` in Python), and the first tied input wins. Original rows stay intact; the builders retain function and parameter
+declarations.
+
+```rust
+use zirium::query::{ReportExpr as E, report};
+let rows = E::array([
+    E::record([("id", E::string("A")), ("score", E::integer(2))]),
+    E::record([("id", E::string("B")), ("score", E::integer(1))]),
+]);
+let ordered = report(rows.clone().sort_by("score", false));
+let best = report(rows.max_by("score"));
+let empty_default = report(E::array([]).min().default(E::integer(0)));
+```
+
+```python
+from zirium.query import ReportExpr as E, report
+rows = E([{"id": "A", "score": 2}, {"id": "B", "score": 1}])
+ordered = report(rows.sort_by("score", descending=True))
+best = report(rows.max_by("score"))
+empty_default = report(E([]).min().default(0))
+```
+
+Keys require present homogeneous integers, finite floats, exact strings or one
+nominal type. Missing/absent fields and incompatible keys fail. Project an
+explicit lookup/default key before ordering when needed. The shared evaluator
+extracts keys once, charges scratch/comparisons and retains original values.
+Native `OpQuery` and map ordering methods keep their existing selector behavior.
+See [constructed ordering](query-language.md#sort-constructed-rows-and-select-extrema)
+for input conversion, empty/tie rules and the executable report.
+
 ## Optional report values
 
 `ReportExpr::null()` constructs absence in Rust. The direct `.occurs()`,

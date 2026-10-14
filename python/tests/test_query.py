@@ -666,3 +666,48 @@ def test_exact_string_matching_filters_projected_names():
     with pytest.raises(ValueError, match="work limit"):
         doc.query(report(E("a" * 4000).contains("z")), max_work=6000)
     assert doc.query(report(E("a" * 4000).starts_with("a")), max_work=6000)
+
+
+def test_report_ordering_helpers_preserve_rows_ties_and_optional_results():
+    from zirium.query import ReportExpr as E
+    from zirium.query import report
+
+    rows: list[ReportInput] = [
+        {"id": "A", "score": 2},
+        {"id": "B", "score": 1},
+        {"id": "C", "score": 2},
+        {"id": "D", "score": 1},
+    ]
+    doc = document()
+    result = doc.query(
+        report(
+            {
+                "ascending": E(rows).sort_by("score"),
+                "descending": E(rows).sort_by("score", descending=True),
+                "minimum": E(rows).min_by("score"),
+                "maximum": E(rows).max_by("score"),
+                "scalar": E([2, 1, 2, 1]).sort(),
+                "scalar_desc": E([2, 1]).sort(descending=True),
+                "scalar_min": E([2, 1]).min(),
+                "scalar_max": E([2, 1]).max(),
+                "empty_min": E([]).min(),
+                "empty_max": E([]).max(),
+                "fallback": E([]).min().default(7),
+            }
+        )
+    )
+    assert result == {
+        "ascending": [rows[1], rows[3], rows[0], rows[2]],
+        "descending": [rows[0], rows[2], rows[1], rows[3]],
+        "minimum": rows[1],
+        "maximum": rows[0],
+        "scalar": [1, 1, 2, 2],
+        "scalar_desc": [2, 1],
+        "scalar_min": 1,
+        "scalar_max": 2,
+        "empty_min": None,
+        "empty_max": None,
+        "fallback": 7,
+    }
+    with pytest.raises(ValueError, match="missing ordering field"):
+        doc.query(report(E([{"score": 1}, {"other": 2}]).min_by("score")))

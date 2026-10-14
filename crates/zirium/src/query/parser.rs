@@ -458,6 +458,12 @@ impl Parser<'_, '_> {
                                     | "lookup"
                                     | "has_key"
                                     | "group_by"
+                                    | "sort"
+                                    | "sort_by"
+                                    | "min"
+                                    | "max"
+                                    | "min_by"
+                                    | "max_by"
                                     | "zip_exact"
                                     | "contains"
                                     | "starts_with"
@@ -652,6 +658,10 @@ impl Parser<'_, '_> {
                             })
                     })
                 || is_native_stage(name)
+                    && !super::comprehension::ordering_call(
+                        self.source,
+                        self.current().range().start() as usize,
+                    )
                 || self.bindings.contains(name)
                     && matches!(
                         self.next_kind(),

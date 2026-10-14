@@ -2303,3 +2303,156 @@ fn exact_string_matching_agrees_in_text_and_typed_projected_names() {
         .unwrap_err();
     assert!(refusal.to_string().contains("work limit"));
 }
+
+#[test]
+fn report_ordering_agrees_with_typed_helpers_and_keeps_native_selector_stages() {
+    use zirium::query::{ConstructedValue as V, NativeValue, ReportExpr as E, report};
+    let mut document = document();
+    let source = include_str!("../../../examples/cli/report-ordering.zirql");
+    let mut output = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            output.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(parsed)) = &output[0] else {
+        panic!("constructed report")
+    };
+    let rows = E::array(
+        [("A", 2), ("B", 1), ("C", 2), ("D", 1)]
+            .map(|(id, score)| E::record([("id", E::string(id)), ("score", E::integer(score))])),
+    );
+    let scalars = E::array([2, 1, 2, 1].map(E::integer));
+    let typed = report(E::record([
+        ("ascending", rows.clone().sort_by("score", false)),
+        ("descending", rows.clone().sort_by("score", true)),
+        ("minimum", rows.clone().min_by("score")),
+        ("maximum", rows.max_by("score")),
+        ("scalar", scalars.clone().sort(false)),
+        ("scalar_min", scalars.clone().min()),
+        ("scalar_max", scalars.max()),
+        ("empty_min", E::array([]).min()),
+        ("empty_max", E::array([]).max()),
+        ("fallback", E::array([]).max().default(E::integer(7))),
+    ]));
+    let actual = document.query(&typed).unwrap();
+    assert_eq!(actual.value(), parsed.value());
+    let V::Record(fields) = actual.value() else {
+        panic!("record")
+    };
+    fn ids(value: &V) -> Vec<&str> {
+        let V::Array(rows) = value else {
+            panic!("rows")
+        };
+        rows.iter()
+            .map(|row| {
+                let V::Record(fields) = row else {
+                    panic!("row")
+                };
+                let V::String(id) = &fields[0].1 else {
+                    panic!("id")
+                };
+                id.as_str()
+            })
+            .collect::<Vec<_>>()
+    }
+    assert_eq!(ids(&fields[0].1), ["B", "D", "A", "C"]);
+    assert_eq!(ids(&fields[1].1), ["A", "C", "B", "D"]);
+    assert_eq!(fields[7].1, V::Absent);
+    assert_eq!(fields[9].1, V::Integer(7));
+    for source in [
+        "names | sort",
+        "sort_by(names) | names",
+        "min_by(names) | names",
+    ] {
+        Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .unwrap();
+    }
+    let prepared = r#"fn bound(n:int)->int {max(sort([n,1],descending=true)) default 0} filter(op(one(sort(["test.seed"])))) | head(bound(1)) | count"#;
+    let mut output = Vec::new();
+    Query::parse(prepared)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            output.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(&output[0],QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data()==&V::Integer(1))
+    );
+    let projected = r#"let ordered = sort_by([{"score":lookup({"id":1},"score") default 0},{"score":2}],"score"); report min_by(ordered,"score");"#;
+    let mut output = Vec::new();
+    Query::parse(projected)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            output.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(&output[0],QueryOutput::Native(NativeValue::Constructed(value)) if value.value()==&V::Record(vec![("score".into(),V::Integer(0))]))
+    );
+    use zirium::query::{
+        ConstructedReport, FunctionDefinition as F, FunctionParameter as P, FunctionType as T,
+        Located, ParameterDeclaration, ParameterType, function_call,
+    };
+    let pair = F::new(
+        "pair",
+        vec![P {
+            name: Located::new("n".into(), 0..0),
+            declaration: T::Integer,
+        }],
+        T::Sequence(Box::new(T::Integer)),
+        vec![],
+        E::array([E::name("n"), E::integer(1)]),
+    )
+    .unwrap();
+    let call = function_call::<ConstructedReport>("pair", [E::name("n")])
+        .with_functions(vec![pair])
+        .with_parameters(vec![ParameterDeclaration {
+            name: Located::new("n".into(), 0..0),
+            ty: Located::new(ParameterType::Int, 0..0),
+        }]);
+    let ordered = report(E::from(call).sort(false));
+    assert_eq!(ordered.parameters().len(), 1);
+    let value = ordered
+        .evaluate_with_parameters(
+            &document,
+            DialectRegistry::baseline(),
+            &[("n".into(), V::Integer(2))],
+            EvaluationLimits::default(),
+        )
+        .unwrap();
+    let V::Array(values) = value.value().data() else {
+        panic!("array")
+    };
+    assert_eq!(
+        [values[0].data(), values[1].data()],
+        [&V::Integer(1), &V::Integer(2)]
+    );
+    for source in [
+        r#"report min_by([{"score":1},{"other":2}],"score");"#,
+        r#"report max_by([{"score":1},{"score":null}],"score");"#,
+        r#"report sort_by([{"score":1},{"score":"2"}],"score");"#,
+    ] {
+        let position = match Query::parse(source) {
+            Err(error) => error.position,
+            Ok(query) => {
+                query
+                    .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+                    .unwrap_err()
+                    .range()
+                    .unwrap()
+                    .start
+            }
+        };
+        assert!(
+            source[position..].starts_with("\"score\""),
+            "{position}: {source}"
+        );
+    }
+}

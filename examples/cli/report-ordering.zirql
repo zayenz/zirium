@@ -1,0 +1,9 @@
+let rows = [{"id": "A", "score": 2}, {"id": "B", "score": 1},
+            {"id": "C", "score": 2}, {"id": "D", "score": 1}];
+report {"ascending": sort_by(rows, "score"),
+        "descending": sort_by(rows, "score", descending=true),
+        "minimum": min_by(rows, "score"), "maximum": max_by(rows, "score"),
+        "scalar": sort([2, 1, 2, 1]),
+        "scalar_min": min([2, 1, 2, 1]), "scalar_max": max([2, 1, 2, 1]),
+        "empty_min": min([]), "empty_max": max([]),
+        "fallback": max([]) default 7};

@@ -938,7 +938,9 @@ pub(super) fn normalize(
             | K::Field { value: v, .. }
             | K::TupleAccess { value: v, .. }
             | K::GroupBy { rows: v, .. }
-            | K::Reduce { array: v, .. } => pending.push(v),
+            | K::Reduce { array: v, .. }
+            | K::Sort { array: v, .. }
+            | K::Extremum { array: v, .. } => pending.push(v),
             K::Record(fields) => pending.extend(fields.iter_mut().map(|(_, v)| v)),
             K::KeyedArray { entries, .. } => {
                 for (k, v) in entries {
