@@ -663,13 +663,17 @@ fn comprehension_refusals_and_skipped_runtime_errors_keep_query_locations() {
             "{source}"
         );
     }
-    for source in [
-        "[1e999 for n in [1]]",
-        "[1e-999 for n in [1]]",
-        "[unknown(n) for n in [1] if false]",
-    ] {
+    for source in ["[1e999 for n in [1]]", "[1e-999 for n in [1]]"] {
         assert!(Query::parse(source).is_err(), "{source}");
     }
+    let source = "[unknown(n) for n in [1] if false]";
+    let parsed = zirium::query::parser::parse(&zirium::query::lexer::lex(source));
+    let diagnostic = &parsed.diagnostics()[0];
+    assert_eq!(diagnostic.message(), "unsupported value call");
+    assert_eq!(diagnostic.range().as_range(), 1..1);
+    let error = Query::parse(source).unwrap_err();
+    assert_eq!(error.position, 1);
+    assert_eq!(error.message, diagnostic.message());
 }
 
 #[test]

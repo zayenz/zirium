@@ -10,17 +10,18 @@ pub const DEFAULT_NESTING_LIMIT: usize = 64;
 // Retain the parser paths for existing syntax-tree consumers.
 pub use super::model::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// An owned query parser diagnostic with its original byte range.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
-    message: &'static str,
+    message: String,
     range: TextRange,
 }
 
 impl Diagnostic {
-    pub fn message(self) -> &'static str {
-        self.message
+    pub fn message(&self) -> &str {
+        &self.message
     }
-    pub fn range(self) -> TextRange {
+    pub fn range(&self) -> TextRange {
         self.range
     }
 }
@@ -301,25 +302,17 @@ impl Parser<'_, '_> {
         let position = match error.location {
             zirql::Location::Query(range) | zirql::Location::Source(range) => range.start,
         };
-        let message = match error.message.as_str() {
-            "parameter type must be int, string or bool" => {
-                "parameter type must be int, string or bool"
+        let message = match error.category {
+            zirql::QueryErrorCategory::UnsupportedNull => {
+                "null is unsupported in positional comprehensions".to_owned()
             }
-            "integer literal exceeds signed 64-bit range" => {
-                "integer literal exceeds signed 64-bit range"
+            zirql::QueryErrorCategory::WorkLimit => {
+                "query work limit exceeded during parsing".to_owned()
             }
-            "invalid JSON string escape or Unicode sequence" => {
-                "invalid JSON string escape or Unicode sequence"
+            zirql::QueryErrorCategory::ResultLimit => {
+                "result limit exceeded during parsing".to_owned()
             }
-            "nonfinite float literal" => "nonfinite float literal",
-            "nonzero decimal literal rounded to zero" => "nonzero decimal literal rounded to zero",
-            "null is unsupported in constructed values" => {
-                "null is unsupported in positional comprehensions"
-            }
-            "value nesting limit exceeded" => "value nesting limit exceeded",
-            "work limit exceeded" => "query work limit exceeded during parsing",
-            "result limit exceeded" => "result limit exceeded during parsing",
-            _ => "invalid constructed report expression",
+            _ => error.message,
         };
         self.diagnostics.push(Diagnostic {
             message,
@@ -562,7 +555,7 @@ impl Parser<'_, '_> {
             && let Some(stage) = expression.first_non_selection_stage()
         {
             self.diagnostics.push(Diagnostic {
-                message: "set operands must be selection queries; put edits and count after the grouped set expression",
+                message: "set operands must be selection queries; put edits and count after the grouped set expression".to_owned(),
                 range: stage.range(),
             });
         }
@@ -905,7 +898,8 @@ impl Parser<'_, '_> {
                 self.expect(TokenKind::RParen, "expected `)` after fixpoint query")?;
                 if let Some(stage) = expression.first_non_selection_stage() {
                     self.diagnostics.push(Diagnostic {
-                        message: "fixpoint requires a selection query without edits or count",
+                        message: "fixpoint requires a selection query without edits or count"
+                            .to_owned(),
                         range: stage.range(),
                     });
                 }
@@ -1146,7 +1140,7 @@ impl Parser<'_, '_> {
                 self.expect(TokenKind::RParen, "expected `)` after operation name")?;
                 if name.is_empty() {
                     self.diagnostics.push(Diagnostic {
-                        message: "operation name must not be empty",
+                        message: "operation name must not be empty".to_owned(),
                         range,
                     });
                 }
@@ -1178,7 +1172,7 @@ impl Parser<'_, '_> {
                 self.expect(TokenKind::RParen, "expected `)` after predicate argument")?;
                 if value.is_empty() {
                     self.diagnostics.push(Diagnostic {
-                        message: "name or type must not be empty",
+                        message: "name or type must not be empty".to_owned(),
                         range: value_range,
                     });
                 }
@@ -1287,7 +1281,7 @@ impl Parser<'_, '_> {
     fn check_attribute_name(&mut self, name: &str, range: TextRange) {
         if !valid_attribute_name(name) {
             self.diagnostics.push(Diagnostic {
-                message: "attribute name must be a dotted ASCII identifier",
+                message: "attribute name must be a dotted ASCII identifier".to_owned(),
                 range,
             });
         }
@@ -1318,13 +1312,13 @@ impl Parser<'_, '_> {
         )?;
         if !valid_attribute_name(&name) {
             self.diagnostics.push(Diagnostic {
-                message: "attribute name must be a dotted ASCII identifier",
+                message: "attribute name must be a dotted ASCII identifier".to_owned(),
                 range: name_range,
             });
         }
         if value.chars().any(char::is_control) {
             self.diagnostics.push(Diagnostic {
-                message: "attribute string must not contain control characters",
+                message: "attribute string must not contain control characters".to_owned(),
                 range: value_range,
             });
         }
@@ -1610,13 +1604,13 @@ impl Parser<'_, '_> {
     }
     fn error(&mut self, message: &'static str) {
         self.diagnostics.push(Diagnostic {
-            message,
+            message: message.to_owned(),
             range: self.current().range(),
         });
     }
     fn error_at_previous(&mut self, message: &'static str) {
         self.diagnostics.push(Diagnostic {
-            message,
+            message: message.to_owned(),
             range: self.previous().range(),
         });
     }
@@ -1769,8 +1763,8 @@ impl NativeReader<'_> {
             budget,
         }
     }
-    fn error(diagnostic: Diagnostic) -> zirql::QueryError {
-        zirql::QueryError::query(diagnostic.range.as_range(), diagnostic.message)
+    fn error(diagnostic: &Diagnostic) -> zirql::QueryError {
+        zirql::QueryError::query(diagnostic.range().as_range(), diagnostic.message())
     }
 }
 impl zirql::ValueReaderHost for NativeReader<'_> {
@@ -1796,7 +1790,7 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         let mut parser = self.parser(reader.position(), budget);
         let result = parser.stage(0);
         if let Some(diagnostic) = parser.diagnostics.first() {
-            return Err(Self::error(*diagnostic));
+            return Err(Self::error(diagnostic));
         }
         let stage = result.ok_or_else(|| reader.error("expected a native stage"))?;
         reader.advance(stage.range().end() as usize - reader.position())?;
@@ -1814,7 +1808,7 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         let mut parser = self.parser(reader.position(), budget);
         let result = parser.primary_predicate(0);
         if let Some(diagnostic) = parser.diagnostics.first() {
-            return Err(Self::error(*diagnostic));
+            return Err(Self::error(diagnostic));
         }
         let predicate = result.ok_or_else(|| reader.error("expected a native predicate"))?;
         reader.advance(predicate.range().end() as usize - reader.position())?;
@@ -1900,5 +1894,56 @@ fn lower_shared_predicate(predicate: zirql::Predicate<Predicate>) -> Predicate {
             predicates: predicates.into_iter().map(lower_shared_predicate).collect(),
             range,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_error_categories_keep_parsing_wording_and_informative_fallback() {
+        let lexed = super::super::lexer::lex("");
+        let mut budget = zirql::Budget::for_program(super::super::comprehension::default_limits());
+        let mut parser = Parser {
+            source: lexed.source(),
+            tokens: lexed.tokens(),
+            cursor: 0,
+            diagnostics: Vec::new(),
+            nesting_limit: DEFAULT_NESTING_LIMIT,
+            bindings: HashSet::new(),
+            budget: &mut budget,
+        };
+        parser.shared_error(
+            zirql::QueryError::query(7..12, "changed work refusal")
+                .with_category(zirql::QueryErrorCategory::WorkLimit),
+        );
+        parser.shared_error(
+            zirql::QueryError::query(8..13, "changed result refusal")
+                .with_category(zirql::QueryErrorCategory::ResultLimit),
+        );
+        parser.shared_error(
+            zirql::QueryError::query(9..14, "changed null refusal")
+                .with_category(zirql::QueryErrorCategory::UnsupportedNull),
+        );
+        parser.shared_error(zirql::QueryError::source(20..25, "specific source failure"));
+        parser.shared_error(zirql::QueryError::query(
+            30..35,
+            "null is unsupported in constructed values",
+        ));
+        assert_eq!(
+            parser
+                .diagnostics
+                .iter()
+                .map(|diagnostic| (diagnostic.message(), diagnostic.range().as_range()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("query work limit exceeded during parsing", 7..7),
+                ("result limit exceeded during parsing", 8..8),
+                ("null is unsupported in positional comprehensions", 9..9),
+                ("specific source failure", 20..20),
+                ("null is unsupported in constructed values", 30..30),
+            ]
+        );
     }
 }

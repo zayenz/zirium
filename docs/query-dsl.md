@@ -323,6 +323,13 @@ in the CLI. Typed expression APIs retain their existing limits and native values
 See [query language limits](query-language.md) for the
 aggregate units and the caller-owned printing boundary.
 
+Text parsing returns `query::QueryError` with an owned `String` message and a
+query byte position. `query::parser::Diagnostic` also owns its message; it is
+`Clone` and no longer `Copy`. Its `message(&self) -> &str` and `range(&self)`
+accessors borrow the diagnostic. Direct `QueryError` construction supplies a
+`String`, for example `message: "invalid query".into()`. Ownership lets detailed
+shared errors survive parsing without replacing them with a generic message.
+
 Evaluation returns `EvaluationError` in Rust and raises `ValueError` in Python.
 Python rejects invalid argument types with `TypeError`. Evaluation runs in Rust
 with shared document access and without holding the Python interpreter lock;

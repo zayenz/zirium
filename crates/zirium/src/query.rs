@@ -244,10 +244,11 @@ enum SortKey {
     Text(String),
 }
 
+/// An owned parsing error at the responsible query byte position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryError {
     pub position: usize,
-    pub message: &'static str,
+    pub message: String,
 }
 
 impl fmt::Display for QueryError {
@@ -343,13 +344,13 @@ impl Query {
                 .and_then(|n| n.checked_add(1))
                 .ok_or(QueryError {
                     position: 0,
-                    message: "query allocation size overflow",
+                    message: "query allocation size overflow".to_owned(),
                 })?;
             admission
                 .charge(work, zirql::Location::Query(0..source.len()))
                 .map_err(|_| QueryError {
                     position: 0,
-                    message: "query work limit exceeded during parsing",
+                    message: "query work limit exceeded during parsing".to_owned(),
                 })?;
             admission
                 .charge_results(
@@ -358,7 +359,7 @@ impl Query {
                 )
                 .map_err(|_| QueryError {
                     position: 0,
-                    message: "result limit exceeded during parsing",
+                    message: "result limit exceeded during parsing".to_owned(),
                 })?;
         }
         let lexed = lexer::lex(source);
@@ -392,7 +393,7 @@ impl Query {
         {
             return Err(QueryError {
                 position: range.start() as usize,
-                message,
+                message: message.to_owned(),
             });
         }
         let (parse_work, parse_results) = if parsed.parse_results != 0 {

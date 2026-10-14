@@ -1015,6 +1015,12 @@ consume a nesting level per term.
 The CLI reports query errors with a byte offset, line, column, and source
 caret. Program-file positions include leading whitespace and comments.
 
+Shared parser errors use Zirql's categories for the existing work-limit,
+result-limit and unsupported-null wording. All other shared errors retain their
+full message. Their diagnostic range remains the zero-length range at the
+responsible shared range's start; `QueryError::position` uses that same byte
+offset. Native runtime errors retain their existing messages and locations.
+
 For implementation timing and scaling measurements, see
 [query profiling](architecture/query-profiling.md).
 
