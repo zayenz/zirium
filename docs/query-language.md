@@ -341,14 +341,15 @@ including a literal such as `[for]` when `for` is bound.
 
 The supported expression forms are:
 
-- Boolean, signed integer, finite decimal float, and string literals; earlier
+- Absence (`null`), Boolean, signed integer, finite decimal float, and string literals; earlier
   bindings and generator names; grouping with parentheses.
 - Positional arrays, records with quoted labels, and nested array comprehensions.
 - Numeric sign, `not`, checked `+`, `-`, `*`, `/`, integer `div` and `mod`;
   numeric `<`, `<=`, `>`, `>=`; typed `==` (also `=`) and `!=`.
 - Boolean `and` and `or`; string or positional-array `++`; record access
   `r.field`, array access `a[i]`, and inclusive integer ranges `lo..hi`.
-- `length`, `sum`, `forall`, `exists`, `require`, `group_by`, and `one` calls;
+- `length`, `sum`, `forall`, `exists`, `require`, `group_by`, `one`,
+  `occurs`, `absent`, `lookup` and `has_key` calls; lazy `default`;
   explicitly projected native queries and correlated `project` rows.
 
 Array positions start at one. Integer arithmetic uses signed 64-bit values and
@@ -364,7 +365,45 @@ Use an explicit projection such as `names`, `attr`, or `count` before constructi
 scalar reports from operations. Native operation, type, and attribute handles
 retain their identity and cannot become comprehension values through their
 printed spelling. Saved JSON arrays and objects can supply scalar or structured
-values; `null` and integers outside `i64` fail when projected into this subset.
+values; JSON `null` projects to absence, while integers outside `i64` fail.
+
+### Optional fields and lazy defaults
+
+`null` is an absent report value. `occurs(value)` and `absent(value)` inspect
+presence; false, zero, empty strings and empty containers remain present.
+`lookup(value,key)` accepts a record string label or one-based positional array
+index and returns absence for a compatible missing key. `has_key(value,key)`
+checks storage, so a stored null has a key while an omitted field does not.
+Wrong container/key types fail. Ordinary `r.field` and `a[i]` still fail on
+missing data. Arithmetic, ordering and conditions require present operands.
+
+`value default fallback` evaluates the left side once and selects its fallback
+only for absence. Both branches receive scope, syntax, native purity and known
+type checks, while skipped fallback data and native execution stay untouched.
+Selected arithmetic or host errors retain their locations. Parenthesize mixed
+operators; `default` follows MiniZinc precedence and associates left to right.
+
+```text
+let info = {"id": 4, "stored": null};
+report {"value": lookup(info, "missing") default 8,
+        "stored": has_key(info, "stored"),
+        "missing": has_key(info, "missing"), "info": info};
+```
+
+The result has `value: 8`, `stored: true` and `missing: false`; `info` contains
+`id` and `stored` only. Stored absence renders as JSON null. The reusable
+`examples/cli/optional-report.zirql` also includes positional lookup, a native
+count and a skipped division error. Run it against the existing input:
+
+```sh
+zirium --program-file examples/cli/optional-report.zirql examples/cli/function-report.mlir
+```
+
+Inline programs, file programs and the [Rust/Python report builders](query-dsl.md#optional-report-values)
+use the same evaluator. Legacy plain JSON literals keep their output shape.
+External inputs remain required int/string/bool; null is a report value, not an
+optional parameter transport. Native operation identities and unsupported
+nominal/keyed report rendering retain their existing boundaries.
 
 Rust callbacks receive `QueryOutput::Native(NativeValue::Constructed(report))`
 before rendering. `report.value()` borrows the ordered Zirql value, including

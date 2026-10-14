@@ -173,6 +173,8 @@ impl ConstructedReport {
 }
 fn value_size(value: &V) -> usize {
     match value {
+        V::Declared { value, .. } => 1usize.saturating_add(value_size(value)),
+        V::Absent => 1,
         V::Array(values)
         | V::Tuple(values)
         | V::Set {
@@ -273,12 +275,33 @@ pub(super) fn has_syntax(source: &str) -> bool {
                 }
                 if matches!(
                     word,
-                    "sum" | "length" | "forall" | "exists" | "require" | "group_by"
+                    "sum"
+                        | "length"
+                        | "forall"
+                        | "exists"
+                        | "require"
+                        | "group_by"
+                        | "occurs"
+                        | "absent"
+                        | "lookup"
+                        | "has_key"
                 ) && rest.starts_with('(')
                 {
                     return true;
                 }
 
+                if word == "default"
+                    && !rest.starts_with([':', '='])
+                    && source[..start]
+                        .trim_end()
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| {
+                            !matches!(c, '[' | '(' | '{' | ',' | ':' | ';' | '=' | '|')
+                        })
+                {
+                    return true;
+                }
                 if arrays > 0 && before_previous_for && word == "in" {
                     return true;
                 }
@@ -321,10 +344,42 @@ pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
             T::RBracket | T::RBrace | T::RParen => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return false;
+                    return tokens[i + 1..]
+                        .iter()
+                        .find(|t| t.kind() != T::Trivia)
+                        .is_some_and(|t| {
+                            t.kind() == T::Identifier && &source[t.range().as_range()] == "default"
+                        });
                 }
             }
             T::Eof => return false,
+            T::Pipe | T::Semicolon if depth == 0 => return false,
+            T::Identifier
+                if &source[token.range().as_range()] == "default"
+                    && matches!(
+                        previous,
+                        T::Identifier
+                            | T::Integer
+                            | T::Number
+                            | T::String
+                            | T::RParen
+                            | T::RBracket
+                            | T::RBrace
+                    ) =>
+            {
+                return true;
+            }
+            T::Identifier
+                if matches!(
+                    &source[token.range().as_range()],
+                    "occurs" | "absent" | "lookup" | "has_key"
+                ) && tokens[i + 1..]
+                    .iter()
+                    .find(|t| t.kind() != T::Trivia)
+                    .is_some_and(|t| t.kind() == T::LParen) =>
+            {
+                return true;
+            }
             T::Trivia => continue,
             T::Identifier
                 if depth == 1
@@ -456,12 +511,7 @@ fn project_json(
     }
     admit(budget, 1, 0, range)?;
     Ok(match value {
-        serde_json::Value::Null => {
-            return Err(
-                EvaluationError::new("null is unsupported in positional comprehensions")
-                    .at(range.clone()),
-            );
-        }
+        serde_json::Value::Null => V::Absent,
         serde_json::Value::Bool(v) => V::Boolean(*v),
         serde_json::Value::Number(v) => {
             if v.is_i64() || v.is_u64() {
@@ -508,7 +558,9 @@ fn to_json(
         return Err(EvaluationError::new("value nesting limit exceeded").at(range.clone()));
     }
     admit(budget, 1, 0, range)?;
-    Ok(match value {
+    Ok(match value.data() {
+        V::Declared { .. } => unreachable!("transparent annotation"),
+        V::Absent => serde_json::Value::Null,
         V::Member(_) | V::KeyedArray { .. } => {
             return Err(EvaluationError::new(
                 "nominal and keyed values are unsupported in Zirium reports",

@@ -52,7 +52,7 @@ from ._zirium import (  # ty: ignore[unresolved-import]
 )
 
 ReportValue: TypeAlias = (
-    bool | int | float | str | list["ReportValue"] | dict[str, "ReportValue"]
+    None | bool | int | float | str | list["ReportValue"] | dict[str, "ReportValue"]
 )
 ReportInput: TypeAlias = (
     ReportExpr
@@ -64,6 +64,7 @@ ReportInput: TypeAlias = (
     | int
     | float
     | str
+    | None
     | list["ReportInput"]
     | dict[str, "ReportInput"]
 )

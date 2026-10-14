@@ -335,7 +335,10 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost {
                 budget,
                 Location::Query(range.clone()),
             )?),
-            K::Map | K::Array => Some(vec![ValueType::Unestablished]),
+            K::Map => Some(vec![ValueType::RecordKind]),
+            K::Array => Some(vec![ValueType::Array(zirql::ArrayType::Elements(
+                Vec::new(),
+            ))]),
         })
     }
     fn constructed_kind(&self, types: Vec<ValueType>) -> program::Kind {
@@ -608,7 +611,7 @@ fn string_argument(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<String, EvaluationError> {
-    let V::String(text) = scalar_argument(value, context, bindings, budget)? else {
+    let V::String(text) = scalar_argument(value, context, bindings, budget)?.into_data() else {
         return Err(EvaluationError::new("primitive argument needs a string")
             .at(value.expression.range.clone()));
     };
@@ -643,7 +646,9 @@ pub(super) fn resolve_stage(
             range,
         });
     }
-    let V::Integer(integer) = scalar_argument(value.operand(), context, bindings, budget)? else {
+    let V::Integer(integer) =
+        scalar_argument(value.operand(), context, bindings, budget)?.into_data()
+    else {
         return Err(
             EvaluationError::new("primitive argument needs an int").at(value
                 .operand()
@@ -765,7 +770,10 @@ pub(super) fn op_name(
         bindings,
         budget,
     )?;
-    let V::String(name) = result.into_value(budget, &value.expression.range)? else {
+    let V::String(name) = result
+        .into_value(budget, &value.expression.range)?
+        .into_data()
+    else {
         return Err(
             EvaluationError::new("op argument needs a string").at(value.expression.range.clone())
         );
@@ -908,7 +916,9 @@ fn visit_value<'a>(
     match &value.value {
         K::Literal(_) | K::Name(_) => {}
         K::NativeQuery(query) => visit_operand(query, pending),
-        K::One(value)
+        K::Occurs(value)
+        | K::Absent(value)
+        | K::One(value)
         | K::IndexSet(value)
         | K::Entries(value)
         | K::Unary { operand: value, .. }
@@ -948,6 +958,18 @@ fn visit_value<'a>(
             }
         }
         K::Binary { left, right, .. }
+        | K::Lookup {
+            value: left,
+            key: right,
+        }
+        | K::HasKey {
+            value: left,
+            key: right,
+        }
+        | K::Default {
+            value: left,
+            fallback: right,
+        }
         | K::ZipExact { left, right }
         | K::Range {
             lower: left,
@@ -1083,7 +1105,9 @@ pub(super) fn dispose_value(value: zirql::ValueExpressionKind<Operand>) {
         match value.value {
             K::Literal(_) | K::Name(_) => {}
             K::NativeQuery(query) => zirql::dispose_expression(*query),
-            K::One(value)
+            K::Occurs(value)
+            | K::Absent(value)
+            | K::One(value)
             | K::IndexSet(value)
             | K::Entries(value)
             | K::Unary { operand: value, .. }
@@ -1113,6 +1137,18 @@ pub(super) fn dispose_value(value: zirql::ValueExpressionKind<Operand>) {
                 }
             }
             K::Binary { left, right, .. }
+            | K::Lookup {
+                value: left,
+                key: right,
+            }
+            | K::HasKey {
+                value: left,
+                key: right,
+            }
+            | K::Default {
+                value: left,
+                fallback: right,
+            }
             | K::ZipExact { left, right }
             | K::Range {
                 lower: left,

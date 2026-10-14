@@ -1115,6 +1115,50 @@ impl ReportExpr {
             0..0,
         )
     }
+    /// Explicit absence in a read-only report.
+    pub fn null() -> Self {
+        Self::node(zirql::ValueExpressionKind::Literal(
+            zirql::ConstructedValue::Absent,
+        ))
+    }
+    pub fn occurs(self) -> Self {
+        let parameters = self.parameters.clone();
+        Self::node(zirql::ValueExpressionKind::Occurs(Box::new(
+            self.into_expression(),
+        )))
+        .with_metadata(parameters)
+    }
+    pub fn absent(self) -> Self {
+        let parameters = self.parameters.clone();
+        Self::node(zirql::ValueExpressionKind::Absent(Box::new(
+            self.into_expression(),
+        )))
+        .with_metadata(parameters)
+    }
+    pub fn lookup(self, key: Self) -> Self {
+        let parameters = merge_parameters(&self.parameters, &key.parameters);
+        Self::node(zirql::ValueExpressionKind::Lookup {
+            value: Box::new(self.into_expression()),
+            key: Box::new(key.into_expression()),
+        })
+        .with_metadata(parameters)
+    }
+    pub fn has_key(self, key: Self) -> Self {
+        let parameters = merge_parameters(&self.parameters, &key.parameters);
+        Self::node(zirql::ValueExpressionKind::HasKey {
+            value: Box::new(self.into_expression()),
+            key: Box::new(key.into_expression()),
+        })
+        .with_metadata(parameters)
+    }
+    pub fn default(self, fallback: Self) -> Self {
+        let parameters = merge_parameters(&self.parameters, &fallback.parameters);
+        Self::node(zirql::ValueExpressionKind::Default {
+            value: Box::new(self.into_expression()),
+            fallback: Box::new(fallback.into_expression()),
+        })
+        .with_metadata(parameters)
+    }
     pub fn integer(value: i64) -> Self {
         Self::node(zirql::ValueExpressionKind::Literal(
             zirql::ConstructedValue::Integer(value),

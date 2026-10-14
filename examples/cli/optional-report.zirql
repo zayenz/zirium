@@ -1,0 +1,10 @@
+let info = {"id": 4, "stored": null};
+let cells = [10, null, 30];
+let native = filter(op("arith.addi")) | count;
+report {"id": lookup(info, "id") default 0,
+        "omitted": absent(lookup(info, "missing")), "stored": has_key(info, "stored"),
+        "missing": has_key(info, "missing"),
+        "stored_cell": has_key(cells, 2), "missing_cell": has_key(cells, 4),
+        "fallback": lookup(cells, 4) default 8,
+        "zero": 0 default 99, "flag": false default true, "empty": [] default [1],
+        "skip": 7 default (1 div 0), "native": native, "info": info, "cells": cells};

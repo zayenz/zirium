@@ -170,6 +170,9 @@ impl ReportGenerator {
     }
 }
 fn report_expression(value: &Bound<'_, PyAny>) -> PyResult<core::ReportExpr> {
+    if value.is_none() {
+        return Ok(core::ReportExpr::null());
+    }
     if let Ok(value) = value.extract::<PyRef<'_, ReportExpr>>() {
         return Ok(value.inner.clone());
     }
@@ -263,6 +266,31 @@ impl ReportExpr {
     fn at(&self, index: &Bound<'_, PyAny>) -> PyResult<Self> {
         Ok(Self {
             inner: self.inner.clone().at(report_expression(index)?),
+        })
+    }
+    fn occurs(&self) -> Self {
+        Self {
+            inner: self.inner.clone().occurs(),
+        }
+    }
+    fn absent(&self) -> Self {
+        Self {
+            inner: self.inner.clone().absent(),
+        }
+    }
+    fn lookup(&self, key: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().lookup(report_expression(key)?),
+        })
+    }
+    fn has_key(&self, key: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().has_key(report_expression(key)?),
+        })
+    }
+    fn default(&self, fallback: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().default(report_expression(fallback)?),
         })
     }
     fn one(&self) -> Self {
@@ -1408,7 +1436,9 @@ fn constructed(
     budget
         .charge_results(1, zirql_location(range))
         .map_err(py_error)?;
-    Ok(match value {
+    Ok(match value.data() {
+        V::Declared { .. } => unreachable!("transparent annotation"),
+        V::Absent => py.None(),
         V::Boolean(value) => value.into_pyobject(py)?.to_owned().into_any().unbind(),
         V::Integer(value) => value.into_pyobject(py)?.into_any().unbind(),
         V::Float(value) => value.into_pyobject(py)?.into_any().unbind(),

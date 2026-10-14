@@ -608,8 +608,7 @@ impl Parser<'_, '_> {
                 });
             }
         }
-        if (self.at(TokenKind::LBracket)
-            && super::comprehension::starts(self.source, self.tokens, self.cursor))
+        if super::comprehension::starts(self.source, self.tokens, self.cursor)
             || (self.at_identifier("group_by") && self.next_kind() == Some(TokenKind::LParen))
         {
             let value = self.shared_value(depth)?;

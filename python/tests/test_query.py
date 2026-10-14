@@ -555,3 +555,66 @@ def test_native_users_paths_keep_sequence_steps_owner_and_projection():
         ops().paths("users", to=op("func.return"), max_depth=2**100)
     del doc, lowered, native
     assert [step.name for step in steps] == ["arith.muli", "arith.addi", "func.return"]
+
+
+def test_optional_report_builders_preserve_none_membership_and_lazy_defaults():
+    from pathlib import Path
+
+    from zirium.query import ReportExpr as E
+    from zirium.query import report
+
+    source = (
+        Path(__file__).parents[2] / "examples/cli/function-report.mlir"
+    ).read_text()
+    lowered = zirium.parse_text(
+        source, registry=zirium.DialectRegistry.baseline()
+    ).lower_strict()
+    assert lowered.document is not None
+    doc = lowered.document
+    info = E({"id": 4, "stored": None})
+    cells = E([10, None, 30])
+    result = doc.query(
+        report(
+            {
+                "id": info.lookup("id").default(0),
+                "omitted": info.lookup("missing").absent(),
+                "stored": info.has_key("stored"),
+                "missing": info.has_key("missing"),
+                "stored_cell": cells.has_key(2),
+                "missing_cell": cells.has_key(4),
+                "fallback": cells.lookup(4).default(8),
+                "zero": E(0).default(99),
+                "flag": E(False).default(True),
+                "empty": E([]).default([1]),
+                "skip": E(7).default(E(9223372036854775807) + 1),
+                "native": ops().filter(op("arith.addi")).count(),
+                "info": info,
+                "cells": cells,
+            }
+        )
+    )
+    assert result == {
+        "id": 4,
+        "omitted": True,
+        "stored": True,
+        "missing": False,
+        "stored_cell": True,
+        "missing_cell": False,
+        "fallback": 8,
+        "zero": 0,
+        "flag": False,
+        "empty": [],
+        "skip": 7,
+        "native": 2,
+        "info": {"id": 4, "stored": None},
+        "cells": [10, None, 30],
+    }
+    assert doc.query(report(None)) is None
+    assert doc.query(report(E(False).occurs())) is True
+    with pytest.raises(ValueError):
+        doc.query(report(E(None).default(E(1) / 0)))
+    required = report(E(7).default(E.name("fallback"))).with_parameters(
+        {"fallback": "int"}
+    )
+    with pytest.raises(TypeError):
+        doc.query(required, parameters={"fallback": None})  # ty: ignore[invalid-argument-type]

@@ -3653,3 +3653,56 @@ fn bounded_users_paths_agree_inline_file_and_buffer_later_failure() {
     assert!(!later.status.success());
     assert!(later.stdout.is_empty());
 }
+
+#[test]
+fn optional_reports_agree_inline_file_and_buffer_selected_failures() {
+    let input = include_str!("../../../examples/cli/function-report.mlir");
+    let program = include_str!("../../../examples/cli/optional-report.zirql");
+    let inline = run_stdin(program, input);
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&inline.stdout).unwrap();
+    assert_eq!(json["info"], serde_json::json!({"id":4,"stored":null}));
+    assert_eq!(json["cells"], serde_json::json!([10, null, 30]));
+    assert_eq!(json["missing"], false);
+    assert_eq!(json["native"], 2);
+    let path = temporary_path("optional-report", "zirql");
+    fs::write(&path, program).unwrap();
+    for option in ["-f", "--program-file"] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args([option, path.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let file = child.wait_with_output().unwrap();
+        assert!(
+            file.status.success(),
+            "{}",
+            String::from_utf8_lossy(&file.stderr)
+        );
+        assert_eq!(file.stdout, inline.stdout);
+    }
+    for later in ["report null default (1 / 0);", "report [10,null,30][4];"] {
+        let failed = run_stdin(&format!("{program} {later}"), input);
+        assert!(!failed.status.success());
+        assert!(failed.stdout.is_empty());
+    }
+    fs::remove_file(path).unwrap();
+    let legacy = run_stdin(r#"{"stored":null}"#, input);
+    assert!(legacy.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&legacy.stdout).unwrap(),
+        serde_json::json!({"stored":null})
+    );
+}

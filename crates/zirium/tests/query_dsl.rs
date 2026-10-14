@@ -650,7 +650,7 @@ fn comprehension_refusals_and_skipped_runtime_errors_keep_query_locations() {
             "native",
             "explicit scalar projection",
         ),
-        ("a = [null]; [n for n in a]", "a", "null"),
+        ("a = [null]; [n + 1 for n in a]", "n + 1", "numeric"),
     ] {
         let error = Query::parse(source)
             .unwrap()
@@ -1633,4 +1633,106 @@ fn bounded_users_paths_keep_native_steps_and_share_projection_parameters_and_lim
             )
             .is_err()
     );
+}
+
+#[test]
+fn optional_reports_agree_in_parsed_and_typed_native_values() {
+    use zirium::query::{
+        ConstructedValue as V, NativeValue, ReportExpr as E, ValueBinaryOperator as B, report,
+    };
+    let mut document = document_from(FUNCTION_REPORT_SOURCE);
+    let source = include_str!("../../../examples/cli/optional-report.zirql");
+    let mut outputs = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(parsed)) = &outputs[0] else {
+        panic!("native report")
+    };
+    let info = E::record([("id", E::integer(4)), ("stored", E::null())]);
+    let cells = E::array([E::integer(10), E::null(), E::integer(30)]);
+    let typed = report(E::record([
+        (
+            "id",
+            info.clone().lookup(E::string("id")).default(E::integer(0)),
+        ),
+        (
+            "omitted",
+            info.clone().lookup(E::string("missing")).absent(),
+        ),
+        ("stored", info.clone().has_key(E::string("stored"))),
+        ("missing", info.clone().has_key(E::string("missing"))),
+        ("stored_cell", cells.clone().has_key(E::integer(2))),
+        ("missing_cell", cells.clone().has_key(E::integer(4))),
+        (
+            "fallback",
+            cells.clone().lookup(E::integer(4)).default(E::integer(8)),
+        ),
+        ("zero", E::integer(0).default(E::integer(99))),
+        ("flag", E::boolean(false).default(E::boolean(true))),
+        ("empty", E::array([]).default(E::array([E::integer(1)]))),
+        (
+            "skip",
+            E::integer(7).default(E::integer(1).binary(B::IntegerDivide, E::integer(0))),
+        ),
+        ("native", E::from(ops().filter(op("arith.addi")).count())),
+        ("info", info),
+        ("cells", cells),
+    ]));
+    let actual = document.query(&typed).unwrap();
+    assert_eq!(actual.value(), parsed.value());
+    let V::Record(fields) = actual.value() else {
+        panic!("record")
+    };
+    assert_eq!(fields[1].1, V::Boolean(true));
+    assert_eq!(fields[3].1, V::Boolean(false));
+    assert_eq!(fields[6].1, V::Integer(8));
+    assert_eq!(fields[11].1, V::Integer(2));
+    assert_eq!(
+        document.query(&report(E::null().absent())).unwrap().value(),
+        &V::Boolean(true)
+    );
+    assert_eq!(
+        document
+            .query(&report(E::boolean(false).occurs()))
+            .unwrap()
+            .value(),
+        &V::Boolean(true)
+    );
+    for source in [
+        r#"a={"id":4}; report 7 default a;"#,
+        "a=[1]; report 7 default a;",
+    ] {
+        assert!(
+            Query::parse(source)
+                .unwrap()
+                .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+                .is_err()
+        );
+    }
+    // Call names retain their legacy binding meaning outside call syntax.
+    assert!(
+        Query::parse("lookup=names; default=lookup; default")
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .is_ok()
+    );
+    assert!(
+        Query::parse("[] default [1]")
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .is_ok()
+    );
+    // Parameter metadata on a skipped fallback remains part of the request.
+    let parameter = report(E::integer(7).default(E::name("fallback"))).with_parameters(vec![
+        zirium::query::ParameterDeclaration {
+            name: zirium::query::Located::new("fallback".into(), 0..0),
+            ty: zirium::query::Located::new(zirium::query::ParameterType::Int, 0..0),
+        },
+    ]);
+    assert!(document.query(&parameter).is_err());
 }

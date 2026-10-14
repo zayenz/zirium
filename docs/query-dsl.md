@@ -473,6 +473,53 @@ Python conversion. Library callers can retain an explicit
 per-stream and work ceilings. Paths remain read-only and are unavailable on diff
 queries.
 
+## Optional report values
+
+`ReportExpr::null()` constructs absence in Rust. The direct `.occurs()`,
+`.absent()`, `.lookup(key)`, `.has_key(key)` and `.default(fallback)` methods
+build the same nodes as the textual language. They retain required parameter
+metadata from both operands, including skipped fallbacks.
+
+```rust
+use zirium::query::{ReportExpr as E, report};
+
+let info = E::record([("id", E::integer(4)), ("stored", E::null())]);
+let query = report(E::record([
+    ("value", info.clone().lookup(E::string("missing")).default(E::integer(8))),
+    ("stored", info.clone().has_key(E::string("stored"))),
+    ("info", info),
+]));
+let result = document.query(&query)?;
+```
+
+Python accepts `None` in report scalars, lists and dictionaries and returns it
+for stored absence. The corresponding methods accept ordinary report inputs:
+
+```python
+from zirium.query import ReportExpr as E, report
+
+info = E({"id": 4, "stored": None})
+result = document.query(report({
+    "value": info.lookup("missing").default(8),
+    "stored": info.has_key("stored"),
+    "missing": info.has_key("missing"),
+    "info": info,
+}))
+assert result == {
+    "value": 8, "stored": True, "missing": False,
+    "info": {"id": 4, "stored": None},
+}
+```
+
+Lookup misses return absence, while wrong key/container types and strict missing
+access still fail. Default evaluates its fallback only for absence; zero,
+false and empty containers remain present. Scope, purity and known-type checks
+still cover both operands. See the [textual optional report](query-language.md#optional-fields-and-lazy-defaults)
+for inline/file usage and the reusable report fixture with a native projection.
+Required external parameters continue to accept int/string/bool only; passing
+`None` as a parameter fails before execution. Optional report values add no new
+MLIR semantics or edit format.
+
 ## Native capture builders
 
 The development Git API adds `SsaQuery` and `CaptureQuery`. `OpQuery::operand`
