@@ -213,24 +213,37 @@ pub(super) fn evaluate(
     bindings: &zirql::Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<QueryOutput, EvaluationError> {
+    evaluate_access(pipeline, Access::Direct(context, bindings), input, budget)
+}
+pub(super) fn evaluate_with_arguments<'h, 'd, 'q>(
+    pipeline: &NativePipeline<'_>,
+    arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'h, 'd, 'q>, super::report::ReportHost>,
+    input: QueryOutput,
+    budget: &mut Budget,
+) -> Result<QueryOutput, EvaluationError> {
+    evaluate_access(pipeline, Access::Prepared(arguments), input, budget)
+}
+fn evaluate_access(
+    pipeline: &NativePipeline<'_>,
+    access: Access<'_, '_, '_, '_>,
+    input: QueryOutput,
+    budget: &mut Budget,
+) -> Result<QueryOutput, EvaluationError> {
     let location = pipeline.range();
     let (kind, items) = into_rows(input);
     let input = NativeInput::from_admitted(
-        StreamContext {
-            evaluation: context,
-            kind,
-            bindings,
-        },
+        StreamContext { access, kind },
         items,
         budget,
         zirql::Location::Query(location),
     )
     .map_err(core_error)?;
-    let result = zirql::evaluate(pipeline, &StreamHost, input, budget).map_err(evaluation_error)?;
+    let mut result =
+        zirql::evaluate(pipeline, &StreamHost, input, budget).map_err(evaluation_error)?;
     Ok(match result.value {
         zirql::NativeValue::Stream(rows) => into_output(result.context.kind, rows),
         zirql::NativeValue::Count(count) => QueryOutput::Count(count),
-        zirql::NativeValue::Tally(counts) => match result.context.evaluation.output {
+        zirql::NativeValue::Tally(counts) => match result.context.access.parts().0.output {
             OutputMode::Native => QueryOutput::Native(NativeValue::Map(
                 counts
                     .into_iter()
@@ -247,10 +260,34 @@ pub(super) fn evaluate(
     })
 }
 
+enum Access<'a, 'host, 'document, 'query> {
+    Direct(
+        &'a mut EvaluationContext<'host, 'document, 'query>,
+        &'a zirql::Bindings<QueryOutput>,
+    ),
+    Prepared(
+        &'a mut dyn zirql::NativeArguments<
+            EvaluationContext<'host, 'document, 'query>,
+            super::report::ReportHost,
+        >,
+    ),
+}
+impl<'h, 'd, 'q> Access<'_, 'h, 'd, 'q> {
+    fn parts(
+        &mut self,
+    ) -> (
+        &mut EvaluationContext<'h, 'd, 'q>,
+        &zirql::Bindings<QueryOutput>,
+    ) {
+        match self {
+            Self::Direct(context, bindings) => (context, bindings),
+            Self::Prepared(arguments) => arguments.parts(),
+        }
+    }
+}
 struct StreamContext<'a, 'host, 'document, 'query> {
-    evaluation: &'a mut EvaluationContext<'host, 'document, 'query>,
+    access: Access<'a, 'host, 'document, 'query>,
     kind: StreamKind,
-    bindings: &'a zirql::Bindings<QueryOutput>,
 }
 
 struct StreamHost;
@@ -313,17 +350,55 @@ impl<'stage>
             unreachable!("filter preparation requires operations")
         };
         if let model::Predicate::OpValue { name, .. } = leaf {
-            let name = super::report::op_name(name, context.evaluation, context.bindings, budget)
-                .map_err(zirql::EvaluationError::Host)?;
-            return Ok(
-                if context.evaluation.document.operation_name(*operation) == Some(&name) {
-                    Truth::True
-                } else {
-                    Truth::False
-                },
-            );
+            let matches = match &mut context.access {
+                Access::Prepared(arguments) => {
+                    let value = arguments.evaluate(
+                        &name.expression,
+                        QueryOutput::Operations(vec![]),
+                        budget,
+                    )?;
+                    let zirql::ConstructedValue::String(text) = value.value().data() else {
+                        return Err(zirql::EvaluationError::Host(
+                            EvaluationError::new("op argument needs a string")
+                                .at(name.expression.range.clone()),
+                        ));
+                    };
+                    if text.is_empty() {
+                        return Err(zirql::EvaluationError::Host(
+                            EvaluationError::new("operation name must not be empty")
+                                .at(name.expression.range.clone()),
+                        ));
+                    }
+                    arguments.parts().0.document.operation_name(*operation) == Some(text)
+                }
+                Access::Direct(evaluation, bindings) => {
+                    let name = super::report::op_name(name, evaluation, bindings, budget)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    evaluation.document.operation_name(*operation) == Some(&name)
+                }
+            };
+            return Ok(if matches { Truth::True } else { Truth::False });
         }
-        Ok(evaluate_leaf(leaf, context.evaluation.document, *operation))
+        let resolved;
+        let leaf = if matches!(leaf, model::Predicate::Computed { .. }) {
+            resolved = match &mut context.access {
+                Access::Prepared(arguments) => {
+                    super::report::resolve_prepared_predicate(leaf, *arguments, budget)
+                }
+                Access::Direct(evaluation, bindings) => {
+                    super::report::resolve_predicate(leaf, evaluation, bindings, budget)
+                }
+            }
+            .map_err(zirql::EvaluationError::Host)?;
+            &resolved
+        } else {
+            leaf
+        };
+        Ok(evaluate_leaf(
+            leaf,
+            context.access.parts().0.document,
+            *operation,
+        ))
     }
 
     fn evaluate_stage(
@@ -334,11 +409,13 @@ impl<'stage>
         budget: &mut Budget,
         _: &Range<usize>,
     ) -> Result<Vec<Row>, zirql::EvaluationError<Self::Error>> {
+        let kind = context.kind;
+        let (evaluation, bindings) = context.access.parts();
         let output = evaluate_host_stage(
             stage,
-            context.evaluation,
-            into_output(context.kind, items),
-            context.bindings,
+            evaluation,
+            into_output(kind, items),
+            bindings,
             budget,
         )
         .map_err(zirql::EvaluationError::Host)?;

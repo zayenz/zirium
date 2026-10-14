@@ -138,10 +138,7 @@ pub(super) fn evaluate(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<comprehension::ConstructedReport, EvaluationError> {
-    let names = runtime_kinds(bindings, budget, &value.expression.range)?;
-    let input_kind = output_kind(&input, budget, &value.expression.range)?;
-    let declared = types(value, input_kind, &names, budget)?;
-    let result = zirql::evaluate_native_value(
+    let result = zirql::evaluate_native_value_with_types(
         &value.expression,
         &ReportHost,
         input,
@@ -151,8 +148,8 @@ pub(super) fn evaluate(
     )
     .map_err(program::evaluation_error)?;
     comprehension::ConstructedReport::with_types(
-        result,
-        declared,
+        result.value,
+        result.types,
         value.expression.range.clone(),
         budget,
     )
@@ -165,10 +162,17 @@ pub(super) fn project(
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<comprehension::ConstructedReport, EvaluationError> {
-    let names = runtime_kinds(bindings, budget, &value.projection.subject.range)?;
-    let input_kind = output_kind(&input, budget, range)?;
-    let declared = projection_types(value, input_kind, &names, budget)?;
-    let result = zirql::evaluate_projection(
+    if parser::is_reserved(&value.projection.subject.value) || value.projection.subject.value == "_"
+    {
+        return Err(
+            EvaluationError::new("projection subject name is reserved").at(value
+                .projection
+                .subject
+                .range
+                .clone()),
+        );
+    }
+    let result = zirql::evaluate_projection_with_types(
         &value.projection,
         &ReportHost,
         input,
@@ -177,7 +181,7 @@ pub(super) fn project(
         budget,
     )
     .map_err(program::evaluation_error)?;
-    comprehension::ConstructedReport::with_types(result, declared, range.clone(), budget)
+    comprehension::ConstructedReport::with_types(result.value, result.types, range.clone(), budget)
 }
 pub(super) fn runtime_kinds(
     bindings: &Bindings<QueryOutput>,
@@ -305,6 +309,137 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost {
 }
 impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost {
     type Kind = program::Kind;
+    fn value_arguments<'s>(
+        &self,
+        stage: &'s model::Stage,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<
+        zirql::NativeValueArguments<'s, EvaluationContext<'_, '_, 'q>, Self>,
+        zirql::QueryError,
+    > {
+        fn nodes(predicate: &model::Predicate) -> usize {
+            match predicate {
+                model::Predicate::Not { predicate, .. }
+                | model::Predicate::Group { predicate, .. } => 1 + nodes(predicate),
+                model::Predicate::And { predicates, .. }
+                | model::Predicate::Or { predicates, .. } => {
+                    1 + predicates.iter().map(nodes).sum::<usize>()
+                }
+                _ => 1,
+            }
+        }
+        let capacity = match stage {
+            model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } => {
+                nodes(predicate) * 2
+            }
+            model::Stage::Computed { .. } => 1,
+            _ => return Ok(Vec::new()),
+        };
+        budget.charge(capacity * 2, Location::Query(range.clone()))?;
+        budget.charge_results(capacity * 2, Location::Query(range.clone()))?;
+        let mut values = Vec::with_capacity(capacity);
+        let mut pending = Vec::with_capacity(capacity);
+        match stage {
+            model::Stage::Computed { value, .. } => {
+                values.push((&*value.operand().expression, program::Kind::Operations))
+            }
+            model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } => {
+                pending.push(predicate)
+            }
+            _ => {}
+        }
+        while let Some(predicate) = pending.pop() {
+            budget.charge(1, Location::Query(range.clone()))?;
+            match predicate {
+                model::Predicate::OpValue { name, .. } => {
+                    values.push((&*name.expression, program::Kind::Operations))
+                }
+                model::Predicate::Computed { value, .. } => values.extend(
+                    value
+                        .operands()
+                        .map(|value| (&*value.expression, program::Kind::Operations)),
+                ),
+                model::Predicate::Not { predicate, .. }
+                | model::Predicate::Group { predicate, .. } => pending.push(predicate),
+                model::Predicate::And { predicates, .. }
+                | model::Predicate::Or { predicates, .. } => {
+                    pending.extend(predicates.iter().rev())
+                }
+                _ => {}
+            }
+        }
+        Ok(values)
+    }
+    fn evaluate_stage_with_arguments(
+        &self,
+        stage: &model::Stage,
+        input: QueryOutput,
+        arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, Self>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        if pipeline::is_stream_stage(stage) && pipeline::is_stream(&input) {
+            let pipeline = pipeline::lower(std::slice::from_ref(stage))
+                .map_err(zirql::EvaluationError::Host)?;
+            return pipeline::evaluate_with_arguments(&pipeline, arguments, input, budget)
+                .map_err(zirql::EvaluationError::Host);
+        }
+        let resolved;
+        let stage = match stage {
+            model::Stage::Computed { value, range } => {
+                resolved = resolve_stage_by(
+                    value,
+                    *range,
+                    &mut |value, budget| {
+                        arguments
+                            .evaluate(&value.expression, QueryOutput::Operations(vec![]), budget)
+                            .map_err(program::evaluation_error)?
+                            .into_owned(budget)
+                            .map_err(core_error)
+                    },
+                    budget,
+                )
+                .map_err(zirql::EvaluationError::Host)?;
+                &resolved
+            }
+            model::Stage::Root { predicate, range } if has_dynamic_predicate(predicate) => {
+                resolved = model::Stage::Root {
+                    predicate: resolve_prepared_predicate(predicate, arguments, budget)
+                        .map_err(zirql::EvaluationError::Host)?,
+                    range: *range,
+                };
+                &resolved
+            }
+            _ => stage,
+        };
+        let (context, bindings) = arguments.parts();
+        self.evaluate_stage(stage, input, context, bindings, budget, range)
+    }
+    fn share_constructed(
+        &self,
+        value: &QueryOutput,
+        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Option<Arc<V>>, zirql::EvaluationError<EvaluationError>> {
+        Ok(match value {
+            QueryOutput::Native(NativeValue::Constructed(value)) => Some(value.shared()),
+            _ => None,
+        })
+    }
+    fn lift_shared_constructed(
+        &self,
+        value: Arc<V>,
+        types: Vec<ValueType>,
+        _: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        comprehension::ConstructedReport::from_shared(value, types, range.clone(), budget)
+            .map(|value| QueryOutput::Native(NativeValue::Constructed(value)))
+            .map_err(zirql::EvaluationError::Host)
+    }
     fn kind(
         &self,
         value: &QueryOutput,
@@ -605,13 +740,14 @@ fn scalar_argument(
     )?
     .into_value(budget, &value.expression.range)
 }
+type ScalarRead<'a> =
+    dyn FnMut(&comprehension::ParsedComprehension, &mut Budget) -> Result<V, EvaluationError> + 'a;
 fn string_argument(
     value: &comprehension::ParsedComprehension,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    bindings: &Bindings<QueryOutput>,
+    read: &mut ScalarRead<'_>,
     budget: &mut Budget,
 ) -> Result<String, EvaluationError> {
-    let V::String(text) = scalar_argument(value, context, bindings, budget)?.into_data() else {
+    let V::String(text) = read(value, budget)?.into_data() else {
         return Err(EvaluationError::new("primitive argument needs a string")
             .at(value.expression.range.clone()));
     };
@@ -619,11 +755,10 @@ fn string_argument(
 }
 fn attribute_argument(
     value: &comprehension::ParsedComprehension,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    bindings: &Bindings<QueryOutput>,
+    read: &mut ScalarRead<'_>,
     budget: &mut Budget,
 ) -> Result<String, EvaluationError> {
-    let text = string_argument(value, context, bindings, budget)?;
+    let text = string_argument(value, read, budget)?;
     if !parser::valid_attribute_name(&text) {
         return Err(
             EvaluationError::new("attribute name must be a dotted ASCII identifier")
@@ -632,23 +767,20 @@ fn attribute_argument(
     }
     Ok(text)
 }
-pub(super) fn resolve_stage(
+fn resolve_stage_by(
     value: &model::ComputedStage,
     range: crate::source::TextRange,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    bindings: &Bindings<QueryOutput>,
+    read: &mut ScalarRead<'_>,
     budget: &mut Budget,
 ) -> Result<model::Stage, EvaluationError> {
     use model::{ComputedStage as C, Stage as S};
     if let C::Attr(value) = value {
         return Ok(S::Attr {
-            name: attribute_argument(value, context, bindings, budget)?,
+            name: attribute_argument(value, read, budget)?,
             range,
         });
     }
-    let V::Integer(integer) =
-        scalar_argument(value.operand(), context, bindings, budget)?.into_data()
-    else {
+    let V::Integer(integer) = read(value.operand(), budget)?.into_data() else {
         return Err(
             EvaluationError::new("primitive argument needs an int").at(value
                 .operand()
@@ -684,15 +816,14 @@ pub(super) fn resolve_stage(
 fn resolve_computed_predicate(
     value: &model::ComputedPredicate,
     range: crate::source::TextRange,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    bindings: &Bindings<QueryOutput>,
+    read: &mut ScalarRead<'_>,
     budget: &mut Budget,
 ) -> Result<model::Predicate, EvaluationError> {
     use model::{ComputedPredicate as C, Predicate as P};
     let name = |value: &comprehension::ParsedComprehension,
-                context: &mut EvaluationContext<'_, '_, '_>,
+                read: &mut ScalarRead<'_>,
                 budget: &mut Budget| {
-        let text = string_argument(value, context, bindings, budget)?;
+        let text = string_argument(value, read, budget)?;
         if text.is_empty() {
             return Err(EvaluationError::new("name or type must not be empty")
                 .at(value.expression.range.clone()));
@@ -701,20 +832,20 @@ fn resolve_computed_predicate(
     };
     Ok(match value {
         C::Dialect(value) => P::Dialect {
-            name: name(value, context, budget)?,
+            name: name(value, read, budget)?,
             range,
         },
         C::ResultType(value) => P::ResultType {
-            spelling: name(value, context, budget)?,
+            spelling: name(value, read, budget)?,
             range,
         },
         C::HasAttr(value) => P::HasAttr {
-            name: attribute_argument(value, context, bindings, budget)?,
+            name: attribute_argument(value, read, budget)?,
             range,
         },
         C::Attr { name, value } => P::Attr {
-            name: attribute_argument(name, context, bindings, budget)?,
-            value: string_argument(value, context, bindings, budget)?,
+            name: attribute_argument(name, read, budget)?,
+            value: string_argument(value, read, budget)?,
             range,
         },
     })
@@ -763,26 +894,37 @@ pub(super) fn op_name(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<String, EvaluationError> {
-    let result = evaluate(
+    op_name_by(
         value,
-        context,
-        QueryOutput::Operations(vec![]),
-        bindings,
+        &mut |value, budget| scalar_argument(value, context, bindings, budget),
         budget,
-    )?;
-    let V::String(name) = result
-        .into_value(budget, &value.expression.range)?
-        .into_data()
-    else {
-        return Err(
-            EvaluationError::new("op argument needs a string").at(value.expression.range.clone())
-        );
-    };
+    )
+}
+fn op_name_by(
+    value: &comprehension::ParsedComprehension,
+    read: &mut ScalarRead<'_>,
+    budget: &mut Budget,
+) -> Result<String, EvaluationError> {
+    let name = string_argument(value, read, budget)?;
     if name.is_empty() {
         return Err(EvaluationError::new("operation name must not be empty")
             .at(value.expression.range.clone()));
     }
     Ok(name)
+}
+pub(super) fn resolve_stage(
+    value: &model::ComputedStage,
+    range: crate::source::TextRange,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+) -> Result<model::Stage, EvaluationError> {
+    resolve_stage_by(
+        value,
+        range,
+        &mut |value, budget| scalar_argument(value, context, bindings, budget),
+        budget,
+    )
 }
 
 pub(super) fn push_expressions<'a>(
@@ -1013,6 +1155,34 @@ pub(super) fn resolve_predicate(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<model::Predicate, EvaluationError> {
+    resolve_predicate_by(
+        predicate,
+        &mut |value, budget| scalar_argument(value, context, bindings, budget),
+        budget,
+    )
+}
+pub(super) fn resolve_prepared_predicate(
+    predicate: &model::Predicate,
+    arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, '_>, ReportHost>,
+    budget: &mut Budget,
+) -> Result<model::Predicate, EvaluationError> {
+    resolve_predicate_by(
+        predicate,
+        &mut |value, budget| {
+            arguments
+                .evaluate(&value.expression, QueryOutput::Operations(vec![]), budget)
+                .map_err(program::evaluation_error)?
+                .into_owned(budget)
+                .map_err(core_error)
+        },
+        budget,
+    )
+}
+fn resolve_predicate_by(
+    predicate: &model::Predicate,
+    read: &mut ScalarRead<'_>,
+    budget: &mut Budget,
+) -> Result<model::Predicate, EvaluationError> {
     use model::Predicate as P;
     let range = predicate.range();
     let payload = predicate_payload(predicate);
@@ -1022,32 +1192,30 @@ pub(super) fn resolve_predicate(
         &program::range(range),
     )?;
     Ok(match predicate {
-        P::Computed { value, .. } => {
-            resolve_computed_predicate(value, range, context, bindings, budget)?
-        }
+        P::Computed { value, .. } => resolve_computed_predicate(value, range, read, budget)?,
         P::OpValue { name, .. } => P::Op {
-            name: op_name(name, context, bindings, budget)?,
+            name: op_name_by(name, read, budget)?,
             range,
         },
         P::Not { predicate, .. } => P::Not {
-            predicate: Box::new(resolve_predicate(predicate, context, bindings, budget)?),
+            predicate: Box::new(resolve_predicate_by(predicate, read, budget)?),
             range,
         },
         P::Group { predicate, .. } => P::Group {
-            predicate: Box::new(resolve_predicate(predicate, context, bindings, budget)?),
+            predicate: Box::new(resolve_predicate_by(predicate, read, budget)?),
             range,
         },
         P::And { predicates, .. } => P::And {
             predicates: predicates
                 .iter()
-                .map(|predicate| resolve_predicate(predicate, context, bindings, budget))
+                .map(|predicate| resolve_predicate_by(predicate, read, budget))
                 .collect::<Result<_, _>>()?,
             range,
         },
         P::Or { predicates, .. } => P::Or {
             predicates: predicates
                 .iter()
-                .map(|predicate| resolve_predicate(predicate, context, bindings, budget))
+                .map(|predicate| resolve_predicate_by(predicate, read, budget))
                 .collect::<Result<_, _>>()?,
             range,
         },

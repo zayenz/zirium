@@ -407,8 +407,8 @@ nominal/keyed report rendering retain their existing boundaries.
 
 Rust callbacks receive `QueryOutput::Native(NativeValue::Constructed(report))`
 before rendering. `report.value()` borrows the ordered Zirql value, including
-record field order. `Clone` shares this immutable result. Evaluator binding reads
-and emission snapshots use charged copies. `report.render_json_with_budget()`
+record field order. `Clone` shares this immutable result. Prepared evaluator reads share immutable values when available;
+owned materialization and emission snapshots use charged copies. `report.render_json_with_budget()`
 and `report.render_ndjson_with_budget()` render under the active allowance;
 `Query::evaluate_with_budget()` supplies that allowance to callbacks. The CLI
 prints constructed values as JSON and supports the usual `--jsonl` envelope.
@@ -1140,6 +1140,21 @@ checks overflow; empty identities are 0, 0, true and false.
 `require(condition, value, "message")` preflights both operands, then evaluates
 its value only when the condition is true. On false it fails with the message.
 An unchosen value still receives scope, known-type and purity validation.
+
+Each report invocation prepares field bodies and embedded scalar/native arguments
+once. Rows and generator values use the current local scope; selected native
+operations still run against the current document. Preparation checks every
+written branch, while Boolean branches and default fallbacks keep their existing
+runtime demand. Reusing a parsed query prepares a fresh invocation for its new
+input.
+
+Immutable constructed binding reads can share their retained value inside that
+invocation. Inspection and slot sharing charge their actual work without copying
+payload bytes. Owned report fields, emission snapshots, Python conversion and
+rendering still pay their materialization costs. Preparation metadata, selected
+new values and native work spend the same cumulative allowance. Defaults and
+nesting ceilings are unchanged; lower repeated analysis/copy costs can let a
+request near an old limit complete, or move the location where it exhausts work.
 
 Projection over an empty selection validates every field before returning an
 empty array. Known record schemas survive empty results, so later invalid sums

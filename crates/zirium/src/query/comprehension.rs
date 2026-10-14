@@ -91,9 +91,26 @@ impl ConstructedReport {
         range: Range<usize>,
         budget: &mut Budget,
     ) -> Result<Self, EvaluationError> {
-        let mut result = Self::new(value, range, budget)?;
-        result.types = Arc::new(types);
-        Ok(result)
+        Self::from_shared(Arc::new(value), types, range, budget)
+    }
+    // Core execution has already admitted these immutable data and prepared facts.
+    pub(super) fn from_shared(
+        value: Arc<V>,
+        types: Vec<ValueType>,
+        range: Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<Self, EvaluationError> {
+        budget
+            .charge(1, Location::Query(range.clone()))
+            .map_err(core_error)?;
+        Ok(Self {
+            value,
+            range,
+            types: Arc::new(types),
+        })
+    }
+    pub(super) fn shared(&self) -> Arc<V> {
+        Arc::clone(&self.value)
     }
     pub(super) fn into_value(
         self,

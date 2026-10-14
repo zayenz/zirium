@@ -1736,3 +1736,40 @@ fn optional_reports_agree_in_parsed_and_typed_native_values() {
     ]);
     assert!(document.query(&parameter).is_err());
 }
+
+#[test]
+fn prepared_native_arguments_keep_row_context_and_skipped_errors() {
+    use zirium::query::{ConstructedValue as V, NativeValue};
+    let query = Query::parse(
+        r#"let labels=["first"]; report input | project(o, {
+        "same": o | filter(op(one(o | names))) | head(length(labels)) | count,
+        "skipped": o | filter(true or op(require(false, "bad", "stop"))) | count
+    });"#,
+    )
+    .unwrap();
+    for source in [
+        "\"alpha\"() : () -> ()\n\"beta\"() : () -> ()\n",
+        "\"gamma\"() : () -> ()\n",
+    ] {
+        let mut document = document_from(source);
+        let mut outputs = Vec::new();
+        query
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                outputs.push(value);
+                Ok(())
+            })
+            .unwrap();
+        let QueryOutput::Native(NativeValue::Constructed(value)) = &outputs[0] else {
+            panic!("constructed rows");
+        };
+        let V::Array(rows) = value.value() else {
+            panic!("array");
+        };
+        assert_eq!(rows.len(), source.lines().count());
+        assert!(rows.iter().all(|row| row
+            == &V::Record(vec![
+                ("same".into(), V::Integer(1)),
+                ("skipped".into(), V::Integer(1))
+            ])));
+    }
+}
