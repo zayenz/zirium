@@ -57,6 +57,10 @@ sets, `sort_by(...)`, keyed extrema, and `map_by(...)`. `names`, `attr`,
 `sort`, extrema, `tally`, JSON, and Markdown. Nested expressions start from the
 current record or selection, while explicit `input` resets to all changes.
 
+Native captures and `paths(...)` are unavailable on this diff surface, including
+after `before` or `after`. A path request receives a located refusal; no traversal
+implicitly crosses document sides.
+
 Text programs and typed builders use one native diff host with Zirql's statement,
 expression, predicate and collection execution. Nested fixed-point bodies,
 selectors and navigation share the active work, item and nesting allowance.

@@ -209,7 +209,9 @@ pub(super) fn output_kind(
             }
             K::Capture(Arc::new(zirql::NativeCapture { fields }))
         }
-        QueryOutput::Operations(_) => K::Operations,
+        QueryOutput::Operations(_) | QueryOutput::Native(NativeValue::OperationSequence(_)) => {
+            K::Operations
+        }
         QueryOutput::Values(_) => K::Strings,
         QueryOutput::Count(_) => K::Count,
         QueryOutput::Map(_)
@@ -383,7 +385,8 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost {
         range: &Range<usize>,
     ) -> Result<Vec<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
         let values = match input {
-            QueryOutput::Operations(operations) => {
+            QueryOutput::Operations(operations)
+            | QueryOutput::Native(NativeValue::OperationSequence(operations)) => {
                 capture::slots::<QueryOutput>(operations.len(), budget, range)
                     .map_err(zirql::EvaluationError::Host)?;
                 budget.check_items(operations.len(), Location::Query(range.clone()))?;
@@ -783,6 +786,9 @@ pub(super) fn push_expressions<'a>(
         | model::Stage::Operand {
             operation: value, ..
         } => visit_operand(&value.expression, pending),
+        model::Stage::Paths { value, .. } => {
+            visit_match_predicate(&value.paths.target, pending);
+        }
         model::Stage::Match { value, .. } => {
             for clause in &value.matching.clauses {
                 match &clause.value {
@@ -904,6 +910,7 @@ fn visit_value<'a>(
         K::NativeQuery(query) => visit_operand(query, pending),
         K::One(value)
         | K::IndexSet(value)
+        | K::Entries(value)
         | K::Unary { operand: value, .. }
         | K::Field { value, .. }
         | K::TupleAccess { value, .. }
@@ -941,6 +948,7 @@ fn visit_value<'a>(
             }
         }
         K::Binary { left, right, .. }
+        | K::ZipExact { left, right }
         | K::Range {
             lower: left,
             upper: right,
@@ -1045,7 +1053,7 @@ pub(super) fn has_constructed(expression: &model::Expression) -> bool {
         .any(|stage| {
             matches!(
                 stage,
-                model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
+                model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
             ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
             || nested(stage).into_iter().any(has_constructed)
         })
@@ -1077,6 +1085,7 @@ pub(super) fn dispose_value(value: zirql::ValueExpressionKind<Operand>) {
             K::NativeQuery(query) => zirql::dispose_expression(*query),
             K::One(value)
             | K::IndexSet(value)
+            | K::Entries(value)
             | K::Unary { operand: value, .. }
             | K::Field { value, .. }
             | K::TupleAccess { value, .. }
@@ -1104,6 +1113,7 @@ pub(super) fn dispose_value(value: zirql::ValueExpressionKind<Operand>) {
                 }
             }
             K::Binary { left, right, .. }
+            | K::ZipExact { left, right }
             | K::Range {
                 lower: left,
                 upper: right,

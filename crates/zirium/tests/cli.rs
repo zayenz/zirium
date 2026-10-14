@@ -3599,3 +3599,57 @@ fn native_capture_reports_agree_inline_file_short_json_and_buffer_failures() {
     let contextual = run_stdin("let match = input; match | count", input);
     assert!(contextual.status.success());
 }
+
+#[test]
+fn bounded_users_paths_agree_inline_file_and_buffer_later_failure() {
+    let input = include_str!("../../../examples/cli/function-report.mlir");
+    let program = include_str!("../../../examples/cli/bounded-paths.zirql");
+    let inline = run_stdin(program.trim(), input);
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&inline.stdout).unwrap();
+    assert_eq!(
+        value[0]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["arith.muli", "arith.addi", "func.return"]
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args([
+            "-f",
+            "examples/cli/bounded-paths.zirql",
+            "examples/cli/function-report.mlir",
+        ])
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, inline.stdout);
+    let zero = run_stdin(
+        r#"filter(op("arith.muli")) | paths(users, to=op("arith.muli"), max_depth=0) | json"#,
+        input,
+    );
+    let value: serde_json::Value = serde_json::from_slice(&zero.stdout).unwrap();
+    assert_eq!(value[0]["steps"].as_array().unwrap().len(), 1);
+    let ordinary = run_stdin(
+        r#"match { from steps in (input | filter(op("arith.muli"))); } | json"#,
+        input,
+    );
+    let value: serde_json::Value = serde_json::from_slice(&ordinary.stdout).unwrap();
+    assert_eq!(value[0]["steps"]["name"], "arith.muli");
+    let later = run_stdin(
+        &format!(
+            "{}; filter(op(\"func.return\")) | operand(input,99)",
+            program.trim()
+        ),
+        input,
+    );
+    assert!(!later.status.success());
+    assert!(later.stdout.is_empty());
+}

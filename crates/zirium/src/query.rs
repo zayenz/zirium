@@ -15,7 +15,7 @@ use crate::{
 
 mod builder;
 mod capture;
-pub use capture::{CaptureMatches, ParsedMatch, ParsedOperand};
+pub use capture::{CaptureMatches, ParsedMatch, ParsedOperand, ParsedPaths};
 mod comprehension;
 pub use comprehension::{ConstructedReport, ParsedComprehension};
 mod diff;
@@ -228,6 +228,8 @@ impl QueryOutput {
 pub enum NativeValue {
     Constructed(ConstructedReport),
     Ssa(ValueId),
+    /// An ordered native operation field that remains a sequence at length one.
+    OperationSequence(Vec<OperationId>),
     Capture(zirql::NativeCapture<QueryOutput>),
     Captures(CaptureMatches),
     String(String),
@@ -718,7 +720,15 @@ fn evaluate_host_stage(
     bindings: &zirql::Bindings<QueryOutput>,
     budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
+    if let QueryOutput::Native(NativeValue::OperationSequence(operations)) = current {
+        current = QueryOutput::Operations(operations);
+    }
     match stage {
+        model::Stage::Paths { value, .. } => {
+            current = QueryOutput::Native(NativeValue::Captures(capture::evaluate_paths(
+                value, context, current, bindings, budget,
+            )?));
+        }
         model::Stage::Match { value, .. } => {
             current = QueryOutput::Native(NativeValue::Captures(capture::evaluate(
                 value, context, current, bindings, budget,
@@ -1238,6 +1248,7 @@ fn countable_len(output: &QueryOutput, stage: &str) -> Result<usize, EvaluationE
         QueryOutput::Map(values) => Ok(values.len()),
         QueryOutput::RankedMap(values) => Ok(values.len()),
         QueryOutput::Array(values) => Ok(values.len()),
+        QueryOutput::Native(NativeValue::OperationSequence(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Types(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Attributes(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Captures(values)) => Ok(values.len()),
@@ -1263,6 +1274,7 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Map(values) => values.len(),
         QueryOutput::RankedMap(values) => values.len(),
         QueryOutput::Array(values) => values.len(),
+        QueryOutput::Native(NativeValue::OperationSequence(values)) => values.len(),
         QueryOutput::Native(NativeValue::Types(values)) => values.len(),
         QueryOutput::Native(NativeValue::Attributes(values)) => values.len(),
         QueryOutput::Native(NativeValue::Captures(values)) => values.len(),
@@ -1736,6 +1748,7 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
             | NativeValue::Constructed(_) => {
                 unreachable!("constructed reports use bounded rendering")
             }
+            NativeValue::OperationSequence(selected) => operation_json(document, selected),
             NativeValue::String(value) => serde_json::json!(value),
             NativeValue::Types(values) => serde_json::json!(
                 values
@@ -1756,32 +1769,7 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
                     .collect(),
             ),
         },
-        QueryOutput::Operations(selected) => serde_json::Value::Array(
-            selected
-                .iter()
-                .map(|&operation| {
-                    let attributes = document
-                        .attributes(operation)
-                        .into_iter()
-                        .flatten()
-                        .map(|(name, spelling)| {
-                            (
-                                name.to_owned(),
-                                serde_json::Value::String(spelling.to_owned()),
-                            )
-                        })
-                        .collect::<serde_json::Map<_, _>>();
-                    serde_json::json!({
-                        "name": document.operation_name(operation),
-                        "attributes": attributes,
-                        "operand_types": document.operands(operation).unwrap_or(&[]).iter()
-                            .map(|&value| document.value_type(value)).collect::<Vec<_>>(),
-                        "result_types": document.result_types(operation).unwrap_or(&[]).iter()
-                            .map(|&ty| document.type_spelling(ty)).collect::<Vec<_>>(),
-                    })
-                })
-                .collect(),
-        ),
+        QueryOutput::Operations(selected) => operation_json(document, selected),
         QueryOutput::Values(values) => serde_json::json!(values),
         QueryOutput::Map(values) => serde_json::Value::Object(values.clone()),
         QueryOutput::RankedMap(values) => {
@@ -1796,6 +1784,35 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
             unreachable!("formatted output is an emission request, not a query value")
         }
     }
+}
+
+fn operation_json(document: &Document, selected: &[OperationId]) -> serde_json::Value {
+    serde_json::Value::Array(
+        selected
+            .iter()
+            .map(|&operation| {
+                let attributes = document
+                    .attributes(operation)
+                    .into_iter()
+                    .flatten()
+                    .map(|(name, spelling)| {
+                        (
+                            name.to_owned(),
+                            serde_json::Value::String(spelling.to_owned()),
+                        )
+                    })
+                    .collect::<serde_json::Map<_, _>>();
+                serde_json::json!({
+                    "name": document.operation_name(operation),
+                    "attributes": attributes,
+                    "operand_types": document.operands(operation).unwrap_or(&[]).iter()
+                        .map(|&value| document.value_type(value)).collect::<Vec<_>>(),
+                    "result_types": document.result_types(operation).unwrap_or(&[]).iter()
+                        .map(|&ty| document.type_spelling(ty)).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn edit_error(error: impl fmt::Display) -> EvaluationError {

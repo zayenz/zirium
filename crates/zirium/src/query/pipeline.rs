@@ -372,7 +372,7 @@ impl<'stage>
 }
 
 // Only domain leaves live here. Zirql owns every Boolean wrapper and short circuit.
-fn evaluate_leaf(
+pub(super) fn evaluate_leaf(
     predicate: &model::Predicate,
     document: &Document,
     operation: OperationId,

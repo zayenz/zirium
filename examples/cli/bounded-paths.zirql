@@ -1,0 +1,1 @@
+filter(op("arith.muli")) | paths(users, to=op("func.return"), max_depth=2) | json

@@ -3,6 +3,228 @@ use super::*;
 use std::{ops::Range, sync::Arc};
 use zirql::{Bindings, ExpressionKind as X, Located, MatchHost, NativeCapture};
 
+/// A retained shared path query; cloning shares its immutable native tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedPaths {
+    pub(super) paths: Arc<zirql::NativePaths<model::Stage, model::Predicate>>,
+}
+impl ParsedPaths {
+    pub(super) fn new(paths: zirql::NativePaths<model::Stage, model::Predicate>) -> Self {
+        Self {
+            paths: Arc::new(paths),
+        }
+    }
+}
+impl Drop for ParsedPaths {
+    fn drop(&mut self) {
+        if let Some(paths) = Arc::get_mut(&mut self.paths) {
+            let paths = std::mem::replace(
+                paths,
+                zirql::NativePaths {
+                    edge: Located::new(
+                        model::Stage::Users {
+                            index: None,
+                            range: crate::source::TextRange::new(0, 0).expect("empty range"),
+                        },
+                        0..0,
+                    ),
+                    target: Located::new(
+                        zirql::PredicateKind::Leaf(model::Predicate::Bool {
+                            value: false,
+                            range: crate::source::TextRange::new(0, 0).expect("empty range"),
+                        }),
+                        0..0,
+                    ),
+                    max_depth: Located::new(0, 0..0),
+                    range: 0..0,
+                },
+            );
+            zirql::dispose_paths(paths);
+        }
+    }
+}
+
+pub(super) fn path_types(
+    value: &ParsedPaths,
+    input: &program::Kind,
+    names: &BTreeMap<String, program::Kind>,
+    budget: &mut Budget,
+) -> Result<NativeCapture<program::Kind>, EvaluationError> {
+    zirql::path_types(&value.paths, &report::ReportHost, input, names, budget).map_err(core_error)
+}
+pub(super) fn evaluate_paths(
+    value: &ParsedPaths,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    input: QueryOutput,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+) -> Result<CaptureMatches, EvaluationError> {
+    let range = &value.paths.range;
+    let kind = report::output_kind(&input, budget, range)?;
+    let names = report::runtime_kinds(bindings, budget, range)?;
+    let schema = Arc::new(path_types(value, &kind, &names, budget)?);
+    let values = zirql::evaluate_paths(
+        &value.paths,
+        &report::ReportHost,
+        input,
+        context,
+        bindings,
+        budget,
+    )
+    .map_err(program::evaluation_error)?;
+    slots::<NativeCapture<QueryOutput>>(values.len(), budget, range)?;
+    program::charge_results(budget, values.len() + 1, range)?;
+    let rows = values
+        .into_iter()
+        .map(|value| {
+            let QueryOutput::Native(NativeValue::Capture(record)) = value else {
+                unreachable!("native path record")
+            };
+            record
+        })
+        .collect();
+    Ok(CaptureMatches {
+        rows,
+        range: range.clone(),
+        schema,
+    })
+}
+
+fn path_operation(
+    value: &QueryOutput,
+    document: &Document,
+    range: &Range<usize>,
+) -> Result<OperationId, EvaluationError> {
+    let QueryOutput::Operations(ids) = value else {
+        return Err(EvaluationError::new("paths require native operations").at(range.clone()));
+    };
+    let [id] = ids.as_slice() else {
+        return Err(EvaluationError::new("path subject requires one operation").at(range.clone()));
+    };
+    document
+        .check_operation(*id)
+        .map_err(|error| EvaluationError::new(error.to_string()).at(range.clone()))?;
+    Ok(*id)
+}
+
+impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost {
+    type Target = model::Predicate;
+    fn validate_path_edge(
+        &self,
+        edge: &model::Stage,
+        input: &program::Kind,
+        _: &BTreeMap<String, program::Kind>,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), zirql::QueryError> {
+        if *input == program::Kind::Operations
+            && matches!(edge, model::Stage::Users { index: None, .. })
+        {
+            return Ok(());
+        }
+        Err(zirql::QueryError::query(
+            range.clone(),
+            "users path edge requires native operations",
+        ))
+    }
+    fn validate_target_leaf(
+        &self,
+        target: &model::Predicate,
+        _: &program::Kind,
+        names: &BTreeMap<String, program::Kind>,
+        budget: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<(), zirql::QueryError> {
+        report::validate_predicate(target, names, budget).map_err(report::query_error)
+    }
+    fn evaluate_target_leaf(
+        &self,
+        target: &model::Predicate,
+        input: &QueryOutput,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        bindings: &Bindings<QueryOutput>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::Truth, zirql::EvaluationError<EvaluationError>> {
+        let operation =
+            path_operation(input, context.document, range).map_err(zirql::EvaluationError::Host)?;
+        let target = report::resolve_predicate(target, context, bindings, budget)
+            .map_err(zirql::EvaluationError::Host)?;
+        Ok(pipeline::evaluate_leaf(
+            &target,
+            context.document,
+            operation,
+        ))
+    }
+    fn path_neighbors(
+        &self,
+        _: &model::Stage,
+        input: &QueryOutput,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        _: &Bindings<QueryOutput>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
+        let operation =
+            path_operation(input, context.document, range).map_err(zirql::EvaluationError::Host)?;
+        let neighbors = evaluate_users(context.document, &[operation], None, budget)
+            .map_err(zirql::EvaluationError::Host)?;
+        slots::<QueryOutput>(neighbors.len(), budget, range)
+            .map_err(zirql::EvaluationError::Host)?;
+        budget.charge_results(
+            neighbors.len() * 2 + 1,
+            zirql::Location::Query(range.clone()),
+        )?;
+        let mut values = Vec::with_capacity(neighbors.len());
+        for operation in neighbors {
+            context
+                .document
+                .check_operation(operation)
+                .map_err(|error| {
+                    zirql::EvaluationError::Host(
+                        EvaluationError::new(error.to_string()).at(range.clone()),
+                    )
+                })?;
+            values.push(QueryOutput::Operations(vec![operation]));
+        }
+        Ok(values)
+    }
+    fn same_path_identity(
+        &self,
+        left: &QueryOutput,
+        right: &QueryOutput,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<bool, zirql::EvaluationError<EvaluationError>> {
+        Ok(
+            path_operation(left, context.document, range).map_err(zirql::EvaluationError::Host)?
+                == path_operation(right, context.document, range)
+                    .map_err(zirql::EvaluationError::Host)?,
+        )
+    }
+    fn path_steps(
+        &self,
+        steps: Vec<QueryOutput>,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        slots::<OperationId>(steps.len(), budget, range).map_err(zirql::EvaluationError::Host)?;
+        budget.charge_results(steps.len() + 1, zirql::Location::Query(range.clone()))?;
+        let mut operations = Vec::with_capacity(steps.len());
+        for step in steps {
+            operations.push(
+                path_operation(&step, context.document, range)
+                    .map_err(zirql::EvaluationError::Host)?,
+            );
+        }
+        Ok(QueryOutput::Native(NativeValue::OperationSequence(
+            operations,
+        )))
+    }
+}
+
 /// A retained normalized native operand. Clone shares its immutable tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedOperand {

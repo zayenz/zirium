@@ -401,7 +401,15 @@ def test_native_ssa_capture_builders_project_the_original_function_report():
     assert isinstance(captures, QueryExpr)
     result = doc.query(captures)
     assert_type(
-        result, list[dict[str, zirium.SemanticOperation | zirium.SemanticValue]]
+        result,
+        list[
+            dict[
+                str,
+                zirium.SemanticOperation
+                | zirium.SemanticValue
+                | list[zirium.SemanticOperation],
+            ]
+        ],
     )
     assert len(result) == 1
     assert list(result[0]) == ["add", "lhs", "rhs"]
@@ -496,3 +504,54 @@ def test_native_ssa_same_owner_counterexample_and_empty_field_preflight():
     )
     with pytest.raises(ValueError, match="incompatible native kind"):
         doc.query(query.project("m", {"bad": capture_ops("m", "lhs").names().one()}))
+
+
+def test_native_users_paths_keep_sequence_steps_owner_and_projection():
+    from pathlib import Path
+
+    from zirium.query import ReportExpr as E
+    from zirium.query import capture_ops, matches, op_expr
+
+    source = (
+        Path(__file__).parents[2] / "examples/cli/function-report.mlir"
+    ).read_text()
+    lowered = zirium.parse_text(
+        source, registry=zirium.DialectRegistry.baseline()
+    ).lower_strict()
+    assert lowered.document is not None
+    doc = lowered.document
+    query = (
+        ops().filter(op("arith.muli")).paths("users", to=op("func.return"), max_depth=2)
+    )
+    native = doc.query(query)
+    assert len(native) == 1
+    steps = native[0]["steps"]
+    assert isinstance(steps, list)
+    assert [step.name for step in steps] == ["arith.muli", "arith.addi", "func.return"]
+    assert native[0]["source"] == steps[0]
+    assert native[0]["sink"] == steps[-1]
+    assert doc.query(
+        query.project("p", {"steps": capture_ops("p", "steps").names()})
+    ) == [{"steps": ["arith.muli", "arith.addi", "func.return"]}]
+    zero = doc.query(
+        ops().filter(op("arith.muli")).paths("users", to=op("arith.muli"), max_depth=0)
+    )
+    assert isinstance(zero[0]["steps"], list)
+    assert zero[0]["steps"] == [zero[0]["source"]]
+    ordinary = doc.query(
+        matches().from_("steps", ops().filter(op("arith.muli"))).build()
+    )
+    assert isinstance(ordinary[0]["steps"], zirium.SemanticOperation)
+    parameterized = (
+        ops()
+        .filter(op("arith.muli"))
+        .paths("users", to=op_expr(E.name("target")), max_depth=2)
+        .with_parameters({"target": "string"})
+    )
+    assert len(doc.query(parameterized, parameters={"target": "func.return"})) == 1
+    with pytest.raises(OverflowError):
+        ops().paths("users", to=op("func.return"), max_depth=-1)
+    with pytest.raises(OverflowError):
+        ops().paths("users", to=op("func.return"), max_depth=2**100)
+    del doc, lowered, native
+    assert [step.name for step in steps] == ["arith.muli", "arith.addi", "func.return"]

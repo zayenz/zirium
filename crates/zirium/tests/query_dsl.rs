@@ -1516,3 +1516,117 @@ fn native_capture_scope_empty_preflight_and_required_operands_share_limits() {
     });
     assert!(output.to_json_with_budget(&document, &mut scarce).is_err());
 }
+
+#[test]
+fn bounded_users_paths_keep_native_steps_and_share_projection_parameters_and_limits() {
+    use zirium::query::{NativeValue, PathEdge, ReportExpr as E, capture_ops, op_expr};
+    let document = document_from(FUNCTION_REPORT_SOURCE);
+    let query = ops()
+        .filter(op("arith.muli"))
+        .paths(PathEdge::Users, op("func.return"), 2);
+    let result = document.query(&query).unwrap();
+    assert_eq!(result.len(), 1);
+    let fields = &result.rows()[0].fields;
+    let QueryOutput::Operations(source) = &fields[0].1 else {
+        panic!("source")
+    };
+    let QueryOutput::Operations(sink) = &fields[1].1 else {
+        panic!("sink")
+    };
+    let QueryOutput::Native(NativeValue::OperationSequence(steps)) = &fields[2].1 else {
+        panic!("native sequence")
+    };
+    assert_eq!(source, &steps[..1]);
+    assert_eq!(sink, &steps[2..]);
+    assert_eq!(
+        steps
+            .iter()
+            .map(|&id| document.operation_name(id).unwrap())
+            .collect::<Vec<_>>(),
+        ["arith.muli", "arith.addi", "func.return"]
+    );
+    for &id in steps {
+        document.check_operation(id).unwrap();
+        let range = document.operation_source_range(id).unwrap().as_range();
+        assert!(FUNCTION_REPORT_SOURCE[range].contains(document.operation_name(id).unwrap()));
+    }
+    let zero = ops()
+        .filter(op("arith.muli"))
+        .paths(PathEdge::Users, op("arith.muli"), 0);
+    let zero = document.query(&zero).unwrap();
+    assert!(
+        matches!(&zero.rows()[0].fields[2].1, QueryOutput::Native(NativeValue::OperationSequence(ids)) if ids==source)
+    );
+    assert!(
+        document
+            .query(
+                &ops()
+                    .filter(op("arith.muli"))
+                    .paths(PathEdge::Users, op("func.return"), 1)
+            )
+            .unwrap()
+            .is_empty()
+    );
+    let projected = query.project("p", [("steps", E::from(capture_ops("p", "steps").names()))]);
+    let report = document.query(&projected).unwrap();
+    assert_eq!(
+        report.value(),
+        &zirql::ConstructedValue::Array(vec![zirql::ConstructedValue::Record(vec![(
+            "steps".into(),
+            zirql::ConstructedValue::Array(
+                ["arith.muli", "arith.addi", "func.return"]
+                    .into_iter()
+                    .map(|s| zirql::ConstructedValue::String(s.into()))
+                    .collect()
+            )
+        )])])
+    );
+    let parameterized = ops()
+        .filter(op("arith.muli"))
+        .paths(PathEdge::Users, op_expr(E::name("target")), 2)
+        .with_parameters(vec![zirql::ParameterDeclaration {
+            name: zirql::Located::new("target".into(), 0..0),
+            ty: zirql::Located::new(zirql::ParameterType::String, 0..0),
+        }]);
+    assert_eq!(
+        parameterized
+            .evaluate_with_parameters(
+                &document,
+                DialectRegistry::baseline(),
+                &[(
+                    "target".into(),
+                    zirql::ConstructedValue::String("func.return".into())
+                )],
+                EvaluationLimits::default()
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut limited = zirql::Budget::for_program(zirql::ProgramLimits {
+        work: 100_000,
+        results: 20,
+        nesting: 64,
+        stream_items: 1000,
+    });
+    assert!(
+        query
+            .evaluate_output_with_budget(
+                &document,
+                DialectRegistry::baseline(),
+                EvaluationOptions::default(),
+                &mut limited
+            )
+            .is_err()
+    );
+    assert!(
+        document
+            .query(
+                &ops()
+                    .filter(op("missing"))
+                    .paths(PathEdge::Users, op("func.return"), 2)
+                    .project("p", [("bad", E::from(capture_ops("p", "missing").names()))])
+            )
+            .is_err()
+    );
+}

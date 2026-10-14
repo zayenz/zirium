@@ -61,6 +61,23 @@ fn adjacent_diff_paths_support_default_and_filtered_json_reports() {
 }
 
 #[test]
+fn native_paths_refuse_the_current_diff_surface_at_the_query() {
+    let (before, after) = pair();
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args([
+            "--diff",
+            before.to_str().unwrap(),
+            after.to_str().unwrap(),
+            r#"after | paths(users, to=op("arith.constant"), max_depth=0) | json"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("native paths are unavailable"));
+}
+
+#[test]
 fn validates_paired_input_grammar_before_reading() {
     for arguments in [
         vec!["--diff"],

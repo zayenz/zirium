@@ -244,6 +244,9 @@ fn parse_stage(
                 )?),
             }
         }
+        _ if stage.starts_with("paths(") => {
+            return Err(error("native paths are unavailable on diff queries"));
+        }
         _ if stage.starts_with("print(") => {
             DiffStage::Print(parse_diff_string(one("print")?).map_err(EvaluationError::new)?)
         }

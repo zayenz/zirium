@@ -290,6 +290,10 @@ impl ComputedStage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
+    Paths {
+        value: super::capture::ParsedPaths,
+        range: TextRange,
+    },
     Match {
         value: super::capture::ParsedMatch,
         range: TextRange,
@@ -488,7 +492,8 @@ pub enum Stage {
 impl Stage {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Match { range, .. }
+            Self::Paths { range, .. }
+            | Self::Match { range, .. }
             | Self::Native { range, .. }
             | Self::Operand { range, .. }
             | Self::Computed { range, .. }
@@ -545,7 +550,8 @@ impl Stage {
     }
     fn is_selection_only(&self) -> bool {
         match self {
-            Self::Match { .. }
+            Self::Paths { .. }
+            | Self::Match { .. }
             | Self::Native { .. }
             | Self::Operand { .. }
             | Self::SetAttr { .. }

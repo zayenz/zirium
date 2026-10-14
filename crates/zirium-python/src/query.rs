@@ -581,6 +581,17 @@ impl OpQuery {
             },
         }
     }
+    #[pyo3(signature = (edge, *, to, max_depth))]
+    fn paths(&self, edge: &str, to: &Predicate, max_depth: usize) -> PyResult<CaptureQuery> {
+        if edge != "users" {
+            return Err(PyTypeError::new_err("path edge must be 'users'"));
+        }
+        Ok(CaptureQuery {
+            inner: self
+                .inner
+                .paths(core::PathEdge::Users, to.inner.clone(), max_depth),
+        })
+    }
     #[pyo3(signature = (index=None))]
     fn users(&self, index: Option<usize>) -> Self {
         Self {
@@ -1217,7 +1228,7 @@ fn native(
             }
             list.into_any().unbind()
         }
-        QueryOutput::Operations(ids) => {
+        QueryOutput::Operations(ids) | QueryOutput::Native(NativeValue::OperationSequence(ids)) => {
             let list = PyList::empty(py);
             for id in ids {
                 list.append(Py::new(
@@ -1336,6 +1347,28 @@ fn capture_record_ref(
                     },
                 )?
                 .into_any()
+            }
+            core::QueryOutput::Native(core::NativeValue::OperationSequence(ids)) => {
+                budget
+                    .charge(ids.len() + 1, zirql_location(range))
+                    .map_err(py_error)?;
+                budget
+                    .charge_results(ids.len() + 1, zirql_location(range))
+                    .map_err(py_error)?;
+                let list = PyList::empty(py);
+                for &id in ids {
+                    read_document(state)?
+                        .check_operation(id)
+                        .map_err(edit_error)?;
+                    list.append(Py::new(
+                        py,
+                        SemanticOperation {
+                            state: state.clone(),
+                            id,
+                        },
+                    )?)?;
+                }
+                list.into_any().unbind()
             }
             core::QueryOutput::Native(core::NativeValue::Ssa(value)) => {
                 budget.charge(1, zirql_location(range)).map_err(py_error)?;

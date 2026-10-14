@@ -415,6 +415,57 @@ Python conversion spends the remaining request budget before
 allocating collections. Ordinary operation/type/attribute results retain their
 existing semantic wrappers.
 
+## Bounded native path builders
+
+The typed builder uses the same traversal as the
+[short command](query-language.md#bounded-ssa-use-paths):
+
+```rust
+use zirium::query::{ops, op, PathEdge};
+
+let paths = ops().filter(op("arith.muli"))
+    .paths(PathEdge::Users, op("func.return"), 2);
+let native = document.query(&paths)?;
+```
+
+`paths` returns `CaptureQuery`; `native` is `CaptureMatches`. On
+`examples/cli/function-report.mlir`, its one row retains the native `mix`
+operations `[arith.muli, arith.addi, func.return]`. The row's `source` and `sink`
+are singleton selections, and `steps` is `NativeValue::OperationSequence`.
+It remains a sequence for a zero-edge witness. Native IDs and source ranges
+remain available before rendering.
+
+Python supplies the supported edge name explicitly:
+
+```python
+from zirium.query import ops, op, capture_ops
+
+paths = ops().filter(op("arith.muli")).paths(
+    "users", to=op("func.return"), max_depth=2
+)
+native = document.query(paths)
+rows = document.query(paths.project("p", {"steps": capture_ops("p", "steps").names()}))
+```
+
+Python path rows are dictionaries with native `SemanticOperation` endpoints
+and a list of native `SemanticOperation` steps. Those wrappers retain their
+document owner. Ordinary singleton capture fields keep their existing wrapper,
+including fields named `steps`. Negative or overflowing Python bounds fail
+before document evaluation.
+
+The target accepts ordinary predicates. Root parameter declarations survive
+path reuse, erasure, nesting and projection; dynamic target arguments use the
+existing typed parameter admission. `PathEdge::Users` enumerates direct SSA
+users in result/use-site order. The bound counts edges, matching roots produce
+`[source]`, and equal-length alternatives follow that order. No witness within
+the bound does not prove global disconnection.
+
+Paths use the active aggregate budget for traversal, copies, projection and
+Python conversion. Library callers can retain an explicit
+`Budget::for_program(ProgramLimits { ... })`; `EvaluationLimits` keeps its
+per-stream and work ceilings. Paths remain read-only and are unavailable on diff
+queries.
+
 ## Native capture builders
 
 The development Git API adds `SsaQuery` and `CaptureQuery`. `OpQuery::operand`

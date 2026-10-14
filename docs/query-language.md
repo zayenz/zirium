@@ -1104,6 +1104,49 @@ generators, copies and rendering retain one work/result/nesting allowance.
 CLI output remains buffered until success; library callbacks retain their
 existing explicit buffering policy.
 
+## Bounded SSA-use paths
+
+Find one shortest native witness from each selected operation to each matching
+sink within an explicit edge bound:
+
+```sh
+zirium 'filter(op("arith.muli")) | paths(users, to=op("func.return"), max_depth=2) | json' examples/cli/function-report.mlir
+zirium -f examples/cli/bounded-paths.zirql examples/cli/function-report.mlir
+```
+
+The [saved program](../examples/cli/bounded-paths.zirql) uses the same short
+expression. Both commands return the `mix` witness with steps
+`[arith.muli, arith.addi, func.return]`. A bound of one gives no witness for this
+pair. `users` is one direct SSA-use connection, following result indices and
+retained use-site order; operand and successor-argument uses both select their
+direct user operation.
+
+The required `max_depth` is a nonnegative integer literal measured in edges.
+`to` uses ordinary operation predicates, including parameters and shared
+`not`/`and`/`or` control. It does not extend the native match guard language.
+Zirql owns the breadth-first traversal. Distinct roots keep input identity order,
+sinks keep discovery order, and neighbor order chooses equal-length ties.
+Repeated roots and cycles cannot duplicate a source/sink pair. Searching
+continues through matching sinks.
+
+Each native capture has `source`, `sink` and `steps`. Endpoints are singleton
+operation selections; steps are an ordered native operation sequence containing
+both endpoints. A matching source has a zero-edge witness whose steps remain
+`[source]`, including in JSON and Python. Existing singleton captures retain
+their behavior even when a user names a capture `steps`.
+
+Field selection and `project` retain native handles until explicit scalar
+projection, for example `p.steps | names`. Handles keep their document owner
+and source coordinates; owner/stale checks still apply. Paths are read-only and
+unavailable on the current diff surface. No endpoint implicitly crosses sides.
+
+Path preflight covers all target branches and types, including empty input.
+The same aggregate program budget pays for scans, identity comparisons,
+traversal slots, native copies, witnesses and rendering. Use `--max-work`,
+`--max-items` and `--max-results` to bound a request. Exhaustion fails the whole
+request. No witness within this bound does not prove global disconnection.
+See [Rust and Python builders](query-dsl.md#bounded-native-path-builders).
+
 ## Native SSA captures
 
 The development Git API supports ordered native captures with `match`. This

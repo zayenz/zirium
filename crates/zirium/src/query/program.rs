@@ -347,7 +347,8 @@ fn record_json(
 
 fn json_allocation(document: &Document, value: &QueryOutput) -> (usize, usize) {
     match value {
-        QueryOutput::Operations(rows) => {
+        QueryOutput::Operations(rows)
+        | QueryOutput::Native(NativeValue::OperationSequence(rows)) => {
             let mut units = 1;
             let mut bytes = 0;
             for &row in rows {
@@ -827,6 +828,10 @@ pub(super) fn validate_stages(
         let failure = |message: &str| EvaluationError::new(message).at(range(stage.range()));
         let require = |valid, message: &str| if valid { Ok(()) } else { Err(failure(message)) };
         match stage {
+            S::Paths { value, .. } => {
+                let schema = capture::path_types(value, &kind, names, budget)?;
+                kind = Kind::Captures(std::sync::Arc::new(schema));
+            }
             S::Match { value, .. } => {
                 let schema = capture::types(value, &kind, names, budget)?;
                 kind = Kind::Captures(std::sync::Arc::new(schema));

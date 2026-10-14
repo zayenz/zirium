@@ -440,6 +440,28 @@ impl Parser<'_, '_> {
             }
         }
     }
+    fn shared_paths(&mut self, depth: usize) -> Option<super::capture::ParsedPaths> {
+        let mut reader =
+            zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
+                .ok()?;
+        let mut host = NativeReader {
+            source: self.source,
+            tokens: self.tokens,
+            bindings: &self.bindings,
+            nesting: self.nesting_limit.saturating_sub(depth),
+        };
+        let nesting = host.nesting;
+        match zirql::read_paths(&mut reader, &mut host, self.budget, nesting) {
+            Ok(value) => {
+                self.sync(reader.position());
+                Some(super::capture::ParsedPaths::new(value))
+            }
+            Err(error) => {
+                self.shared_error(error);
+                None
+            }
+        }
+    }
     fn shared_match(&mut self, depth: usize) -> Option<super::capture::ParsedMatch> {
         let mut reader =
             zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
@@ -567,6 +589,13 @@ impl Parser<'_, '_> {
     fn stage(&mut self, depth: usize) -> Option<Stage> {
         self.skip_trivia();
         let start = self.current().range().start();
+        if self.at_identifier("paths") && self.next_kind() == Some(TokenKind::LParen) {
+            let value = self.shared_paths(depth)?;
+            return Some(Stage::Paths {
+                value,
+                range: self.span(start),
+            });
+        }
         if self.at_identifier("match") && self.next_kind() == Some(TokenKind::LBrace) {
             let value = self.shared_match(depth)?;
             return Some(Stage::Match {
@@ -1651,6 +1680,7 @@ fn is_native_stage(name: &str) -> bool {
             | "tally"
             | "value"
             | "map_by"
+            | "paths"
             | "project"
     )
 }
@@ -1821,6 +1851,23 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
             value: super::capture::ParsedMatch::new(matching),
             range: TextRange::new(range.start as u32, range.end as u32)
                 .expect("ordered query range"),
+        })
+    }
+    fn parse_path_edge(
+        &mut self,
+        edge: zirql::Located<&str>,
+        _: &mut zirql::Budget,
+    ) -> Result<Stage, zirql::QueryError> {
+        if edge.value != "users" {
+            return Err(zirql::QueryError::query(
+                edge.range,
+                "unsupported path edge",
+            ));
+        }
+        Ok(Stage::Users {
+            index: None,
+            range: TextRange::new(edge.range.start as u32, edge.range.end as u32)
+                .expect("ordered edge range"),
         })
     }
     fn set_operator(&self, word: &str) -> Option<SetOperator> {

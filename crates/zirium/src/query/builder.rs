@@ -331,6 +331,31 @@ pub fn input() -> OpQuery {
     QueryExpr::start(Vec::new())
 }
 
+/// Direct native edges supported by bounded operation paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathEdge {
+    Users,
+}
+
+fn path_target(predicate: model::Predicate) -> zirql::Predicate<model::Predicate> {
+    use model::Predicate as P;
+    let location = program::range(predicate.range());
+    let value = match predicate {
+        P::Not { predicate, .. } => zirql::PredicateKind::Not(Box::new(path_target(*predicate))),
+        P::Group { predicate, .. } => {
+            zirql::PredicateKind::Group(Box::new(path_target(*predicate)))
+        }
+        P::And { predicates, .. } => {
+            zirql::PredicateKind::And(predicates.into_iter().map(path_target).collect())
+        }
+        P::Or { predicates, .. } => {
+            zirql::PredicateKind::Or(predicates.into_iter().map(path_target).collect())
+        }
+        predicate => zirql::PredicateKind::Leaf(predicate),
+    };
+    zirql::Located::new(value, location)
+}
+
 impl Document {
     /// Evaluate a structured query with the baseline dialect registry and default limits.
     /// See the [registry contract](https://github.com/zayenz/zirium/blob/main/docs/custom-formats.md#registry-contract-for-each-rust-stage).
@@ -395,6 +420,31 @@ impl OpQuery {
             index: Some(index),
             range: range(),
         })
+    }
+    /// Retain one shortest native witness for each source/sink pair within the edge bound.
+    pub fn paths(&self, edge: PathEdge, to: Predicate, max_depth: usize) -> CaptureQuery {
+        let parameters = merge_parameters(&self.parameters, &to.parameters);
+        let edge = match edge {
+            PathEdge::Users => Stage::Users {
+                index: None,
+                range: range(),
+            },
+        };
+        self.append(
+            Stage::Paths {
+                value: capture::ParsedPaths::new(zirql::NativePaths {
+                    edge: zirql::Located::new(edge, 0..0),
+                    target: path_target(to.inner),
+                    max_depth: zirql::Located::new(max_depth, 0..0),
+                    range: 0..0,
+                }),
+                range: range(),
+            },
+            to.depth + 1,
+            to.nodes + 1,
+            to.invalid,
+        )
+        .with_parameters(parameters)
     }
     pub fn users(&self) -> Self {
         self.stage(Stage::Users {
@@ -834,7 +884,7 @@ macro_rules! result {
         }
     };
 }
-result!(Vec<OperationId>, QueryOutput::Operations(value) => value);
+result!(Vec<OperationId>, QueryOutput::Operations(value) | QueryOutput::Native(NativeValue::OperationSequence(value)) => value);
 result!(Vec<String>, QueryOutput::Values(value) => value);
 result!(usize, QueryOutput::Count(value) => value);
 result!(String, QueryOutput::Native(NativeValue::String(value)) => value);
