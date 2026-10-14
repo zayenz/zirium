@@ -279,6 +279,7 @@ pub(super) fn to_json(
     budget: &mut zirql::Budget,
     range: &Range<usize>,
 ) -> Result<serde_json::Value, EvaluationError> {
+    let value = functions::unretained(value);
     match value {
         QueryOutput::Native(NativeValue::Ssa(value)) => {
             capture::check_value(document, *value, range)?;
@@ -481,6 +482,12 @@ pub(super) fn copy_value(
     budget: &mut zirql::Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
+    if let QueryOutput::Native(NativeValue::Retained(value)) = value {
+        charge_results(budget, 1, range)?;
+        return Ok(QueryOutput::Native(NativeValue::Retained(
+            std::sync::Arc::clone(value),
+        )));
+    }
     if let QueryOutput::Native(NativeValue::Captures(value)) = value {
         return value
             .copy(budget, range)
@@ -576,6 +583,10 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
         budget: &mut zirql::Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        let previous_stage = context.current_stage;
+        if let Stages::Native { native, .. } = stage {
+            context.current_stage = *native as *const _ as usize;
+        }
         let result = match stage {
             Stages::Parameter(index) => Ok(context.parameters[*index]
                 .take()
@@ -589,6 +600,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
             Stages::Native { native, .. } => charge(budget, output_size(&input).max(1))
                 .and_then(|()| evaluate_host_stage(native, context, input, bindings, budget)),
         };
+        context.current_stage = previous_stage;
         let value =
             result.map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))?;
         check_items(budget, output_size(&value))
@@ -802,264 +814,332 @@ pub(super) fn validate_expression(
     expression: &model::Expression,
     input: Kind,
     names: &BTreeMap<String, Kind>,
-    budget: &mut zirql::Budget,
+    budget: &mut Budget,
 ) -> Result<Kind, EvaluationError> {
-    let left = validate_stages(&expression.first, input.clone(), names, budget)?;
-    for (_, stages) in &expression.rest {
-        let right = validate_stages(stages, input.clone(), names, budget)?;
-        if left != right || !matches!(left, Kind::Operations | Kind::Strings) {
-            return Err(EvaluationError::new(
-                "set operands require operation or value streams of the same kind",
-            )
-            .at(range(expression.range)));
-        }
+    Validator {
+        host: report::ReportHost,
     }
-    Ok(left)
+    .expression(expression, input, names, budget)
 }
 
-pub(super) fn validate_stages(
-    stages: &[model::Stage],
-    mut kind: Kind,
-    names: &BTreeMap<String, Kind>,
-    budget: &mut zirql::Budget,
-) -> Result<Kind, EvaluationError> {
-    use model::{Stage as S, StructuredStage as N};
-    for stage in stages {
-        let failure = |message: &str| EvaluationError::new(message).at(range(stage.range()));
-        let require = |valid, message: &str| if valid { Ok(()) } else { Err(failure(message)) };
-        match stage {
-            S::Paths { value, .. } => {
-                let schema = capture::path_types(value, &kind, names, budget)?;
-                kind = Kind::Captures(std::sync::Arc::new(schema));
+pub(super) struct Validator<'f> {
+    pub(super) host: report::ReportHost<'f>,
+}
+impl Validator<'_> {
+    pub(super) fn expression(
+        &self,
+        expression: &model::Expression,
+        input: Kind,
+        names: &BTreeMap<String, Kind>,
+        budget: &mut zirql::Budget,
+    ) -> Result<Kind, EvaluationError> {
+        let left = self.stages(&expression.first, input.clone(), names, budget)?;
+        for (_, stages) in &expression.rest {
+            let right = self.stages(stages, input.clone(), names, budget)?;
+            if left != right || !matches!(left, Kind::Operations | Kind::Strings) {
+                return Err(EvaluationError::new(
+                    "set operands require operation or value streams of the same kind",
+                )
+                .at(range(expression.range)));
             }
-            S::Match { value, .. } => {
-                let schema = capture::types(value, &kind, names, budget)?;
-                kind = Kind::Captures(std::sync::Arc::new(schema));
-            }
-            S::Native { value, .. } => {
-                kind = capture::operand_kind(value, &kind, names, budget)?;
-            }
-            S::Operand { operation, .. } => {
-                require(
-                    capture::operand_kind(operation, &kind, names, budget)? == Kind::Operations,
-                    "operand requires native operations",
-                )?;
-                kind = Kind::Ssa;
-            }
-            S::Computed { value, range } => {
-                report::validate_argument(
-                    value.operand(),
-                    value.parameter_type().into(),
-                    names,
-                    budget,
-                )?;
-                kind = validate_stages(
-                    std::slice::from_ref(&value.placeholder(*range)),
-                    kind,
-                    names,
-                    budget,
-                )?;
-            }
-            S::Input { .. } => kind = Kind::Operations,
-            S::Binding { name, .. } => {
-                kind = names.get(name).cloned().ok_or_else(|| {
-                    failure(&format!(
-                        "binding `{name}` is unavailable in this evaluation context"
-                    ))
-                })?
-            }
-            S::Comprehension { value, .. } => {
-                let types = report::types(value, kind.clone(), names, budget)?;
-                kind = Kind::Constructed(std::sync::Arc::new(types));
-            }
-            S::Projection { value, .. } => {
-                let types = report::projection_types(value, kind.clone(), names, budget)?;
-                kind = Kind::Constructed(std::sync::Arc::new(types));
-            }
-            S::Literal { value, .. } => {
-                validate_literal(value, names).map_err(|error| error.at(range(stage.range())))?;
-                kind = match value {
-                    model::JsonLiteral::Object(_) => Kind::Map,
-                    model::JsonLiteral::Array(_) => Kind::Array,
-                    _ => unreachable!(),
+        }
+        Ok(left)
+    }
+
+    pub(super) fn stages(
+        &self,
+        stages: &[model::Stage],
+        mut kind: Kind,
+        names: &BTreeMap<String, Kind>,
+        budget: &mut zirql::Budget,
+    ) -> Result<Kind, EvaluationError> {
+        use model::{Stage as S, StructuredStage as N};
+        for stage in stages {
+            let failure = |message: &str| EvaluationError::new(message).at(range(stage.range()));
+            let require = |valid, message: &str| if valid { Ok(()) } else { Err(failure(message)) };
+            match stage {
+                S::FunctionInput { value, .. } => {
+                    kind = report::output_kind(value, budget, &range(stage.range()))?;
                 }
-            }
-            S::Group { expression, .. } => {
-                kind = validate_expression(expression, kind, names, budget)?
-            }
-            S::Fixpoint { expression, .. } => {
-                require(
-                    matches!(kind, Kind::Operations | Kind::Strings),
-                    "fixpoint requires an operation or value stream",
-                )?;
-                kind = validate_expression(expression, kind, names, budget)?;
-                require(
-                    matches!(kind, Kind::Operations | Kind::Strings),
-                    "fixpoint requires an operation or value stream",
-                )?;
-            }
-            S::Filter { predicate, .. } | S::Root { predicate, .. } => {
-                require(
+                S::FunctionValue { value, .. } => {
+                    kind =
+                        functions::value_kind(&self.host, &value.expression, kind, names, budget)
+                            .map_err(core_error)?;
+                }
+                S::FunctionPrimitive {
+                    primitive,
+                    argument,
+                    ..
+                } => {
+                    let argument_kind = functions::value_kind(
+                        &self.host,
+                        &argument.expression,
+                        Kind::Operations,
+                        names,
+                        budget,
+                    )
+                    .map_err(core_error)?;
+                    require(
+                        argument_kind == Kind::Operations,
+                        "native primitive requires one Operation",
+                    )?;
+                    kind = match primitive {
+                        functions::Primitive::DirectChildren => Kind::Operations,
+                        functions::Primitive::CostAnnotation => {
+                            Kind::Constructed(std::sync::Arc::new(vec![
+                                zirql::ValueType::Integer,
+                                zirql::ValueType::Absent,
+                            ]))
+                        }
+                    };
+                }
+                S::Paths { value, .. } => {
+                    let schema = capture::path_types(value, &kind, names, budget, &self.host)?;
+                    kind = Kind::Captures(std::sync::Arc::new(schema));
+                }
+                S::Match { value, .. } => {
+                    let schema = capture::types(value, &kind, names, budget)?;
+                    kind = Kind::Captures(std::sync::Arc::new(schema));
+                }
+                S::Native { value, .. } => {
+                    kind = capture::operand_kind(value, &kind, names, budget)?;
+                }
+                S::Operand { operation, .. } => {
+                    require(
+                        capture::operand_kind(operation, &kind, names, budget)? == Kind::Operations,
+                        "operand requires native operations",
+                    )?;
+                    kind = Kind::Ssa;
+                }
+                S::Computed { value, range } => {
+                    report::validate_argument_with_host(
+                        value.operand(),
+                        value.parameter_type().into(),
+                        names,
+                        budget,
+                        &self.host,
+                    )?;
+                    kind = self.stages(
+                        std::slice::from_ref(&value.placeholder(*range)),
+                        kind,
+                        names,
+                        budget,
+                    )?;
+                }
+                S::Input { .. } => kind = Kind::Operations,
+                S::Binding { name, .. } => {
+                    kind = names.get(name).cloned().ok_or_else(|| {
+                        failure(&format!(
+                            "binding `{name}` is unavailable in this evaluation context"
+                        ))
+                    })?
+                }
+                S::Comprehension { value, .. } => {
+                    let types =
+                        report::types_with_host(value, kind.clone(), names, budget, &self.host)?;
+                    kind = Kind::Constructed(std::sync::Arc::new(types));
+                }
+                S::Projection { value, .. } => {
+                    let types = report::projection_types_with_host(
+                        value,
+                        kind.clone(),
+                        names,
+                        budget,
+                        &self.host,
+                    )?;
+                    kind = Kind::Constructed(std::sync::Arc::new(types));
+                }
+                S::Literal { value, .. } => {
+                    validate_literal(value, names)
+                        .map_err(|error| error.at(range(stage.range())))?;
+                    kind = match value {
+                        model::JsonLiteral::Object(_) => Kind::Map,
+                        model::JsonLiteral::Array(_) => Kind::Array,
+                        _ => unreachable!(),
+                    }
+                }
+                S::Group { expression, .. } => {
+                    kind = self.expression(expression, kind, names, budget)?
+                }
+                S::Fixpoint { expression, .. } => {
+                    require(
+                        matches!(kind, Kind::Operations | Kind::Strings),
+                        "fixpoint requires an operation or value stream",
+                    )?;
+                    kind = self.expression(expression, kind, names, budget)?;
+                    require(
+                        matches!(kind, Kind::Operations | Kind::Strings),
+                        "fixpoint requires an operation or value stream",
+                    )?;
+                }
+                S::Filter { predicate, .. } | S::Root { predicate, .. } => {
+                    require(
+                        kind == Kind::Operations,
+                        "stage requires operations, but the current stream contains values",
+                    )?;
+                    report::validate_predicate_with_host(predicate, names, budget, &self.host)?;
+                }
+                S::Reachable { .. }
+                | S::Closure { .. }
+                | S::Slice { .. }
+                | S::ForwardSlice { .. }
+                | S::Defs { .. }
+                | S::Users { .. }
+                | S::Parent { .. }
+                | S::Children { .. }
+                | S::Subtree { .. }
+                | S::SetAttr { .. }
+                | S::RemoveAttr { .. } => require(
                     kind == Kind::Operations,
                     "stage requires operations, but the current stream contains values",
-                )?;
-                report::validate_predicate(predicate, names, budget)?;
-            }
-            S::Reachable { .. }
-            | S::Closure { .. }
-            | S::Slice { .. }
-            | S::ForwardSlice { .. }
-            | S::Defs { .. }
-            | S::Users { .. }
-            | S::Parent { .. }
-            | S::Children { .. }
-            | S::Subtree { .. }
-            | S::SetAttr { .. }
-            | S::RemoveAttr { .. } => require(
-                kind == Kind::Operations,
-                "stage requires operations, but the current stream contains values",
-            )?,
-            S::Names { .. } | S::Attr { .. } | S::ResultTypes { .. } | S::OperandTypes { .. } => {
-                require(kind == Kind::Operations, "projection requires operations")?;
-                kind = Kind::Strings;
-            }
-            S::Tally { .. } => {
-                require(
-                    kind == Kind::Strings,
-                    "tally requires a value stream; use names or attr first",
-                )?;
-                kind = Kind::Map;
-            }
-            S::Unique { .. } => require(
-                matches!(
-                    kind,
-                    Kind::Operations | Kind::Strings | Kind::Types | Kind::Attributes
-                ),
-                "unique requires an operation or value stream",
-            )?,
-            S::Sort { .. }
-            | S::Min { .. }
-            | S::Max { .. }
-            | S::MinAll { .. }
-            | S::MaxAll { .. } => {
-                require(kind == Kind::Strings, "ordering requires a value stream")?
-            }
-            S::SortBy { selector, .. } if kind == Kind::Map => require(
-                selector.is_map_value(),
-                "sort_by on a map requires the scalar selector value",
-            )?,
-            S::SortBy { selector, .. }
-            | S::MinBy { selector, .. }
-            | S::MinAllBy { selector, .. }
-            | S::MaxBy { selector, .. }
-            | S::MaxAllBy { selector, .. } => {
-                require(
-                    kind == Kind::Operations,
-                    "ordering selector requires operations",
-                )?;
-                let selector = validate_expression(selector, Kind::Operations, names, budget)?;
-                require(
-                    matches!(selector, Kind::Strings | Kind::String | Kind::Count),
-                    "ordering selector must produce exactly one string or count per operation",
-                )?;
-            }
-            S::Reverse { .. } | S::Head { .. } | S::Tail { .. } => require(
-                !matches!(
-                    kind,
-                    Kind::Count
-                        | Kind::String
-                        | Kind::Ssa
-                        | Kind::Capture(_)
-                        | Kind::Captures(_)
-                        | Kind::Constructed(_)
-                ),
-                "stage requires a stream, map, or array",
-            )?,
-            S::Count { .. } | S::Check { .. } => {
-                require(
+                )?,
+                S::Names { .. }
+                | S::Attr { .. }
+                | S::ResultTypes { .. }
+                | S::OperandTypes { .. } => {
+                    require(kind == Kind::Operations, "projection requires operations")?;
+                    kind = Kind::Strings;
+                }
+                S::Tally { .. } => {
+                    require(
+                        kind == Kind::Strings,
+                        "tally requires a value stream; use names or attr first",
+                    )?;
+                    kind = Kind::Map;
+                }
+                S::Unique { .. } => require(
+                    matches!(
+                        kind,
+                        Kind::Operations | Kind::Strings | Kind::Types | Kind::Attributes
+                    ),
+                    "unique requires an operation or value stream",
+                )?,
+                S::Sort { .. }
+                | S::Min { .. }
+                | S::Max { .. }
+                | S::MinAll { .. }
+                | S::MaxAll { .. } => {
+                    require(kind == Kind::Strings, "ordering requires a value stream")?
+                }
+                S::SortBy { selector, .. } if kind == Kind::Map => require(
+                    selector.is_map_value(),
+                    "sort_by on a map requires the scalar selector value",
+                )?,
+                S::SortBy { selector, .. }
+                | S::MinBy { selector, .. }
+                | S::MinAllBy { selector, .. }
+                | S::MaxBy { selector, .. }
+                | S::MaxAllBy { selector, .. } => {
+                    require(
+                        kind == Kind::Operations,
+                        "ordering selector requires operations",
+                    )?;
+                    let selector = self.expression(selector, Kind::Operations, names, budget)?;
+                    require(
+                        matches!(selector, Kind::Strings | Kind::String | Kind::Count),
+                        "ordering selector must produce exactly one string or count per operation",
+                    )?;
+                }
+                S::Reverse { .. } | S::Head { .. } | S::Tail { .. } => require(
                     !matches!(
                         kind,
                         Kind::Count
                             | Kind::String
                             | Kind::Ssa
                             | Kind::Capture(_)
+                            | Kind::Captures(_)
                             | Kind::Constructed(_)
                     ),
                     "stage requires a stream, map, or array",
-                )?;
-                if matches!(stage, S::Count { .. }) {
-                    kind = Kind::Count;
-                }
-            }
-            S::MapBy { key, value, .. } => {
-                require(kind == Kind::Operations, "map_by requires operations")?;
-                require(
-                    validate_expression(key, Kind::Operations, names, budget)? == Kind::Strings,
-                    "map_by key must produce exactly one string",
-                )?;
-                validate_expression(value, Kind::Operations, names, budget)?;
-                kind = Kind::Map;
-            }
-            S::Structured { step, .. } => match step {
-                N::One => {
-                    require(kind == Kind::Strings, "one requires a string stream")?;
-                    kind = Kind::String;
-                }
-                N::WhereExists(expression) => {
-                    require(kind == Kind::Operations, "where_exists requires operations")?;
+                )?,
+                S::Count { .. } | S::Check { .. } => {
                     require(
-                        validate_expression(expression, Kind::Operations, names, budget)?
-                            == Kind::Operations,
-                        "where_exists requires operations",
+                        !matches!(
+                            kind,
+                            Kind::Count
+                                | Kind::String
+                                | Kind::Ssa
+                                | Kind::Capture(_)
+                                | Kind::Constructed(_)
+                        ),
+                        "stage requires a stream, map, or array",
                     )?;
+                    if matches!(stage, S::Count { .. }) {
+                        kind = Kind::Count;
+                    }
                 }
-                N::MapBy { key, value } => {
+                S::MapBy { key, value, .. } => {
                     require(kind == Kind::Operations, "map_by requires operations")?;
                     require(
-                        validate_expression(key, Kind::Operations, names, budget)? == Kind::String,
+                        self.expression(key, Kind::Operations, names, budget)? == Kind::Strings,
                         "map_by key must produce exactly one string",
                     )?;
-                    validate_expression(value, Kind::Operations, names, budget)?;
+                    self.expression(value, Kind::Operations, names, budget)?;
                     kind = Kind::Map;
                 }
-                N::StringAttr(_) => {
-                    require(kind == Kind::Operations, "string_attr requires operations")?;
-                    kind = Kind::Strings;
+                S::Structured { step, .. } => match step {
+                    N::One => {
+                        require(kind == Kind::Strings, "one requires a string stream")?;
+                        kind = Kind::String;
+                    }
+                    N::WhereExists(expression) => {
+                        require(kind == Kind::Operations, "where_exists requires operations")?;
+                        require(
+                            self.expression(expression, Kind::Operations, names, budget)?
+                                == Kind::Operations,
+                            "where_exists requires operations",
+                        )?;
+                    }
+                    N::MapBy { key, value } => {
+                        require(kind == Kind::Operations, "map_by requires operations")?;
+                        require(
+                            self.expression(key, Kind::Operations, names, budget)? == Kind::String,
+                            "map_by key must produce exactly one string",
+                        )?;
+                        self.expression(value, Kind::Operations, names, budget)?;
+                        kind = Kind::Map;
+                    }
+                    N::StringAttr(_) => {
+                        require(kind == Kind::Operations, "string_attr requires operations")?;
+                        kind = Kind::Strings;
+                    }
+                    N::Types { .. } => {
+                        require(kind == Kind::Operations, "types requires operations")?;
+                        kind = Kind::Types;
+                    }
+                    N::Attributes(_) => {
+                        require(kind == Kind::Operations, "attributes requires operations")?;
+                        kind = Kind::Attributes;
+                    }
+                    N::Spellings => {
+                        require(
+                            matches!(kind, Kind::Types | Kind::Attributes),
+                            "spellings requires native types or attributes",
+                        )?;
+                        kind = Kind::Strings;
+                    }
+                },
+                S::Format { .. } => {
+                    require(kind == Kind::Operations, "format requires operations")?
                 }
-                N::Types { .. } => {
-                    require(kind == Kind::Operations, "types requires operations")?;
-                    kind = Kind::Types;
+                S::Markdown { .. } => require(
+                    matches!(kind, Kind::Map | Kind::Array | Kind::Strings | Kind::Count),
+                    "markdown requires values, a count, or a map of scalars or maps of scalars",
+                )?,
+                S::Print { parts, .. } => {
+                    validate_interpolation(parts, names)
+                        .map_err(|error| error.at(range(stage.range())))?;
                 }
-                N::Attributes(_) => {
-                    require(kind == Kind::Operations, "attributes requires operations")?;
-                    kind = Kind::Attributes;
+                S::Emit { .. } | S::Json { .. } => {}
+                S::Value { .. } => {
+                    return Err(failure(
+                        "value is only valid as the selector in sort_by(value) on a map",
+                    ));
                 }
-                N::Spellings => {
-                    require(
-                        matches!(kind, Kind::Types | Kind::Attributes),
-                        "spellings requires native types or attributes",
-                    )?;
-                    kind = Kind::Strings;
-                }
-            },
-            S::Format { .. } => require(kind == Kind::Operations, "format requires operations")?,
-            S::Markdown { .. } => require(
-                matches!(kind, Kind::Map | Kind::Array | Kind::Strings | Kind::Count),
-                "markdown requires values, a count, or a map of scalars or maps of scalars",
-            )?,
-            S::Print { parts, .. } => {
-                validate_interpolation(parts, names)
-                    .map_err(|error| error.at(range(stage.range())))?;
-            }
-            S::Emit { .. } | S::Json { .. } => {}
-            S::Value { .. } => {
-                return Err(failure(
-                    "value is only valid as the selector in sort_by(value) on a map",
-                ));
             }
         }
+        Ok(kind)
     }
-    Ok(kind)
 }
 
 fn validate_interpolation(

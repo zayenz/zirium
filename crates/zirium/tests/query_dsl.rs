@@ -1773,3 +1773,423 @@ fn prepared_native_arguments_keep_row_context_and_skipped_errors() {
             ])));
     }
 }
+
+#[test]
+fn typed_functions_reuse_native_tree_and_tail_continuations() {
+    use zirium::query::{ConstructedValue, FunctionLimits, NativeValue};
+    let mut document = document_from(include_str!("../../../examples/cli/subtree-cost.mlir"));
+    let query = Query::parse(include_str!("../../../examples/cli/subtree-cost.zirql")).unwrap();
+    let mut emitted = Vec::new();
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            emitted.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(emitted, vec![QueryOutput::Json("8\n".to_owned())]);
+    for (source, expected) in [
+        (
+            "fn read_cost(if: Operation) -> opt int { cost_annotation(if true { if } else { if }) } let selected = filter(op(\"example.root\")); report read_cost(selected) default 8 | json",
+            "8\n",
+        ),
+        (
+            "fn read_cost(op: Operation) -> opt int { let if = op; cost_annotation(if) } let selected = filter(op(\"example.root\")); report read_cost(selected) default 8 | json",
+            "8\n",
+        ),
+        (
+            "fn count_named(op: Operation, if: string) -> int { op | filter(op(if)) | count } let selected = filter(op(\"example.root\")); report count_named(selected, \"example.root\") | json",
+            "1\n",
+        ),
+    ] {
+        emitted.clear();
+        Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                emitted.push(value);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(emitted, vec![QueryOutput::Json(expected.to_owned())]);
+    }
+    let query = Query::parse(include_str!("../../../examples/cli/tail-accumulator.zirql"))
+        .unwrap()
+        .with_function_limits(FunctionLimits { active_depth: 1 });
+    emitted.clear();
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            emitted.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(emitted, vec![QueryOutput::Json("500500\n".to_owned())]);
+    let query=Query::parse("fn identity(x: Operation) -> Operation { x } let selected = filter(op(\"example.root\")); identity(selected)").unwrap();
+    emitted.clear();
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            emitted.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(&emitted[0],QueryOutput::Operations(ids) if ids.len()==1));
+    let query = Query::parse("fn plus(x: int) -> int { x+1 } report plus(4)").unwrap();
+    emitted.clear();
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            emitted.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(&emitted[0],QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data()==&ConstructedValue::Integer(5)),
+        "{emitted:?}"
+    );
+}
+
+#[test]
+fn function_native_contracts_preserve_ids_sequences_and_current_owners() {
+    use zirium::query::{
+        FunctionDefinition as F, FunctionNativeType as N, FunctionParameter as P,
+        FunctionType as T, Located, NativeValue, ReportExpr as E, function_call, report,
+    };
+    use zirium::semantic::OperationId;
+    let mut document = document_from(include_str!("../../../examples/cli/subtree-cost.mlir"));
+    let parameter = |name: &str, declaration| P {
+        name: Located::new(name.to_owned(), 0..0),
+        declaration,
+    };
+    let identity = F::new(
+        "identity",
+        vec![parameter("x", T::Native(N::Operation))],
+        T::Native(N::Operation),
+        vec![],
+        E::name("x"),
+    )
+    .unwrap();
+    let selected = ops()
+        .filter(op("example.root"))
+        .evaluate(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationLimits::default(),
+        )
+        .unwrap()[0];
+    let call = |value| {
+        function_call::<Vec<OperationId>>("identity", [value])
+            .with_functions(vec![identity.clone()])
+    };
+    assert_eq!(
+        document.query(&call(E::operation(selected))).unwrap(),
+        vec![selected]
+    );
+    assert_eq!(
+        document
+            .query(&call(E::native(&ops().filter(op("example.root")))))
+            .unwrap(),
+        vec![selected]
+    );
+    let foreign = document_from("\"foreign\"() : () -> ()").root_operations()[0];
+    let stale = ops()
+        .filter(op("example.right"))
+        .evaluate(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationLimits::default(),
+        )
+        .unwrap()[0];
+    let ssa = ops()
+        .filter(op("example.right"))
+        .operand(0)
+        .evaluate(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationLimits::default(),
+        )
+        .unwrap();
+    let ssa_identity = F::new(
+        "ssa_identity",
+        vec![parameter("x", T::Native(N::SSAValue))],
+        T::Native(N::SSAValue),
+        vec![],
+        E::name("x"),
+    )
+    .unwrap();
+    assert_eq!(
+        document
+            .query(
+                &function_call::<zirium::semantic::ValueId>("ssa_identity", [E::ssa_value(ssa)])
+                    .with_functions(vec![ssa_identity])
+            )
+            .unwrap(),
+        ssa
+    );
+    let mut edit = document.edit(DialectRegistry::baseline()).unwrap();
+    edit.erase(stale).unwrap();
+    edit.commit().unwrap();
+    for invalid in [foreign, stale] {
+        let error = document.query(&call(E::operation(invalid))).unwrap_err();
+        assert!(error.range().is_some());
+    }
+    let sequence = F::new(
+        "sequence_id",
+        vec![parameter(
+            "x",
+            T::Sequence(Box::new(T::Native(N::Operation))),
+        )],
+        T::Sequence(Box::new(T::Native(N::Operation))),
+        vec![],
+        E::name("x"),
+    )
+    .unwrap();
+    for values in [vec![], vec![selected]] {
+        let value = document
+            .query(
+                &function_call::<QueryOutput>(
+                    "sequence_id",
+                    [E::operation_sequence(values.clone())],
+                )
+                .with_functions(vec![sequence.clone()]),
+            )
+            .unwrap();
+        assert_eq!(
+            value,
+            QueryOutput::Native(NativeValue::OperationSequence(values))
+        );
+    }
+    let wrong = F::new("wrong", vec![], T::Integer, vec![], E::boolean(true)).unwrap();
+    assert!(
+        document
+            .query(&report(E::call("wrong", [])).with_functions(vec![wrong]))
+            .unwrap_err()
+            .range()
+            .is_some()
+    );
+    assert!(
+        document
+            .query(&call(E::integer(1)))
+            .unwrap_err()
+            .range()
+            .is_some()
+    );
+}
+
+#[test]
+fn functions_prepare_fields_arguments_and_all_written_bodies_before_execution() {
+    use zirium::query::{
+        FunctionDefinition as F, FunctionLimits, FunctionType as T, PathEdge, ReportExpr as E,
+        function_call, matches, op_expr,
+    };
+    let mut document = document_from(include_str!("../../../examples/cli/subtree-cost.mlir"));
+    let source = r#"fn bump(n: int) -> int { n+1 }
+        fn label() -> string { "example.root" }
+        filter(op(label())) | head(bump(0)) | project(row, {"cost":bump(row | children | count)}) | json"#;
+    let mut outputs = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        outputs,
+        vec![QueryOutput::Json(
+            "[\n  {\n    \"cost\": 3\n  }\n]\n".to_owned()
+        )]
+    );
+    let mut path_outputs = Vec::new();
+    for source in [
+        r#"filter(op("example.root")) | paths(users,to=op("example.root"),max_depth=0) | json"#,
+        r#"fn label()->string {"example.root"} filter(op("example.root")) | paths(users,to=op(label()),max_depth=0) | json"#,
+    ] {
+        let mut output = Vec::new();
+        Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                output.push(value);
+                Ok(())
+            })
+            .unwrap();
+        path_outputs.push(output);
+    }
+    assert_eq!(path_outputs[0], path_outputs[1]);
+    let label = F::new(
+        "label",
+        vec![],
+        T::String,
+        vec![],
+        E::string("example.root"),
+    )
+    .unwrap();
+    let typed = ops().filter(op("example.root")).paths(
+        PathEdge::Users,
+        op_expr(E::from(
+            function_call::<String>("label", []).with_functions(vec![label]),
+        )),
+        0,
+    );
+    let literal = ops()
+        .filter(op("example.root"))
+        .paths(PathEdge::Users, op("example.root"), 0);
+    assert_eq!(
+        document.query(&typed).unwrap().rows(),
+        document.query(&literal).unwrap().rows()
+    );
+    let body = r#"fn label()->string {"example.root"} fn witnesses(op:Operation)->int { op | paths(users,to=op(label()),max_depth=0) | count } let selected=filter(op("example.root")); report witnesses(selected) | json"#;
+    let query = Query::parse(body)
+        .unwrap()
+        .with_function_limits(FunctionLimits { active_depth: 1 });
+    let error = query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(error.to_string().contains("active function depth limit"));
+    assert!(error.range().is_some());
+    outputs.clear();
+    query
+        .with_function_limits(FunctionLimits { active_depth: 2 })
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(outputs, vec![QueryOutput::Json("1\n".into())]);
+    for pipeline in [
+        "op | paths(users,to=false and op(label()),max_depth=0)",
+        "op | filter(false) | paths(users,to=op(label()),max_depth=0)",
+    ] {
+        let source = format!(
+            r#"fn label()->string {{"example.root"}} fn witnesses(op:Operation)->int {{ {pipeline} | count }} let selected=filter(op("example.root")); report witnesses(selected) | json"#
+        );
+        outputs.clear();
+        Query::parse(&source)
+            .unwrap()
+            .with_function_limits(FunctionLimits { active_depth: 1 })
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                outputs.push(value);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(outputs, vec![QueryOutput::Json("0\n".into())]);
+    }
+    for source in [
+        "fn bad() -> int { missing(0) } emit; report 1",
+        "fn bad() -> int { if true {1} else {missing(0)} } emit; report 1",
+        "fn same() -> int {1} fn same() -> int {2} emit; report 1",
+        "fn unary(n:int) -> int {n} emit; report unary()",
+        "let outer = 2; fn capture() -> int {outer} emit; report 1",
+        "fn shadow(n:int) -> int {let n=2; n} emit; report 1",
+        "fn impure(op:Operation) -> int { op | set_attr(\"x\",\"y\") | count } emit; report 1",
+        "fn label()->string {\"example.root\"} emit; filter(false) | paths(users,to=op(missing()),max_depth=0)",
+    ] {
+        let mut emitted = 0;
+        let query = Query::parse(source);
+        if let Ok(query) = query {
+            let error = query
+                .evaluate(&mut document, DialectRegistry::baseline(), |_, _| {
+                    emitted += 1;
+                    Ok(())
+                })
+                .unwrap_err();
+            assert!(error.range().is_some(), "{source}: {error}");
+        }
+        assert_eq!(emitted, 0, "{source}");
+    }
+    let bad = F::new("unused", vec![], T::Integer, vec![], E::call("missing", [])).unwrap();
+    let source = ops().with_functions(vec![bad]);
+    let captures = matches().from("row", &source).build();
+    assert!(document.query(&captures).unwrap_err().range().is_some());
+    let malformed =
+        include_str!("../../../examples/cli/subtree-cost.mlir").replace("3 : i64", "\"bad\"");
+    let mut malformed = document_from(&malformed);
+    let error = Query::parse(include_str!("../../../examples/cli/subtree-cost.zirql"))
+        .unwrap()
+        .evaluate(&mut malformed, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(error.to_string().contains("cost annotation"));
+    assert!(error.range().is_some());
+}
+
+#[test]
+fn tail_functions_keep_active_calls_and_cumulative_allowances_bounded() {
+    use zirium::query::{FunctionLimits, ProgramLimits};
+    let mut document = document();
+    let tail = Query::parse(include_str!("../../../examples/cli/tail-accumulator.zirql"))
+        .unwrap()
+        .with_function_limits(FunctionLimits { active_depth: 1 });
+    let limits = ProgramLimits {
+        work: 2_000_000,
+        results: 1_000_000,
+        stream_items: 1000,
+        nesting: 64,
+    };
+    for scarce in [
+        ProgramLimits {
+            work: 1000,
+            ..limits
+        },
+        ProgramLimits {
+            results: 1000,
+            ..limits
+        },
+    ] {
+        assert!(
+            tail.evaluate_with_program_limits(
+                &mut document,
+                DialectRegistry::baseline(),
+                None,
+                EvaluationOptions::default(),
+                scarce,
+                |_, _| Ok(())
+            )
+            .is_err()
+        );
+    }
+    for source in [
+        "fn forever(n:int)->int {forever(n+1)} report forever(0)",
+        "fn grow(n:int)->int {if n==0{0}else{1+grow(n-1)}} report grow(100)",
+    ] {
+        let query = Query::parse(source)
+            .unwrap()
+            .with_function_limits(FunctionLimits { active_depth: 1 });
+        assert!(
+            query
+                .evaluate_with_program_limits(
+                    &mut document,
+                    DialectRegistry::baseline(),
+                    None,
+                    EvaluationOptions::default(),
+                    limits,
+                    |_, _| Ok(())
+                )
+                .unwrap_err()
+                .range()
+                .is_some()
+        );
+    }
+    let mutual=Query::parse("fn even(n:int)->bool {if n==0{true}else{odd(n-1)}} fn odd(n:int)->bool {if n==0{false}else{even(n-1)}} report even(1000) | json").unwrap().with_function_limits(FunctionLimits{active_depth:1});
+    let mut emitted = Vec::new();
+    mutual
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            emitted.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(emitted, vec![QueryOutput::Json("true\n".to_owned())]);
+    tail.evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap();
+}
+
+#[test]
+fn function_runtime_failures_retain_explicit_library_emission_events() {
+    let mut document = document();
+    let mut emitted = Vec::new();
+    let error =
+        Query::parse("fn fail(n:int)->int {10 div n} report 1 | json; report fail(0) | json")
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                emitted.push(value);
+                Ok(())
+            })
+            .unwrap_err();
+    assert_eq!(emitted, vec![QueryOutput::Json("1\n".to_owned())]);
+    assert!(error.range().is_some());
+}

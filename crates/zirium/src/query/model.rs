@@ -12,6 +12,7 @@ pub enum SetOperator {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
+    pub functions: Vec<super::FunctionDefinition>,
     pub parameters: Vec<zirql::ParameterDeclaration>,
     pub(crate) parameter_positions: Vec<usize>,
     pub statements: Vec<Statement>,
@@ -307,6 +308,19 @@ pub enum Stage {
         index: usize,
         range: TextRange,
     },
+    FunctionInput {
+        value: std::sync::Arc<super::QueryOutput>,
+        range: TextRange,
+    },
+    FunctionValue {
+        value: super::comprehension::ParsedComprehension,
+        range: TextRange,
+    },
+    FunctionPrimitive {
+        primitive: super::functions::Primitive,
+        argument: super::comprehension::ParsedComprehension,
+        range: TextRange,
+    },
     Computed {
         value: ComputedStage,
         range: TextRange,
@@ -496,6 +510,9 @@ impl Stage {
             | Self::Match { range, .. }
             | Self::Native { range, .. }
             | Self::Operand { range, .. }
+            | Self::FunctionInput { range, .. }
+            | Self::FunctionValue { range, .. }
+            | Self::FunctionPrimitive { range, .. }
             | Self::Computed { range, .. }
             | Self::Projection { range, .. }
             | Self::Comprehension { range, .. }

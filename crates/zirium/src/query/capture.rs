@@ -49,8 +49,9 @@ pub(super) fn path_types(
     input: &program::Kind,
     names: &BTreeMap<String, program::Kind>,
     budget: &mut Budget,
+    host: &report::ReportHost<'_>,
 ) -> Result<NativeCapture<program::Kind>, EvaluationError> {
-    zirql::path_types(&value.paths, &report::ReportHost, input, names, budget).map_err(core_error)
+    zirql::path_types(&value.paths, host, input, names, budget).map_err(core_error)
 }
 pub(super) fn evaluate_paths(
     value: &ParsedPaths,
@@ -60,18 +61,40 @@ pub(super) fn evaluate_paths(
     budget: &mut Budget,
 ) -> Result<CaptureMatches, EvaluationError> {
     let range = &value.paths.range;
+    let host = context
+        .functions
+        .map_or(&report::ReportHost, |session| session.host);
     let kind = report::output_kind(&input, budget, range)?;
     let names = report::runtime_kinds(bindings, budget, range)?;
-    let schema = Arc::new(path_types(value, &kind, &names, budget)?);
-    let values = zirql::evaluate_paths(
-        &value.paths,
-        &report::ReportHost,
-        input,
-        context,
-        bindings,
-        budget,
-    )
-    .map_err(program::evaluation_error)?;
+    let schema = Arc::new(path_types(value, &kind, &names, budget, host)?);
+    let values = zirql::evaluate_paths(&value.paths, host, input, context, bindings, budget)
+        .map_err(program::evaluation_error)?;
+    path_matches(values, schema, budget, range)
+}
+pub(super) fn evaluate_paths_with_arguments<'q, 'f>(
+    value: &ParsedPaths,
+    host: &report::ReportHost<'f>,
+    input: QueryOutput,
+    arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, report::ReportHost<'f>>,
+    budget: &mut Budget,
+) -> Result<CaptureMatches, EvaluationError> {
+    let range = &value.paths.range;
+    let schema = {
+        let (_, bindings) = arguments.parts();
+        let kind = report::output_kind(&input, budget, range)?;
+        let names = report::runtime_kinds(bindings, budget, range)?;
+        Arc::new(path_types(value, &kind, &names, budget, host)?)
+    };
+    let values = zirql::evaluate_paths_with_arguments(&value.paths, host, input, arguments, budget)
+        .map_err(program::evaluation_error)?;
+    path_matches(values, schema, budget, range)
+}
+fn path_matches(
+    values: Vec<QueryOutput>,
+    schema: Arc<NativeCapture<program::Kind>>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<CaptureMatches, EvaluationError> {
     slots::<NativeCapture<QueryOutput>>(values.len(), budget, range)?;
     program::charge_results(budget, values.len() + 1, range)?;
     let rows = values
@@ -107,7 +130,7 @@ fn path_operation(
     Ok(*id)
 }
 
-impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost {
+impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
     type Target = model::Predicate;
     fn validate_path_edge(
         &self,
@@ -135,7 +158,8 @@ impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost {
         budget: &mut Budget,
         _: &Range<usize>,
     ) -> Result<(), zirql::QueryError> {
-        report::validate_predicate(target, names, budget).map_err(report::query_error)
+        report::validate_predicate_with_host(target, names, budget, self)
+            .map_err(report::query_error)
     }
     fn evaluate_target_leaf(
         &self,
@@ -150,6 +174,27 @@ impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost {
             path_operation(input, context.document, range).map_err(zirql::EvaluationError::Host)?;
         let target = report::resolve_predicate(target, context, bindings, budget)
             .map_err(zirql::EvaluationError::Host)?;
+        Ok(pipeline::evaluate_leaf(
+            &target,
+            context.document,
+            operation,
+        ))
+    }
+    fn evaluate_target_leaf_with_arguments(
+        &self,
+        target: &model::Predicate,
+        input: &QueryOutput,
+        arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, Self>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::Truth, zirql::EvaluationError<EvaluationError>> {
+        let operation = {
+            let (context, _) = arguments.parts();
+            path_operation(input, context.document, range).map_err(zirql::EvaluationError::Host)?
+        };
+        let target = report::resolve_prepared_predicate(target, arguments, budget)
+            .map_err(zirql::EvaluationError::Host)?;
+        let (context, _) = arguments.parts();
         Ok(pipeline::evaluate_leaf(
             &target,
             context.document,
@@ -506,7 +551,7 @@ pub(super) fn check_value(
     }
     Ok(())
 }
-impl<'q> MatchHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost {
+impl<'q> MatchHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
     type Guard = model::Predicate;
     fn validate_guard_leaf(
         &self,

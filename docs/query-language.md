@@ -1266,3 +1266,89 @@ containing the existing semantic wrappers. The explicit JSON boundary describes
 SSA values with `kind`, zero-based `index` and optional `type`, alongside the
 existing operation description. See [native capture builders](query-dsl.md#native-capture-builders).
 This matching surface is read-only and does not support diff queries or rewrites.
+
+## Typed recursive functions
+
+A pure function receives every input explicitly. Declarations share one request:
+all signatures register before any body is prepared, so forward and mutual calls
+work. Ordered `let` bindings belong to the function body. They cannot capture
+saved query bindings, caller parameters, the projection subject or implicit
+`input`. A local cannot redefine an existing local or parameter. Function names
+cannot replace builtins or native stages.
+
+```zirium
+fn subtree_cost(op: Operation) -> int {
+  (cost_annotation(op) default 1)
+    + sum([subtree_cost(child) for child in direct_children(op)])
+}
+let selected = filter(op("example.root"));
+report subtree_cost(selected) | json
+```
+
+The [saved program](../examples/cli/subtree-cost.zirql) returns `8` for the
+[containment tree](../examples/cli/subtree-cost.mlir): one unannotated root and
+exactly two leaves with integer costs `3` and `4`. `direct_children` follows
+region, block and operation order. It follows containment, including zero
+children, without consulting SSA users. Its result is `sequence<Operation>`.
+`cost_annotation` reads the document's decoded `cost` attribute and returns
+`opt int`. Missing cost is absent and selects `default 1`; a non-integer,
+malformed integer or value outside i64 fails at the annotation read.
+
+Calls accept zero or more comma-separated arguments. They work in reports,
+projection fields, computed native arguments and native query sources. For
+example, an `identity(op: Operation) -> Operation` call can feed
+`identity(selected) | children | count`. A primitive call such as
+`direct_children(identity(selected))` also retains the native argument.
+An explicit call source receives its written arguments rather than the
+surrounding pipeline selection.
+
+Signatures accept `int`, `float`, `bool`, `string`, `opt T`, `sequence<T>`,
+`tuple<T, ...>`, `record {field: T, ...}`, `set<T>` and `keyed<T>`.
+Nested declarations use the same grammar. Sets retain their existing supported
+Boolean, integer, float and nominal element identities; `set<string>` is
+unsupported. Keyed shape and present cells remain runtime facts. Zirium's native
+names are `Operation` and `SSAValue`. `SSAValue` means one exact checked
+`ValueId`, including its result or block-argument position. Operation admission
+requires exactly one valid current-document operation. An explicit native
+operation sequence retains its sequence shape at length zero or one.
+Native capture records and maps check their declared fields and nested handles.
+There is no native-handle transport through external `param` declarations;
+those inputs remain int, string or bool.
+
+Function arguments and results are admitted against their whole declarations.
+Wrong arity, duplicate names, unknown calls, unavailable names and effects in
+any written body or branch fail before execution, even when unused. Runtime
+failures keep their query range and bounded active call context. Optional
+absence remains distinct from unknown type information and execution failure.
+`default` handles absence; it does not catch a type, arithmetic or budget error.
+Functions cannot edit, emit or invoke an impure nested query. Textual functions
+are unavailable in diff programs.
+
+Conditional values require a final `else`:
+
+```zirium
+fn accumulate(n: int, total: int) -> int {
+  if n == 0 { total } else { accumulate(n - 1, total + n) }
+}
+report accumulate(1000, 0) | json
+```
+
+`else if` adds ordered conditions. Branches contain expressions; ordered local
+`let` declarations belong to the function body. Compatible self and mutual tail
+calls reuse an activation. Pending arithmetic, incompatible return declarations
+and native callbacks keep their non-tail or host-reentry obligations.
+
+Zirium defaults to 64 active user-function calls. Rust callers can set
+`FunctionLimits { active_depth: 1 }` with `Query::with_function_limits` or the
+corresponding typed root method; the accumulator still returns `500500`.
+Expression nesting and host reentry have separate finite guards. Every call,
+native inspection and result spends the same request allowance, so infinite
+tail recursion still fails normally. Function-bearing programs use aggregate
+program budgeting even when they contain no comprehension. CLI controls remain
+`--max-work`, `--max-items` and `--max-results`.
+
+Declarations and written entries prepare once per submitted request. Projection
+rows reuse those entries with current bindings and the current document;
+immutable native results retain owners across released function frames.
+Rendering remains explicit. The CLI buffers every emission until success;
+Rust's emission callback can observe an earlier event before a later failure.

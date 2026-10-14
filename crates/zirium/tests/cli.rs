@@ -3706,3 +3706,69 @@ fn optional_reports_agree_inline_file_and_buffer_selected_failures() {
         serde_json::json!({"stored":null})
     );
 }
+
+#[test]
+fn typed_functions_agree_inline_file_and_buffer_later_runtime_failure() {
+    let input = include_str!("../../../examples/cli/subtree-cost.mlir");
+    let program = include_str!("../../../examples/cli/subtree-cost.zirql");
+    let inline = run_stdin(program, input);
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    assert_eq!(inline.stdout, b"8\n");
+    let path = temporary_path("typed-functions", "zirql");
+    for (source, expected) in [
+        (program, Some(inline.stdout.as_slice())),
+        (
+            "fn fail(n:int)->int {10 div n} report 1 | json; report fail(0) | json",
+            None,
+        ),
+    ] {
+        fs::write(&path, source).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args(["--program-file", path.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let file = child.wait_with_output().unwrap();
+        let inline = run_stdin(source, input);
+        if let Some(expected) = expected {
+            assert!(
+                file.status.success(),
+                "{}",
+                String::from_utf8_lossy(&file.stderr)
+            );
+            assert_eq!(file.stdout, expected);
+        } else {
+            assert!(!file.status.success());
+            assert!(file.stdout.is_empty());
+            assert!(!inline.status.success());
+            assert!(inline.stdout.is_empty());
+        }
+    }
+    fs::remove_file(path).unwrap();
+    let tail = run_stdin(
+        include_str!("../../../examples/cli/tail-accumulator.zirql"),
+        input,
+    );
+    assert!(
+        tail.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tail.stderr)
+    );
+    assert_eq!(tail.stdout, b"500500\n");
+    let malformed = run_stdin(program, &input.replace("3 : i64", "\"bad\""));
+    assert!(!malformed.status.success());
+    assert!(malformed.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&malformed.stderr).contains("cost annotation"));
+}

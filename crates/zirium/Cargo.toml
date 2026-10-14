@@ -15,4 +15,4 @@ categories = ["parser-implementations", "compilers"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-zirql = { git = "https://github.com/zayenz/zirql", rev = "75ec373b7e61db56e43b4d1520397aca42cf06ef", version = "=0.1.0-alpha.5" }
+zirql = { git = "https://github.com/zayenz/zirql", rev = "cdb64efb4b9685ee2f494b7c3f04fc26e2f3527a", version = "=0.1.0-alpha.5" }

@@ -1218,6 +1218,12 @@ fn native(
 ) -> PyResult<Py<PyAny>> {
     use core::{NativeValue, QueryOutput};
     Ok(match output {
+        QueryOutput::Native(NativeValue::Retained(value)) => {
+            let value = QueryOutput::Native(NativeValue::Retained(value))
+                .into_owned_with_budget(budget)
+                .map_err(py_error)?;
+            return native(py, state, value, budget);
+        }
         QueryOutput::Native(NativeValue::Ssa(value)) => {
             budget
                 .charge(1, zirql_location(&(0..0)))
@@ -1358,6 +1364,11 @@ fn capture_record_ref(
         budget
             .charge_results(1, zirql_location(range))
             .map_err(py_error)?;
+        let mut value = value;
+        while let core::QueryOutput::Native(core::NativeValue::Retained(shared)) = value {
+            budget.charge(1, zirql_location(range)).map_err(py_error)?;
+            value = shared;
+        }
         let value = match value {
             core::QueryOutput::Operations(ids) if ids.len() == 1 => {
                 budget.charge(1, zirql_location(range)).map_err(py_error)?;

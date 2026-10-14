@@ -391,3 +391,41 @@ and `E(rows).group_by("matches")` respectively; the
 [builder guide](query-dsl.md#constructed-report-builders) describes their native
 results. [Grouping rules](query-language.md#stable-record-groups) preserve the
 existing rendering, diagnostic and budget boundaries.
+
+## Recursive containment cost
+
+The [tree fixture](../examples/cli/subtree-cost.mlir) contains an unannotated
+root and exactly two leaves with integer costs `3` and `4`.
+
+```console
+$ zirium 'fn subtree_cost(op: Operation) -> int { (cost_annotation(op) default 1) + sum([subtree_cost(child) for child in direct_children(op)]) } let selected = filter(op("example.root")); report subtree_cost(selected) | json' examples/cli/subtree-cost.mlir
+8
+$ zirium --program-file examples/cli/subtree-cost.zirql examples/cli/subtree-cost.mlir
+8
+$ zirium --program-file examples/cli/tail-accumulator.zirql examples/cli/subtree-cost.mlir
+500500
+$ cargo run -p zirium --locked --example typed_functions
+8
+500500
+```
+
+The first two commands run the same
+[function program](../examples/cli/subtree-cost.zirql). `direct_children`
+follows containment in source order; it does not traverse SSA users.
+Missing `cost` selects `default 1`. A stored string cost is an error:
+
+```sh
+printf '"example.root"() {cost = "bad"} : () -> ()\n' |
+  zirium --program-file examples/cli/subtree-cost.zirql
+```
+
+This command fails with a located `cost annotation must be an i64 integer`
+diagnostic and empty stdout. Changing the annotation to an integer outside i64
+also fails. `default` never replaces malformed data or an exhausted allowance.
+
+The [accumulator](../examples/cli/tail-accumulator.zirql) performs 1,001 calls
+under the finite default of 64 active activations. Compatible tail calls reuse
+one activation; work and produced data remain bounded by `--max-work` and
+`--max-results`. The compiled Rust example also sets an active limit of one.
+See [typed functions](query-language.md#typed-recursive-functions) for signature
+syntax, lexical scope, purity and independent limits.

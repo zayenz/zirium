@@ -77,6 +77,7 @@ pub(crate) fn parse_with_budget(
     let mut parser = Parser {
         source: lexed.source(),
         tokens: lexed.tokens(),
+        function_mode: has_function_header(lexed),
         cursor: 0,
         diagnostics: Vec::new(),
         nesting_limit,
@@ -95,9 +96,36 @@ pub(crate) fn parse_with_budget(
     }
 }
 
+fn has_function_header(lexed: &Lexed<'_>) -> bool {
+    let mut tokens = lexed
+        .tokens()
+        .iter()
+        .filter(|token| token.kind() != TokenKind::Trivia)
+        .peekable();
+    while let Some(token) = tokens.next() {
+        if token.kind() == TokenKind::Identifier
+            && &lexed.source()[token.range().as_range()] == "fn"
+            && tokens
+                .peek()
+                .is_some_and(|next| next.kind() == TokenKind::Identifier)
+        {
+            let mut probe = tokens.clone();
+            probe.next();
+            if probe
+                .next()
+                .is_some_and(|next| next.kind() == TokenKind::LParen)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 struct Parser<'a, 'b> {
     source: &'a str,
     tokens: &'a [Token],
+    function_mode: bool,
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
     nesting_limit: usize,
@@ -109,9 +137,11 @@ impl Parser<'_, '_> {
     fn program(&mut self) -> Option<Program> {
         self.skip_trivia();
         let mut parameters = Vec::new();
+        let mut functions = Vec::new();
         let mut parameter_positions = Vec::new();
         if self.at(TokenKind::Eof) {
             return Some(Program {
+                functions,
                 parameters,
                 parameter_positions,
                 statements: Vec::new(),
@@ -126,6 +156,39 @@ impl Parser<'_, '_> {
         let mut statements = Vec::new();
         loop {
             self.skip_trivia();
+            if self.at_identifier("fn") {
+                let mut reader = zirql::ArgumentReader::new(
+                    self.source,
+                    self.current().range().start() as usize,
+                )
+                .ok()?;
+                let mut host = NativeReader {
+                    source: self.source,
+                    tokens: self.tokens,
+                    bindings: &self.bindings,
+                    nesting: self.nesting_limit,
+                    function_mode: true,
+                };
+                match zirql::read_function_declaration(
+                    &mut reader,
+                    &mut host,
+                    self.budget,
+                    self.nesting_limit,
+                    super::functions::resolve_type,
+                ) {
+                    Ok(Some(declaration)) => {
+                        self.sync(reader.position());
+                        self.function_mode = true;
+                        functions.push(super::FunctionDefinition::parsed(declaration));
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.shared_error(error);
+                        return None;
+                    }
+                }
+            }
             if self.at_identifier("do") {
                 self.bump();
                 let expression = self.expression(0)?;
@@ -133,6 +196,7 @@ impl Parser<'_, '_> {
                 self.skip_trivia();
                 if self.at(TokenKind::Eof) {
                     return Some(Program {
+                        functions,
                         parameters,
                         parameter_positions,
                         statements,
@@ -223,6 +287,7 @@ impl Parser<'_, '_> {
                         }
                         if self.at(TokenKind::Eof) {
                             return Some(Program {
+                                functions,
                                 parameters,
                                 parameter_positions,
                                 statements,
@@ -276,6 +341,7 @@ impl Parser<'_, '_> {
                 self.error("expected `|`, a set operator, `;`, or end of query");
             }
             return Some(Program {
+                functions,
                 parameters,
                 parameter_positions,
                 statements,
@@ -320,18 +386,102 @@ impl Parser<'_, '_> {
         });
     }
     fn shared_value(&mut self, depth: usize) -> Option<super::comprehension::ParsedComprehension> {
-        let mut reader =
-            zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
-                .ok()?;
+        let mut end = self.source.len();
+        if self.function_mode {
+            let mut nesting = 0usize;
+            for (offset, token) in self.tokens[self.cursor..].iter().enumerate() {
+                match token.kind() {
+                    TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => nesting += 1,
+                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace if nesting == 0 => {
+                        break;
+                    }
+                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => nesting -= 1,
+                    TokenKind::Semicolon if nesting == 0 => break,
+                    TokenKind::Pipe if nesting == 0 => {
+                        if let Some(next) = self.tokens[self.cursor + offset + 1..]
+                            .iter()
+                            .find(|t| t.kind() != TokenKind::Trivia)
+                            && matches!(
+                                &self.source[next.range().as_range()],
+                                "json"
+                                    | "emit"
+                                    | "markdown"
+                                    | "print"
+                                    | "format"
+                                    | "set_attr"
+                                    | "remove_attr"
+                            )
+                        {
+                            end = token.range().start() as usize;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut reader = zirql::ArgumentReader::new(
+            &self.source[..end],
+            self.current().range().start() as usize,
+        )
+        .ok()?;
         let mut host = NativeReader {
             source: self.source,
             tokens: self.tokens,
+            function_mode: self.function_mode,
             bindings: &self.bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
         };
         let nesting = host.nesting;
         match zirql::read_value_expression(&mut reader, &mut host, self.budget, nesting) {
             Ok(value) => {
+                if !self.function_mode {
+                    let written = self.tokens[self.cursor..]
+                        .iter()
+                        .take_while(|token| (token.range().start() as usize) < reader.position())
+                        .filter(|token| token.kind() != TokenKind::Trivia)
+                        .collect::<Vec<_>>();
+                    if let Some(pair) = written.windows(2).find(|pair| {
+                        pair[0].kind() == TokenKind::Identifier
+                            && pair[1].kind() == TokenKind::LParen
+                            && !is_native_stage(&self.source[pair[0].range().as_range()])
+                            && !is_reserved(&self.source[pair[0].range().as_range()])
+                            && !matches!(
+                                &self.source[pair[0].range().as_range()],
+                                "default"
+                                    | "div"
+                                    | "mod"
+                                    | "for"
+                                    | "in"
+                                    | "if"
+                                    | "else"
+                                    | "lookup"
+                                    | "has_key"
+                                    | "group_by"
+                                    | "zip_exact"
+                                    | "require"
+                                    | "length"
+                                    | "sum"
+                                    | "forall"
+                                    | "exists"
+                                    | "occurs"
+                                    | "absent"
+                                    | "entries"
+                                    | "one"
+                                    | "op"
+                                    | "dialect"
+                                    | "result_type"
+                                    | "has_attr"
+                                    | "string_attr_eq"
+                            )
+                    }) {
+                        self.shared_error(zirql::QueryError::query(
+                            pair[0].range().as_range(),
+                            "unsupported value call",
+                        ));
+                        return None;
+                    }
+                }
                 self.sync(reader.position());
                 Some(super::comprehension::ParsedComprehension::new(value))
             }
@@ -348,6 +498,7 @@ impl Parser<'_, '_> {
         let mut host = NativeReader {
             source: self.source,
             tokens: self.tokens,
+            function_mode: self.function_mode,
             bindings: &self.bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
         };
@@ -418,6 +569,7 @@ impl Parser<'_, '_> {
         let mut host = NativeReader {
             source: self.source,
             tokens: self.tokens,
+            function_mode: self.function_mode,
             bindings: &bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
         };
@@ -440,6 +592,7 @@ impl Parser<'_, '_> {
         let mut host = NativeReader {
             source: self.source,
             tokens: self.tokens,
+            function_mode: self.function_mode,
             bindings: &self.bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
         };
@@ -462,6 +615,7 @@ impl Parser<'_, '_> {
         let mut host = NativeReader {
             source: self.source,
             tokens: self.tokens,
+            function_mode: self.function_mode,
             bindings: &self.bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
         };
@@ -582,6 +736,39 @@ impl Parser<'_, '_> {
     fn stage(&mut self, depth: usize) -> Option<Stage> {
         self.skip_trivia();
         let start = self.current().range().start();
+        if matches!(self.current_text(), "direct_children" | "cost_annotation")
+            && self.next_kind() == Some(TokenKind::LParen)
+        {
+            let primitive = if self.current_text() == "direct_children" {
+                super::functions::Primitive::DirectChildren
+            } else {
+                super::functions::Primitive::CostAnnotation
+            };
+            self.bump();
+            self.expect(TokenKind::LParen, "expected `(`")?;
+            let argument = self.shared_value(depth + 1)?;
+            self.expect(TokenKind::RParen, "expected `)` after native argument")?;
+            return Some(Stage::FunctionPrimitive {
+                primitive,
+                argument,
+                range: self.span(start),
+            });
+        }
+        if self.function_mode
+            && self.at(TokenKind::Identifier)
+            && self.next_kind() == Some(TokenKind::LParen)
+            && !is_native_stage(self.current_text())
+            && !matches!(
+                self.current_text(),
+                "op" | "dialect" | "result_type" | "has_attr" | "string_attr_eq"
+            )
+        {
+            let value = self.shared_value(depth)?;
+            return Some(Stage::FunctionValue {
+                value,
+                range: self.span(start),
+            });
+        }
         if self.at_identifier("paths") && self.next_kind() == Some(TokenKind::LParen) {
             let value = self.shared_paths(depth)?;
             return Some(Stage::Paths {
@@ -1630,6 +1817,8 @@ fn is_native_stage(name: &str) -> bool {
     matches!(
         name,
         "input"
+            | "direct_children"
+            | "cost_annotation"
             | "operand"
             | "filter"
             | "reachable"
@@ -1682,6 +1871,8 @@ pub(super) fn is_reserved(name: &str) -> bool {
     matches!(
         name,
         "input"
+            | "direct_children"
+            | "cost_annotation"
             | "do"
             | "filter"
             | "closure"
@@ -1747,20 +1938,39 @@ struct NativeReader<'a> {
     tokens: &'a [Token],
     bindings: &'a HashSet<String>,
     nesting: usize,
+    function_mode: bool,
 }
 impl NativeReader<'_> {
-    fn parser<'b>(&self, position: usize, budget: &'b mut zirql::Budget) -> Parser<'_, 'b> {
-        Parser {
+    fn parser<'b>(
+        &self,
+        position: usize,
+        locals: &[&str],
+        budget: &'b mut zirql::Budget,
+    ) -> Result<Parser<'_, 'b>, zirql::QueryError> {
+        let location = zirql::Location::Query(position..position);
+        budget.charge(
+            self.bindings.iter().map(|name| name.len() + 1).sum(),
+            location.clone(),
+        )?;
+        let mut bindings = self.bindings.clone();
+        for &name in locals {
+            if !bindings.contains(name) {
+                budget.charge(name.len() + 1, location.clone())?;
+                bindings.insert(name.to_owned());
+            }
+        }
+        Ok(Parser {
             source: self.source,
             tokens: self.tokens,
+            function_mode: self.function_mode,
             cursor: self
                 .tokens
                 .partition_point(|token| (token.range().start() as usize) < position),
             diagnostics: vec![],
             nesting_limit: self.nesting,
-            bindings: self.bindings.clone(),
+            bindings,
             budget,
-        }
+        })
     }
     fn error(diagnostic: &Diagnostic) -> zirql::QueryError {
         zirql::QueryError::query(diagnostic.range().as_range(), diagnostic.message())
@@ -1771,6 +1981,19 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
     type SetOperator = SetOperator;
     type Emitter = ();
     type Predicate = Predicate;
+    fn retains_native_values(&self) -> bool {
+        self.function_mode
+    }
+    fn value_source(
+        &mut self,
+        value: zirql::ValueExpression<super::report::Operand>,
+        range: std::ops::Range<usize>,
+    ) -> Result<Stage, zirql::QueryError> {
+        Ok(Stage::FunctionValue {
+            value: super::comprehension::ParsedComprehension::new(value),
+            range: TextRange::new(range.start as u32, range.end as u32).expect("ordered range"),
+        })
+    }
     fn is_binding(&self, name: &str) -> bool {
         self.bindings.contains(name)
     }
@@ -1782,11 +2005,15 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         reader: &mut zirql::ArgumentReader<'_>,
         budget: &mut zirql::Budget,
     ) -> Result<zirql::ExpressionStep<Stage, ()>, zirql::QueryError> {
-        budget.charge(
-            self.bindings.iter().map(|name| name.len() + 1).sum(),
-            zirql::Location::Query(reader.position()..reader.position()),
-        )?;
-        let mut parser = self.parser(reader.position(), budget);
+        self.parse_stage_in_scope(reader, &[], budget)
+    }
+    fn parse_stage_in_scope(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        locals: &[&str],
+        budget: &mut zirql::Budget,
+    ) -> Result<zirql::ExpressionStep<Stage, ()>, zirql::QueryError> {
+        let mut parser = self.parser(reader.position(), locals, budget)?;
         let result = parser.stage(0);
         if let Some(diagnostic) = parser.diagnostics.first() {
             return Err(Self::error(diagnostic));
@@ -1800,11 +2027,15 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         reader: &mut zirql::ArgumentReader<'_>,
         budget: &mut zirql::Budget,
     ) -> Result<Predicate, zirql::QueryError> {
-        budget.charge(
-            self.bindings.iter().map(|name| name.len() + 1).sum(),
-            zirql::Location::Query(reader.position()..reader.position()),
-        )?;
-        let mut parser = self.parser(reader.position(), budget);
+        self.parse_predicate_leaf_in_scope(reader, &[], budget)
+    }
+    fn parse_predicate_leaf_in_scope(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        locals: &[&str],
+        budget: &mut zirql::Budget,
+    ) -> Result<Predicate, zirql::QueryError> {
+        let mut parser = self.parser(reader.position(), locals, budget)?;
         let result = parser.primary_predicate(0);
         if let Some(diagnostic) = parser.diagnostics.first() {
             return Err(Self::error(diagnostic));
@@ -1907,6 +2138,7 @@ mod tests {
         let mut parser = Parser {
             source: lexed.source(),
             tokens: lexed.tokens(),
+            function_mode: false,
             cursor: 0,
             diagnostics: Vec::new(),
             nesting_limit: DEFAULT_NESTING_LIMIT,

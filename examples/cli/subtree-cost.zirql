@@ -1,0 +1,6 @@
+fn subtree_cost(op: Operation) -> int {
+  (cost_annotation(op) default 1)
+    + sum([subtree_cost(child) for child in direct_children(op)])
+}
+let selected = filter(op("example.root"));
+report subtree_cost(selected) | json

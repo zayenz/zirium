@@ -31,15 +31,21 @@ pub use zirql::{
     ParameterDeclaration, ParameterInputs, ParameterType, ProgramLimits, ValueBinaryOperator,
     ValueUnaryOperator, constructed_value_type,
 };
+mod functions;
 mod literal;
 pub mod parser;
 mod pipeline;
 mod program;
 mod render;
 mod report;
+pub use functions::{
+    FunctionDefinition, FunctionLimits, FunctionNativeType, FunctionParameter, FunctionType,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
+    functions: Vec<FunctionDefinition>,
+    function_limits: FunctionLimits,
     parameters: Vec<ParameterDeclaration>,
     parameter_positions: Vec<usize>,
     expression: model::Expression,
@@ -76,6 +82,8 @@ pub struct EvaluationOptions {
 
 // Document access and host policy stay outside the caller-owned core budget.
 struct EvaluationContext<'a, 'document, 'query> {
+    functions: Option<&'a functions::Session<'query, 'a, 'document>>,
+    current_stage: usize,
     document: &'a mut DocumentAccess<'document>,
     registry: &'a DialectRegistry,
     expressions: &'a BTreeMap<usize, program::Expression<'query>>,
@@ -208,6 +216,10 @@ pub enum QueryOutput {
 }
 
 impl QueryOutput {
+    /// Materialize a retained native wrapper under the active request allowance.
+    pub fn into_owned_with_budget(self, budget: &mut Budget) -> Result<Self, EvaluationError> {
+        functions::owned(self, budget, &(0..0))
+    }
     /// Materialize ordinary JSON under the active request allowance.
     pub fn to_json_with_budget(
         &self,
@@ -227,6 +239,8 @@ impl QueryOutput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeValue {
     Constructed(ConstructedReport),
+    /// An unchanged argument retains its shared owner across a native callback.
+    Retained(std::sync::Arc<QueryOutput>),
     Ssa(ValueId),
     /// An ordered native operation field that remains a sequence at length one.
     OperationSequence(Vec<OperationId>),
@@ -408,6 +422,8 @@ impl Query {
             .into_program()
             .expect("diagnostic-free query has a program");
         Ok(Self {
+            functions: program.functions,
+            function_limits: functions::DEFAULT_LIMITS,
             parameters: program.parameters,
             parameter_positions: program.parameter_positions,
             expression: program.expression,
@@ -515,8 +531,12 @@ impl Query {
     }
 
     /// Whether this parsed program uses the bounded constructed report path.
+    pub fn with_function_limits(mut self, limits: FunctionLimits) -> Self {
+        self.function_limits = limits;
+        self
+    }
     pub fn has_comprehensions(&self) -> bool {
-        self.parse_results != 0
+        !self.functions.is_empty() || self.parse_results != 0
     }
 
     /// Evaluate and render callbacks with one caller-owned request allowance.
@@ -613,7 +633,26 @@ impl Query {
             program::range(self.expression.range),
             budget,
         )?;
-        program::validate(self, document_name, budget)?;
+        let function_host = report::ReportHost {
+            functions: &self.functions,
+        };
+        let mut functions = if self.functions.is_empty() {
+            None
+        } else {
+            Some(functions::Session::new(
+                &self.functions,
+                &function_host,
+                self.function_limits,
+                budget,
+            )?)
+        };
+        if let Some(session) = &mut functions {
+            session.prepare_program(self, document_name, &function_host, budget)?;
+        } else {
+            program::validate(self, document_name, budget)?;
+        }
+
+        let function_roots = functions::expression_roots(&self.functions);
         let expressions = program::expressions(
             self.statements
                 .iter()
@@ -622,7 +661,8 @@ impl Query {
                     | model::Statement::Do(expression)
                     | model::Statement::Query(expression) => expression,
                 })
-                .chain(std::iter::once(&self.expression)),
+                .chain(std::iter::once(&self.expression))
+                .chain(function_roots),
         );
         program::charge_results(
             budget,
@@ -648,6 +688,8 @@ impl Query {
         });
         let bindings = zirql::Bindings::new(initial).map_err(core_error)?;
         let mut context = EvaluationContext {
+            functions: functions.as_ref(),
+            current_stage: 0,
             document: &mut access,
             registry,
             expressions: &expressions,
@@ -721,10 +763,33 @@ fn evaluate_host_stage(
     bindings: &zirql::Bindings<QueryOutput>,
     budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
+    current = functions::owned(current, budget, &program::range(stage.range()))?;
     if let QueryOutput::Native(NativeValue::OperationSequence(operations)) = current {
         current = QueryOutput::Operations(operations);
     }
     match stage {
+        model::Stage::FunctionInput { value, range } => {
+            program::charge_results(budget, 1, &program::range(*range))?;
+            current = QueryOutput::Native(NativeValue::Retained(std::sync::Arc::clone(value)));
+        }
+        model::Stage::FunctionValue { value, .. } => {
+            current = functions::evaluate(value, context, current, bindings, budget)?;
+        }
+        model::Stage::FunctionPrimitive {
+            primitive,
+            argument,
+            range,
+        } => {
+            let value = functions::evaluate(
+                argument,
+                context,
+                QueryOutput::Operations(vec![]),
+                bindings,
+                budget,
+            )?;
+            current =
+                functions::primitive(*primitive, &value, context, budget, &program::range(*range))?;
+        }
         model::Stage::Paths { value, .. } => {
             current = QueryOutput::Native(NativeValue::Captures(capture::evaluate_paths(
                 value, context, current, bindings, budget,
@@ -1244,6 +1309,7 @@ fn take_operations(output: QueryOutput, stage: &str) -> Result<Vec<OperationId>,
 
 fn countable_len(output: &QueryOutput, stage: &str) -> Result<usize, EvaluationError> {
     match output {
+        QueryOutput::Native(NativeValue::Retained(value)) => countable_len(value, stage),
         QueryOutput::Operations(selected) => Ok(selected.len()),
         QueryOutput::Values(values) => Ok(values.len()),
         QueryOutput::Map(values) => Ok(values.len()),
@@ -1270,6 +1336,7 @@ fn countable_len(output: &QueryOutput, stage: &str) -> Result<usize, EvaluationE
 
 fn output_len(output: &QueryOutput) -> usize {
     match output {
+        QueryOutput::Native(NativeValue::Retained(value)) => output_len(value),
         QueryOutput::Operations(values) => values.len(),
         QueryOutput::Values(values) => values.len(),
         QueryOutput::Map(values) => values.len(),
@@ -1743,6 +1810,7 @@ fn evaluate_attr(
 fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value {
     match output {
         QueryOutput::Native(value) => match value {
+            NativeValue::Retained(value) => output_value(document, value),
             NativeValue::Ssa(_)
             | NativeValue::Capture(_)
             | NativeValue::Captures(_)

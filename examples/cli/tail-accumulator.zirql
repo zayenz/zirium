@@ -1,0 +1,4 @@
+fn accumulate(n: int, total: int) -> int {
+  if n == 0 { total } else { accumulate(n - 1, total + n) }
+}
+report accumulate(1000, 0) | json

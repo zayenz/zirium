@@ -610,3 +610,63 @@ enumeration, including for empty sources and unchosen Boolean branches.
 `operand` requires one operation and a resolved operand; `same_value` compares
 the full result or block-argument identity rather than its defining operation.
 Native captures remain read-only and are unavailable on the diff surface.
+
+## Building typed functions in Rust
+
+`FunctionDefinition` uses shared `FunctionParameter`, `FunctionType` and value
+nodes. It constructs declarations directly; no generated source is parsed.
+Attach all definitions to the submitted `QueryExpr` with `with_functions`.
+Composition shares identical definitions and retains conflicting definitions
+for preflight to reject.
+
+```rust
+use zirium::query::{
+    FunctionDefinition, FunctionParameter, FunctionType as T,
+    FunctionLimits, Located, ReportExpr as E, ValueBinaryOperator as B, report,
+};
+let parameter = |name: &str| FunctionParameter {
+    name: Located::new(name.to_owned(), 0..0),
+    declaration: T::Integer,
+};
+let accumulate = FunctionDefinition::new(
+    "accumulate", vec![parameter("n"), parameter("total")], T::Integer, vec![],
+    E::conditional(
+        E::name("n").binary(B::Equal, E::integer(0)),
+        E::name("total"),
+        E::call("accumulate", [
+            E::name("n").binary(B::Subtract, E::integer(1)),
+            E::name("total").binary(B::Add, E::name("n")),
+        ]),
+    ),
+)?;
+let query = report(E::call("accumulate", [E::integer(1000), E::integer(0)]))
+    .with_functions(vec![accumulate])
+    .with_function_limits(FunctionLimits { active_depth: 1 });
+```
+
+Run the [complete library example](../crates/zirium/examples/typed_functions.rs):
+
+```sh
+cargo run -p zirium --locked --example typed_functions
+```
+
+It evaluates the same native tree as the CLI, then the accumulator, and prints
+`8` and `500500`. Evaluation and explicit JSON conversion use one budget.
+
+`FunctionType::Native(FunctionNativeType::Operation)` and `SSAValue` describe
+checked document-owned IDs. `E::native(&query)` retains a typed query operand;
+`E::operation(id)` and `E::ssa_value(id)` supply explicit handles checked on
+function admission. `E::operation_sequence(ids)` preserves sequence shape,
+including zero or one operation. `E::direct_children` and `E::cost_annotation`
+use the same native primitives as the textual reader. `function_call::<T>`
+starts a typed native query through the existing `QueryResult` conversion;
+`report(E::call(...))` returns `ConstructedReport` for scalar/report values.
+
+Functions never retain the document, caller bindings, result history or active
+budget. One request prepares every body and written entry, then invokes those
+entries against that request's current context. Native callback arguments
+retain a shared owner after a function frame returns. Passing or inspecting
+unchanged constructed data shares its immutable owner; constructing a new row
+or rendering output still pays for the produced data. External parameters keep
+their existing int/string/bool transport. Python keeps its existing query builders and native result conversion; there
+is no Python function builder API.
