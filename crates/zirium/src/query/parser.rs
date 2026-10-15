@@ -2289,6 +2289,14 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
                 .expect("ordered query range"),
         })
     }
+    fn map_ranking(&mut self, range: std::ops::Range<usize>) -> Result<Stage, zirql::QueryError> {
+        let range =
+            TextRange::new(range.start as u32, range.end as u32).expect("ordered query range");
+        Ok(Stage::SortBy {
+            selector: super::report::OrderingSelector::MapValue(range),
+            range,
+        })
+    }
     fn ordering(
         &mut self,
         ordering: zirql::NativeOrdering<super::report::Operand>,

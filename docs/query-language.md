@@ -230,7 +230,11 @@ an explicitly ranked map, and `reverse`, `head`, and `tail` preserve that order
 through bindings, JSON, and Markdown output. Equal values use lexical key order;
 `reverse` reverses the whole order, including ties. Nested map values are not
 implicitly ranked: project a scalar first.
-Here `value` is a map-entry selector, not a general pipeline stage.
+Here `value` is a map-entry selector, not a general pipeline stage. Supported
+categories are null, Boolean, number and string. Signed and unsigned integers
+and finite floats share the numeric category and compare without losing integer
+precision. Other categories cannot mix. Ranking, comparisons and subsequent
+bounds share the request's work and result limits.
 
 ## Building JSON structures
 

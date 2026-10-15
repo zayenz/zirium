@@ -553,8 +553,30 @@ pub(super) fn copy_value(
         }
         return Ok(QueryOutput::Native(NativeValue::Map(result)));
     }
+    let ranked_map = if let QueryOutput::RankedMap(entries) = value {
+        // Ranked maps contain admitted scalars. Check the copied entry storage
+        // and charge its visits before scanning keys and scalar content.
+        let units = entries
+            .len()
+            .checked_add(1)
+            .filter(|_| {
+                entries
+                    .len()
+                    .checked_mul(std::mem::size_of::<(String, serde_json::Value)>())
+                    .is_some_and(|bytes| bytes <= isize::MAX as usize)
+            })
+            .ok_or_else(|| {
+                EvaluationError::new("native map storage limit exceeded").at(range.clone())
+            })?;
+        budget
+            .charge(units, zirql::Location::Query(range.clone()))
+            .map_err(core_error)?;
+        true
+    } else {
+        false
+    };
     admit(value, budget, range)?;
-    if budget.remaining_results().is_some() {
+    if ranked_map || budget.remaining_results().is_some() {
         budget
             .charge(copied_bytes(value), zirql::Location::Query(range.clone()))
             .map_err(core_error)?;

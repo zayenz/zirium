@@ -3097,6 +3097,39 @@ fn ranked_maps_compare_large_and_mixed_numbers_exactly() {
 }
 
 #[test]
+fn ranked_scalar_maps_keep_categories_and_rerank_ties() {
+    for (query, expected) in [
+        (
+            r#"{"z":null,"a":null} | sort_by(value) | reverse | sort_by(value) | json"#,
+            "{\n  \"a\": null,\n  \"z\": null\n}\n",
+        ),
+        (
+            r#"{"a":true,"z":false} | sort_by(value) | json"#,
+            "{\n  \"z\": false,\n  \"a\": true\n}\n",
+        ),
+        (
+            r#"{"a":"β","z":"a"} | sort_by((value)) | json"#,
+            "{\n  \"z\": \"a\",\n  \"a\": \"β\"\n}\n",
+        ),
+    ] {
+        let output = run_stdin(query, "module {}");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+    let output = run_stdin(r#"{"a":true,"z":1} | sort_by(value)"#, "module {}");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("sort_by(value) requires comparable scalar map values of one type")
+    );
+}
+
+#[test]
 fn markdown_bounds_the_dense_table_from_sparse_histograms() {
     let mut source = String::from("module {");
     for i in 0..20 {

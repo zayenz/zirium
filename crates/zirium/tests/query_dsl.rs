@@ -3507,3 +3507,43 @@ fn prepared_fixed_point_keeps_function_locals_saved_bindings_and_native_kind() {
         matches!(&outputs[..], [QueryOutput::Values(values)] if values == &["builtin.module", "test.z", "test.a"])
     );
 }
+
+#[test]
+fn textual_map_ranking_keeps_saved_order_with_prepared_bounds() {
+    let mut document = document();
+    let source = r#"fn bound(n:int)->int {n}
+        ranked = filter(op("test.scope")) | map_by(attr("sym_name"), children | count) | sort_by(value);
+        ranked | reverse | head(bound(2)) | tail(bound(1)) | json;
+        ranked | json"#;
+    let mut outputs = vec![];
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        outputs,
+        [
+            QueryOutput::Json("{\n  \"second\": 1\n}\n".into()),
+            QueryOutput::Json("{\n  \"second\": 1,\n  \"first\": 3\n}\n".into()),
+        ]
+    );
+
+    // Prepared native maps keep their native result contract.
+    let source = r#"fn invalid(root:Operation)->int {
+        direct_children(root) | map_by(names, count) | sort_by(value) | count
+    } let selected_root = filter(op("builtin.module")); invalid(selected_root)"#;
+    let error = Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("ordering selector requires operations"),
+        "{error}"
+    );
+    assert!(error.range().is_some());
+}

@@ -1083,7 +1083,7 @@ fn evaluate_host_stage(
         }
         model::Stage::SortBy { selector, .. } => {
             if selector.is_map_value() {
-                current = sort_map_by_value(current)?;
+                current = sort_map_by_value(current, budget, &program::range(stage.range()))?;
             } else {
                 if matches!(current, QueryOutput::Map(_) | QueryOutput::RankedMap(_)) {
                     return Err(EvaluationError::new(
@@ -1107,15 +1107,33 @@ fn evaluate_host_stage(
             QueryOutput::Values(values) => zirql::reverse(values),
             QueryOutput::Native(NativeValue::Types(values)) => zirql::reverse(values),
             QueryOutput::Native(NativeValue::Attributes(values)) => zirql::reverse(values),
-            QueryOutput::RankedMap(entries) => zirql::reverse(entries),
+            QueryOutput::RankedMap(entries) => zirql::select_ranked_map(
+                entries,
+                zirql::MapSelection::Reverse,
+                budget,
+                zirql::Location::Query(program::range(stage.range())),
+            )
+            .map_err(core_error)?,
             _ => {
                 return Err(EvaluationError::new(
                     "reverse requires an operation stream, value stream, or ranked map",
                 ));
             }
         },
-        model::Stage::Head { count, .. } => truncate_stream(&mut current, *count, false)?,
-        model::Stage::Tail { count, .. } => truncate_stream(&mut current, *count, true)?,
+        model::Stage::Head { count, .. } => truncate_stream(
+            &mut current,
+            *count,
+            false,
+            budget,
+            &program::range(stage.range()),
+        )?,
+        model::Stage::Tail { count, .. } => truncate_stream(
+            &mut current,
+            *count,
+            true,
+            budget,
+            &program::range(stage.range()),
+        )?,
         model::Stage::Min { .. } => {
             current = QueryOutput::Values(extreme_value(
                 current,
@@ -1452,6 +1470,8 @@ fn truncate_stream(
     output: &mut QueryOutput,
     count: usize,
     from_end: bool,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
 ) -> Result<(), EvaluationError> {
     fn truncate<T>(values: &mut Vec<T>, count: usize, from_end: bool) {
         if from_end {
@@ -1465,7 +1485,17 @@ fn truncate_stream(
         QueryOutput::Values(values) => truncate(values, count, from_end),
         QueryOutput::Native(NativeValue::Types(values)) => truncate(values, count, from_end),
         QueryOutput::Native(NativeValue::Attributes(values)) => truncate(values, count, from_end),
-        QueryOutput::RankedMap(values) => truncate(values, count, from_end),
+        QueryOutput::RankedMap(values) => zirql::select_ranked_map(
+            values,
+            if from_end {
+                zirql::MapSelection::Tail(count)
+            } else {
+                zirql::MapSelection::Head(count)
+            },
+            budget,
+            zirql::Location::Query(range.clone()),
+        )
+        .map_err(core_error)?,
         _ => {
             return Err(EvaluationError::new(
                 "head and tail require an operation stream, value stream, or ranked map",
@@ -1515,85 +1545,72 @@ fn order_strings(
     .map_err(program::evaluation_error)
 }
 
-fn sort_map_by_value(output: QueryOutput) -> Result<QueryOutput, EvaluationError> {
-    let mut entries: Vec<_> = match output {
-        QueryOutput::Map(entries) => entries.into_iter().collect(),
+fn sort_map_by_value(
+    output: QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    let entries = match output {
+        QueryOutput::Map(entries) => {
+            let count = entries.len();
+            let units = count
+                .checked_add(1)
+                .filter(|_| {
+                    count
+                        .checked_mul(std::mem::size_of::<(String, serde_json::Value)>())
+                        .is_some_and(|bytes| bytes <= isize::MAX as usize)
+                })
+                .ok_or_else(|| {
+                    EvaluationError::new("native map storage limit exceeded").at(range.clone())
+                })?;
+            budget
+                .charge(units, zirql::Location::Query(range.clone()))
+                .map_err(core_error)?;
+            program::charge_results(budget, units, range)?;
+            entries.into_iter().collect()
+        }
         QueryOutput::RankedMap(entries) => entries,
-        _ => {
-            return Err(EvaluationError::new("sort_by(value) requires a map"));
-        }
+        _ => return Err(EvaluationError::new("sort_by(value) requires a map")),
     };
-    let kind = entries
-        .first()
-        .map(|(_, value)| scalar_sort_kind(value))
-        .transpose()?;
-    for (_, value) in &entries {
-        if Some(scalar_sort_kind(value)?) != kind {
-            return Err(EvaluationError::new(
-                "sort_by(value) requires comparable scalar map values of one type",
-            ));
-        }
-    }
-    entries.sort_by(|(left_key, left), (right_key, right)| {
-        compare_scalar_values(left, right).then_with(|| left_key.cmp(right_key))
-    });
-    Ok(QueryOutput::RankedMap(entries))
+    zirql::rank_map_by_value(
+        entries,
+        budget,
+        zirql::Location::Query(range.clone()),
+        |value, budget| scalar_map_key(value, budget, range),
+    )
+    .map(QueryOutput::RankedMap)
+    .map_err(program::evaluation_error)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ScalarSortKind {
-    Null,
-    Bool,
-    Number,
-    String,
-}
-
-fn scalar_sort_kind(value: &serde_json::Value) -> Result<ScalarSortKind, EvaluationError> {
-    match value {
-        serde_json::Value::Null => Ok(ScalarSortKind::Null),
-        serde_json::Value::Bool(_) => Ok(ScalarSortKind::Bool),
-        serde_json::Value::Number(_) => Ok(ScalarSortKind::Number),
-        serde_json::Value::String(_) => Ok(ScalarSortKind::String),
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => Err(EvaluationError::new(
-            "sort_by(value) requires scalar map values; project a scalar from nested maps first",
-        )),
-    }
-}
-
-fn compare_scalar_values(
-    left: &serde_json::Value,
-    right: &serde_json::Value,
-) -> std::cmp::Ordering {
-    match (left, right) {
-        (serde_json::Value::Null, serde_json::Value::Null) => std::cmp::Ordering::Equal,
-        (serde_json::Value::Bool(left), serde_json::Value::Bool(right)) => left.cmp(right),
-        (serde_json::Value::Number(left), serde_json::Value::Number(right)) => {
-            let integer = |number: &serde_json::Number| {
-                number
-                    .as_i64()
-                    .map(i128::from)
-                    .or_else(|| number.as_u64().map(i128::from))
-            };
-            match (integer(left), integer(right)) {
-                (Some(left), Some(right)) => left.cmp(&right),
-                (Some(left), None) => compare_integer_float(left, right.as_f64().unwrap()),
-                (None, Some(right)) => {
-                    compare_integer_float(right, left.as_f64().unwrap()).reverse()
-                }
-                (None, None) => left.as_f64().partial_cmp(&right.as_f64()).unwrap(),
+fn scalar_map_key(
+    value: &serde_json::Value,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<zirql::ScalarMapKey, zirql::EvaluationError<EvaluationError>> {
+    use zirql::ScalarMapKey as K;
+    Ok(match value {
+        serde_json::Value::Null => K::Null,
+        serde_json::Value::Bool(value) => K::Boolean(*value),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                K::Integer(value)
+            } else if let Some(value) = value.as_u64() {
+                K::Unsigned(value)
+            } else {
+                K::Float(value.as_f64().expect("JSON numbers are finite"))
             }
         }
-        (serde_json::Value::String(left), serde_json::Value::String(right)) => left.cmp(right),
-        _ => unreachable!("map values are validated before sorting"),
-    }
-}
-
-fn compare_integer_float(integer: i128, float: f64) -> std::cmp::Ordering {
-    // JSON integers fit in i64/u64. Saturation of this wider cast still orders
-    // out-of-range floats correctly; compare fractional parts only on a tie.
-    integer
-        .cmp(&(float as i128))
-        .then_with(|| 0.0f64.partial_cmp(&float.fract()).unwrap())
+        serde_json::Value::String(value) => {
+            budget.charge(value.len(), zirql::Location::Query(range.clone()))?;
+            budget.charge_results(value.len(), zirql::Location::Query(range.clone()))?;
+            K::String(value.clone())
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            return Err(zirql::EvaluationError::Host(EvaluationError::new(
+                "sort_by(value) requires scalar map values; project a scalar from nested maps first",
+            )));
+        }
+    })
 }
 
 fn sort_operations_by(
