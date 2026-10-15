@@ -3,7 +3,7 @@
 A query transforms an ordered stream. It starts with every operation
 in the input document. A pipe passes the current stream to the next stage:
 
-```zirium
+```zirql
 filter(op("arith.addi")) | users | filter(has_attr("analysis.tag"))
 ```
 
@@ -19,15 +19,15 @@ For Rust and Python builders with native results, see the
 
 `input` and a final `emit` are implicit. These programs print the same document:
 
-```zirium
+```zirql
 # An empty program is valid.
 ```
 
-```zirium
+```zirql
 input
 ```
 
-```zirium
+```zirql
 input | emit
 ```
 
@@ -79,7 +79,7 @@ whole input. Use the library's original-output API to reproduce input bytes.
 
 Declare caller inputs before using them:
 
-```zirium
+```zirql
 param operation_name: string;
 param minimum_ops: int;
 filter(op(operation_name)) | head(minimum_ops) | names | json
@@ -128,7 +128,7 @@ and shorter commands remain usable without declarations or `--param`.
 Bindings make a longer query easier to read and let several parts reuse the same
 selection. Each binding is evaluated once for each input document:
 
-```zirium
+```zirql
 adds = filter(op("stablehlo.add"));
 matmuls = filter(op("stablehlo.dot_general"));
 
@@ -161,7 +161,7 @@ sorted lexically. `json` can also emit a map explicitly.
 
 To map function names to their number of matmuls:
 
-```zirium
+```zirql
 matmuls = filter(op("stablehlo.dot_general"));
 
 matmuls | root(op("func.func")) | attr("sym_name") | tally | json
@@ -174,7 +174,7 @@ without matmuls are absent. On `examples/cli/stablelm-decode.mlir`, this produce
 
 For a separate analysis of each function, use `map_by(key_query, value_query)`:
 
-```zirium
+```zirql
 functions = filter(op("func.func"));
 
 functions
@@ -213,7 +213,7 @@ Use `sort_by(query)` to order operations by a derived key. The selector runs
 once for each operation and must return exactly one string or count. Sorting is
 stable, so operations with equal keys retain their previous order:
 
-```zirium
+```zirql
 filter(op("func.func")) | sort_by(attr("sym_name")) | head(10)
 ```
 
@@ -236,7 +236,7 @@ Here `value` is a map-entry selector, not a general pipeline stage.
 
 Object and array literals combine saved results into a larger report:
 
-```zirium
+```zirql
 functions = filter(op("func.func"));
 n = functions | count;
 counts = functions
@@ -273,7 +273,7 @@ A literal is a pipeline stage that replaces the current result. It must start
 with `{` or `[`; scalars occur inside objects and arrays. Literals may be saved
 in bindings or embedded within one another:
 
-```zirium
+```zirql
 totals = names | tally;
 report = {"totals": totals, "complete": true};
 [report, {"note": "Counts include container operations"}] | json
@@ -302,7 +302,7 @@ projected values. The filter is optional. For this complete input:
 
 this query projects operation names, constructs records, then emits JSON:
 
-```zirium
+```zirql
 labels = names;
 [{"name": n, "label": "data:" ++ n} for n in labels] | json
 ```
@@ -319,7 +319,7 @@ The output is:
 Repeated `for` clauses can depend on earlier bindings. The rightmost generator
 varies fastest; each `if` filters its own clause before later clauses run:
 
-```zirium
+```zirql
 labels = names;
 [{"name": n, "label": "data:" ++ s}
  for n in labels
@@ -366,7 +366,7 @@ text without substring or normalization copies.
 
 Project a domain name first, then apply the helpers to that string:
 
-```text
+```zirql
 let labels = filter(op("func.func")) | attr("sym_name");
 [n for n in labels if starts_with(n, "m") and ends_with(n, "x")] | json;
 ```
@@ -406,7 +406,7 @@ type checks, while skipped fallback data and native execution stay untouched.
 Selected arithmetic or host errors retain their locations. Parenthesize mixed
 operators; `default` follows MiniZinc precedence and associates left to right.
 
-```text
+```zirql
 let info = {"id": 4, "stored": null};
 report {"value": lookup(info, "missing") default 8,
         "stored": has_key(info, "stored"),
@@ -496,7 +496,7 @@ conversion. Keys retain typed identity and receive no string coercion.
 For the [function fixture](../examples/cli/function-report.mlir), this short
 program groups functions by their represented `arith.addi` count:
 
-```zirium
+```zirql
 let rows = filter(op("func.func")) | project(f, {
   "name": f | attr("sym_name") | one,
   "matches": f | children | subtree | filter(op("arith.addi")) | count
@@ -523,7 +523,7 @@ rules. A grouping error leaves CLI stdout empty after earlier reports too.
 Use `markdown` to emit a table from a histogram or a map of histograms.
 Use `print("text")` for headings and explanatory text between results:
 
-```zirium
+```zirql
 functions = filter(op("func.func"));
 n = functions | count;
 
@@ -546,7 +546,7 @@ still needs a query statement after its last binding.
 Prefix a query with `do` to evaluate it while suppressing its implicit result.
 Use it for an edit followed by whole-document output:
 
-```zirium
+```zirql
 do filter(op("arith.addi"))
    | set_attr("analysis.tag", "review");
 
@@ -567,7 +567,7 @@ after the expected and actual cardinalities. A successful check leaves the
 stream unchanged, so it can appear anywhere in a pipeline. Prefix a check
 statement with `do` when only the exit status matters:
 
-```zirium
+```zirql
 do filter(op("linalg.matmul")) | check("expected a lowered matmul");
 do filter(op("bufferization.alloc_tensor"))
    | check(0, "tensor allocations must be eliminated");
@@ -637,7 +637,7 @@ interpolation error leaves CLI stdout empty, including earlier `print` output.
 
 Adding `reachable` includes supported dependencies and referenced bodies:
 
-```zirium
+```zirql
 functions = filter(op("func.func"));
 
 functions
@@ -693,7 +693,7 @@ Predicates test one operation. They appear inside `filter(...)`.
 Combine predicates with `not`, `and`, and `or`, in that precedence order.
 Parentheses override precedence:
 
-```zirium
+```zirql
 filter((op("arith.addi") or op("arith.muli")) and not has_attr("skip"))
 ```
 
@@ -744,7 +744,7 @@ preserves duplicates just like its unindexed form.
 root until it finds a match. It returns at most one match for each input item.
 Repeated matches remain repeated, so `unique` commonly follows `root`:
 
-```zirium
+```zirql
 filter(op("linalg.matmul"))
 | root(op("func.func"))
 | unique
@@ -755,7 +755,7 @@ therefore contain duplicates. An empty stream stays empty.
 
 For example, find the function containing a call, expand its body, and tag its returns:
 
-```zirium
+```zirql
 filter(op("func.call")) | parent
 | subtree
 | filter(op("func.return"))
@@ -778,7 +778,7 @@ Use `backward_slice` to inspect a computation without expanding the whole
 function when an operand is a function input. The shorter `slice` spelling is
 an alias:
 
-```zirium
+```zirql
 # Follow the first returned value, for example logits rather than cache outputs.
 filter(op("func.return")) | defs(0) | backward_slice
 ```
@@ -794,7 +794,7 @@ symbol dependencies is the desired behavior.
 uses of every operation it reaches, until no new users remain. It retains the
 seed and returns each operation once in source order:
 
-```zirium
+```zirql
 filter(op("stablehlo.dot_general")) | forward_slice
 ```
 
@@ -817,14 +817,14 @@ describe the parsed structural representation, not normalized MLIR.
 `union`, `intersect`, and `except` are infix operators between selection
 queries. Both operands receive the same incoming selection.
 
-```zirium
+```zirql
 filter(op("arith.addi")) union filter(op("arith.muli"))
 ```
 
 For this example, `filter(op("arith.addi") or op("arith.muli"))` is shorter.
 Set operators are useful when the operands navigate differently:
 
-```zirium
+```zirql
 filter(op("arith.addi")) | (defs union users)
 ```
 
@@ -845,7 +845,7 @@ Pipes bind more tightly than set operators. All set operators have equal
 precedence and associate left to right. Parenthesize a set expression before
 applying a stage to its combined result:
 
-```zirium
+```zirql
 (filter(op("arith.addi")) | users union filter(op("arith.muli")) | defs)
 | count
 ```
@@ -854,7 +854,7 @@ An operand searches the complete document only when it receives the initial
 selection or explicitly uses `input`. This query adds every tagged operation
 in the document to the current selection:
 
-```zirium
+```zirql
 filter(op("arith.addi")) | (filter(true) union (input | filter(has_attr("tag"))))
 ```
 
@@ -874,7 +874,7 @@ are followed on subsequent applications.
 
 Use `fixpoint(closure)` for the complete supported dependency slice:
 
-```zirium
+```zirql
 filter(op("func.call")) | fixpoint(closure)
 ```
 
@@ -890,7 +890,7 @@ fails. Emission does not affect convergence.
 
 Fixed points do not implicitly accumulate intermediate selections:
 
-```zirium
+```zirql
 # Retain the seed and add users until no more are found.
 filter(op("arith.addi")) | fixpoint(filter(true) union users)
 
@@ -958,7 +958,7 @@ operation kinds present in the input.
 order. For example, this prints the names of functions that contain a matrix
 multiplication:
 
-```zirium
+```zirql
 filter(op("linalg.matmul"))
 | root(op("func.func"))
 | unique
@@ -980,7 +980,7 @@ whole document without first printing the edited selection.
 
 `emit` prints the current fragment and passes the same selection onward:
 
-```zirium
+```zirql
 filter(op("arith.addi")) | emit | users
 ```
 
@@ -994,7 +994,7 @@ the selection onward. By default it retains the source assembly form for each
 operation, including custom operation syntax, SSA names, aliases, and comments
 when retained syntax is available:
 
-```zirium
+```zirql
 format
 ```
 
@@ -1004,7 +1004,7 @@ width and `indent` controls spaces per indentation level. Both must be positive;
 Use MLIR's quoted generic assembly form explicitly when source spelling should
 be replaced:
 
-```zirium
+```zirql
 format(assembly = "generic", width = 100, indent = 2)
 ```
 
@@ -1169,7 +1169,7 @@ interpolation and null behavior.
 
 This complete program uses local literal arguments:
 
-```text
+```zirql
 let operation_name = "arith.addi";
 let minimum_ops = 2;
 let threshold = require(minimum_ops >= 0, minimum_ops, "minimum_ops must be nonnegative");
@@ -1272,7 +1272,7 @@ The development Git API supports ordered native captures with `match`. This
 program selects additions whose two operands are the same SSA value, then
 projects a scalar report:
 
-```text
+```zirql
 let matches = match {
   from add in (input | filter(op("arith.addi")));
   bind lhs = operand(add, 0);
@@ -1335,7 +1335,7 @@ saved query bindings, caller parameters, the projection subject or implicit
 `input`. A local cannot redefine an existing local or parameter. Function names
 cannot replace builtins or native stages.
 
-```zirium
+```zirql
 fn subtree_cost(op: Operation) -> int {
   (cost_annotation(op) default 1)
     + sum([subtree_cost(child) for child in direct_children(op)])
@@ -1385,7 +1385,7 @@ are unavailable in diff programs.
 
 Conditional values require a final `else`:
 
-```zirium
+```zirql
 fn accumulate(n: int, total: int) -> int {
   if n == 0 { total } else { accumulate(n - 1, total + n) }
 }
@@ -1420,7 +1420,7 @@ uses exact labels, such as `{label: label, cost: cost}`; add `..` to ignore
 other fields. `_` discards a part. `absent`, `present(pattern)` and scalar
 literals test presence or a value without introducing a name.
 
-```zirium
+```zirql
 fn add_cost((label, {cost: (_, cost), ..}):
     tuple<string, record {cost: tuple<string, int>, ignored: int}>)
     -> record {label: string, total: int} {
@@ -1444,7 +1444,7 @@ Value matches try their arms in order. The subject runs once, and a false
 guard continues to the next arm. Guards require known Boolean values. Include
 an unguarded final `_` arm, even when earlier arms appear exhaustive:
 
-```zirium
+```zirql
 let row = {"cost": 4};
 report match (lookup(row, "cost")) {
   absent => {"kind": "absent", "cost": 0},
@@ -1474,7 +1474,7 @@ values without parsing generated source.
 This report combines a tail accumulator with optional scores, exact string
 matching and stable ordering. Save the program as `report.zirql`:
 
-```text
+```zirql
 fn accumulate(n: int, total: int) -> int {
   if n == 0 { total } else { accumulate(n - 1, total + n) }
 }

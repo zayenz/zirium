@@ -1,0 +1,57 @@
+{
+  "name": "zirql",
+  "scopeName": "source.zirql",
+  "patterns": [
+    {
+      "name": "comment.line.number-sign.zirql",
+      "match": "#.*$"
+    },
+    {
+      "name": "string.quoted.double.zirql",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.zirql",
+          "match": "\\\\."
+        }
+      ]
+    },
+    {
+      "name": "keyword.control.zirql",
+      "match": "(?<![\\w.])\\b(?:let|param|report|fn|if|else|for|in|match|from|bind|where)\\b(?!\\s*:)"
+    },
+    {
+      "name": "keyword.operator.word.zirql",
+      "match": "(?<![\\w.])\\b(?:and|or|not|div|mod|default)\\b(?!\\s*:)"
+    },
+    {
+      "name": "constant.language.zirql",
+      "match": "(?<![\\w.])\\b(?:true|false|null)\\b(?!\\s*:)|<>"
+    },
+    {
+      "name": "storage.type.zirql",
+      "match": "(?<![\\w.])\\b(?:bool|int|float|string|opt|sequence|tuple|record|set|keyed|queue|identity_set)\\b(?!\\s*:)"
+    },
+    {
+      "name": "constant.numeric.zirql",
+      "match": "\\b[0-9]+(?:\\.(?!\\.)[0-9]*)?(?:[eE][+-]?[0-9]+)?\\b"
+    },
+    {
+      "name": "entity.name.function.zirql",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+    },
+    {
+      "name": "constant.language.zirql",
+      "match": "(?<![\\w.])\\b(?:absent|present)\\b(?!\\s*:)"
+    },
+    {
+      "name": "support.function.zirql",
+      "match": "(?<![\\w.])\\b(?:input|count)\\b(?!\\s*:)"
+    },
+    {
+      "name": "keyword.operator.zirql",
+      "match": "=>|->|\\.\\.|\\+\\+|<=|>=|==|!=|[|+*/<>=-]"
+    }
+  ]
+}

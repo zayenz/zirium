@@ -22,3 +22,15 @@ Generated content, `public/`, `.astro/`, dependencies and `dist/` are ignored.
 
 See [PUBLISHING.md](PUBLISHING.md) for the deployment handoff. Building the site
 does not run Rust tests, benchmarks or release checks.
+
+## Zirql syntax highlighting
+
+Use `zirql` for query code fences. The grammar in
+`../assets/syntax/zirql.tmLanguage.json` is an unchanged copy of the
+[shared Zirql grammar](https://github.com/zayenz/zirql/blob/main/assets/syntax/zirql.tmLanguage.json).
+Copy updates from that file to keep the three documentation sites consistent.
+The site configuration adds host-specific keywords using the same token scopes.
+Highlighting does not validate queries.
+
+Existing `zirium` code fences also use the Zirql grammar. MLIR input keeps its
+separate fence label.

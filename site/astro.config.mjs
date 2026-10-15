@@ -1,5 +1,15 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import zirql from '../assets/syntax/zirql.tmLanguage.json' with { type: 'json' };
+
+// Keep shared Zirql token scopes; add only this host's syntax.
+const queryLanguage = {
+  ...zirql,
+  patterns: [...zirql.patterns, {
+    name: 'keyword.control.zirql',
+    match: String.raw`(?<![\w.])\b(?:do|emit|union|intersect|except)\b(?!\s*:)`,
+  }],
+};
 
 const base = process.env.SITE_BASE || '/zirium';
 const site = process.env.SITE_URL || 'https://zayenz.se';
@@ -29,6 +39,6 @@ export default defineConfig({
       { label: 'Rust API', link: 'https://docs.rs/zirium' },
       { label: 'All projects', link: 'https://zayenz.se/projects/' },
     ],
-    expressiveCode: { shiki: { langAlias: { zirium: 'text', mlir: 'text' } } },
+    expressiveCode: { shiki: { langs: [queryLanguage], langAlias: { zirium: 'zirql', mlir: 'text' } } },
   })],
 });
