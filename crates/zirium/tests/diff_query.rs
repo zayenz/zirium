@@ -30,6 +30,13 @@ fn typed_change_filters_project_and_navigate_on_the_after_document() {
     )
     .unwrap();
 
+    assert!(
+        comparison
+            .query(&changes().filter(op("missing")).names().min())
+            .unwrap()
+            .is_empty()
+    );
+
     let rewired = changes().filter(changed(ChangeField::Attributes) & dialect("arith"));
     assert_eq!(comparison.query(&rewired).unwrap().len(), 1);
 

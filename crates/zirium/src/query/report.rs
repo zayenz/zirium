@@ -38,6 +38,91 @@ impl ParsedProjection {
     }
 }
 
+/// A stage-owned selector keeps its prepared lexical body stable across rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OrderingSelector {
+    MapValue(crate::source::TextRange),
+    Query(comprehension::ParsedComprehension),
+}
+impl OrderingSelector {
+    pub(super) fn new(expression: &model::Expression) -> Self {
+        if expression.is_map_value() {
+            Self::MapValue(expression.range)
+        } else {
+            Self::from_operand(operand(expression))
+        }
+    }
+    pub(super) fn from_operand(expression: Operand) -> Self {
+        let range = expression.range.clone();
+        // The existing function runner projects scalar native results. Retain
+        // the key in a native field so Count keeps its full unsigned range.
+        let query_range = crate::source::TextRange::new(range.start as u32, range.end as u32)
+            .expect("ordered selector range");
+        let expression = Located::new(
+            X::Sequence {
+                input: Box::new(expression),
+                steps: vec![Located::new(
+                    Step::Stage(model::Stage::RetainOrderingKey { range: query_range }),
+                    range.clone(),
+                )],
+            },
+            range.clone(),
+        );
+        Self::Query(comprehension::ParsedComprehension::new(Located::new(
+            zirql::ValueExpressionKind::NativeValue(Box::new(expression)),
+            range,
+        )))
+    }
+    pub(super) fn is_map_value(&self) -> bool {
+        matches!(self, Self::MapValue(_))
+    }
+    pub(super) fn range(&self) -> Range<usize> {
+        match self {
+            Self::MapValue(range) => program::range(*range),
+            Self::Query(value) => value.expression.range.clone(),
+        }
+    }
+    pub(super) fn body(&self) -> Option<&comprehension::ParsedComprehension> {
+        match self {
+            Self::MapValue(_) => None,
+            Self::Query(value) => Some(value),
+        }
+    }
+    pub(super) fn is_read_only(&self) -> bool {
+        let Some(value) = self.body() else {
+            return true;
+        };
+        let zirql::ValueExpressionKind::NativeValue(query) = &value.expression.value else {
+            unreachable!("ordering selectors retain a native query")
+        };
+        operand_is_read_only(query)
+    }
+}
+fn operand_is_read_only(query: &Operand) -> bool {
+    let mut pending = vec![query];
+    while let Some(query) = pending.pop() {
+        match &query.value {
+            X::Input | X::Binding(_) => {}
+            X::Group(query) | X::Field { value: query, .. } => pending.push(query),
+            X::Sequence { input, steps } => {
+                if !steps.iter().all(|step| match &step.value {
+                    Step::Stage(stage) => stage.is_read_only(),
+                    Step::Emit { .. } => false,
+                }) {
+                    return false;
+                }
+                pending.push(input);
+            }
+            X::Set { left, right, .. } => {
+                pending.push(right);
+                pending.push(left);
+            }
+            X::Record(fields) => pending.extend(fields.iter().rev().map(|(_, value)| value)),
+        }
+    }
+    true
+}
+
 pub(super) fn operand(expression: &model::Expression) -> Operand {
     fn stages(stages: &[model::Stage], range: Range<usize>) -> Operand {
         let mut input = Located::new(X::Input, range.clone());
@@ -439,6 +524,16 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 }
             }
         }
+        if let Some((selector, _)) = ordering_selector(stage)
+            && let Some(value) = selector.body()
+        {
+            let zirql::ValueExpressionKind::NativeValue(query) = &value.expression.value else {
+                unreachable!("ordering selectors retain a native query")
+            };
+            budget.charge(operand_size(query), Location::Query(range.clone()))?;
+            budget.charge_results(1, Location::Query(range.clone()))?;
+            return Ok(vec![(&value.expression, program::Kind::Operations)]);
+        }
         if let model::Stage::FunctionValue { value, .. }
         | model::Stage::Comprehension { value, .. }
         | model::Stage::FunctionPrimitive {
@@ -500,6 +595,53 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        if let Some((selector, order)) = ordering_selector(stage)
+            && let Some(value) = selector.body()
+        {
+            let input =
+                functions::owned(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+            if matches!(input, QueryOutput::Map(_) | QueryOutput::RankedMap(_))
+                && order == zirql::NativeOrder::Sort
+            {
+                return Err(zirql::EvaluationError::Host(
+                    EvaluationError::new("sort_by on a map requires the scalar selector value")
+                        .at(range.clone()),
+                ));
+            }
+            let input = match input {
+                QueryOutput::Native(NativeValue::OperationSequence(operations)) => {
+                    QueryOutput::Operations(operations)
+                }
+                input => input,
+            };
+            let selected = take_operations(input, ordering_name(order))
+                .map_err(zirql::EvaluationError::Host)?;
+            if order != zirql::NativeOrder::Sort && selected.is_empty() {
+                return Err(zirql::EvaluationError::Host(
+                    EvaluationError::new("by extrema require a non-empty operation stream")
+                        .at(range.clone()),
+                ));
+            }
+            let selected = zirql::order_native_by(
+                selected,
+                order,
+                budget,
+                Location::Query(range.clone()),
+                |operation, budget| {
+                    program::charge_results(budget, 2, range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    budget.charge(1, Location::Query(range.clone()))?;
+                    let output = arguments.evaluate_native(
+                        &value.expression,
+                        QueryOutput::Operations(vec![*operation]),
+                        budget,
+                    )?;
+                    borrowed_ordering_key(output.value(), budget, &value.expression.range)
+                        .map_err(zirql::EvaluationError::Host)
+                },
+            )?;
+            return Ok(QueryOutput::Operations(selected));
+        }
         let prepared = arguments.parts().0.functions.is_some();
         match stage {
             model::Stage::Paths { value, .. } if prepared => {
@@ -828,11 +970,6 @@ pub(super) fn nested(stage: &model::Stage) -> Vec<&model::Expression> {
     use model::{Stage as S, StructuredStage as T};
     match stage {
         S::Group { expression, .. } | S::Fixpoint { expression, .. } => vec![expression],
-        S::SortBy { selector, .. }
-        | S::MinBy { selector, .. }
-        | S::MinAllBy { selector, .. }
-        | S::MaxBy { selector, .. }
-        | S::MaxAllBy { selector, .. } => vec![selector],
         S::MapBy { key, value, .. }
         | S::Structured {
             step: T::MapBy { key, value },
@@ -850,34 +987,67 @@ fn expression_size(expression: &model::Expression) -> usize {
         .first
         .iter()
         .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
-        .map(|stage| {
-            use model::{Stage as S, StructuredStage as T};
-            let payload = match stage {
-                S::Binding { name, .. }
-                | S::Attr { name, .. }
-                | S::RemoveAttr { name, .. }
-                | S::Structured {
-                    step: T::StringAttr(name) | T::Attributes(name),
-                    ..
-                } => name.len(),
-                S::Filter { predicate, .. } | S::Root { predicate, .. } => {
-                    predicate_size(predicate)
-                }
-                S::SetAttr { name, value, .. } => name.len().saturating_add(value.len()),
-                S::Check { message, .. } => message.as_ref().map_or(0, String::len),
-                _ => 0,
-            };
-            1usize
-                .saturating_add(program::range(stage.range()).len())
-                .saturating_add(payload)
-                .saturating_add(
-                    nested(stage)
-                        .into_iter()
-                        .map(expression_size)
-                        .fold(0usize, usize::saturating_add),
-                )
-        })
+        .map(stage_size)
         .fold(0usize, usize::saturating_add)
+}
+fn operand_size(query: &Operand) -> usize {
+    let mut size = 0usize;
+    let mut pending = vec![query];
+    while let Some(query) = pending.pop() {
+        size = size.saturating_add(1);
+        match &query.value {
+            X::Input => {}
+            X::Binding(name) => size = size.saturating_add(name.len()),
+            X::Group(query) | X::Field { value: query, .. } => pending.push(query),
+            X::Sequence { input, steps } => {
+                size = steps
+                    .iter()
+                    .map(|step| match &step.value {
+                        Step::Stage(stage) => stage_size(stage),
+                        Step::Emit { .. } => 1,
+                    })
+                    .fold(size, usize::saturating_add);
+                pending.push(input);
+            }
+            X::Set { left, right, .. } => {
+                pending.push(right);
+                pending.push(left);
+            }
+            X::Record(fields) => {
+                for (name, value) in fields.iter().rev() {
+                    size = size.saturating_add(name.value.len());
+                    pending.push(value);
+                }
+            }
+        }
+    }
+    size
+}
+
+fn stage_size(stage: &model::Stage) -> usize {
+    use model::{Stage as S, StructuredStage as T};
+    let payload = match stage {
+        S::Binding { name, .. }
+        | S::Attr { name, .. }
+        | S::RemoveAttr { name, .. }
+        | S::Structured {
+            step: T::StringAttr(name) | T::Attributes(name),
+            ..
+        } => name.len(),
+        S::Filter { predicate, .. } | S::Root { predicate, .. } => predicate_size(predicate),
+        S::SetAttr { name, value, .. } => name.len().saturating_add(value.len()),
+        S::Check { message, .. } => message.as_ref().map_or(0, String::len),
+        _ => 0,
+    };
+    1usize
+        .saturating_add(program::range(stage.range()).len())
+        .saturating_add(payload)
+        .saturating_add(
+            nested(stage)
+                .into_iter()
+                .map(expression_size)
+                .fold(0usize, usize::saturating_add),
+        )
 }
 fn predicate_payload(predicate: &model::Predicate) -> usize {
     use model::Predicate as P;
@@ -1073,6 +1243,15 @@ pub(super) fn push_expressions<'a>(
     pending: &mut Vec<&'a model::Expression>,
 ) {
     match stage {
+        model::Stage::SortBy { selector, .. }
+        | model::Stage::MinBy { selector, .. }
+        | model::Stage::MaxBy { selector, .. }
+        | model::Stage::MinAllBy { selector, .. }
+        | model::Stage::MaxAllBy { selector, .. } => {
+            if let Some(value) = selector.body() {
+                visit_value(&value.expression, pending);
+            }
+        }
         model::Stage::Native { value, .. }
         | model::Stage::Operand {
             operation: value, ..
@@ -1433,28 +1612,56 @@ pub(super) fn requires_session(expression: &model::Expression) -> bool {
         .first
         .iter()
         .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
-        .any(|stage| match stage {
-            model::Stage::PatternBinding { .. }
-            | model::Stage::FunctionPrimitive { .. }
-            | model::Stage::FunctionInput { .. } => true,
-            model::Stage::Comprehension { value, .. }
-            | model::Stage::FunctionValue { value, .. } => {
-                value_requires_session(&value.expression)
-            }
-            model::Stage::Projection { value, .. } => value
-                .projection
-                .fields
-                .iter()
-                .any(|(_, value)| value_requires_session(value)),
-            model::Stage::Computed { value, .. } => {
-                value_requires_session(&value.operand().expression)
-            }
-            model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } => {
-                predicate_requires_session(predicate)
-            }
-            _ => nested(stage).into_iter().any(requires_session),
-        })
+        .any(stage_requires_session)
 }
+fn stage_requires_session(stage: &model::Stage) -> bool {
+    if ordering_selector(stage).is_some_and(|(selector, _)| selector.body().is_some()) {
+        return true;
+    }
+    match stage {
+        model::Stage::PatternBinding { .. }
+        | model::Stage::FunctionPrimitive { .. }
+        | model::Stage::FunctionInput { .. } => true,
+        model::Stage::Comprehension { value, .. } | model::Stage::FunctionValue { value, .. } => {
+            value_requires_session(&value.expression)
+        }
+        model::Stage::Projection { value, .. } => value
+            .projection
+            .fields
+            .iter()
+            .any(|(_, value)| value_requires_session(value)),
+        model::Stage::Computed { value, .. } => value_requires_session(&value.operand().expression),
+        model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } => {
+            predicate_requires_session(predicate)
+        }
+        _ => nested(stage).into_iter().any(requires_session),
+    }
+}
+fn operand_requires_session(query: &Operand) -> bool {
+    let mut pending = vec![query];
+    while let Some(query) = pending.pop() {
+        match &query.value {
+            X::Input | X::Binding(_) => {}
+            X::Group(query) | X::Field { value: query, .. } => pending.push(query),
+            X::Sequence { input, steps } => {
+                if steps.iter().any(|step| match &step.value {
+                    Step::Stage(stage) => stage_requires_session(stage),
+                    Step::Emit { .. } => false,
+                }) {
+                    return true;
+                }
+                pending.push(input);
+            }
+            X::Set { left, right, .. } => {
+                pending.push(right);
+                pending.push(left);
+            }
+            X::Record(fields) => pending.extend(fields.iter().rev().map(|(_, value)| value)),
+        }
+    }
+    false
+}
+
 fn predicate_requires_session(predicate: &model::Predicate) -> bool {
     match predicate {
         model::Predicate::Computed { value, .. } => value
@@ -1519,9 +1726,7 @@ fn value_requires_session_with_names(
                 }
             }
             K::NativeQuery(query) => {
-                let mut expressions = Vec::new();
-                visit_operand(query, &mut expressions);
-                if expressions.into_iter().any(requires_session) {
+                if operand_requires_session(query) {
                     return true;
                 }
             }
@@ -1770,4 +1975,28 @@ pub(super) fn validate_predicate_with_host(
         _ => {}
     }
     Ok(())
+}
+
+pub(super) fn ordering_selector(
+    stage: &model::Stage,
+) -> Option<(&OrderingSelector, zirql::NativeOrder)> {
+    use model::Stage as S;
+    use zirql::NativeOrder as O;
+    Some(match stage {
+        S::SortBy { selector, .. } => (selector, O::Sort),
+        S::MinBy { selector, .. } => (selector, O::Min),
+        S::MaxBy { selector, .. } => (selector, O::Max),
+        S::MinAllBy { selector, .. } => (selector, O::MinAll),
+        S::MaxAllBy { selector, .. } => (selector, O::MaxAll),
+        _ => return None,
+    })
+}
+fn ordering_name(order: zirql::NativeOrder) -> &'static str {
+    match order {
+        zirql::NativeOrder::Sort => "sort_by",
+        zirql::NativeOrder::Min => "min_by",
+        zirql::NativeOrder::Max => "max_by",
+        zirql::NativeOrder::MinAll => "min_all_by",
+        zirql::NativeOrder::MaxAll => "max_all_by",
+    }
 }

@@ -867,27 +867,29 @@ fn evaluate_stage(
             Ok(from_rows(kind, items))
         }
         DiffStage::Sort | DiffStage::Extreme { .. } => {
-            let DiffProgramOutput::Strings(mut strings) = value else {
+            let DiffProgramOutput::Strings(strings) = value else {
                 return Err(failure("sort and extrema require strings", range));
             };
-            if let DiffStage::Extreme { maximum, all } = stage {
-                let selected = if *maximum {
-                    strings.iter().max()
-                } else {
-                    strings.iter().min()
-                };
-                if let Some(selected) = selected {
-                    program::charge_bytes(budget, selected.len(), range)?;
-                    let selected = selected.clone();
-                    strings.retain(|text| text == &selected);
-                    if !all {
-                        strings.truncate(1);
-                    }
-                }
-            } else {
-                strings.sort();
-            }
-            Ok(DiffProgramOutput::Strings(strings))
+            let order = match stage {
+                DiffStage::Extreme {
+                    maximum: false,
+                    all: false,
+                } => zirql::NativeOrder::Min,
+                DiffStage::Extreme {
+                    maximum: true,
+                    all: false,
+                } => zirql::NativeOrder::Max,
+                DiffStage::Extreme {
+                    maximum: false,
+                    all: true,
+                } => zirql::NativeOrder::MinAll,
+                DiffStage::Extreme {
+                    maximum: true,
+                    all: true,
+                } => zirql::NativeOrder::MaxAll,
+                _ => zirql::NativeOrder::Sort,
+            };
+            super::order_strings(strings, order, budget, range).map(DiffProgramOutput::Strings)
         }
         DiffStage::Order { kind, selector } => {
             order(value, *kind, selector, context, bindings, budget, range)
@@ -1275,11 +1277,6 @@ fn combine(
     Ok(from_rows(left_kind, selected))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum SortKey {
-    Count(usize),
-    Text(String),
-}
 fn order(
     value: DiffProgramOutput,
     kind: Order,
@@ -1296,48 +1293,41 @@ fn order(
             range,
         ));
     }
-    admit(budget, items.len(), range)?;
-    let mut keyed = Vec::with_capacity(items.len());
-    for (index, item) in items.into_iter().enumerate() {
-        admit(budget, 1, range)?;
-        let input = from_rows(stream, vec![item.clone()]);
-        let key = evaluate_expression(selector, input, context, bindings, budget)?;
-        let key = match key {
-            DiffProgramOutput::Count(count) => SortKey::Count(count),
-            DiffProgramOutput::Strings(mut strings) if strings.len() == 1 => {
-                SortKey::Text(strings.pop().unwrap())
-            }
-            _ => {
-                return Err(failure(
-                    "ordering key must produce exactly one scalar",
-                    range,
-                ));
-            }
-        };
-        keyed.push((key, index, item));
-    }
-    keyed.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-    if !keyed.is_empty() && !matches!(kind, Order::Sort) {
-        let key = if matches!(kind, Order::Max | Order::MaxAll) {
-            &keyed.last().unwrap().0
-        } else {
-            &keyed[0].0
-        };
-        if let SortKey::Text(text) = key {
-            program::charge_bytes(budget, text.len(), range)?;
-        }
-        let key = key.clone();
-        keyed.retain(|(candidate, _, _)| candidate == &key);
-        keyed.sort_by_key(|(_, index, _)| *index);
-        if matches!(kind, Order::Min | Order::Max) {
-            keyed.truncate(1);
-        }
-    }
-    Ok(from_rows(
-        stream,
-        keyed.into_iter().map(|(_, _, item)| item).collect(),
-    ))
+    let order = match kind {
+        Order::Sort => zirql::NativeOrder::Sort,
+        Order::Min => zirql::NativeOrder::Min,
+        Order::Max => zirql::NativeOrder::Max,
+        Order::MinAll => zirql::NativeOrder::MinAll,
+        Order::MaxAll => zirql::NativeOrder::MaxAll,
+    };
+    let items = zirql::order_native_by(
+        items,
+        order,
+        budget,
+        zirql::Location::Query(range.clone()),
+        |item, budget| {
+            admit(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            let input = from_rows(stream, vec![item.clone()]);
+            let key = evaluate_expression(selector, input, context, bindings, budget)
+                .map_err(zirql::EvaluationError::Host)?;
+            Ok(match key {
+                DiffProgramOutput::Count(count) => zirql::NativeOrderKey::Count(count),
+                DiffProgramOutput::Strings(mut strings) if strings.len() == 1 => {
+                    zirql::NativeOrderKey::Text(strings.pop().unwrap())
+                }
+                _ => {
+                    return Err(zirql::EvaluationError::Host(failure(
+                        "ordering key must produce exactly one scalar",
+                        range,
+                    )));
+                }
+            })
+        },
+    )
+    .map_err(program::evaluation_error)?;
+    Ok(from_rows(stream, items))
 }
+
 fn map(
     value: DiffProgramOutput,
     key: &Expression,

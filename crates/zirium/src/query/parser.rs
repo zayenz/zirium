@@ -1135,6 +1135,7 @@ impl Parser<'_, '_> {
                     self.error("selector queries cannot edit or emit");
                     return None;
                 }
+                let selector = super::report::OrderingSelector::new(&selector);
                 let range = self.span(start);
                 match name.as_str() {
                     "sort_by" => Stage::SortBy { selector, range },
@@ -2270,6 +2271,46 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
                 .expect("ordered query range"),
         }
     }
+    fn ordering(
+        &mut self,
+        ordering: zirql::NativeOrdering<super::report::Operand>,
+        range: std::ops::Range<usize>,
+    ) -> Result<Stage, zirql::QueryError> {
+        use zirql::NativeOrder as O;
+        let range =
+            TextRange::new(range.start as u32, range.end as u32).expect("ordered query range");
+        let Some(selector) = ordering.selector else {
+            return Ok(match ordering.order {
+                O::Sort => Stage::Sort { range },
+                O::Min => Stage::Min { range },
+                O::Max => Stage::Max { range },
+                O::MinAll => Stage::MinAll { range },
+                O::MaxAll => Stage::MaxAll { range },
+            });
+        };
+        let selector = if native_map_value(&selector) {
+            let selector_range =
+                TextRange::new(selector.range.start as u32, selector.range.end as u32)
+                    .expect("ordered selector range");
+            zirql::dispose_expression(selector);
+            super::report::OrderingSelector::MapValue(selector_range)
+        } else {
+            super::report::OrderingSelector::from_operand(selector)
+        };
+        if !selector.is_read_only() {
+            return Err(zirql::QueryError::query(
+                range.as_range(),
+                "selector queries cannot edit or emit",
+            ));
+        }
+        Ok(match ordering.order {
+            O::Sort => Stage::SortBy { selector, range },
+            O::Min => Stage::MinBy { selector, range },
+            O::Max => Stage::MaxBy { selector, range },
+            O::MinAll => Stage::MinAllBy { selector, range },
+            O::MaxAll => Stage::MaxAllBy { selector, range },
+        })
+    }
     fn matching(
         &mut self,
         matching: zirql::NativeMatch<super::report::Operand, Predicate>,
@@ -2328,6 +2369,23 @@ fn lower_shared_predicate(predicate: zirql::Predicate<Predicate>) -> Predicate {
             predicates: predicates.into_iter().map(lower_shared_predicate).collect(),
             range,
         },
+    }
+}
+
+fn native_map_value(query: &super::report::Operand) -> bool {
+    use zirql::{ExpressionKind as X, ExpressionStep as S};
+    match &query.value {
+        X::Group(query) => native_map_value(query),
+        X::Sequence { input, steps } if matches!(input.value, X::Input) => {
+            matches!(
+                steps.as_slice(),
+                [zirql::Located {
+                    value: S::Stage(Stage::Value { .. }),
+                    ..
+                }]
+            )
+        }
+        _ => false,
     }
 }
 

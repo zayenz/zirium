@@ -2385,6 +2385,9 @@ fn ordering_bounds_and_extrema_compose_on_streams() {
         "filter(false) | min_by(names)",
         "filter(false) | names | max_all",
         "filter(false) | max_all_by(names)",
+        "filter(op(\"vendor.item\")) | sort_by(children | names)",
+        "names | emit; filter(op(\"vendor.item\")) | min_all_by(attr(\"label\") | check(2))",
+        "filter(false) | sort_by(names | emit)",
         "saved = count; saved | count",
     ] {
         let output = run_stdin(query, input);

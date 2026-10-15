@@ -203,11 +203,6 @@ pub(super) fn expressions<'q>(
                     pending.push(key);
                     pending.push(value);
                 }
-                model::Stage::SortBy { selector, .. }
-                | model::Stage::MinBy { selector, .. }
-                | model::Stage::MinAllBy { selector, .. }
-                | model::Stage::MaxBy { selector, .. }
-                | model::Stage::MaxAllBy { selector, .. } => pending.push(selector),
                 model::Stage::Structured {
                     step: model::StructuredStage::MapBy { key, value },
                     ..
@@ -1099,6 +1094,13 @@ impl Validator<'_> {
                 | S::MaxAll { .. } => {
                     require(kind == Kind::Strings, "ordering requires a value stream")?
                 }
+                S::RetainOrderingKey { .. } => {
+                    charge_bytes(budget, 4, &range(stage.range()))?;
+                    charge_results(budget, 3, &range(stage.range()))?;
+                    kind = Kind::Capture(std::sync::Arc::new(zirql::NativeCapture {
+                        fields: vec![("key".into(), kind)],
+                    }));
+                }
                 S::SortBy { selector, .. } if kind == Kind::Map => require(
                     selector.is_map_value(),
                     "sort_by on a map requires the scalar selector value",
@@ -1112,9 +1114,25 @@ impl Validator<'_> {
                         kind == Kind::Operations,
                         "ordering selector requires operations",
                     )?;
-                    let selector = self.expression(selector, Kind::Operations, names, budget)?;
+                    let selector = selector.body().ok_or_else(|| {
+                        EvaluationError::new(
+                            "value is only valid as the selector in sort_by(value) on a map",
+                        )
+                        .at(selector.range())
+                    })?;
+                    let selector = functions::value_kind(
+                        &self.host,
+                        &selector.expression,
+                        Kind::Operations,
+                        names,
+                        budget,
+                    )
+                    .map_err(core_error)?;
+                    let Kind::Capture(schema) = selector else {
+                        unreachable!("ordering selectors retain one native field")
+                    };
                     require(
-                        matches!(selector, Kind::Strings | Kind::String | Kind::Count),
+                        matches!(schema.fields.as_slice(), [(name, Kind::Strings | Kind::String | Kind::Count)] if name == "key"),
                         "ordering selector must produce exactly one string or count per operation",
                     )?;
                 }

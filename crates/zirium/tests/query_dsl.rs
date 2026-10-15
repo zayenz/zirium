@@ -1162,7 +1162,7 @@ fn correlated_function_report_agrees_through_text_and_typed_native_data() {
             },
         )
         .unwrap_err();
-    assert!(error.to_string().contains("work limit"));
+    assert!(error.to_string().contains("work limit"), "{error}");
 }
 
 #[test]
@@ -3258,5 +3258,29 @@ fn common_index_sets_and_tuple_positions_read_projected_names() {
                 })
                 .collect()
         )
+    );
+}
+
+#[test]
+fn prepared_ordering_selector_keeps_parameter_and_saved_outer_input() {
+    let mut document = document_from("module { \"test.z\"() : () -> () \"test.a\"() : () -> () }");
+    let source = r#"fn labels(root: Operation, needle: string) -> sequence<string> {
+        let saved = root;
+        direct_children(root) | sort_by((filter(op(needle)) union saved) | count) | names
+    }
+    let selected_root = filter(op("builtin.module")); report labels(selected_root, "test.z") | json"#;
+    let mut outputs = vec![];
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        outputs,
+        [QueryOutput::Json(
+            "[\n  \"test.a\",\n  \"test.z\"\n]\n".into()
+        )]
     );
 }

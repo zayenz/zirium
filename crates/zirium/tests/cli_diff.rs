@@ -455,6 +455,9 @@ fn diff_records_can_be_ordered_by_relative_keys() {
         ("sort_by(names)", "test.a\ntest.z\n"),
         ("min_by(names)", "test.a\n"),
         ("max_all_by(names)", "test.z\n"),
+        ("reverse | min_all_by(count)", "test.a\ntest.z\n"),
+        ("reverse | max_all_by(count)", "test.a\ntest.z\n"),
+        ("filter(false) | min_by(names)", ""),
     ] {
         let query = format!("filter(changed(\"attributes\")) | {stage} | names");
         let output = Command::new(env!("CARGO_BIN_EXE_zirium"))

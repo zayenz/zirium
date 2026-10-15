@@ -266,12 +266,6 @@ pub enum NativeValue {
     Map(BTreeMap<String, QueryOutput>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum SortKey {
-    Count(usize),
-    Text(String),
-}
-
 /// An owned parsing error at the responsible query byte position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryError {
@@ -1050,13 +1044,26 @@ fn evaluate_host_stage(
                 "unique requires an operation or value stream",
             ));
         }
+        model::Stage::RetainOrderingKey { .. } => {
+            let range = program::range(stage.range());
+            program::charge_bytes(budget, 4, &range)?;
+            program::charge_results(budget, 3, &range)?;
+            current = QueryOutput::Native(NativeValue::Capture(zirql::NativeCapture {
+                fields: vec![("key".into(), current)],
+            }));
+        }
         model::Stage::Sort { .. } => {
             let QueryOutput::Values(values) = &mut current else {
                 return Err(EvaluationError::new(
                     "sort requires a value stream; use names or attr first",
                 ));
             };
-            values.sort();
+            *values = order_strings(
+                std::mem::take(values),
+                zirql::NativeOrder::Sort,
+                budget,
+                &program::range(stage.range()),
+            )?;
         }
         model::Stage::SortBy { selector, .. } => {
             if selector.is_map_value() {
@@ -1069,7 +1076,13 @@ fn evaluate_host_stage(
                 }
                 let selected = take_operations(current, "sort_by")?;
                 current = QueryOutput::Operations(sort_operations_by(
-                    selected, selector, context, bindings, budget, false, None,
+                    selected,
+                    selector,
+                    context,
+                    bindings,
+                    budget,
+                    zirql::NativeOrder::Sort,
+                    &program::range(stage.range()),
                 )?);
             }
         }
@@ -1088,16 +1101,36 @@ fn evaluate_host_stage(
         model::Stage::Head { count, .. } => truncate_stream(&mut current, *count, false)?,
         model::Stage::Tail { count, .. } => truncate_stream(&mut current, *count, true)?,
         model::Stage::Min { .. } => {
-            current = QueryOutput::Values(extreme_value(current, false, false)?);
+            current = QueryOutput::Values(extreme_value(
+                current,
+                zirql::NativeOrder::Min,
+                budget,
+                &program::range(stage.range()),
+            )?);
         }
         model::Stage::Max { .. } => {
-            current = QueryOutput::Values(extreme_value(current, true, false)?);
+            current = QueryOutput::Values(extreme_value(
+                current,
+                zirql::NativeOrder::Max,
+                budget,
+                &program::range(stage.range()),
+            )?);
         }
         model::Stage::MinAll { .. } => {
-            current = QueryOutput::Values(extreme_value(current, false, true)?);
+            current = QueryOutput::Values(extreme_value(
+                current,
+                zirql::NativeOrder::MinAll,
+                budget,
+                &program::range(stage.range()),
+            )?);
         }
         model::Stage::MaxAll { .. } => {
-            current = QueryOutput::Values(extreme_value(current, true, true)?);
+            current = QueryOutput::Values(extreme_value(
+                current,
+                zirql::NativeOrder::MaxAll,
+                budget,
+                &program::range(stage.range()),
+            )?);
         }
         model::Stage::MinBy { selector, .. } => {
             let selected = take_operations(current, "min_by")?;
@@ -1107,8 +1140,8 @@ fn evaluate_host_stage(
                 context,
                 bindings,
                 budget,
-                false,
-                Some(false),
+                zirql::NativeOrder::Min,
+                &program::range(stage.range()),
             )?);
         }
         model::Stage::MaxBy { selector, .. } => {
@@ -1119,8 +1152,8 @@ fn evaluate_host_stage(
                 context,
                 bindings,
                 budget,
-                true,
-                Some(false),
+                zirql::NativeOrder::Max,
+                &program::range(stage.range()),
             )?);
         }
         model::Stage::MinAllBy { selector, .. } => {
@@ -1131,8 +1164,8 @@ fn evaluate_host_stage(
                 context,
                 bindings,
                 budget,
-                false,
-                Some(true),
+                zirql::NativeOrder::MinAll,
+                &program::range(stage.range()),
             )?);
         }
         model::Stage::MaxAllBy { selector, .. } => {
@@ -1143,8 +1176,8 @@ fn evaluate_host_stage(
                 context,
                 bindings,
                 budget,
-                true,
-                Some(true),
+                zirql::NativeOrder::MaxAll,
+                &program::range(stage.range()),
             )?);
         }
         model::Stage::Attr { name, .. } => {
@@ -1424,29 +1457,42 @@ fn truncate_stream(
 
 fn extreme_value(
     output: QueryOutput,
-    maximum: bool,
-    retain_all: bool,
+    order: zirql::NativeOrder,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
 ) -> Result<Vec<String>, EvaluationError> {
     let QueryOutput::Values(values) = output else {
         return Err(EvaluationError::new(
             "value extrema require a value stream; use names or attr first",
         ));
     };
-    let value = if maximum {
-        values.iter().max()
-    } else {
-        values.iter().min()
+    if values.is_empty() {
+        return Err(EvaluationError::new(
+            "value extrema require a non-empty value stream",
+        ));
     }
-    .cloned()
-    .ok_or_else(|| EvaluationError::new("value extrema require a non-empty value stream"))?;
-    if retain_all {
-        Ok(values
-            .into_iter()
-            .filter(|candidate| candidate == &value)
-            .collect())
-    } else {
-        Ok(vec![value])
-    }
+    order_strings(values, order, budget, range)
+}
+
+fn order_strings(
+    values: Vec<String>,
+    order: zirql::NativeOrder,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<Vec<String>, EvaluationError> {
+    zirql::order_native_by(
+        values,
+        order,
+        budget,
+        zirql::Location::Query(range.clone()),
+        |value, budget| {
+            program::charge_bytes(budget, value.len(), range)
+                .map_err(zirql::EvaluationError::Host)?;
+            program::charge_results(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            Ok(zirql::NativeOrderKey::Text(value.clone()))
+        },
+    )
+    .map_err(program::evaluation_error)
 }
 
 fn sort_map_by_value(output: QueryOutput) -> Result<QueryOutput, EvaluationError> {
@@ -1532,54 +1578,108 @@ fn compare_integer_float(integer: i128, float: f64) -> std::cmp::Ordering {
 
 fn sort_operations_by(
     selected: Vec<OperationId>,
-    selector: &model::Expression,
+    selector: &report::OrderingSelector,
     context: &mut EvaluationContext<'_, '_, '_>,
     bindings: &zirql::Bindings<QueryOutput>,
     budget: &mut zirql::Budget,
-    descending: bool,
-    extrema: Option<bool>,
+    order: zirql::NativeOrder,
+    range: &std::ops::Range<usize>,
 ) -> Result<Vec<OperationId>, EvaluationError> {
-    if extrema.is_some() && selected.is_empty() {
+    if order != zirql::NativeOrder::Sort && selected.is_empty() {
         return Err(EvaluationError::new(
             "by extrema require a non-empty operation stream",
         ));
     }
-    let mut keyed = Vec::with_capacity(selected.len());
-    for operation in selected {
-        let output = evaluate_expression(
-            selector,
-            context,
-            QueryOutput::Operations(vec![operation]),
-            bindings,
-            budget,
-        )?;
-        let key = match output {
-            QueryOutput::Count(value) => SortKey::Count(value),
-            QueryOutput::Native(NativeValue::String(value)) => SortKey::Text(value),
-            QueryOutput::Values(mut values) if values.len() == 1 => {
-                SortKey::Text(values.pop().unwrap())
-            }
-            _ => {
-                return Err(EvaluationError::new(
-                    "ordering selector must produce exactly one string or count per operation",
-                ));
-            }
-        };
-        keyed.push((operation, key));
-    }
-    if let Some(retain_all) = extrema {
-        let keys = keyed.iter().map(|(_, key)| key);
-        let extreme = if descending { keys.max() } else { keys.min() }
-            .cloned()
-            .expect("extrema reject empty streams before computing keys");
-        keyed.retain(|(_, key)| key == &extreme);
-        if !retain_all {
-            keyed.truncate(1);
+    let value = selector
+        .body()
+        .ok_or_else(|| EvaluationError::new("ordering selector requires operations"))?;
+    zirql::order_native_by(
+        selected,
+        order,
+        budget,
+        zirql::Location::Query(range.clone()),
+        |operation, budget| {
+            program::charge_results(budget, 2, range).map_err(zirql::EvaluationError::Host)?;
+            charge(budget, 1).map_err(zirql::EvaluationError::Host)?;
+            let input = QueryOutput::Operations(vec![*operation]);
+            let output = if let Some(session) = context.functions {
+                session
+                    .run(&value.expression, context, &input, bindings, budget)
+                    .map_err(zirql::EvaluationError::Host)?
+            } else {
+                let zirql::ValueExpressionKind::NativeValue(query) = &value.expression.value else {
+                    unreachable!("ordering selectors retain a native query")
+                };
+                zirql::evaluate_expression(
+                    query,
+                    &report::ReportHost,
+                    input,
+                    context,
+                    bindings,
+                    budget,
+                )?
+            };
+            ordering_key(output, budget, &value.expression.range)
+                .map_err(zirql::EvaluationError::Host)
+        },
+    )
+    .map_err(program::evaluation_error)
+}
+
+fn ordering_key(
+    output: QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<zirql::NativeOrderKey, EvaluationError> {
+    match output {
+        QueryOutput::Native(NativeValue::Capture(mut record)) => {
+            let (_, key) = record
+                .fields
+                .pop()
+                .expect("ordering selectors retain one native field");
+            ordering_key(key, budget, range)
         }
-    } else {
-        keyed.sort_by(|left, right| left.1.cmp(&right.1));
+        QueryOutput::Count(value) => Ok(zirql::NativeOrderKey::Count(value)),
+        QueryOutput::Native(NativeValue::String(value)) => Ok(zirql::NativeOrderKey::Text(value)),
+        QueryOutput::Values(mut values) if values.len() == 1 => {
+            Ok(zirql::NativeOrderKey::Text(values.pop().unwrap()))
+        }
+        QueryOutput::Native(NativeValue::Retained(value)) => {
+            borrowed_ordering_key(&value, budget, range)
+        }
+        _ => Err(EvaluationError::new(
+            "ordering selector must produce exactly one string or count per operation",
+        )
+        .at(range.clone())),
     }
-    Ok(keyed.into_iter().map(|(operation, _)| operation).collect())
+}
+
+fn borrowed_ordering_key(
+    output: &QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<zirql::NativeOrderKey, EvaluationError> {
+    let text = match functions::unretained(output) {
+        QueryOutput::Native(NativeValue::Capture(record)) => {
+            let (_, key) = record
+                .fields
+                .first()
+                .expect("ordering selectors retain one native field");
+            return borrowed_ordering_key(key, budget, range);
+        }
+        QueryOutput::Count(value) => return Ok(zirql::NativeOrderKey::Count(*value)),
+        QueryOutput::Native(NativeValue::String(value)) => value,
+        QueryOutput::Values(values) if values.len() == 1 => &values[0],
+        _ => {
+            return Err(EvaluationError::new(
+                "ordering selector must produce exactly one string or count per operation",
+            )
+            .at(range.clone()));
+        }
+    };
+    program::charge_bytes(budget, text.len(), range)?;
+    program::charge_results(budget, 1, range)?;
+    Ok(zirql::NativeOrderKey::Text(text.clone()))
 }
 
 fn value_depth(value: &serde_json::Value) -> usize {

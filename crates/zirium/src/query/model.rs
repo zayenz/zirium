@@ -101,25 +101,7 @@ impl Expression {
         self.first
             .iter()
             .chain(self.rest.iter().flat_map(|(_, stages)| stages))
-            .all(|stage| match stage {
-                Stage::SetAttr { .. }
-                | Stage::RemoveAttr { .. }
-                | Stage::Emit { .. }
-                | Stage::Format { .. }
-                | Stage::Json { .. }
-                | Stage::Markdown { .. }
-                | Stage::Print { .. } => false,
-                Stage::Group { expression, .. } | Stage::Fixpoint { expression, .. } => {
-                    expression.is_read_only()
-                }
-                Stage::SortBy { selector, .. }
-                | Stage::MinBy { selector, .. }
-                | Stage::MinAllBy { selector, .. }
-                | Stage::MaxBy { selector, .. }
-                | Stage::MaxAllBy { selector, .. } => selector.is_read_only(),
-                Stage::MapBy { key, value, .. } => key.is_read_only() && value.is_read_only(),
-                _ => true,
-            })
+            .all(Stage::is_read_only)
     }
 
     pub(crate) fn ends_with_emission(&self) -> bool {
@@ -419,7 +401,10 @@ pub enum Stage {
         range: TextRange,
     },
     SortBy {
-        selector: Box<Expression>,
+        selector: super::report::OrderingSelector,
+        range: TextRange,
+    },
+    RetainOrderingKey {
         range: TextRange,
     },
     Reverse {
@@ -437,28 +422,28 @@ pub enum Stage {
         range: TextRange,
     },
     MinBy {
-        selector: Box<Expression>,
+        selector: super::report::OrderingSelector,
         range: TextRange,
     },
     MinAll {
         range: TextRange,
     },
     MinAllBy {
-        selector: Box<Expression>,
+        selector: super::report::OrderingSelector,
         range: TextRange,
     },
     Max {
         range: TextRange,
     },
     MaxBy {
-        selector: Box<Expression>,
+        selector: super::report::OrderingSelector,
         range: TextRange,
     },
     MaxAll {
         range: TextRange,
     },
     MaxAllBy {
-        selector: Box<Expression>,
+        selector: super::report::OrderingSelector,
         range: TextRange,
     },
     Attr {
@@ -512,6 +497,28 @@ pub enum Stage {
 }
 
 impl Stage {
+    pub(super) fn is_read_only(&self) -> bool {
+        match self {
+            Stage::SetAttr { .. }
+            | Stage::RemoveAttr { .. }
+            | Stage::Emit { .. }
+            | Stage::Format { .. }
+            | Stage::Json { .. }
+            | Stage::Markdown { .. }
+            | Stage::Print { .. } => false,
+            Stage::Group { expression, .. } | Stage::Fixpoint { expression, .. } => {
+                expression.is_read_only()
+            }
+            Stage::SortBy { selector, .. }
+            | Stage::MinBy { selector, .. }
+            | Stage::MinAllBy { selector, .. }
+            | Stage::MaxBy { selector, .. }
+            | Stage::MaxAllBy { selector, .. } => selector.is_read_only(),
+            Stage::MapBy { key, value, .. } => key.is_read_only() && value.is_read_only(),
+            _ => true,
+        }
+    }
+
     pub fn range(&self) -> TextRange {
         match self {
             Self::Paths { range, .. }
@@ -548,6 +555,7 @@ impl Stage {
             | Self::Unique { range }
             | Self::Sort { range }
             | Self::SortBy { range, .. }
+            | Self::RetainOrderingKey { range }
             | Self::Reverse { range }
             | Self::Head { range, .. }
             | Self::Tail { range, .. }
@@ -585,6 +593,7 @@ impl Stage {
             | Self::Count { .. }
             | Self::Tally { .. }
             | Self::Value { .. }
+            | Self::RetainOrderingKey { .. }
             | Self::MapBy { .. }
             | Self::Literal { .. }
             | Self::Comprehension { .. }

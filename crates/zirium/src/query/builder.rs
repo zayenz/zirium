@@ -755,7 +755,7 @@ impl OrderKey for usize {}
 macro_rules! ordering {
     ($($method:ident => $stage:ident),*) => { impl OpQuery { $(
         pub fn $method<T: OrderKey>(&self, selector: &QueryExpr<T>) -> Self {
-            self.nested(selector, Stage::$stage { selector: Box::new(selector.expression.clone()), range: range() })
+            self.nested(selector, Stage::$stage { selector: super::report::OrderingSelector::new(&selector.expression), range: range() })
         }
     )* }};
 }
