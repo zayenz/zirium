@@ -860,12 +860,7 @@ fn run() -> Result<(), String> {
                             .map_err(|error| EvaluationError::new(error.to_string()))?;
                         report.write_all(b"\n").map_err(output_staging_error)?;
                     }
-                    QueryOutput::Map(values) => {
-                        serde_json::to_writer_pretty(&mut report, &values)
-                            .map_err(|error| EvaluationError::new(error.to_string()))?;
-                        report.write_all(b"\n").map_err(output_staging_error)?;
-                    }
-                    QueryOutput::RankedMap(entries) => {
+                    QueryOutput::Map(entries) => {
                         use serde::ser::{SerializeMap, Serializer};
                         let mut serializer = serde_json::Serializer::pretty(&mut report);
                         let mut map = serializer
@@ -1358,7 +1353,7 @@ fn write_ndjson_record(
                 }
                 record.write_all(&compact).map_err(output_staging_error)?;
             }
-            QueryOutput::RankedMap(entries) => {
+            QueryOutput::Map(entries) => {
                 let mut serializer = serde_json::Serializer::new(&mut *record);
                 let mut map = serializer
                     .serialize_map(Some(entries.len()))
@@ -1484,8 +1479,7 @@ fn ndjson_value(output: QueryOutput) -> Result<serde_json::Value, EvaluationErro
         QueryOutput::Operations(_) => unreachable!("operation selections stream into NDJSON"),
         QueryOutput::Values(values) => serde_json::json!(values),
         QueryOutput::Count(count) => serde_json::json!(count),
-        QueryOutput::Map(values) => serde_json::Value::Object(values),
-        QueryOutput::RankedMap(_) => unreachable!("ranked maps use ordered NDJSON serialization"),
+        QueryOutput::Map(_) => unreachable!("maps use ordered NDJSON serialization"),
         QueryOutput::Array(values) => serde_json::Value::Array(values),
         QueryOutput::Json(_) => unreachable!("JSON emissions retain their serialized order"),
         QueryOutput::Text(text) => serde_json::Value::String(text),

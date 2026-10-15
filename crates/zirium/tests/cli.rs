@@ -1079,7 +1079,7 @@ fn set_queries_are_ordered_and_composable() {
     let input = "module {\n  \"test.a\"() {group = \"keep\"} : () -> ()\n  \"test.b\"() {group = \"keep\"} : () -> ()\n  \"test.c\"() : () -> ()\n}\n";
 
     let union = run_stdin(
-        r#"filter(op("test.c")) union filter(op("test.a") or has_attr("group"))"#,
+        r#"(filter(op("test.c")) union filter(op("test.a") or has_attr("group"))) | names"#,
         input,
     );
     assert!(
@@ -1092,7 +1092,7 @@ fn set_queries_are_ordered_and_composable() {
     assert_eq!(text.matches("test.b").count(), 1, "{text}");
     assert_eq!(text.matches("test.c").count(), 1, "{text}");
     assert!(
-        text.find("test.a").unwrap() < text.find("test.c").unwrap(),
+        text.find("test.c").unwrap() < text.find("test.a").unwrap(),
         "{text}"
     );
 
@@ -2924,7 +2924,7 @@ fn markdown_reports_combine_statements_interpolation_and_sparse_tables() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "# Report\n2 functions\n\n| Key | arith.constant | func.return |\n| --- | --- | --- |\n| a |  | 1 |\n| b | 1 | 1 |\n\n{done}\n"
+        "# Report\n2 functions\n\n| Key | func.return | arith.constant |\n| --- | --- | --- |\n| a | 1 |  |\n| b | 1 | 1 |\n\n{done}\n"
     );
 
     // Each statement starts from the document; declarations run where written.
@@ -3055,7 +3055,7 @@ fn ranked_histograms_keep_order_through_bounds_bindings_and_markdown() {
     assert!(output.status.success());
     assert_eq!(
         output.stdout,
-        b"\n| Key | Value |\n| --- | --- |\n| a | 2 |\n| z | 1 |\n\n"
+        b"\n| Key | Value |\n| --- | --- |\n| z | 1 |\n| a | 2 |\n\n"
     );
 
     for query in [
@@ -3120,6 +3120,40 @@ fn ranked_scalar_maps_keep_categories_and_rerank_ties() {
         );
         assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
     }
+    let query = r#"saved = {"z":{"m":1,"a":2},"a":0}; {"nested":saved} | json"#;
+    let output = run_stdin(query, "module {}");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["nested"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["z", "a"]
+    );
+    assert_eq!(
+        json["nested"]["z"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["m", "a"]
+    );
+    let output = run_stdin_with_options(
+        &["--jsonl"],
+        r#"{"z":1,"a":1} | reverse | sort_by(value)"#,
+        "module {}",
+    );
+    assert!(output.status.success());
+    let line = String::from_utf8(output.stdout).unwrap();
+    assert!(line.contains(r#""result":{"a":1,"z":1}"#), "{line}");
     let output = run_stdin(r#"{"a":true,"z":1} | sort_by(value)"#, "module {}");
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());

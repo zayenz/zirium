@@ -542,6 +542,13 @@ impl ReportExpr {
             inner: self.inner.clone().sort_by(field, descending),
         }
     }
+    #[pyo3(signature = (*, descending = false))]
+    fn sort_by_value(&self, descending: bool) -> Self {
+        Self {
+            inner: self.inner.clone().sort_by_value(descending),
+        }
+    }
+
     fn min(&self) -> Self {
         Self {
             inner: self.inner.clone().min(),
@@ -1271,6 +1278,41 @@ impl MapQuery {
         Err(PyTypeError::new_err(
             "query expressions have no truth value; evaluate with document.query(expression)",
         ))
+    }
+    fn sort(&self) -> Self {
+        Self {
+            inner: self.inner.sort(),
+        }
+    }
+    fn sort_by_value(&self) -> Self {
+        Self {
+            inner: self.inner.sort_by_value(),
+        }
+    }
+    fn reverse(&self) -> Self {
+        Self {
+            inner: self.inner.reverse(),
+        }
+    }
+    fn head(&self, count: usize) -> Self {
+        Self {
+            inner: self.inner.head(count),
+        }
+    }
+    fn tail(&self, count: usize) -> Self {
+        Self {
+            inner: self.inner.tail(count),
+        }
+    }
+    fn head_expr(&self, count: &ReportExpr) -> Self {
+        Self {
+            inner: self.inner.head_expr(count.inner.clone()),
+        }
+    }
+    fn tail_expr(&self, count: &ReportExpr) -> Self {
+        Self {
+            inner: self.inner.tail_expr(count.inner.clone()),
+        }
     }
     fn count(&self) -> CountQuery {
         CountQuery {

@@ -152,7 +152,7 @@ fn parse_stage(
             };
             DiffStage::SelectionUnique(pipeline)
         }
-        "count" => return stream(Stage::Count, range.clone()),
+        "count" => DiffStage::Count,
         "tally" => return stream(Stage::Tally, range.clone()),
         "names" => DiffStage::Names,
         "result_types" => DiffStage::ResultTypes,
@@ -169,9 +169,7 @@ fn parse_stage(
         "markdown" => DiffStage::Markdown,
         _ if stage.starts_with("users(") => DiffStage::Users(Some(number("users")?)),
         _ if stage.starts_with("defs(") => DiffStage::Defs(Some(number("defs")?)),
-        _ if stage.starts_with("head(") => {
-            return stream(Stage::Head(number("head")?), range.clone());
-        }
+        _ if stage.starts_with("head(") => DiffStage::Head(number("head")?),
         _ if stage.starts_with("tail(") => DiffStage::Tail(number("tail")?),
         _ if stage.starts_with("check(") => DiffStage::Check(Some(number("check")?)),
         _ if stage.starts_with("attr(") => {
@@ -217,13 +215,17 @@ fn parse_stage(
                 "max_all_by" => Order::MaxAll,
                 _ => unreachable!("matched ordering stage"),
             };
-            DiffStage::Order {
-                kind,
-                selector: super::diff_program::nested(parse_expression(
-                    source,
-                    one(name)?,
-                    depth + 1,
-                )?),
+            if name == "sort_by" && one(name)?.trim() == "value" {
+                DiffStage::SortMapValue
+            } else {
+                DiffStage::Order {
+                    kind,
+                    selector: super::diff_program::nested(parse_expression(
+                        source,
+                        one(name)?,
+                        depth + 1,
+                    )?),
+                }
             }
         }
         _ if stage.starts_with("map_by(") => {

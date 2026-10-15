@@ -166,11 +166,11 @@ fn text_programs_keep_native_side_results_and_the_typed_projection_contract() {
     for (source, expected) in [
         (
             "after | reverse union after",
-            selected.operations().to_vec(),
+            selected.operations().iter().rev().copied().collect(),
         ),
         (
             "after | reverse intersect after",
-            selected.operations().to_vec(),
+            selected.operations().iter().rev().copied().collect(),
         ),
         ("after except after", vec![]),
     ] {
@@ -211,7 +211,7 @@ fn text_programs_keep_native_side_results_and_the_typed_projection_contract() {
         panic!("native map")
     };
     assert!(
-        matches!(&entries["arith.constant"], DiffProgramOutput::Operations(DiffSide::Before, operations) if operations.is_empty())
+        matches!(&entries.iter().find(|(key, _)| key == "arith.constant").unwrap().1, DiffProgramOutput::Operations(DiffSide::Before, operations) if operations.is_empty())
     );
     maps.clear();
     DiffProgram::parse("map_by(names, after | map_by(names, count))")
@@ -231,7 +231,7 @@ fn text_programs_keep_native_side_results_and_the_typed_projection_contract() {
         panic!("native map")
     };
     assert!(
-        matches!(&entries["arith.constant"], DiffProgramOutput::Map(nested) if nested["arith.constant"] == DiffProgramOutput::Count(1))
+        matches!(&entries.iter().find(|(key, _)| key == "arith.constant").unwrap().1, DiffProgramOutput::Map(nested) if nested.iter().find(|(key, _)| key == "arith.constant").unwrap().1 == DiffProgramOutput::Count(1))
     );
 
     assert_eq!(
@@ -561,4 +561,116 @@ fn flat_diff_sets_parse_and_drop_on_a_normal_thread() {
     })
     .join()
     .unwrap();
+}
+
+#[test]
+fn dictionaries_and_sets_retain_operand_order_and_native_sides() {
+    use zirium::query::{
+        DiffProgram, DiffProgramOutput, EvaluationLimits, EvaluationOptions, diff_value_to_json,
+    };
+    let before = document(
+        r#"module {
+        "test.z"() {v = 1 : i64} : () -> ()
+        "test.a"() {v = 1 : i64} : () -> ()
+        "test.m"() {v = 1 : i64} : () -> ()
+    }"#,
+    );
+    let after = document(
+        r#"module {
+        "test.z"() {v = 2 : i64} : () -> ()
+        "test.a"() {v = 2 : i64} : () -> ()
+        "test.m"() {v = 2 : i64} : () -> ()
+    }"#,
+    );
+    let diff = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits::default(),
+    )
+    .unwrap();
+    let source = r#"
+        selected = reverse;
+        counts = selected | map_by(names, count);
+        counts;
+        counts | sort_by(value) | reverse | sort_by( value ) | head(2);
+        selected | map_by(names, before | map_by(names, count));
+        counts | head(0);
+        filter(false) | names | tally | sort_by(value) | reverse | tail(1);
+        (selected union input) | names;
+        (selected intersect input) | names;
+        (selected except head(1)) | names;
+        (after | parent union after | parent) | names;
+        (after | reverse intersect after) | names;
+    "#;
+    let mut outputs = vec![];
+    DiffProgram::parse(source)
+        .unwrap()
+        .evaluate(
+            &diff,
+            ("before", "after"),
+            EvaluationLimits::default(),
+            EvaluationOptions::default(),
+            |_, value, _| {
+                outputs.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    let mut budget = zirql::Budget::new(zirql::Limits {
+        work: 100_000,
+        items: 1_000,
+        nesting: 64,
+    });
+    let json = diff_value_to_json(&diff, &outputs[0], &mut budget).unwrap();
+    assert_eq!(
+        json.as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["test.m", "test.a", "test.z"]
+    );
+    let json = diff_value_to_json(&diff, &outputs[1], &mut budget).unwrap();
+    assert_eq!(
+        json.as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["test.z", "test.a"]
+    );
+    let DiffProgramOutput::Map(nested) = &outputs[2] else {
+        panic!("native dictionary");
+    };
+    let DiffProgramOutput::Map(inner) = &nested[0].1 else {
+        panic!("nested dictionary");
+    };
+    assert_eq!(inner[0].0, "test.m");
+    let json = diff_value_to_json(&diff, &outputs[2], &mut budget).unwrap();
+    assert_eq!(
+        json.as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["test.m", "test.a", "test.z"]
+    );
+    assert!(matches!(&outputs[3], DiffProgramOutput::Map(entries) if entries.is_empty()));
+    assert!(matches!(&outputs[4], DiffProgramOutput::Map(entries) if entries.is_empty()));
+    assert_eq!(
+        outputs[5],
+        DiffProgramOutput::Strings(vec!["test.m".into(), "test.a".into(), "test.z".into()])
+    );
+    assert_eq!(outputs[6], outputs[5]);
+    assert_eq!(
+        outputs[7],
+        DiffProgramOutput::Strings(vec!["test.m".into(), "test.a".into()])
+    );
+    assert_eq!(
+        outputs[8],
+        DiffProgramOutput::Strings(vec!["builtin.module".into()])
+    );
+    assert_eq!(outputs[9], outputs[5]);
 }

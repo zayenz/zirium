@@ -245,11 +245,11 @@ fn result_units(value: &QueryOutput) -> usize {
     match value {
         QueryOutput::Native(NativeValue::Map(entries)) => {
             1 + entries
-                .values()
-                .map(|value| 1 + result_units(value))
+                .iter()
+                .map(|(_, value)| 1 + result_units(value))
                 .sum::<usize>()
         }
-        QueryOutput::Map(_) | QueryOutput::RankedMap(_) => 1 + output_size(value),
+        QueryOutput::Map(_) => 1 + output_size(value),
         _ => output_size(value).max(1),
     }
 }
@@ -423,10 +423,6 @@ fn json_allocation(document: &Document, value: &QueryOutput) -> (usize, usize) {
         }
         QueryOutput::Values(rows) => (1 + rows.len(), rows.iter().map(String::len).sum()),
         QueryOutput::Map(rows) => (
-            1 + rows.values().map(|v| 1 + json_size(v)).sum::<usize>(),
-            copied_bytes(value),
-        ),
-        QueryOutput::RankedMap(rows) => (
             1 + rows.iter().map(|(_, v)| 1 + json_size(v)).sum::<usize>(),
             copied_bytes(value),
         ),
@@ -486,7 +482,7 @@ fn json(
 ) -> Result<String, EvaluationError> {
     use serde::ser::{SerializeMap, Serializer};
     let mut bytes = Vec::new();
-    if let QueryOutput::RankedMap(entries) = value {
+    if let QueryOutput::Map(entries) = value {
         let mut serializer = serde_json::Serializer::pretty(BudgetWriter {
             bytes: &mut bytes,
             budget,
@@ -546,16 +542,15 @@ pub(super) fn copy_value(
     }
     if let QueryOutput::Native(NativeValue::Map(entries)) = value {
         charge_results(budget, 1 + entries.len(), range)?;
-        let mut result = BTreeMap::new();
+        let mut result = Vec::with_capacity(entries.len());
         for (key, value) in entries {
             charge_bytes(budget, key.len(), range)?;
-            result.insert(key.clone(), copy_value(value, budget, range)?);
+            result.push((key.clone(), copy_value(value, budget, range)?));
         }
         return Ok(QueryOutput::Native(NativeValue::Map(result)));
     }
-    let ranked_map = if let QueryOutput::RankedMap(entries) = value {
-        // Ranked maps contain admitted scalars. Check the copied entry storage
-        // and charge its visits before scanning keys and scalar content.
+    let textual_map = if let QueryOutput::Map(entries) = value {
+        // Check entry storage before scanning keys and nested values.
         let units = entries
             .len()
             .checked_add(1)
@@ -576,7 +571,7 @@ pub(super) fn copy_value(
         false
     };
     admit(value, budget, range)?;
-    if ranked_map || budget.remaining_results().is_some() {
+    if textual_map || budget.remaining_results().is_some() {
         budget
             .charge(copied_bytes(value), zirql::Location::Query(range.clone()))
             .map_err(core_error)?;
@@ -598,10 +593,6 @@ fn copied_bytes(value: &QueryOutput) -> usize {
             .map(|(key, value)| key.len() + copied_bytes(value))
             .sum(),
         QueryOutput::Map(entries) => entries
-            .iter()
-            .map(|(key, value)| key.len() + json_bytes(value))
-            .sum(),
-        QueryOutput::RankedMap(entries) => entries
             .iter()
             .map(|(key, value)| key.len() + json_bytes(value))
             .sum(),
@@ -1108,6 +1099,7 @@ impl Validator<'_> {
                     ),
                     "unique requires an operation or value stream",
                 )?,
+                S::Sort { .. } if matches!(kind, Kind::Map | Kind::NativeMap) => {}
                 S::Sort { .. }
                 | S::Min { .. }
                 | S::Max { .. }
@@ -1122,10 +1114,12 @@ impl Validator<'_> {
                         fields: vec![("key".into(), kind)],
                     }));
                 }
-                S::SortBy { selector, .. } if kind == Kind::Map => require(
-                    selector.is_map_value(),
-                    "sort_by on a map requires the scalar selector value",
-                )?,
+                S::SortBy { selector, .. } if matches!(kind, Kind::Map | Kind::NativeMap) => {
+                    require(
+                        selector.is_map_value(),
+                        "sort_by on a map requires the scalar selector value",
+                    )?
+                }
                 S::SortBy { selector, .. }
                 | S::MinBy { selector, .. }
                 | S::MinAllBy { selector, .. }

@@ -31,7 +31,7 @@ def test_navigation_composition_and_native_types():
     assert isinstance(seed, QueryExpr)
     assert doc.query(seed.users().count()) == 2
     assert doc.query(seed.users().unique().names()) == ["test.add"]
-    assert doc.query(seed.users().union(seed).names()) == ["test.seed", "test.add"]
+    assert doc.query(seed.users().union(seed).names()) == ["test.add", "test.seed"]
     assert doc.query(seed.users().difference(seed.users()).count()) == 0
     assert doc.query(seed.users().intersect(ops().filter(op("test.add"))).count()) == 1
     names = seed.users().names()
@@ -81,6 +81,25 @@ def test_nested_queries_maps_ordering_and_relative_input():
         "second": {"test.idle": 1},
     }
     assert doc.query(scopes.map_by(key, ops().count())) == {"first": 6, "second": 6}
+    assert list(result) == ["first", "second"]
+    assert list(result["first"]) == ["test.seed", "test.add", "test.end"]
+    tied = scopes.reverse().map_by(key, ops().count())
+    assert list(doc.query(tied)) == ["second", "first"]
+    assert list(doc.query(tied.sort_by_value().reverse().sort_by_value())) == [
+        "first",
+        "second",
+    ]
+    assert list(doc.query(tied.sort().head(1))) == ["first"]
+    assert doc.query(tied.head(0)) == {}
+    from zirium.query import ReportExpr as E
+
+    assert list(doc.query(tied.head_expr(E(1)))) == ["second"]
+    assert list(doc.query(tied.tail_expr(E(1)))) == ["first"]
+    assert list(doc.query(tied.tail(1))) == ["first"]
+    assert list(doc.query(scopes.reverse().map_by(key, input().children()))) == [
+        "second",
+        "first",
+    ]
     selections = doc.query(scopes.map_by(key, input().children()))
     assert_type(selections, dict[str, list[zirium.SemanticOperation]])
     assert selections["first"][0].name == "test.seed"
@@ -722,6 +741,9 @@ def test_report_ordering_helpers_preserve_rows_ties_and_optional_results():
         "empty_max": None,
         "fallback": 7,
     }
+    dictionary = doc.query(report(E({"z": 1, "a": 1, "m": 0}).sort_by_value()))
+    assert isinstance(dictionary, dict)
+    assert list(dictionary) == ["m", "z", "a"]
     with pytest.raises(ValueError, match="missing ordering field"):
         doc.query(report(E([{"score": 1}, {"other": 2}]).min_by("score")))
 

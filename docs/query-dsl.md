@@ -141,10 +141,12 @@ respectively.
 Navigation preserves order and duplicates. A consumer using the same result twice
 appears twice in `users()`. Add `unique()` when counting distinct operations.
 `union(other)`, `intersect(other)`, and `difference(other)` combine operation or
-string queries. Operation sets use document order; string sets preserve first
-appearance. Each operand is a complete expression evaluated with the same input.
+string queries. Union keeps first appearance from the left operand, then the right.
+Intersection and difference deduplicate in left-operand order. Each operand is
+a complete expression evaluated with the same input.
 
-`head(n)`, `tail(n)`, and `reverse()` apply to streams; `sort()` applies to strings.
+`head(n)`, `tail(n)`, and `reverse()` apply to streams and dictionaries;
+`sort()` orders strings or dictionary keys.
 These operate on computed streams and do not avoid parsing the document or
 executing earlier stages.
 
@@ -165,8 +167,11 @@ unchanged. It preserves duplicate semantics, detects cycles, and obeys work and
 item limits. For accumulating transitive users, use
 `arithmetic.fixpoint(input().union(input().users()))`.
 
-Map ranking is available in textual queries. Typed `MapQuery` returns a
-`BTreeMap` or Python `dict` with lexical key order and has no `sort_by(value)`.
+`MapQuery` returns ordered `Vec<(String, T)>` entries in Rust and a Python
+`dict` in insertion order. `sort_by_value()` stably orders scalar values;
+`sort()` orders keys. Both return a dictionary query, as do `reverse()`,
+`head(n)` and `tail(n)`. Equal values retain their current order, including
+after reversal. `head_expr` and `tail_expr` accept a `ReportExpr` bound.
 
 `reachable()` treats an unregistered operation as a retained leaf by default;
 it does not follow that operation's regions, operands, successors, or symbol
@@ -206,13 +211,13 @@ let report = functions.map_by(
     &input().string_attr("sym_name").one(),
     &input().children().subtree().names().tally(),
 );
-let histograms = document.query(&report)?; // BTreeMap<String, BTreeMap<String, usize>>
+let histograms = document.query(&report)?; // Vec<(String, Vec<(String, usize)>)>
 ```
 
 `one()` requires exactly one string and returns a scalar. Missing or multiple
 strings are errors. `map_by` rejects duplicate keys. `tally()` instead combines
-equal strings and returns their occurrence counts. Maps have lexically ordered
-keys. Empty inputs produce empty maps.
+equal strings and returns their occurrence counts in first-occurrence order.
+`map_by` retains input order. Empty inputs produce empty maps.
 
 Map values can also be operation selections, type or attribute selections,
 strings, scalar strings, counts, or nested maps. Operations remain usable handles;
@@ -247,7 +252,7 @@ tie, and all-extrema retain every tie. Extrema on empty streams are errors.
 | `attributes(name)` | `Vec<AttributeId>` | `list[SemanticAttribute]` |
 | String query followed by `one()` | `String` | `str` |
 | `count()` | `usize` | `int` |
-| `tally()` | `BTreeMap<String, usize>` | `dict[str, int]` |
+| `tally()` | `Vec<(String, usize)>` | `dict[str, int]` |
 
 Type and attribute queries expose `spellings()` for retained MLIR text.
 `string_attr(name)` decodes string attributes, omits missing attributes, and

@@ -23,7 +23,7 @@ pub enum DiffProgramOutput {
     Operations(DiffSide, Vec<DiffOperation>),
     Strings(Vec<String>),
     Count(usize),
-    Map(BTreeMap<String, DiffProgramOutput>),
+    Map(Vec<(String, DiffProgramOutput)>),
     Json(serde_json::Value, Option<DiffSide>),
     Text(String),
 }
@@ -232,7 +232,10 @@ pub(super) enum DiffStage {
     Graph(OperationTraversal),
     Fixpoint(Box<OwnedExpression>),
     Reverse,
+    Head(usize),
     Tail(usize),
+    Count,
+    SortMapValue,
     Names,
     Attr(String),
     ResultTypes,
@@ -399,10 +402,10 @@ fn copy(
     admit(budget, value.len().max(1), range)?;
     match value {
         DiffProgramOutput::Map(entries) => {
-            let mut result = BTreeMap::new();
+            let mut result = Vec::with_capacity(entries.len());
             for (key, value) in entries {
                 program::charge_bytes(budget, key.len(), range)?;
-                result.insert(key.clone(), copy(value, budget, range)?);
+                result.push((key.clone(), copy(value, budget, range)?));
             }
             Ok(DiffProgramOutput::Map(result))
         }
@@ -849,16 +852,68 @@ fn evaluate_stage(
         | DiffStage::Attr(_)
         | DiffStage::ResultTypes
         | DiffStage::OperandTypes => project(diff, value, stage, budget, range),
-        DiffStage::Reverse | DiffStage::Tail(_) => {
+        DiffStage::Count => Ok(DiffProgramOutput::Count(value.len())),
+        DiffStage::SortMapValue => {
+            let DiffProgramOutput::Map(entries) = value else {
+                return Err(failure("sort_by(value) requires a map", range));
+            };
+            zirql::sort_map_by_value(
+                entries,
+                budget,
+                zirql::Location::Query(range.clone()),
+                |value, budget| match value {
+                    DiffProgramOutput::Count(count) => Ok(zirql::ScalarMapKey::Unsigned(
+                        u64::try_from(*count).map_err(|_| {
+                            zirql::EvaluationError::Host(failure(
+                                "count exceeds unsigned map key range",
+                                range,
+                            ))
+                        })?,
+                    )),
+                    DiffProgramOutput::Json(value, _) => {
+                        super::scalar_map_key(value, budget, range)
+                    }
+                    _ => Err(zirql::EvaluationError::Host(failure(
+                        "sort_by(value) requires scalar map values",
+                        range,
+                    ))),
+                },
+            )
+            .map(DiffProgramOutput::Map)
+            .map_err(program::evaluation_error)
+        }
+        DiffStage::Reverse | DiffStage::Head(_) | DiffStage::Tail(_) => {
+            if let DiffProgramOutput::Map(mut entries) = value {
+                let selection = match stage {
+                    DiffStage::Reverse => zirql::MapSelection::Reverse,
+                    DiffStage::Head(count) => zirql::MapSelection::Head(*count),
+                    DiffStage::Tail(count) => zirql::MapSelection::Tail(*count),
+                    _ => unreachable!(),
+                };
+                zirql::select_map(
+                    &mut entries,
+                    selection,
+                    budget,
+                    zirql::Location::Query(range.clone()),
+                )
+                .map_err(core_error)?;
+                return Ok(DiffProgramOutput::Map(entries));
+            }
             let (kind, mut items) = rows(value)?;
             match stage {
                 DiffStage::Reverse => zirql::reverse(&mut items),
+                DiffStage::Head(count) => items.truncate(*count),
                 DiffStage::Tail(count) => zirql::tail(&mut items, *count),
                 _ => {}
             }
             Ok(from_rows(kind, items))
         }
         DiffStage::Sort | DiffStage::Extreme { .. } => {
+            if matches!(stage, DiffStage::Sort)
+                && let DiffProgramOutput::Map(entries) = value
+            {
+                return super::order_map_keys(entries, budget, range).map(DiffProgramOutput::Map);
+            }
             let DiffProgramOutput::Strings(strings) = value else {
                 return Err(failure("sort and extrema require strings", range));
             };
@@ -1244,9 +1299,9 @@ fn combine(
             }
             zirql::combine_native_set(
                 operator,
-                left.into_iter(),
-                right.into_iter(),
-                diff.change_ids().map(Ok),
+                left.iter().copied(),
+                right.iter().copied(),
+                left.iter().chain(&right).copied().map(Ok),
                 budget,
                 location,
                 |_, _| Ok(()),
@@ -1266,16 +1321,22 @@ fn combine(
             }
             for operation in left.iter().chain(&right) {
                 charge(budget, 1, range)?;
-                diff.operation_id(*operation).map_err(diff_error)?;
+                if operation.side() != side {
+                    return Err(failure(
+                        "set operation handle has a different diff side",
+                        range,
+                    ));
+                }
+                let id = diff.operation_id(*operation).map_err(diff_error)?;
+                diff.document(side)
+                    .check_operation(id)
+                    .map_err(|error| failure(error.to_string(), range))?;
             }
             let selected = zirql::combine_native_set(
                 operator,
-                left.into_iter(),
-                right.into_iter(),
-                diff.document(side).operations().map(|id| {
-                    diff.scoped_operation(side, id)
-                        .map_err(|error| zirql::EvaluationError::Host(diff_error(error)))
-                }),
+                left.iter().copied(),
+                right.iter().copied(),
+                left.iter().chain(&right).copied().map(Ok),
                 budget,
                 location,
                 |_, _| Ok(()),
@@ -1848,10 +1909,25 @@ fn validate_stage(
             require(selection, "projection requires changes or operations")?;
             Kind::Strings
         }
-        DiffStage::Reverse | DiffStage::Tail(_) => {
-            require(stream, "stage requires a stream")?;
+        DiffStage::Count => {
+            require(
+                stream || input == Kind::Map,
+                "count requires a stream or map",
+            )?;
+            Kind::Count
+        }
+        DiffStage::SortMapValue => {
+            require(input == Kind::Map, "sort_by(value) requires a map")?;
             input
         }
+        DiffStage::Reverse | DiffStage::Head(_) | DiffStage::Tail(_) => {
+            require(
+                stream || input == Kind::Map,
+                "stage requires a stream or map",
+            )?;
+            input
+        }
+        DiffStage::Sort if input == Kind::Map => input,
         DiffStage::Sort | DiffStage::Extreme { .. } => {
             require(input == Kind::Strings, "sort and extrema require strings")?;
             input

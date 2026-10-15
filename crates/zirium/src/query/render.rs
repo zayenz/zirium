@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::ops::Range;
 
@@ -78,8 +78,7 @@ pub(super) fn markdown(
 
 fn map_entries(output: &QueryOutput) -> Option<Vec<(&String, &serde_json::Value)>> {
     match output {
-        QueryOutput::Map(entries) => Some(entries.iter().collect()),
-        QueryOutput::RankedMap(entries) => {
+        QueryOutput::Map(entries) => {
             Some(entries.iter().map(|(key, value)| (key, value)).collect())
         }
         _ => None,
@@ -94,7 +93,8 @@ fn markdown_map(
         return Ok(finish(String::new(), true));
     }
     if entries.iter().all(|(_, value)| value.is_object()) {
-        let mut columns = BTreeSet::new();
+        let mut columns = Vec::new();
+        let mut seen = HashSet::new();
         for &(key, value) in entries {
             for (column, value) in value.as_object().unwrap() {
                 if value.is_array() || value.is_object() {
@@ -102,13 +102,13 @@ fn markdown_map(
                         "markdown cell at row `{key}`, column `{column}` is nested; expected a scalar, use json for deeper data"
                     )));
                 }
-                if columns.insert(column.as_str()) {
+                if seen.insert(column.as_str()) {
+                    columns.push(column.as_str());
                     // Bound the union before expanding sparse rows into a rectangle.
                     table_budget(entries.len(), columns.len() + 1, state)?;
                 }
             }
         }
-        let columns: Vec<_> = columns.into_iter().collect();
         let mut headers = vec!["Key"];
         headers.extend(&columns);
         table_budget(entries.len(), headers.len(), state)?;

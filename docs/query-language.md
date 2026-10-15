@@ -9,10 +9,11 @@ filter(op("arith.addi")) | users | filter(has_attr("analysis.tag"))
 
 This finds `arith.addi` operations, follows their direct users, and keeps users
 with an `analysis.tag` attribute. Navigation replaces the stream and preserves
-duplicates; edits keep the selection. Operation set operators, `closure`,
-`backward_slice`, `forward_slice`, and `reachable` produce source-ordered sets.
-`slice` is an alias for `backward_slice`. Use `unique` to remove duplicates
-from other streams.
+duplicates; edits keep the selection. `closure`, `backward_slice`,
+`forward_slice`, and `reachable` produce source-ordered sets. `slice` is an alias
+for `backward_slice`. Use `unique` to remove duplicates from other streams.
+Set union keeps first appearance from the left operand, then the right.
+Intersection and difference deduplicate in left-operand order.
 
 For Rust and Python builders with native results, see the
 [structured query guide](query-dsl.md).
@@ -156,8 +157,8 @@ those stages in a query statement. Use `union` to combine saved selections;
 
 `tally` counts how many times each value occurs and returns a map from strings
 to counts. For example, `names | tally` counts operations by their full names.
-An empty value stream produces `{}`. Maps print as JSON objects, with keys
-sorted lexically. `json` can also emit a map explicitly.
+An empty value stream produces `{}`. Dictionaries print as JSON objects, with
+keys in first-occurrence order. `json` can also emit a map explicitly.
 
 To map function names to their number of matmuls:
 
@@ -203,8 +204,9 @@ become queries relative to the current function.
 
 ## Ordering, bounds, and extrema
 
-`sort` orders a value stream lexically. `reverse` reverses an operation stream,
-value stream, or explicitly ranked map. `head(n)` keeps the first `n` items,
+`sort` orders a value stream lexically or a dictionary by its string keys.
+`reverse` reverses an operation stream, value stream, or dictionary. `head(n)`
+keeps the first `n` items,
 while `tail(n)` keeps the last `n`; both preserve the retained items' order.
 These stages truncate an already computed stream. They do not avoid parsing the
 whole file or evaluating earlier stages.
@@ -224,16 +226,16 @@ selector rules as `sort_by`; the first operation wins a tie. The corresponding
 every tied extreme in its previous order. All extrema stages report an error on
 an empty stream. Use `reverse` after `sort` or `sort_by` for descending order.
 
-Unranked maps remain sorted lexically by key. Use `sort_by(value)` on a `tally`
-or `map_by` map whose values are comparable scalars of one type. The result is
-an explicitly ranked map, and `reverse`, `head`, and `tail` preserve that order
-through bindings, JSON, and Markdown output. Equal values use lexical key order;
-`reverse` reverses the whole order, including ties. Nested map values are not
-implicitly ranked: project a scalar first.
+Dictionaries keep insertion order. `map_by` uses input order, and `tally` keeps
+the first occurrence of each spelling. Use `sort_by(value)` on a dictionary
+whose values are comparable scalars of one type. Sorting returns a dictionary;
+`reverse`, `head`, and `tail` retain that kind through bindings, nested results,
+JSON objects, and Markdown. Equal values retain their current order, including
+after reversal. Nested map values need an explicit scalar projection.
 Here `value` is a map-entry selector, not a general pipeline stage. Supported
 categories are null, Boolean, number and string. Signed and unsigned integers
 and finite floats share the numeric category and compare without losing integer
-precision. Other categories cannot mix. Ranking, comparisons and subsequent
+precision. Other categories cannot mix. Sorting, comparisons and subsequent
 bounds share the request's work and result limits.
 
 ## Building JSON structures
@@ -628,8 +630,9 @@ For example, `{"a": {"add": 2}, "b": {"add": 1, "mul": 3}}` renders as:
 | a | 2 | |
 | b | 1 | 3 |
 
-Map rows and columns are sorted lexically, except that ranked maps retain their
-row order. Missing cells and null values are blank. Other scalars are strings,
+Dictionary rows follow their current entry order. Columns follow the first
+occurrence of each inner key. Missing cells and null values are blank. Other
+scalars are strings,
 numbers, or booleans. Empty inner maps contribute blank rows; if every inner
 map is empty, only the `Key` column remains.
 

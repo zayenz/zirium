@@ -64,6 +64,15 @@ implicitly crosses document sides.
 Text programs and typed builders use one native diff host with Zirql's statement,
 expression, predicate and collection execution. Nested fixed-point bodies,
 selectors and navigation share the active work, item and nesting allowance.
+
+Set union keeps first appearance from the left operand, then the right;
+intersection and difference deduplicate in left-operand order. Navigation keeps
+its domain order. Dictionaries from `map_by` keep input order and `tally` keeps
+first-seen keys. `sort` orders dictionary keys and `sort_by(value)` stably sorts
+scalar values. `reverse`, `head(n)` and `tail(n)` retain dictionary kind and
+current order through saved results, nesting and JSON objects. Equal value keys
+retain their incoming order. An empty dictionary remains a dictionary.
+
 Fixed points compare ordered selections, including duplicates, and refuse cycles
 or a change of side. The initial change stream must fit the item ceiling before
 filtering. Flat pipelines and set chains do not add a nesting level per term.

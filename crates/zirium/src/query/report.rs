@@ -473,7 +473,7 @@ pub(super) fn output_kind(
         }
         QueryOutput::Values(_) => K::Strings,
         QueryOutput::Count(_) => K::Count,
-        QueryOutput::Map(_) | QueryOutput::RankedMap(_) => K::Map,
+        QueryOutput::Map(_) => K::Map,
         QueryOutput::Native(NativeValue::Map(_)) => K::NativeMap,
         QueryOutput::Array(_) => K::Array,
         QueryOutput::Native(NativeValue::String(_)) => K::String,
@@ -874,9 +874,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         {
             let input =
                 functions::owned(input, budget, range).map_err(zirql::EvaluationError::Host)?;
-            if matches!(input, QueryOutput::Map(_) | QueryOutput::RankedMap(_))
-                && order == zirql::NativeOrder::Sort
-            {
+            if matches!(input, QueryOutput::Map(_)) && order == zirql::NativeOrder::Sort {
                 return Err(zirql::EvaluationError::Host(
                     EvaluationError::new("sort_by on a map requires the scalar selector value")
                         .at(range.clone()),

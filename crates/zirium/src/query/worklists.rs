@@ -102,7 +102,7 @@ pub(super) fn admit_input(
             QueryOutput::Native(NativeValue::Map(record)) => {
                 capture::slots::<&QueryOutput>(record.len(), budget, range)
                     .map_err(zirql::EvaluationError::Host)?;
-                pending.extend(record.values());
+                pending.extend(record.iter().map(|(_, value)| value));
             }
             _ => {}
         }

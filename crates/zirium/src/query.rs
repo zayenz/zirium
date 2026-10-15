@@ -208,9 +208,7 @@ pub enum QueryOutput {
     Operations(Vec<OperationId>),
     Values(Vec<String>),
     Count(usize),
-    Map(serde_json::Map<String, serde_json::Value>),
-    /// A textual report map whose entry order was chosen explicitly.
-    RankedMap(Vec<(String, serde_json::Value)>),
+    Map(Vec<(String, serde_json::Value)>),
     Array(Vec<serde_json::Value>),
     Json(String),
     Text(String),
@@ -263,7 +261,7 @@ pub enum NativeValue {
     String(String),
     Types(Vec<TypeId>),
     Attributes(Vec<(String, AttributeId)>),
-    Map(BTreeMap<String, QueryOutput>),
+    Map(Vec<(String, QueryOutput)>),
 }
 
 /// An owned parsing error at the responsible query byte position.
@@ -880,7 +878,13 @@ fn evaluate_host_stage(
                 return Err(EvaluationError::new("JSON nesting limit exceeded"));
             }
             current = match value {
-                serde_json::Value::Object(entries) => QueryOutput::Map(entries),
+                serde_json::Value::Object(entries) => {
+                    let range = program::range(stage.range());
+                    capture::slots::<(String, serde_json::Value)>(entries.len(), budget, &range)?;
+                    charge(budget, entries.len())?;
+                    program::charge_results(budget, entries.len() + 1, &range)?;
+                    QueryOutput::Map(entries.into_iter().collect())
+                }
                 serde_json::Value::Array(values) => QueryOutput::Array(values),
                 _ => unreachable!("literal stages start with an object or array"),
             };
@@ -959,7 +963,7 @@ fn evaluate_host_stage(
             )
             .map_err(program::evaluation_error)?;
             program::charge_results(budget, entries.len().saturating_add(1), &range)?;
-            current = QueryOutput::Map(entries.into_iter().collect());
+            current = QueryOutput::Map(entries);
         }
         model::Stage::NativeMap { mapping, .. } => {
             current = report::evaluate_map(
@@ -1076,23 +1080,36 @@ fn evaluate_host_stage(
             }));
         }
         model::Stage::Sort { .. } => {
-            let QueryOutput::Values(values) = &mut current else {
-                return Err(EvaluationError::new(
-                    "sort requires a value stream; use names or attr first",
-                ));
+            let range = program::range(stage.range());
+            current = match current {
+                QueryOutput::Map(entries) => {
+                    order_map_keys(entries, budget, &range).map(QueryOutput::Map)?
+                }
+                QueryOutput::Native(NativeValue::Map(entries)) => {
+                    order_map_keys(entries, budget, &range)
+                        .map(|entries| QueryOutput::Native(NativeValue::Map(entries)))?
+                }
+                QueryOutput::Values(values) => QueryOutput::Values(order_strings(
+                    values,
+                    zirql::NativeOrder::Sort,
+                    budget,
+                    &range,
+                )?),
+                _ => {
+                    return Err(
+                        EvaluationError::new("sort requires a value stream or map").at(range)
+                    );
+                }
             };
-            *values = order_strings(
-                std::mem::take(values),
-                zirql::NativeOrder::Sort,
-                budget,
-                &program::range(stage.range()),
-            )?;
         }
         model::Stage::SortBy { selector, .. } => {
             if selector.is_map_value() {
                 current = sort_map_by_value(current, budget, &program::range(stage.range()))?;
             } else {
-                if matches!(current, QueryOutput::Map(_) | QueryOutput::RankedMap(_)) {
+                if matches!(
+                    current,
+                    QueryOutput::Map(_) | QueryOutput::Native(NativeValue::Map(_))
+                ) {
                     return Err(EvaluationError::new(
                         "sort_by on a map requires the scalar selector value",
                     ));
@@ -1114,7 +1131,14 @@ fn evaluate_host_stage(
             QueryOutput::Values(values) => zirql::reverse(values),
             QueryOutput::Native(NativeValue::Types(values)) => zirql::reverse(values),
             QueryOutput::Native(NativeValue::Attributes(values)) => zirql::reverse(values),
-            QueryOutput::RankedMap(entries) => zirql::select_ranked_map(
+            QueryOutput::Map(entries) => zirql::select_map(
+                entries,
+                zirql::MapSelection::Reverse,
+                budget,
+                zirql::Location::Query(program::range(stage.range())),
+            )
+            .map_err(core_error)?,
+            QueryOutput::Native(NativeValue::Map(entries)) => zirql::select_map(
                 entries,
                 zirql::MapSelection::Reverse,
                 budget,
@@ -1123,7 +1147,7 @@ fn evaluate_host_stage(
             .map_err(core_error)?,
             _ => {
                 return Err(EvaluationError::new(
-                    "reverse requires an operation stream, value stream, or ranked map",
+                    "reverse requires an operation stream, value stream, or map",
                 ));
             }
         },
@@ -1428,7 +1452,6 @@ fn countable_len(output: &QueryOutput, stage: &str) -> Result<usize, EvaluationE
         QueryOutput::Operations(selected) => Ok(selected.len()),
         QueryOutput::Values(values) => Ok(values.len()),
         QueryOutput::Map(values) => Ok(values.len()),
-        QueryOutput::RankedMap(values) => Ok(values.len()),
         QueryOutput::Array(values) => Ok(values.len()),
         QueryOutput::Native(NativeValue::OperationSequence(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Types(values)) => Ok(values.len()),
@@ -1461,7 +1484,6 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Operations(values) => values.len(),
         QueryOutput::Values(values) => values.len(),
         QueryOutput::Map(values) => values.len(),
-        QueryOutput::RankedMap(values) => values.len(),
         QueryOutput::Array(values) => values.len(),
         QueryOutput::Native(NativeValue::OperationSequence(values)) => values.len(),
         QueryOutput::Native(NativeValue::Types(values)) => values.len(),
@@ -1503,7 +1525,18 @@ fn truncate_stream(
         QueryOutput::Values(values) => truncate(values, count, from_end),
         QueryOutput::Native(NativeValue::Types(values)) => truncate(values, count, from_end),
         QueryOutput::Native(NativeValue::Attributes(values)) => truncate(values, count, from_end),
-        QueryOutput::RankedMap(values) => zirql::select_ranked_map(
+        QueryOutput::Map(values) => zirql::select_map(
+            values,
+            if from_end {
+                zirql::MapSelection::Tail(count)
+            } else {
+                zirql::MapSelection::Head(count)
+            },
+            budget,
+            zirql::Location::Query(range.clone()),
+        )
+        .map_err(core_error)?,
+        QueryOutput::Native(NativeValue::Map(values)) => zirql::select_map(
             values,
             if from_end {
                 zirql::MapSelection::Tail(count)
@@ -1516,7 +1549,7 @@ fn truncate_stream(
         .map_err(core_error)?,
         _ => {
             return Err(EvaluationError::new(
-                "head and tail require an operation stream, value stream, or ranked map",
+                "head and tail require an operation stream, value stream, or map",
             ));
         }
     }
@@ -1563,41 +1596,80 @@ fn order_strings(
     .map_err(program::evaluation_error)
 }
 
+fn order_map_keys<V>(
+    entries: Vec<(String, V)>,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<Vec<(String, V)>, EvaluationError> {
+    zirql::order_native_by(
+        entries,
+        zirql::NativeOrder::Sort,
+        budget,
+        zirql::Location::Query(range.clone()),
+        |(key, _), budget| {
+            program::charge_bytes(budget, key.len(), range)
+                .map_err(zirql::EvaluationError::Host)?;
+            program::charge_results(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            Ok(zirql::NativeOrderKey::Text(key.clone()))
+        },
+    )
+    .map_err(program::evaluation_error)
+}
+
 fn sort_map_by_value(
     output: QueryOutput,
     budget: &mut zirql::Budget,
     range: &std::ops::Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
-    let entries = match output {
+    let location = zirql::Location::Query(range.clone());
+    match output {
         QueryOutput::Map(entries) => {
-            let count = entries.len();
-            let units = count
-                .checked_add(1)
-                .filter(|_| {
-                    count
-                        .checked_mul(std::mem::size_of::<(String, serde_json::Value)>())
-                        .is_some_and(|bytes| bytes <= isize::MAX as usize)
-                })
-                .ok_or_else(|| {
-                    EvaluationError::new("native map storage limit exceeded").at(range.clone())
-                })?;
-            budget
-                .charge(units, zirql::Location::Query(range.clone()))
-                .map_err(core_error)?;
-            program::charge_results(budget, units, range)?;
-            entries.into_iter().collect()
+            zirql::sort_map_by_value(entries, budget, location, |value, budget| {
+                scalar_map_key(value, budget, range)
+            })
+            .map(QueryOutput::Map)
+            .map_err(program::evaluation_error)
         }
-        QueryOutput::RankedMap(entries) => entries,
-        _ => return Err(EvaluationError::new("sort_by(value) requires a map")),
-    };
-    zirql::rank_map_by_value(
-        entries,
-        budget,
-        zirql::Location::Query(range.clone()),
-        |value, budget| scalar_map_key(value, budget, range),
-    )
-    .map(QueryOutput::RankedMap)
-    .map_err(program::evaluation_error)
+        QueryOutput::Native(NativeValue::Map(entries)) => {
+            zirql::sort_map_by_value(entries, budget, location, |value, budget| {
+                native_map_key(value, budget, range)
+            })
+            .map(|entries| QueryOutput::Native(NativeValue::Map(entries)))
+            .map_err(program::evaluation_error)
+        }
+        _ => Err(EvaluationError::new("sort_by(value) requires a map").at(range.clone())),
+    }
+}
+
+fn native_map_key(
+    value: &QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<zirql::ScalarMapKey, zirql::EvaluationError<EvaluationError>> {
+    use zirql::ScalarMapKey as K;
+    match value {
+        QueryOutput::Native(NativeValue::Retained(value)) => native_map_key(value, budget, range),
+        QueryOutput::Count(count) => Ok(K::Unsigned(u64::try_from(*count).map_err(|_| {
+            zirql::EvaluationError::Host(EvaluationError::new("count exceeds unsigned map key range").at(range.clone()))
+        })?)),
+        QueryOutput::Native(NativeValue::String(value)) => {
+            budget.charge(value.len(), zirql::Location::Query(range.clone()))?;
+            budget.charge_results(value.len(), zirql::Location::Query(range.clone()))?;
+            Ok(K::String(value.clone()))
+        }
+        QueryOutput::Native(NativeValue::Constructed(value)) => match value.value().data() {
+            zirql::ConstructedValue::Integer(value) => Ok(K::Integer(*value)),
+            zirql::ConstructedValue::Float(value) => Ok(K::Float(*value)),
+            zirql::ConstructedValue::Boolean(value) => Ok(K::Boolean(*value)),
+            zirql::ConstructedValue::String(value) => {
+                budget.charge(value.len(), zirql::Location::Query(range.clone()))?;
+                budget.charge_results(value.len(), zirql::Location::Query(range.clone()))?;
+                Ok(K::String(value.clone()))
+            }
+            _ => Err(zirql::EvaluationError::Host(EvaluationError::new("sort_by(value) requires scalar map values; project a scalar from nested maps first").at(range.clone()))),
+        },
+        _ => Err(zirql::EvaluationError::Host(EvaluationError::new("sort_by(value) requires scalar map values; project a scalar from nested maps first").at(range.clone()))),
+    }
 }
 
 fn scalar_map_key(
@@ -1774,13 +1846,11 @@ fn output_size(output: &QueryOutput) -> usize {
             })
         }
         QueryOutput::Native(NativeValue::Constructed(value)) => value.size(),
-        QueryOutput::Native(NativeValue::Map(entries)) => {
-            entries.values().map(|value| 1 + output_size(value)).sum()
-        }
-        QueryOutput::Map(entries) => entries.values().map(|value| 1 + json_size(value)).sum(),
-        QueryOutput::RankedMap(entries) => {
-            entries.iter().map(|(_, value)| 1 + json_size(value)).sum()
-        }
+        QueryOutput::Native(NativeValue::Map(entries)) => entries
+            .iter()
+            .map(|(_, value)| 1 + output_size(value))
+            .sum(),
+        QueryOutput::Map(entries) => entries.iter().map(|(_, value)| 1 + json_size(value)).sum(),
         QueryOutput::Array(values) => 1 + values.iter().map(json_size).sum::<usize>(),
         _ => output_len(output),
     }
@@ -1812,9 +1882,9 @@ fn evaluate_set_operator(
             }
             zirql::combine_native_set(
                 operator,
-                left.into_iter(),
-                right.into_iter(),
-                document.operations().map(Ok),
+                left.iter().copied(),
+                right.iter().copied(),
+                left.iter().chain(&right).copied().map(Ok),
                 budget,
                 location,
                 |_, _| Ok(()),
@@ -2066,10 +2136,7 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
         },
         QueryOutput::Operations(selected) => operation_json(document, selected),
         QueryOutput::Values(values) => serde_json::json!(values),
-        QueryOutput::Map(values) => serde_json::Value::Object(values.clone()),
-        QueryOutput::RankedMap(values) => {
-            serde_json::Value::Object(values.iter().cloned().collect())
-        }
+        QueryOutput::Map(values) => serde_json::Value::Object(values.iter().cloned().collect()),
         QueryOutput::Array(values) => serde_json::Value::Array(values.clone()),
         QueryOutput::Count(count) => serde_json::json!(count),
         QueryOutput::Json(value) | QueryOutput::Text(value) => {

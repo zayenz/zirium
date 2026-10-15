@@ -298,11 +298,11 @@ fn diff_sets_preserve_kind_and_reject_cross_side_empty_selections() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(output.stdout, b"test.a\ntest.b\n");
+    assert_eq!(output.stdout, b"test.b\ntest.a\n");
     for (query, expected) in [
         (
             "(after | reverse intersect after) | names",
-            &b"test.a\ntest.b\n"[..],
+            &b"test.b\ntest.a\n"[..],
         ),
         (
             r#"(after | reverse except after | filter(op("test.a"))) | names"#,

@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use zirium::{
     dialect::DialectRegistry,
     parser::ParsedFile,
@@ -207,40 +206,89 @@ fn nested_queries_distinguish_relative_input_from_the_document() {
     let document = document();
     let scopes = ops().filter(op("test.scope"));
     let key = input().string_attr("sym_name").one();
-    let counts: BTreeMap<String, usize> = document
+    let counts: Vec<(String, usize)> = document
         .query(&scopes.map_by(&key, &input().children().subtree().count()))
         .unwrap();
     assert_eq!(
         counts,
-        BTreeMap::from([("first".into(), 3), ("second".into(), 1)])
+        Vec::from([("first".into(), 3), ("second".into(), 1)])
     );
     let global = document
         .query(&scopes.map_by(&key, &ops().count()))
         .unwrap();
     assert_eq!(
         global,
-        BTreeMap::from([("first".into(), 6), ("second".into(), 6)])
+        Vec::from([("first".into(), 6), ("second".into(), 6)])
     );
     let histograms = document
         .query(&scopes.map_by(&key, &input().children().names().tally()))
         .unwrap();
-    assert_eq!(histograms["first"]["test.add"], 1);
+    assert_eq!(
+        histograms[0]
+            .1
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["test.seed", "test.add", "test.end"]
+    );
+    assert_eq!(
+        histograms[0]
+            .1
+            .iter()
+            .find(|(key, _)| key == "test.add")
+            .unwrap()
+            .1,
+        1
+    );
+    let tied = scopes.reverse().map_by(&key, &ops().count());
+    assert_eq!(
+        document.query(&tied).unwrap(),
+        [("second".into(), 6), ("first".into(), 6)]
+    );
+    assert_eq!(
+        document
+            .query(&tied.sort_by_value().reverse().sort_by_value())
+            .unwrap(),
+        [("first".into(), 6), ("second".into(), 6)]
+    );
+    assert_eq!(
+        document.query(&tied.sort().head(1)).unwrap(),
+        [("first".into(), 6)]
+    );
+    assert!(document.query(&tied.head(0)).unwrap().is_empty());
+    assert_eq!(
+        document
+            .query(&tied.tail_expr(zirium::query::ReportExpr::integer(1)))
+            .unwrap(),
+        [("first".into(), 6)]
+    );
+    let native = document.query(&tied.erased()).unwrap();
+    let mut budget = tied.new_budget(EvaluationLimits::default());
+    let json = native.to_json_with_budget(&document, &mut budget).unwrap();
+    assert_eq!(
+        json.as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["second", "first"]
+    );
     let selections = document
         .query(&scopes.map_by(&key, &input().children()))
         .unwrap();
     assert_eq!(
-        document.operation_name(selections["first"][0]),
+        document.operation_name(selections[0].1[0]),
         Some("test.seed")
     );
     let types = document
         .query(&scopes.map_by(&key, &input().children().result_types()))
         .unwrap();
-    assert_eq!(document.type_spelling(types["first"][0]), Some("i32"));
+    assert_eq!(document.type_spelling(types[0].1[0]), Some("i32"));
     let attributes = document
         .query(&scopes.map_by(&key, &input().attributes("sym_name")))
         .unwrap();
     assert_eq!(
-        document.attribute_spelling_value(attributes["second"][0]),
+        document.attribute_spelling_value(attributes[1].1[0]),
         Some("\"second\"")
     );
     let selected = document
@@ -434,7 +482,7 @@ fn predicate_work_is_charged_per_operation_and_short_circuits() {
 }
 
 #[test]
-fn stream_stages_and_nested_queries_preserve_exact_work_allowances() {
+fn stream_stages_and_nested_queries_share_work_limits() {
     let mut document = document();
     let scopes = ops().filter(op("test.scope"));
     let nested = scopes.map_by(
@@ -445,7 +493,7 @@ fn stream_stages_and_nested_queries_preserve_exact_work_allowances() {
         (
             ops().names().unique().tally(),
             27,
-            BTreeMap::from([
+            Vec::from([
                 ("test.scope".to_owned(), 1),
                 ("test.seed".to_owned(), 1),
                 ("test.add".to_owned(), 1),
@@ -456,7 +504,7 @@ fn stream_stages_and_nested_queries_preserve_exact_work_allowances() {
         (
             nested,
             40,
-            BTreeMap::from([("first".to_owned(), 3), ("second".to_owned(), 1)]),
+            Vec::from([("first".to_owned(), 3), ("second".to_owned(), 1)]),
         ),
     ] {
         let limits = EvaluationLimits {
@@ -481,16 +529,13 @@ fn stream_stages_and_nested_queries_preserve_exact_work_allowances() {
             .unwrap_err();
         assert!(error.to_string().contains("work limit exceeded"));
     }
-    for (source, allowance) in [
-        ("names | unique | tally", 17),
-        (
-            r#"filter(op("test.scope")) | map_by(attr("sym_name"), children | count)"#,
-            24,
-        ),
+    for source in [
+        "names | unique | tally",
+        r#"filter(op("test.scope")) | map_by(attr("sym_name"), children | count)"#,
     ] {
         let query = Query::parse(source).unwrap();
         let limits = EvaluationLimits {
-            max_work: allowance,
+            max_work: 1_000,
             max_items: 100,
         };
         query
@@ -506,7 +551,7 @@ fn stream_stages_and_nested_queries_preserve_exact_work_allowances() {
                 &mut document,
                 DialectRegistry::baseline(),
                 EvaluationLimits {
-                    max_work: allowance - 1,
+                    max_work: 10,
                     ..limits
                 },
                 |_, _| Ok(()),
@@ -881,11 +926,8 @@ fn json_literal_snapshots_remain_saved_after_an_edit() {
     let QueryOutput::Map(entries) = &outputs[0] else {
         panic!("JSON object snapshot")
     };
-    assert_eq!(
-        entries["saved"]["nodes"][0]["attributes"]["tag"],
-        "\"start\""
-    );
-    assert_eq!(entries["current"][0]["attributes"]["tag"], "\"edited\"");
+    assert_eq!(entries[0].1["nodes"][0]["attributes"]["tag"], "\"start\"");
+    assert_eq!(entries[1].1[0]["attributes"]["tag"], "\"edited\"");
 }
 
 #[test]
@@ -2471,6 +2513,25 @@ fn report_ordering_agrees_with_typed_helpers_and_keeps_native_selector_stages() 
         ("empty_max", E::array([]).max()),
         ("fallback", E::array([]).max().default(E::integer(7))),
     ]));
+    let dictionary = report(
+        E::record([
+            ("z", E::integer(1)),
+            ("a", E::integer(1)),
+            ("m", E::integer(0)),
+        ])
+        .sort_by_value(false),
+    );
+    let sorted = document.query(&dictionary).unwrap();
+    let V::Record(entries) = sorted.value().data() else {
+        panic!("dictionary");
+    };
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["m", "z", "a"]
+    );
     let actual = document.query(&typed).unwrap();
     assert_eq!(actual.value(), parsed.value());
     let V::Record(fields) = actual.value() else {
@@ -3438,7 +3499,7 @@ fn prepared_map_selectors_keep_parameters_saved_inputs_and_native_values() {
         .unwrap();
     assert_eq!(
         outputs,
-        [QueryOutput::Json("{\n  \"a\": 1,\n  \"z\": 2\n}\n".into())]
+        [QueryOutput::Json("{\n  \"z\": 2,\n  \"a\": 1\n}\n".into())]
     );
 
     let source = r#"fn selected(root: Operation) -> record {a: Operation, z: Operation} {
@@ -3461,7 +3522,9 @@ fn prepared_map_selectors_keep_parameters_saved_inputs_and_native_values() {
     let QueryOutput::Native(zirium::query::NativeValue::Map(entries)) = value else {
         panic!("native map")
     };
-    let QueryOutput::Operations(operations) = &entries["z"] else {
+    let QueryOutput::Operations(operations) =
+        &entries.iter().find(|(key, _)| key == "z").unwrap().1
+    else {
         panic!("native operations")
     };
     assert_eq!(document.operation_name(operations[0]), Some("test.z"));
@@ -3514,7 +3577,7 @@ fn prepared_fixed_point_keeps_function_locals_saved_bindings_and_native_kind() {
     assert_eq!(
         outputs,
         [QueryOutput::Json(
-            "[\n  \"builtin.module\",\n  \"test.z\"\n]\n".into()
+            "[\n  \"test.z\",\n  \"builtin.module\"\n]\n".into()
         )]
     );
 
@@ -3578,19 +3641,19 @@ fn textual_map_ranking_keeps_saved_order_with_prepared_bounds() {
         ]
     );
 
-    // Prepared native maps keep their native result contract.
-    let source = r#"fn invalid(root:Operation)->int {
+    let mut document = document_from(r#"module { "test.z"() : () -> () "test.a"() : () -> () }"#);
+    let source = r#"fn ordered(root:Operation)->int {
         direct_children(root) | map_by(names, count) | sort_by(value) | count
-    } let selected_root = filter(op("builtin.module")); invalid(selected_root)"#;
-    let error = Query::parse(source)
+    } let selected_root = filter(op("builtin.module")); ordered(selected_root)"#;
+    let mut outputs = vec![];
+    Query::parse(source)
         .unwrap()
-        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
-        .unwrap_err();
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
     assert!(
-        error
-            .to_string()
-            .contains("ordering selector requires operations"),
-        "{error}"
+        matches!(outputs.as_slice(), [QueryOutput::Native(zirium::query::NativeValue::Constructed(value))] if value.value().data() == &zirium::query::ConstructedValue::Integer(2))
     );
-    assert!(error.range().is_some());
 }

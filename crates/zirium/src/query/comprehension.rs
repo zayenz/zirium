@@ -576,15 +576,6 @@ pub(super) fn project(
             }
             Ok(V::Record(result))
         }
-        QueryOutput::RankedMap(fields) => {
-            admit(budget, 1 + fields.len(), 0, range)?;
-            let mut result = Vec::with_capacity(fields.len());
-            for (key, value) in fields {
-                admit(budget, 0, key.len(), range)?;
-                result.push((key.clone(), project_json(value, budget, range, 0)?));
-            }
-            Ok(V::Record(result))
-        }
         QueryOutput::Native(NativeValue::Map(fields)) => {
             admit(budget, 1 + fields.len(), 0, range)?;
             let mut result = Vec::with_capacity(fields.len());

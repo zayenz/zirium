@@ -53,7 +53,7 @@ pub struct QueryExpr<T> {
 pub type OpQuery = QueryExpr<Vec<OperationId>>;
 pub type StringQuery = QueryExpr<Vec<String>>;
 pub type CountQuery = QueryExpr<usize>;
-pub type MapQuery<T> = QueryExpr<BTreeMap<String, T>>;
+pub type MapQuery<T> = QueryExpr<Vec<(String, T)>>;
 pub type TypeQuery = QueryExpr<Vec<TypeId>>;
 pub type AttributeQuery = QueryExpr<Vec<AttributeId>>;
 
@@ -676,6 +676,46 @@ impl<T> MapQuery<T> {
             result: PhantomData,
         }
     }
+    pub fn sort(&self) -> Self {
+        self.stage(Stage::Sort { range: range() })
+    }
+    pub fn sort_by_value(&self) -> Self {
+        self.stage(Stage::SortBy {
+            selector: report::OrderingSelector::MapValue(range()),
+            range: range(),
+        })
+    }
+    pub fn reverse(&self) -> Self {
+        self.stage(Stage::Reverse { range: range() })
+    }
+    pub fn head(&self, count: usize) -> Self {
+        self.stage(Stage::Head {
+            count,
+            range: range(),
+        })
+    }
+    pub fn tail(&self, count: usize) -> Self {
+        self.stage(Stage::Tail {
+            count,
+            range: range(),
+        })
+    }
+    pub fn head_expr(&self, count: ReportExpr) -> Self {
+        self.stage(Stage::Computed {
+            value: model::ComputedStage::Head(count.value),
+            range: range(),
+        })
+        .with_parameters(count.parameters)
+        .with_functions(count.functions)
+    }
+    pub fn tail_expr(&self, count: ReportExpr) -> Self {
+        self.stage(Stage::Computed {
+            value: model::ComputedStage::Tail(count.value),
+            range: range(),
+        })
+        .with_parameters(count.parameters)
+        .with_functions(count.functions)
+    }
     pub fn count(&self) -> CountQuery {
         self.stage(Stage::Count { range: range() })
     }
@@ -976,8 +1016,8 @@ result!(usize, QueryOutput::Count(value) => value);
 result!(String, QueryOutput::Native(NativeValue::String(value)) => value);
 result!(Vec<TypeId>, QueryOutput::Native(NativeValue::Types(value)) => value);
 result!(Vec<AttributeId>, QueryOutput::Native(NativeValue::Attributes(value)) => value.into_iter().map(|(_, id)| id).collect());
-impl<T: QueryResult> private::Sealed for BTreeMap<String, T> {}
-impl<T: QueryResult> QueryResult for BTreeMap<String, T> {
+impl<T: QueryResult> private::Sealed for Vec<(String, T)> {}
+impl<T: QueryResult> QueryResult for Vec<(String, T)> {
     fn from_query_output(output: QueryOutput) -> Result<Self, EvaluationError> {
         let entries = match output {
             QueryOutput::Native(NativeValue::Map(entries)) => entries,
@@ -1509,18 +1549,22 @@ impl ReportExpr {
     }
     /// Stably sort scalar values. Descending order keeps input order for ties.
     pub fn sort(self, descending: bool) -> Self {
-        self.sort_field(None, descending)
+        self.sort_selector(None, descending)
     }
     /// Stably sort records by a static field, retaining original rows and ties.
     pub fn sort_by(self, field: impl Into<String>, descending: bool) -> Self {
-        self.sort_field(Some(field.into()), descending)
+        self.sort_selector(Some(zirql::SortSelector::Field(field.into())), descending)
     }
-    fn sort_field(self, field: Option<String>, descending: bool) -> Self {
+    /// Stably sort dictionary entries by their scalar values.
+    pub fn sort_by_value(self, descending: bool) -> Self {
+        self.sort_selector(Some(zirql::SortSelector::Value), descending)
+    }
+    fn sort_selector(self, selector: Option<zirql::SortSelector>, descending: bool) -> Self {
         let functions = self.functions.clone();
         let parameters = self.parameters.clone();
         Self::node(zirql::ValueExpressionKind::Sort {
             array: Box::new(self.into_expression()),
-            field: field.map(|field| zirql::Located::new(field, 0..0)),
+            selector: selector.map(|selector| zirql::Located::new(selector, 0..0)),
             descending,
         })
         .with_metadata(parameters, functions)
