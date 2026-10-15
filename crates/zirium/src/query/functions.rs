@@ -1350,7 +1350,7 @@ fn normalize_with(
             | K::Sort { array: v, .. }
             | K::Extremum { array: v, .. } => pending.push(v),
             K::Record(fields) => pending.extend(fields.iter_mut().map(|(_, v)| v)),
-            K::KeyedArray { entries, .. } => {
+            K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
                 for (k, v) in entries {
                     pending.push(k);
                     pending.push(v)
@@ -1408,6 +1408,15 @@ fn normalize_with(
             } => {
                 clauses(generators, &mut pending);
                 pending.push(head)
+            }
+            K::DictionaryComprehension {
+                clauses: generators,
+                key,
+                head,
+            } => {
+                clauses(generators, &mut pending);
+                pending.push(key);
+                pending.push(head);
             }
             K::KeyedComprehension {
                 clauses: generators,

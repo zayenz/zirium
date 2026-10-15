@@ -3266,7 +3266,7 @@ fn json_literal_errors_are_specific_and_leave_stdout_empty() {
         (r#"{"x": missing}"#, "earlier binding"),
         (r#"{"x": "{missing}"}"#, "earlier binding"),
         (r#"A = [1, 2]; {"x": "{A}"}"#, "count or exactly one string"),
-        (r#"{unquoted: 1}"#, "quoted object key"),
+        (r#"{unquoted: 1}"#, "undefined binding"),
         (r#"{"x": 1,}"#, "quoted object key"),
         ("[1,]", "expected a JSON value"),
         ("[01]", "JSON number"),
@@ -4100,5 +4100,64 @@ fn existence_inline_file_and_later_failure_share_buffering() {
     assert_eq!(failure.status.code(), Some(1));
     assert!(failure.stdout.is_empty());
     assert!(String::from_utf8_lossy(&failure.stderr).contains("check"));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn brace_reports_match_inline_files_and_buffer_duplicate_failures() {
+    let path = temporary_path("brace-collections", "zirql");
+    for (source, success) in [
+        (
+            include_str!("../../../examples/cli/brace-collections.zirql"),
+            true,
+        ),
+        (
+            r#"report {3,1}; let k="pear"; report {k:1,(k ++ ""):1 div 0};"#,
+            false,
+        ),
+    ] {
+        let inline = run_stdin(source, INPUT);
+        fs::write(&path, source).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args(["--program-file", path.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(INPUT.as_bytes())
+            .unwrap();
+        let saved = child.wait_with_output().unwrap();
+        assert_eq!(inline.status.success(), success, "{inline:?}");
+        assert_eq!(saved.status.success(), success, "{saved:?}");
+        assert_eq!(inline.stdout, saved.stdout);
+        if success {
+            let result: serde_json::Value = serde_json::from_slice(&inline.stdout).unwrap();
+            assert_eq!(result["set"], serde_json::json!([3, 1]));
+            assert_eq!(
+                result["dictionary"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["pear!", "apple!"]
+            );
+        } else {
+            assert!(inline.stdout.is_empty());
+            for result in [inline, saved] {
+                let message = String::from_utf8_lossy(&result.stderr);
+                assert!(
+                    message.contains("duplicate dictionary key: pear"),
+                    "{message}"
+                );
+                assert!(!message.contains("zero"));
+            }
+        }
+    }
     fs::remove_file(path).unwrap();
 }

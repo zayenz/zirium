@@ -1822,11 +1822,20 @@ pub(super) fn visit_value<'a>(
                 visit_value(value, pending)
             }
         }
-        K::KeyedArray { entries, .. } => {
+        K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
             for (key, value) in entries {
                 visit_value(key, pending);
                 visit_value(value, pending)
             }
+        }
+        K::DictionaryComprehension {
+            clauses: generators,
+            key,
+            head,
+        } => {
+            clauses(generators, pending);
+            visit_value(key, pending);
+            visit_value(head, pending);
         }
         K::KeyedComprehension {
             clauses: generators,
@@ -2135,7 +2144,7 @@ fn value_requires_session_with_names(
             | K::Extremum { array: v, .. } => pending.push(v),
             K::Array(values) | K::Tuple(values) | K::Set(values) => pending.extend(values),
             K::Record(fields) => pending.extend(fields.iter().map(|(_, value)| value)),
-            K::KeyedArray { entries, .. } => {
+            K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
                 for (k, v) in entries {
                     pending.push(k);
                     pending.push(v);
@@ -2182,6 +2191,7 @@ fn value_requires_session_with_names(
                 pending.push(otherwise);
             }
             K::Comprehension { clauses, head, .. }
+            | K::DictionaryComprehension { clauses, head, .. }
             | K::KeyedComprehension { clauses, head, .. } => {
                 for clause in clauses {
                     match &clause.value {
@@ -2197,6 +2207,9 @@ fn value_requires_session_with_names(
                     }
                 }
                 pending.push(head);
+                if let K::DictionaryComprehension { key, .. } = &value.value {
+                    pending.push(key);
+                }
                 if let K::KeyedComprehension {
                     key,
                     empty_axis_sources,

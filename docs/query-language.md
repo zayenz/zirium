@@ -338,8 +338,9 @@ filter and the head. Duplicate binders, shadowing, forward references, and
 undefined names fail at their query locations. `_` discards a value and cannot
 be read. Nested comprehensions retain their own array shape.
 
-Inside a comprehension, object labels are static quoted strings and bare names
-are values. `{"n": n}` uses the label `n` and the bound value of `n`.
+Inside a shared value expression, dictionary keys are expressions.
+`{"n": n}` uses the literal key `n` and the bound value of `n`; `{n: 1}`
+uses the bound string `n` as its key.
 Strings are decoded literals: `"{n}"` contains braces and the letter `n`.
 Outside comprehensions, plain JSON-shaped literals keep their existing binding
 and interpolation rules. `for` and `if` remain ordinary binding names elsewhere,
@@ -349,11 +350,11 @@ The supported expression forms are:
 
 - Absence (`null`), Boolean, signed integer, finite decimal float, and string literals; earlier
   bindings and generator names; grouping with parentheses.
-- Positional arrays, records with quoted labels, and nested array comprehensions.
+- Positional arrays, string dictionaries, scalar sets, tuples and nested comprehensions.
 - Numeric sign, `not`, checked `+`, `-`, `*`, `/`, integer `div` and `mod`;
   numeric `<`, `<=`, `>`, `>=`; typed `==` (also `=`) and `!=`.
 - Boolean `and` and `or`; string or positional-array `++`; record access
-  `r.field`, array access `a[i]`, and inclusive integer ranges `lo..hi`.
+  `r.field`, array access `a[i]`, dictionary access `d[key]`, and inclusive integer ranges `lo..hi`.
 - `length`, `sum`, `forall`, `exists`, `require`, `group_by`, `sort`, `sort_by`,
   `min`, `max`, `min_by`, `max_by`, `one`, `occurs`, `absent`, `lookup`, `has_key`,
   `contains`, `starts_with` and `ends_with` calls; lazy `default`;
@@ -395,6 +396,45 @@ scalar reports from operations. Native operation, type, and attribute handles
 retain their identity and cannot become comprehension values through their
 printed spelling. Saved JSON arrays and objects can supply scalar or structured
 values; JSON `null` projects to absence, while integers outside `i64` fail.
+
+### Sets and computed dictionary keys
+
+A colon at a brace body's own level selects a string dictionary; otherwise a
+nonempty body is a set. `{3, 1, 3}` keeps `3, 1`, and
+`{n mod 3 for n in 1..5}` keeps `1, 2, 0`. Repeated `for` clauses and filters
+can supply dictionary keys as well as values:
+
+```zirql
+{k: {n mod 3 for n in 1..5}
+ for w in ["pear", "apple"]
+ for k in [w, w ++ "!"] if ends_with(k, "!")}
+```
+
+The dictionary keeps `pear!`, then `apple!`. Each key must be a present string;
+a duplicate fails before evaluating its value. `.field` uses a static label
+and `[key]` accepts a computed string. Strict access fails on a missing stored
+field, while `lookup` is optional.
+
+Sets remove duplicates without moving the first occurrence. Elements must be
+homogeneous Booleans, integers, finite floats or host-supplied nominal members;
+strings are not set elements. `sort({3, 1, 3})` returns a set in order `1, 3`.
+Empty `{}` is a dictionary. `set<int>()`, `set<bool>()` and `set<float>()`
+construct typed empty scalar sets. An empty nominal set needs a host-supplied
+value; the common reader does not resolve nominal names.
+
+The [saved collection report](../examples/cli/brace-collections.zirql) combines
+these forms with strict access, nesting and sorting:
+
+```sh
+zirium --program-file examples/cli/brace-collections.zirql examples/cli/arithmetic.mlir
+```
+
+Inline programs use the same parser and evaluator. Collections inside a
+function or control block keep their own braces, for example
+`if true { {3, 1, 3} } else { set<int>() }`. Plain JSON objects and arrays
+retain their established interpolation and native-result insertion behavior.
+Selected shared collection forms use the aggregate request budget, including
+parsing, candidates before filters, construction, copying and rendering.
 
 ### Optional fields and lazy defaults
 

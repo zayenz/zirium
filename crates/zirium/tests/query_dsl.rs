@@ -3732,3 +3732,71 @@ fn text_existence_keeps_typed_identities_duplicates_and_prepared_scope() {
         }
     }
 }
+
+#[test]
+fn brace_collections_keep_native_data_order_and_function_locals() {
+    let mut document = document();
+    let mut outputs = Vec::new();
+    Query::parse(include_str!(
+        "../../../examples/cli/brace-collections.zirql"
+    ))
+    .unwrap()
+    .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+        outputs.push(value);
+        Ok(())
+    })
+    .unwrap();
+    let QueryOutput::Native(zirium::query::NativeValue::Constructed(report)) = &outputs[0] else {
+        panic!("constructed report")
+    };
+    use zirium::query::ConstructedValue as V;
+    let V::Record(fields) = report.value().data() else {
+        panic!("report dictionary")
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["set", "dictionary", "access", "empty", "typed", "sorted"]
+    );
+    let V::Record(entries) = fields[1].1.data() else {
+        panic!("computed dictionary")
+    };
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["pear!", "apple!"]
+    );
+    assert!(
+        matches!(fields[0].1.data(), V::Set { elements, .. } if elements == &[V::Integer(3),V::Integer(1)])
+    );
+    assert!(
+        matches!(fields[2].1.data(), V::Set { elements, .. } if elements == &[V::Integer(1),V::Integer(2),V::Integer(0)])
+    );
+    outputs.clear();
+    Query::parse(r#"[{"pear":1 for _ in [1]}]"#)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(zirium::query::NativeValue::Constructed(value)) = &outputs[0] else {
+        panic!("nested dictionary comprehension")
+    };
+    assert!(
+        matches!(value.value().data(), V::Array(values) if matches!(values[0].data(), V::Record(fields) if fields[0].0 == "pear"))
+    );
+    outputs.clear();
+    Query::parse(r#"fn make(k:string) -> record {"pear":set<int>} { let key=k; {key:{3,1,3}} } let saved=make("pear"); report saved["pear"];"#).unwrap()
+        .evaluate(&mut document,DialectRegistry::baseline(),|_,value| { outputs.push(value); Ok(()) }).unwrap();
+    let QueryOutput::Native(zirium::query::NativeValue::Constructed(value)) = &outputs[0] else {
+        panic!("function result")
+    };
+    assert!(
+        matches!(value.value().data(), V::Set { elements, .. } if elements == &[V::Integer(3),V::Integer(1)])
+    );
+}

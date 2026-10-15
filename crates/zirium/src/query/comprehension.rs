@@ -216,10 +216,87 @@ fn value_size(value: &V) -> usize {
     }
 }
 
+// Keep legacy JSON objects on their interpolation/native-insertion path. Only
+// a set, an expression key, typed empty set or computed access needs this reader.
+fn collection_syntax(source: &str) -> bool {
+    let mut reader = zirql::ArgumentReader::new(source, 0).expect("source boundary");
+    let mut containers = [b' '; super::parser::DEFAULT_NESTING_LIMIT];
+    let mut depth = 0usize;
+    while !reader.remaining().is_empty() {
+        reader.skip_whitespace();
+        let Some(character) = reader.remaining().chars().next() else {
+            break;
+        };
+        let start = reader.position();
+        reader
+            .advance(character.len_utf8())
+            .expect("character boundary");
+        match character {
+            '"' => {
+                let mut escaped = false;
+                while let Some(ch) = reader.remaining().chars().next() {
+                    reader.advance(ch.len_utf8()).expect("character boundary");
+                    if ch == '"' && !escaped {
+                        break;
+                    }
+                    escaped = ch == '\\' && !escaped;
+                }
+                if depth > 0 && containers[depth - 1] == b'k' {
+                    reader.skip_whitespace();
+                    if !reader.consume(':') {
+                        return true;
+                    }
+                    containers[depth - 1] = b'{';
+                }
+            }
+            '{' | '[' | '(' => {
+                if depth == containers.len() {
+                    return true;
+                }
+                containers[depth] = if character == '{' {
+                    b'k'
+                } else {
+                    character as u8
+                };
+                depth += 1;
+            }
+            '}' | ']' | ')' => {
+                depth = depth.saturating_sub(1);
+                if character == '}' {
+                    reader.skip_whitespace();
+                    if reader.remaining().starts_with(['[', '.']) {
+                        return true;
+                    }
+                }
+            }
+            ',' if depth > 0 && containers[depth - 1] == b'{' => containers[depth - 1] = b'k',
+            _ if depth > 0 && containers[depth - 1] == b'k' => return true,
+            ch if ch.is_ascii_alphabetic() || ch == '_' => {
+                let mut probe = zirql::ArgumentReader::new(source, start).expect("source boundary");
+                let word = probe.word().expect("identifier start");
+                reader
+                    .advance(probe.position() - reader.position())
+                    .expect("word boundary");
+                if word.value == "set" && probe.consume('<') {
+                    return true;
+                }
+                if word.value == "for" && depth > 0 && probe.word().is_ok() && probe.keyword("in") {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 // Recognize `for binder in` at this array's own level. `[for]` stays a literal.
 // The allocation-free admission scan ignores quoted strings and comments, so
 // legacy names and text containing `for` retain their old parsing allowance.
 pub(super) fn has_syntax(source: &str) -> bool {
+    if collection_syntax(source) {
+        return true;
+    }
     let bytes = source.as_bytes();
     let mut cursor = 0;
     let mut arrays = 0usize;
@@ -419,6 +496,28 @@ pub(super) fn ordering_call(source: &str, position: usize) -> bool {
 }
 
 pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
+    if let Some(first) = tokens.get(cursor) {
+        let mut depth = 0usize;
+        let mut end = source.len();
+        for token in &tokens[cursor..] {
+            match token.kind() {
+                T::LParen | T::LBracket | T::LBrace => depth += 1,
+                T::RParen | T::RBracket | T::RBrace if depth == 0 => {
+                    end = token.range().start() as usize;
+                    break;
+                }
+                T::RParen | T::RBracket | T::RBrace => depth -= 1,
+                T::Pipe | T::Semicolon | T::Eof if depth == 0 => {
+                    end = token.range().start() as usize;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if collection_syntax(&source[first.range().start() as usize..end]) {
+            return true;
+        }
+    }
     if tokens
         .get(cursor)
         .is_some_and(|token| ordering_call(source, token.range().start() as usize))
