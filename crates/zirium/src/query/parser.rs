@@ -77,7 +77,7 @@ pub(crate) fn parse_with_budget(
     let mut parser = Parser {
         source: lexed.source(),
         tokens: lexed.tokens(),
-        function_mode: has_function_header(lexed),
+        function_mode: has_function_header(lexed) || has_control_values(lexed),
         cursor: 0,
         diagnostics: Vec::new(),
         nesting_limit,
@@ -117,6 +117,43 @@ fn has_function_header(lexed: &Lexed<'_>) -> bool {
             {
                 return true;
             }
+        }
+    }
+    false
+}
+
+fn has_control_values(lexed: &Lexed<'_>) -> bool {
+    let mut tokens = lexed
+        .tokens()
+        .iter()
+        .filter(|token| token.kind() != TokenKind::Trivia)
+        .peekable();
+    let mut pending_if = false;
+    let mut parentheses = Vec::new();
+    // Carry pending probes through parenthesized segments instead of rescanning
+    // each contextual `if` suffix. Every token is visited once.
+    while let Some(token) = tokens.next() {
+        match token.kind() {
+            TokenKind::LParen => {
+                parentheses.push(pending_if);
+                pending_if = false;
+            }
+            TokenKind::RParen => {
+                pending_if |= parentheses.pop().unwrap_or(false);
+            }
+            TokenKind::LBrace if pending_if => return true,
+            TokenKind::Semicolon | TokenKind::RBracket | TokenKind::Eof => pending_if = false,
+            TokenKind::Identifier => {
+                let word = &lexed.source()[token.range().as_range()];
+                let next = tokens.peek().map(|token| token.kind());
+                if word == "match" && next == Some(TokenKind::LParen)
+                    || word == "let" && matches!(next, Some(TokenKind::LParen | TokenKind::LBrace))
+                {
+                    return true;
+                }
+                pending_if |= word == "if";
+            }
+            _ => {}
         }
     }
     false
@@ -169,7 +206,7 @@ impl Parser<'_, '_> {
                     nesting: self.nesting_limit,
                     function_mode: true,
                 };
-                match zirql::read_function_declaration(
+                match zirql::read_pattern_function_declaration(
                     &mut reader,
                     &mut host,
                     self.budget,
@@ -251,7 +288,9 @@ impl Parser<'_, '_> {
                         parameters.push(declaration);
                         continue;
                     }
-                    Ok(Some(zirql::CommonStatement::Let(name))) => {
+                    Ok(Some(zirql::CommonStatement::Let(name)))
+                        if !matches!(name.value.as_str(), "_" | "true" | "false") =>
+                    {
                         if is_reserved(&name.value) || self.bindings.contains(&name.value) {
                             self.error("binding name is reserved or already defined");
                             return None;
@@ -296,6 +335,67 @@ impl Parser<'_, '_> {
                             });
                         }
                         statements.push(Statement::Query(expression));
+                        continue;
+                    }
+                    Ok(None) | Ok(Some(zirql::CommonStatement::Let(_))) => {}
+                    Err(error) => {
+                        self.shared_error(error);
+                        return None;
+                    }
+                }
+            }
+            if self.at_identifier("let") && self.next_kind() != Some(TokenKind::Equals) {
+                let mut reader = zirql::ArgumentReader::new(
+                    self.source,
+                    self.current().range().start() as usize,
+                )
+                .ok()?;
+                match zirql::read_pattern_let(&mut reader, self.budget, self.nesting_limit) {
+                    Ok(Some(pattern)) => {
+                        let names = match zirql::pattern_names(&pattern, self.budget) {
+                            Ok(names) => names.into_iter().cloned().collect::<Vec<_>>(),
+                            Err(error) => {
+                                zirql::dispose_pattern(pattern);
+                                self.shared_error(error);
+                                return None;
+                            }
+                        };
+                        let mut seen = HashSet::new();
+                        for name in &names {
+                            if is_reserved(&name.value)
+                                || self.bindings.contains(&name.value)
+                                || !seen.insert(&name.value)
+                            {
+                                self.sync(name.range.start);
+                                self.error("binding name is reserved or already defined");
+                                zirql::dispose_pattern(pattern);
+                                return None;
+                            }
+                        }
+                        self.sync(reader.position());
+                        self.function_mode = true;
+                        let Some(value) = self.shared_value(0) else {
+                            zirql::dispose_pattern(pattern);
+                            return None;
+                        };
+                        let range = TextRange::new(
+                            pattern.range.start as u32,
+                            value.expression.range.end as u32,
+                        )
+                        .expect("ordered binding range");
+                        let value = super::functions::ParsedBinding::new(pattern, value);
+                        self.expect(TokenKind::Semicolon, "expected `;` after binding")?;
+                        for name in &names {
+                            self.bindings.insert(name.value.clone());
+                        }
+                        statements.push(Statement::PatternBinding {
+                            names,
+                            expression: Expression {
+                                first: vec![Stage::PatternBinding { value, range }],
+                                rest: Vec::new(),
+                                range,
+                            },
+                        });
                         continue;
                     }
                     Ok(None) => {}
@@ -435,6 +535,17 @@ impl Parser<'_, '_> {
         let nesting = host.nesting;
         match zirql::read_value_expression(&mut reader, &mut host, self.budget, nesting) {
             Ok(value) => {
+                let value = if self.function_mode {
+                    match super::functions::normalize_outer(value, &self.bindings, self.budget) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.shared_error(error);
+                            return None;
+                        }
+                    }
+                } else {
+                    value
+                };
                 if !self.function_mode {
                     let written = self.tokens[self.cursor..]
                         .iter()
@@ -455,6 +566,8 @@ impl Parser<'_, '_> {
                                     | "in"
                                     | "if"
                                     | "else"
+                                    | "match"
+                                    | "present"
                                     | "lookup"
                                     | "has_key"
                                     | "group_by"
@@ -749,6 +862,25 @@ impl Parser<'_, '_> {
     fn stage(&mut self, depth: usize) -> Option<Stage> {
         self.skip_trivia();
         let start = self.current().range().start();
+        if (self.at_identifier("match") && self.next_kind() == Some(TokenKind::LParen))
+            || (self.at_identifier("if")
+                && self.function_mode
+                && self.next_kind().is_some_and(|kind| {
+                    matches!(
+                        kind,
+                        TokenKind::Identifier
+                            | TokenKind::LParen
+                            | TokenKind::Integer
+                            | TokenKind::String
+                    )
+                }))
+        {
+            let value = self.shared_value(depth)?;
+            return Some(Stage::FunctionValue {
+                value,
+                range: self.span(start),
+            });
+        }
         if matches!(self.current_text(), "direct_children" | "cost_annotation")
             && self.next_kind() == Some(TokenKind::LParen)
         {

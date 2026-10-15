@@ -648,6 +648,50 @@ enumeration, including for empty sources and unchosen Boolean branches.
 the full result or block-argument identity rather than its defining operation.
 Native captures remain read-only and are unavailable on the diff surface.
 
+## Destructuring reports
+
+Rust exposes shared `Pattern`, `PatternKind` and `Located` values.
+`ReportExpr::tuple` preserves tuple shape; `ReportExpr::block` takes ordered
+`(Pattern, ReportExpr)` bindings and a final value. `ReportExpr::value_match`
+takes a subject and `ReportMatchArm { pattern, guard, value }` arms.
+`FunctionDefinition::with_patterns` accepts `PatternParameter` declarations;
+`FunctionDefinition::new` retains its name-only parameter signature. The
+[complete Rust example](../crates/zirium/examples/typed_functions.rs) uses a
+tuple parameter and a tail call through a local block and value match.
+
+Python's report builders use reusable `ReportPattern` and `ReportMatchArm`
+owners. They accept the existing report inputs and run through `Document.query`:
+
+```python
+from zirium.query import ReportExpr as E, ReportPattern as P, ReportMatchArm as Arm
+from zirium.query import report
+
+cost = E.name("cost")
+query = report(E.value_match(E({"cost": 4}).lookup("cost"), [
+    Arm(P.absent(), {"kind": "absent", "cost": 0}),
+    Arm(P.present(P.name("cost")), {"kind": "large", "cost": cost}, guard=cost > 10),
+    Arm(P.present(P.name("cost")), E.block(
+        [(P.name("answer"), cost + 1)],
+        {"kind": "small", "cost": E.name("answer")},
+    )),
+    Arm(P.wildcard(), {"kind": "fallback", "cost": 0}),
+]))
+assert doc.query(query) == {"kind": "small", "cost": 5}
+```
+
+`P.tuple([...])`, `P.record({...}, ignore_rest=True)`, `P.literal(value)` and
+`E.tuple([...])` cover the same structural forms as the text reader.
+`pattern.located(start, end)` retains source coordinates for diagnostics.
+`E.conditional(condition, selected, otherwise)` builds a conditional value.
+Patterns, arms and expressions refuse Python truth-value conversion. Queries
+can be reused against another current document; they retain no active budget.
+Python has no function-definition builder or textual-program entry point.
+
+The [language guide](query-language.md#destructuring-and-guarded-value-matches)
+describes exact shapes, scope and ordered guards. All branches receive static
+checks, while runtime evaluation visits only demanded values. Native capture
+enumeration and operation/SSA ownership keep their existing boundaries.
+
 ## Building typed functions in Rust
 
 `FunctionDefinition` uses shared `FunctionParameter`, `FunctionType` and value

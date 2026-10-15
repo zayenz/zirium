@@ -29,7 +29,7 @@ pub use diff::*;
 pub use zirql::{
     Budget, ConstructedValue, Located, Location as ValueLocation, NativeCapture,
     ParameterDeclaration, ParameterInputs, ParameterType, ProgramLimits, ValueBinaryOperator,
-    ValueUnaryOperator, constructed_value_type,
+    ValueUnaryOperator, constructed_value_type, copy_pattern,
 };
 mod functions;
 mod literal;
@@ -40,6 +40,7 @@ mod render;
 mod report;
 pub use functions::{
     FunctionDefinition, FunctionLimits, FunctionNativeType, FunctionParameter, FunctionType,
+    Pattern, PatternKind, PatternParameter,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -315,6 +316,16 @@ impl EvaluationError {
 }
 
 impl Query {
+    fn requires_value_session(&self) -> bool {
+        report::requires_session(&self.expression)
+            || self.statements.iter().any(|statement| match statement {
+                model::Statement::Binding { expression, .. }
+                | model::Statement::PatternBinding { expression, .. }
+                | model::Statement::Do(expression)
+                | model::Statement::Query(expression) => report::requires_session(expression),
+            })
+    }
+
     pub fn parse(source: &str) -> Result<Self, QueryError> {
         Self::parse_with_program_limits(source, comprehension::default_limits())
     }
@@ -636,7 +647,7 @@ impl Query {
         let function_host = report::ReportHost {
             functions: &self.functions,
         };
-        let mut functions = if self.functions.is_empty() {
+        let mut functions = if self.functions.is_empty() && !self.requires_value_session() {
             None
         } else {
             Some(functions::Session::new(
@@ -658,6 +669,7 @@ impl Query {
                 .iter()
                 .map(|statement| match statement {
                     model::Statement::Binding { expression, .. }
+                    | model::Statement::PatternBinding { expression, .. }
                     | model::Statement::Do(expression)
                     | model::Statement::Query(expression) => expression,
                 })
@@ -771,6 +783,12 @@ fn evaluate_host_stage(
         model::Stage::FunctionInput { value, range } => {
             program::charge_results(budget, 1, &program::range(*range))?;
             current = QueryOutput::Native(NativeValue::Retained(std::sync::Arc::clone(value)));
+        }
+        model::Stage::PatternBinding { .. } => {
+            let session = context.functions.ok_or_else(|| {
+                EvaluationError::new("pattern binding requires a prepared session")
+            })?;
+            current = session.run_binding(context, &current, bindings, budget)?;
         }
         model::Stage::FunctionValue { value, .. } => {
             current = functions::evaluate(value, context, current, bindings, budget)?;

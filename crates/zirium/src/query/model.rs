@@ -28,6 +28,10 @@ pub enum Statement {
         name: String,
         expression: Expression,
     },
+    PatternBinding {
+        names: Vec<zirql::Located<String>>,
+        expression: Expression,
+    },
     Do(Expression),
     Query(Expression),
 }
@@ -312,6 +316,10 @@ pub enum Stage {
         value: std::sync::Arc<super::QueryOutput>,
         range: TextRange,
     },
+    PatternBinding {
+        value: super::functions::ParsedBinding,
+        range: TextRange,
+    },
     FunctionValue {
         value: super::comprehension::ParsedComprehension,
         range: TextRange,
@@ -512,6 +520,7 @@ impl Stage {
             | Self::Operand { range, .. }
             | Self::FunctionInput { range, .. }
             | Self::FunctionValue { range, .. }
+            | Self::PatternBinding { range, .. }
             | Self::FunctionPrimitive { range, .. }
             | Self::Computed { range, .. }
             | Self::Projection { range, .. }

@@ -1,0 +1,11 @@
+let row = {"cost": 4};
+report match (lookup(row, "cost")) {
+    absent => {"kind": "absent", "cost": 0},
+    present(cost) if cost < 0 => require(false, {"kind": "negative", "cost": 0}, "negative cost"),
+    present(cost) if cost > 10 => {"kind": "large", "cost": cost},
+    present(cost) => {
+        let answer = cost + 1;
+        {"kind": "small", "cost": answer}
+    },
+    _ => {"kind": "fallback", "cost": 0}
+} | json;

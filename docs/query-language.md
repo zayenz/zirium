@@ -1330,7 +1330,7 @@ This matching surface is read-only and does not support diff queries or rewrites
 
 A pure function receives every input explicitly. Declarations share one request:
 all signatures register before any body is prepared, so forward and mutual calls
-work. Ordered `let` bindings belong to the function body. They cannot capture
+work. Ordered `let` bindings belong to their lexical block. Functions cannot capture
 saved query bindings, caller parameters, the projection subject or implicit
 `input`. A local cannot redefine an existing local or parameter. Function names
 cannot replace builtins or native stages.
@@ -1392,8 +1392,8 @@ fn accumulate(n: int, total: int) -> int {
 report accumulate(1000, 0) | json
 ```
 
-`else if` adds ordered conditions. Branches contain expressions; ordered local
-`let` declarations belong to the function body. Compatible self and mutual tail
+`else if` adds ordered conditions. Each branch is a lexical block with ordered
+local `let` declarations and one final value. Compatible self and mutual tail
 calls reuse an activation. Pending arithmetic, incompatible return declarations
 and native callbacks keep their non-tail or host-reentry obligations.
 
@@ -1411,6 +1411,63 @@ rows reuse those entries with current bindings and the current document;
 immutable native results retain owners across released function frames.
 Rendering remains explicit. The CLI buffers every emission until success;
 Rust's emission callback can observe an earlier event before a later failure.
+
+## Destructuring and guarded value matches
+
+Patterns bind parts of a value in `let` declarations, function parameters and
+value-match arms. A tuple uses exact arity, such as `(label, cost)`. A record
+uses exact labels, such as `{label: label, cost: cost}`; add `..` to ignore
+other fields. `_` discards a part. `absent`, `present(pattern)` and scalar
+literals test presence or a value without introducing a name.
+
+```zirium
+fn add_cost((label, {cost: (_, cost), ..}):
+    tuple<string, record {cost: tuple<string, int>, ignored: int}>)
+    -> record {label: string, total: int} {
+  if cost >= 0 {
+    let answer = cost + 1;
+    {"label": label, "total": answer}
+  } else { {"label": label, "total": 0} }
+}
+let (label, details) = ("alpha", {"cost": ("estimate", 4), "ignored": 99});
+report add_cost((label, details)) | json;
+```
+
+The initializer runs before any of its pattern's names become available. A
+failed binding introduces no names and fails the request. Names cannot repeat
+within a pattern or shadow an enclosing binding. A function admits every whole
+argument against its declaration before destructuring it. Structural patterns
+can inspect constructed records and explicit native capture records; native
+operation and SSA handles remain opaque checked values.
+
+Value matches try their arms in order. The subject runs once, and a false
+guard continues to the next arm. Guards require known Boolean values. Include
+an unguarded final `_` arm, even when earlier arms appear exhaustive:
+
+```zirium
+let row = {"cost": 4};
+report match (lookup(row, "cost")) {
+  absent => {"kind": "absent", "cost": 0},
+  present(cost) if cost > 10 => {"kind": "large", "cost": cost},
+  present(cost) => {
+    let answer = cost + 1;
+    {"kind": "small", "cost": answer}
+  },
+  _ => {"kind": "fallback", "cost": 0}
+} | json;
+```
+
+Every written arm is checked for scope, calls and effects before execution.
+Only the selected arm's value runs. A failing guard, stale or foreign native
+handle, type error or exhausted budget fails the request; none becomes a
+pattern mismatch. Blocks and selected match arms retain compatible tail-call
+behavior. Native capture enumeration keeps its separate `match { from ... }`
+syntax.
+
+The [destructured report](../examples/cli/destructured-report.zirql) and
+[guarded match](../examples/cli/guarded-match.zirql) are complete saved programs.
+Their [typed builders](query-dsl.md#destructuring-reports) construct the same
+values without parsing generated source.
 
 ## A bounded constructed report
 

@@ -711,3 +711,155 @@ def test_report_ordering_helpers_preserve_rows_ties_and_optional_results():
     }
     with pytest.raises(ValueError, match="missing ordering field"):
         doc.query(report(E([{"score": 1}, {"other": 2}]).min_by("score")))
+
+
+def test_pattern_reports_preserve_destructuring_guards_and_reuse():
+    from zirium.query import ReportExpr as E
+    from zirium.query import ReportMatchArm as Arm
+    from zirium.query import ReportPattern as P
+    from zirium.query import report, require
+
+    cost = E.name("cost")
+    details = P.tuple(
+        [
+            P.name("label"),
+            P.record(
+                {"cost": P.tuple([P.wildcard(), P.name("cost")])},
+                ignore_rest=True,
+            ),
+        ]
+    )
+    summary = E.block(
+        [
+            (
+                details,
+                E.tuple(["alpha", {"cost": E.tuple(["estimate", 4]), "ignored": 99}]),
+            )
+        ],
+        E.conditional(
+            cost >= 0,
+            {"label": E.name("label"), "total": cost + 1},
+            {"label": E.name("label"), "total": 0},
+        ),
+    )
+    query = report(
+        E.block(
+            [
+                (
+                    P.record(
+                        {
+                            "name": P.name("title"),
+                            "counts": P.tuple([P.wildcard(), P.name("amount")]),
+                        },
+                        ignore_rest=True,
+                    ),
+                    {
+                        "name": "operations",
+                        "counts": E.tuple([0, 3]),
+                        "ignored": "unused",
+                    },
+                )
+            ],
+            {"summary": summary, "title": E.name("title"), "count": E.name("amount")},
+        )
+    )
+    expected = {
+        "summary": {"label": "alpha", "total": 5},
+        "title": "operations",
+        "count": 3,
+    }
+    assert document().query(query) == expected
+    assert document().query(query) == expected
+
+    present = P.present(P.name("cost"))
+    guarded = report(
+        E.value_match(
+            E({"cost": 4}).lookup("cost"),
+            [
+                Arm(P.absent(), {"kind": "absent", "cost": 0}),
+                Arm(
+                    present,
+                    require(False, {"kind": "negative", "cost": 0}, "negative cost"),
+                    guard=cost < 0,
+                ),
+                Arm(present, {"kind": "large", "cost": cost}, guard=cost > 10),
+                Arm(
+                    present,
+                    E.block(
+                        [(P.name("answer"), cost + 1)],
+                        {"kind": "small", "cost": E.name("answer")},
+                    ),
+                ),
+                Arm(P.wildcard(), {"kind": "fallback", "cost": 0}),
+            ],
+        )
+    )
+    assert document().query(guarded) == {"kind": "small", "cost": 5}
+    assert (
+        document().query(
+            report(E.value_match(None, [Arm(P.absent(), 7), Arm(P.wildcard(), 0)]))
+        )
+        == 7
+    )
+    assert (
+        document().query(
+            report(E.value_match("x", [Arm(P.literal("x"), 1), Arm(P.wildcard(), 0)]))
+        )
+        == 1
+    )
+
+
+def test_pattern_report_refusals_preflight_all_arms_and_keep_no_truth_value():
+    from zirium.query import ReportExpr as E
+    from zirium.query import ReportMatchArm as Arm
+    from zirium.query import ReportPattern as P
+    from zirium.query import report
+
+    pattern = P.name("n").located(7, 8)
+    arm = Arm(pattern, E.name("n"))
+    with pytest.raises(TypeError, match="truth value"):
+        bool(pattern)
+    with pytest.raises(TypeError, match="truth value"):
+        bool(arm)
+    with pytest.raises(TypeError, match="ordered"):
+        pattern.located(8, 7)
+    with pytest.raises(TypeError, match="finite"):
+        P.literal(float("nan"))
+    doc = document()
+    with pytest.raises(ValueError):
+        doc.query(
+            report(E.block([(P.tuple([P.name("n"), P.name("n")]), E.tuple([1, 2]))], 0))
+        )
+    with pytest.raises(ValueError):
+        doc.query(report(E.block([(P.tuple([pattern]), E.tuple([1, 2]))], 0)))
+    with pytest.raises(ValueError):
+        doc.query(
+            report(E.block([(P.record({"x": P.wildcard()}), {"x": 1, "y": 2})], 0))
+        )
+    with pytest.raises(ValueError):
+        doc.query(report(E.block([(pattern, 1), (P.name("n"), 2)], E.name("n"))))
+    with pytest.raises(ValueError):
+        doc.query(report(E.value_match(1, [Arm(P.literal(1), 7)])))
+    with pytest.raises(ValueError):
+        doc.query(
+            report(
+                E.value_match(1, [Arm(P.wildcard(), 7, guard=1), Arm(P.wildcard(), 0)])
+            )
+        )
+    with pytest.raises(ValueError):
+        doc.query(
+            report(
+                E.value_match(
+                    1, [Arm(P.literal(1), 7), Arm(P.wildcard(), E.name("unavailable"))]
+                )
+            )
+        )
+    with pytest.raises(ValueError):
+        doc.query(
+            report(
+                E.value_match(
+                    1,
+                    [Arm(P.wildcard(), 7, guard=(E(1) / 0) > 0), Arm(P.wildcard(), 0)],
+                )
+            )
+        )

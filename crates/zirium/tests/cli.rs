@@ -3874,3 +3874,43 @@ fn report_ordering_inline_file_and_later_failure_keep_output_buffering() {
     assert!(String::from_utf8_lossy(&failure.stderr).contains("missing ordering field"));
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn pattern_examples_agree_inline_file_and_buffer_later_failures() {
+    let input = include_str!("../../../examples/cli/function-report.mlir");
+    for program in [
+        include_str!("../../../examples/cli/destructured-report.zirql"),
+        include_str!("../../../examples/cli/guarded-match.zirql"),
+    ] {
+        let inline = run_stdin(program, input);
+        assert!(
+            inline.status.success(),
+            "{}",
+            String::from_utf8_lossy(&inline.stderr)
+        );
+        let path = temporary_path("pattern-report", "zirql");
+        fs::write(&path, program).unwrap();
+        let file = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args([
+                "--program-file",
+                path.to_str().unwrap(),
+                "examples/cli/function-report.mlir",
+            ])
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+            .output()
+            .unwrap();
+        fs::remove_file(path).unwrap();
+        assert!(
+            file.status.success(),
+            "{}",
+            String::from_utf8_lossy(&file.stderr)
+        );
+        assert_eq!(file.stdout, inline.stdout);
+        let failed = run_stdin(
+            &format!("{program} report match (1) {{ x if (1 div 0) == 0 => x, _ => 0 }};"),
+            input,
+        );
+        assert!(!failed.status.success());
+        assert!(failed.stdout.is_empty());
+    }
+}

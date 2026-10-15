@@ -403,12 +403,11 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 }
             }
         }
-        if !self.functions.is_empty()
-            && let model::Stage::FunctionValue { value, .. }
-            | model::Stage::Comprehension { value, .. }
-            | model::Stage::FunctionPrimitive {
-                argument: value, ..
-            } = stage
+        if let model::Stage::FunctionValue { value, .. }
+        | model::Stage::Comprehension { value, .. }
+        | model::Stage::FunctionPrimitive {
+            argument: value, ..
+        } = stage
         {
             budget.charge_results(1, Location::Query(range.clone()))?;
             return Ok(vec![(&value.expression, program::Kind::Operations)]);
@@ -418,9 +417,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 nodes(predicate) * 2
             }
             model::Stage::Computed { .. } => 1,
-            model::Stage::Paths { value, .. } if !self.functions.is_empty() => {
-                target_nodes(&value.paths.target) * 2
-            }
+            model::Stage::Paths { value, .. } => target_nodes(&value.paths.target) * 2,
             _ => return Ok(Vec::new()),
         };
         budget.charge(capacity * 2, Location::Query(range.clone()))?;
@@ -467,8 +464,9 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        let prepared = arguments.parts().0.functions.is_some();
         match stage {
-            model::Stage::Paths { value, .. } if !self.functions.is_empty() => {
+            model::Stage::Paths { value, .. } if prepared => {
                 return capture::evaluate_paths_with_arguments(
                     value, self, input, arguments, budget,
                 )
@@ -477,7 +475,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             }
             model::Stage::FunctionValue { value, .. }
             | model::Stage::Comprehension { value, .. }
-                if !self.functions.is_empty() =>
+                if prepared =>
             {
                 let value = arguments.evaluate_native(
                     &value.expression,
@@ -853,23 +851,6 @@ fn predicate_size(predicate: &model::Predicate) -> usize {
         .saturating_add(children)
 }
 
-pub(super) fn validate_argument(
-    value: &comprehension::ParsedComprehension,
-    expected: ValueType,
-    names: &BTreeMap<String, program::Kind>,
-    budget: &mut Budget,
-) -> Result<(), EvaluationError> {
-    if types(value, program::Kind::Operations, names, budget)?
-        .iter()
-        .any(|ty| *ty != expected)
-    {
-        return Err(
-            EvaluationError::new("primitive argument has an incompatible scalar type")
-                .at(value.expression.range.clone()),
-        );
-    }
-    Ok(())
-}
 fn scalar_argument(
     value: &comprehension::ParsedComprehension,
     context: &mut EvaluationContext<'_, '_, '_>,
@@ -995,44 +976,6 @@ fn resolve_computed_predicate(
         },
     })
 }
-pub(super) fn validate_predicate(
-    predicate: &model::Predicate,
-    names: &BTreeMap<String, program::Kind>,
-    budget: &mut Budget,
-) -> Result<(), EvaluationError> {
-    match predicate {
-        model::Predicate::SameValue { range, .. } => {
-            return Err(EvaluationError::new(
-                "same_value is only supported in native match guards",
-            )
-            .at(program::range(*range)));
-        }
-        model::Predicate::Computed { value, .. } => {
-            for operand in value.operands() {
-                validate_argument(operand, ValueType::String, names, budget)?;
-            }
-        }
-        model::Predicate::OpValue { name, .. } => {
-            if types(name, program::Kind::Operations, names, budget)?
-                .iter()
-                .any(|ty| *ty != ValueType::String)
-            {
-                return Err(EvaluationError::new("op argument needs a string")
-                    .at(name.expression.range.clone()));
-            }
-        }
-        model::Predicate::Not { predicate, .. } | model::Predicate::Group { predicate, .. } => {
-            validate_predicate(predicate, names, budget)?
-        }
-        model::Predicate::And { predicates, .. } | model::Predicate::Or { predicates, .. } => {
-            for predicate in predicates {
-                validate_predicate(predicate, names, budget)?
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
 pub(super) fn op_name(
     value: &comprehension::ParsedComprehension,
     context: &mut EvaluationContext<'_, '_, '_>,
@@ -1097,6 +1040,7 @@ pub(super) fn push_expressions<'a>(
                 }
             }
         }
+        model::Stage::PatternBinding { value, .. } => visit_value(&value.value.expression, pending),
         model::Stage::Computed { value, .. } => visit_value(&value.operand().expression, pending),
         model::Stage::FunctionValue { value, .. }
         | model::Stage::FunctionPrimitive {
@@ -1205,14 +1149,42 @@ pub(super) fn visit_value<'a>(
         }
     };
     match &value.value {
-        K::Literal(_) | K::Name(_) => {}
+        K::Literal(_) | K::Name(_) | K::IdentitySet { .. } => {}
         K::NativeQuery(query) | K::NativeValue(query) => visit_operand(query, pending),
-        K::Call { arguments, .. } => {
+        K::Block { bindings, value } => {
+            for (_, source) in bindings {
+                visit_value(source, pending);
+            }
+            visit_value(value, pending);
+        }
+        K::ValueMatch { subject, arms } => {
+            visit_value(subject, pending);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    visit_value(guard, pending);
+                }
+                visit_value(&arm.value, pending);
+            }
+        }
+        K::Loop { states, body } => {
+            for (_, value) in states {
+                visit_value(value, pending);
+            }
+            visit_value(body, pending);
+        }
+        K::Fold { items, initial, .. } | K::Scan { items, initial, .. } => {
+            visit_value(items, pending);
+            visit_value(initial, pending);
+        }
+        K::Call { arguments, .. } | K::Continue(arguments) => {
             for value in arguments {
                 visit_value(value, pending);
             }
         }
-        K::Occurs(value)
+        K::Queue { items: value, .. }
+        | K::PopFront(value)
+        | K::Break(value)
+        | K::Occurs(value)
         | K::Absent(value)
         | K::One(value)
         | K::IndexSet(value)
@@ -1269,6 +1241,14 @@ pub(super) fn visit_value<'a>(
             fallback: right,
         }
         | K::ZipExact { left, right }
+        | K::PushBackAll {
+            queue: left,
+            items: right,
+        }
+        | K::Insert {
+            set: left,
+            item: right,
+        }
         | K::Range {
             lower: left,
             upper: right,
@@ -1391,79 +1371,99 @@ pub(super) fn has_dynamic_predicate(predicate: &model::Predicate) -> bool {
     }
 }
 
-pub(super) fn has_constructed(expression: &model::Expression) -> bool {
+/// Native/control forms need the prepared runner even without declarations.
+/// Ordinary report values retain their existing constructed-only path.
+pub(super) fn requires_session(expression: &model::Expression) -> bool {
     expression
         .first
         .iter()
         .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
-        .any(|stage| {
-            matches!(
-                stage,
-                model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::FunctionPrimitive{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
-            ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
-            || nested(stage).into_iter().any(has_constructed)
+        .any(|stage| match stage {
+            model::Stage::PatternBinding { .. }
+            | model::Stage::FunctionPrimitive { .. }
+            | model::Stage::FunctionInput { .. } => true,
+            model::Stage::Comprehension { value, .. }
+            | model::Stage::FunctionValue { value, .. } => {
+                value_requires_session(&value.expression)
+            }
+            model::Stage::Projection { value, .. } => value
+                .projection
+                .fields
+                .iter()
+                .any(|(_, value)| value_requires_session(value)),
+            model::Stage::Computed { value, .. } => {
+                value_requires_session(&value.operand().expression)
+            }
+            model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } => {
+                predicate_requires_session(predicate)
+            }
+            _ => nested(stage).into_iter().any(requires_session),
         })
 }
-
-pub(super) fn dispose_value(value: zirql::ValueExpressionKind<Operand>) {
-    use zirql::{ValueExpressionKind as K, ValueGenerator as G};
-    let mut pending = vec![Located::new(value, 0..0)];
+fn predicate_requires_session(predicate: &model::Predicate) -> bool {
+    match predicate {
+        model::Predicate::Computed { value, .. } => value
+            .operands()
+            .any(|value| value_requires_session(&value.expression)),
+        model::Predicate::OpValue { name, .. } => value_requires_session(&name.expression),
+        model::Predicate::Not { predicate, .. } | model::Predicate::Group { predicate, .. } => {
+            predicate_requires_session(predicate)
+        }
+        model::Predicate::And { predicates, .. } | model::Predicate::Or { predicates, .. } => {
+            predicates.iter().any(predicate_requires_session)
+        }
+        _ => false,
+    }
+}
+pub(super) fn value_requires_session(value: &zirql::ValueExpression<Operand>) -> bool {
+    use zirql::ValueExpressionKind as K;
+    let mut pending = vec![value];
     while let Some(value) = pending.pop() {
-        let mut generators = |clauses: Vec<Located<G<Operand>>>| {
-            for clause in clauses {
-                match clause.value {
-                    G::In { source, filter, .. }
-                    | G::Bind {
-                        value: source,
-                        filter,
-                        ..
-                    } => {
-                        pending.push(source);
-                        if let Some(filter) = filter {
-                            pending.push(filter);
-                        }
-                    }
-                }
-            }
-        };
-        match value.value {
+        match &value.value {
+            K::Block { .. }
+            | K::ValueMatch { .. }
+            | K::Call { .. }
+            | K::NativeValue(_)
+            | K::Loop { .. }
+            | K::Fold { .. }
+            | K::Scan { .. }
+            | K::Break(_)
+            | K::Continue(_)
+            | K::Queue { .. }
+            | K::PopFront(_)
+            | K::PushBackAll { .. }
+            | K::IdentitySet { .. }
+            | K::Insert { .. } => return true,
             K::Literal(_) | K::Name(_) => {}
-            K::NativeQuery(query) | K::NativeValue(query) => zirql::dispose_expression(*query),
-            K::Call { arguments, .. } => pending.extend(arguments),
-            K::Occurs(value)
-            | K::Absent(value)
-            | K::One(value)
-            | K::IndexSet(value)
-            | K::Entries(value)
-            | K::Unary { operand: value, .. }
-            | K::Field { value, .. }
-            | K::TupleAccess { value, .. }
-            | K::GroupBy { rows: value, .. }
-            | K::Reduce { array: value, .. }
-            | K::Sort { array: value, .. }
-            | K::Extremum { array: value, .. } => pending.push(*value),
-            K::Array(values) | K::Tuple(values) | K::Set(values) => pending.extend(values),
-            K::Record(fields) => pending.extend(fields.into_iter().map(|(_, value)| value)),
-            K::KeyedArray { entries, .. } => {
-                for (key, value) in entries {
-                    pending.push(key);
-                    pending.push(value)
+            K::NativeQuery(query) => {
+                let mut expressions = Vec::new();
+                visit_operand(query, &mut expressions);
+                if expressions.into_iter().any(requires_session) {
+                    return true;
                 }
             }
-            K::KeyedComprehension {
-                clauses,
-                key,
-                head,
-                empty_axis_sources,
-            } => {
-                generators(clauses);
-                pending.push(*key);
-                pending.push(*head);
-                if let Some(sources) = empty_axis_sources {
-                    pending.extend(sources)
+            K::Occurs(v)
+            | K::Absent(v)
+            | K::One(v)
+            | K::IndexSet(v)
+            | K::Entries(v)
+            | K::Unary { operand: v, .. }
+            | K::Field { value: v, .. }
+            | K::TupleAccess { value: v, .. }
+            | K::GroupBy { rows: v, .. }
+            | K::Reduce { array: v, .. }
+            | K::Sort { array: v, .. }
+            | K::Extremum { array: v, .. } => pending.push(v),
+            K::Array(values) | K::Tuple(values) | K::Set(values) => pending.extend(values),
+            K::Record(fields) => pending.extend(fields.iter().map(|(_, value)| value)),
+            K::KeyedArray { entries, .. } => {
+                for (k, v) in entries {
+                    pending.push(k);
+                    pending.push(v);
                 }
             }
             K::Binary { left, right, .. }
+            | K::ZipExact { left, right }
             | K::Lookup {
                 value: left,
                 key: right,
@@ -1476,39 +1476,81 @@ pub(super) fn dispose_value(value: zirql::ValueExpressionKind<Operand>) {
                 value: left,
                 fallback: right,
             }
-            | K::ZipExact { left, right }
-            | K::Range {
-                lower: left,
-                upper: right,
-            }
             | K::ArrayAccess {
                 array: left,
                 index: right,
+            }
+            | K::Range {
+                lower: left,
+                upper: right,
             }
             | K::Require {
                 condition: left,
                 value: right,
                 ..
             } => {
-                pending.push(*left);
-                pending.push(*right)
+                pending.push(left);
+                pending.push(right);
             }
             K::Conditional {
                 branches,
                 otherwise,
             } => {
-                for (condition, value) in branches {
-                    pending.push(condition);
-                    pending.push(value)
+                for (c, v) in branches {
+                    pending.push(c);
+                    pending.push(v);
                 }
-                pending.push(*otherwise)
+                pending.push(otherwise);
             }
-            K::Comprehension { clauses, head, .. } => {
-                generators(clauses);
-                pending.push(*head)
+            K::Comprehension { clauses, head, .. }
+            | K::KeyedComprehension { clauses, head, .. } => {
+                for clause in clauses {
+                    match &clause.value {
+                        zirql::ValueGenerator::In { source, filter, .. }
+                        | zirql::ValueGenerator::Bind {
+                            value: source,
+                            filter,
+                            ..
+                        } => {
+                            pending.push(source);
+                            pending.extend(filter);
+                        }
+                    }
+                }
+                pending.push(head);
+                if let K::KeyedComprehension {
+                    key,
+                    empty_axis_sources,
+                    ..
+                } = &value.value
+                {
+                    pending.push(key);
+                    if let Some(sources) = empty_axis_sources {
+                        pending.extend(sources);
+                    }
+                }
             }
         }
     }
+    false
+}
+
+pub(super) fn has_constructed(expression: &model::Expression) -> bool {
+    expression
+        .first
+        .iter()
+        .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
+        .any(|stage| {
+            matches!(
+                stage,
+                model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::FunctionPrimitive{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
+            ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
+            || nested(stage).into_iter().any(has_constructed)
+        })
+}
+
+pub(super) fn dispose_value(value: zirql::ValueExpressionKind<Operand>) {
+    zirql::dispose_native_value(Located::new(value, 0..0));
 }
 
 pub(super) fn types_with_host(
@@ -1518,7 +1560,7 @@ pub(super) fn types_with_host(
     budget: &mut Budget,
     host: &ReportHost<'_>,
 ) -> Result<Vec<ValueType>, EvaluationError> {
-    if host.functions.is_empty() {
+    if host.functions.is_empty() && !value_requires_session(&value.expression) {
         return types(value, input, names, budget);
     }
     let kind =
@@ -1537,7 +1579,13 @@ pub(super) fn projection_types_with_host(
     budget: &mut Budget,
     host: &ReportHost<'_>,
 ) -> Result<Vec<ValueType>, EvaluationError> {
-    if host.functions.is_empty() {
+    if host.functions.is_empty()
+        && value
+            .projection
+            .fields
+            .iter()
+            .all(|(_, value)| !value_requires_session(value))
+    {
         return projection_types(value, input, names, budget);
     }
     let projection = &value.projection;
@@ -1605,9 +1653,6 @@ pub(super) fn validate_predicate_with_host(
     budget: &mut Budget,
     host: &ReportHost<'_>,
 ) -> Result<(), EvaluationError> {
-    if host.functions.is_empty() {
-        return validate_predicate(predicate, names, budget);
-    }
     match predicate {
         model::Predicate::SameValue { range, .. } => {
             return Err(EvaluationError::new(

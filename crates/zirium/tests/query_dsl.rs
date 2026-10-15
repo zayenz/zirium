@@ -564,6 +564,10 @@ fn contextual_comprehensions_keep_order_and_native_typed_values() {
 
     for (source, expected) in [
         (
+            "if = count; [if, if, if] | json",
+            serde_json::json!([2, 2, 2]),
+        ),
+        (
             "if = count; [if-1 for n in [1]] | json",
             serde_json::json!([1]),
         ),
@@ -2454,5 +2458,320 @@ fn report_ordering_agrees_with_typed_helpers_and_keeps_native_selector_stages() 
             source[position..].starts_with("\"score\""),
             "{position}: {source}"
         );
+    }
+}
+
+#[test]
+fn destructured_reports_and_guarded_matches_agree_with_typed_builders() {
+    use zirium::query::{
+        FunctionDefinition as F, FunctionType as T, Located, NativeValue, PatternKind as P,
+        PatternParameter, ReportExpr as E, ReportMatchArm as A, ValueBinaryOperator as B, report,
+    };
+    let p = |value| Located::new(value, 0..0);
+    let name = |name: &str| p(P::Name(Located::new(name.into(), 0..0)));
+    let record_pattern = |fields, ignore_rest| {
+        p(P::Record {
+            fields,
+            ignore_rest,
+        })
+    };
+    let parameter = p(P::Tuple(vec![
+        name("label"),
+        record_pattern(
+            vec![(
+                Located::new("cost".into(), 0..0),
+                p(P::Tuple(vec![p(P::Wildcard), name("cost")])),
+            )],
+            true,
+        ),
+    ]));
+    let function = F::with_patterns(
+        "add_cost",
+        vec![PatternParameter {
+            pattern: parameter,
+            declaration: T::Tuple(vec![
+                T::String,
+                T::Record(vec![
+                    ("cost".into(), T::Tuple(vec![T::String, T::Integer])),
+                    ("ignored".into(), T::Integer),
+                ]),
+            ]),
+        }],
+        T::Record(vec![
+            ("label".into(), T::String),
+            ("total".into(), T::Integer),
+        ]),
+        E::conditional(
+            E::name("cost").binary(B::GreaterEqual, E::integer(0)),
+            E::block(
+                vec![(
+                    name("answer"),
+                    E::name("cost").binary(B::Add, E::integer(1)),
+                )],
+                E::record([("label", E::name("label")), ("total", E::name("answer"))]),
+            )
+            .unwrap(),
+            E::record([("label", E::name("label")), ("total", E::integer(0))]),
+        ),
+    )
+    .unwrap();
+    let typed = report(
+        E::block(
+            vec![
+                (
+                    record_pattern(
+                        vec![
+                            (Located::new("name".into(), 0..0), name("title")),
+                            (
+                                Located::new("counts".into(), 0..0),
+                                p(P::Tuple(vec![p(P::Wildcard), name("amount")])),
+                            ),
+                        ],
+                        true,
+                    ),
+                    E::record([
+                        ("name", E::string("operations")),
+                        ("counts", E::tuple([E::integer(0), E::integer(3)])),
+                        ("ignored", E::string("unused")),
+                    ]),
+                ),
+                (
+                    p(P::Tuple(vec![name("label"), name("details")])),
+                    E::tuple([
+                        E::string("alpha"),
+                        E::record([
+                            ("cost", E::tuple([E::string("estimate"), E::integer(4)])),
+                            ("ignored", E::integer(99)),
+                        ]),
+                    ]),
+                ),
+            ],
+            E::record([
+                (
+                    "summary",
+                    E::call(
+                        "add_cost",
+                        [E::tuple([E::name("label"), E::name("details")])],
+                    ),
+                ),
+                ("title", E::name("title")),
+                ("count", E::name("amount")),
+            ]),
+        )
+        .unwrap(),
+    )
+    .with_functions(vec![function]);
+    let mut document = document();
+    let expected = document.query(&typed).unwrap();
+    let source = include_str!("../../../examples/cli/destructured-report.zirql");
+    let source = source.strip_suffix(" | json;\n").unwrap();
+    let mut emitted = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            emitted.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(&emitted[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value()==expected.value())
+    );
+    let cost = E::name("cost");
+    let selected = E::block(
+        vec![(name("answer"), cost.clone().binary(B::Add, E::integer(1)))],
+        E::record([("kind", E::string("small")), ("cost", E::name("answer"))]),
+    )
+    .unwrap();
+    let typed = report(
+        E::block(
+            vec![(name("row"), E::record([("cost", E::integer(4))]))],
+            E::value_match(
+                E::name("row").lookup(E::string("cost")),
+                vec![
+                    A {
+                        pattern: p(P::Absent),
+                        guard: None,
+                        value: E::record([("kind", E::string("absent")), ("cost", E::integer(0))]),
+                    },
+                    A {
+                        pattern: p(P::Present(Box::new(name("cost")))),
+                        guard: Some(cost.clone().binary(B::Less, E::integer(0))),
+                        value: E::require(
+                            E::boolean(false),
+                            E::record([("kind", E::string("negative")), ("cost", E::integer(0))]),
+                            "negative cost",
+                        ),
+                    },
+                    A {
+                        pattern: p(P::Present(Box::new(name("cost")))),
+                        guard: Some(cost.clone().binary(B::Greater, E::integer(10))),
+                        value: E::record([("kind", E::string("large")), ("cost", cost)]),
+                    },
+                    A {
+                        pattern: p(P::Present(Box::new(name("cost")))),
+                        guard: None,
+                        value: selected,
+                    },
+                    A {
+                        pattern: p(P::Wildcard),
+                        guard: None,
+                        value: E::record([
+                            ("kind", E::string("fallback")),
+                            ("cost", E::integer(0)),
+                        ]),
+                    },
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let expected = document.query(&typed).unwrap();
+    emitted.clear();
+    let source = include_str!("../../../examples/cli/guarded-match.zirql")
+        .strip_suffix(" | json;\n")
+        .unwrap();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            emitted.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(&emitted[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value()==expected.value())
+    );
+}
+
+#[test]
+fn pattern_native_views_tail_calls_and_refusals_keep_host_contracts() {
+    use zirium::query::{
+        FunctionDefinition as F, FunctionLimits, FunctionNativeType as N, FunctionType as T,
+        Located, NativeValue, PatternKind as P, PatternParameter, ReportExpr as E,
+        ReportMatchArm as A, function_call,
+    };
+    let p = |value| Located::new(value, 41..48);
+    let name = || p(P::Name(Located::new("selected".into(), 41..48)));
+    let function = F::with_patterns(
+        "select",
+        vec![PatternParameter {
+            pattern: p(P::Record {
+                fields: vec![(Located::new("operation".into(), 41..48), name())],
+                ignore_rest: true,
+            }),
+            declaration: T::Record(vec![
+                ("operation".into(), T::Native(N::Operation)),
+                ("ignored".into(), T::Native(N::Operation)),
+            ]),
+        }],
+        T::Native(N::Operation),
+        E::name("selected"),
+    )
+    .unwrap();
+    let mut document = document();
+    let operation = ops()
+        .head(1)
+        .evaluate(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationLimits::default(),
+        )
+        .unwrap()[0];
+    let call = |operation| {
+        function_call::<Vec<zirium::semantic::OperationId>>(
+            "select",
+            [E::capture(vec![
+                ("operation".into(), QueryOutput::Operations(vec![operation])),
+                ("ignored".into(), QueryOutput::Operations(vec![operation])),
+            ])],
+        )
+        .with_functions(vec![function.clone()])
+    };
+    assert_eq!(document.query(&call(operation)).unwrap(), vec![operation]);
+    let other = document_from(SOURCE);
+    let foreign = ops()
+        .head(1)
+        .evaluate(
+            &other,
+            DialectRegistry::baseline(),
+            EvaluationLimits::default(),
+        )
+        .unwrap()[0];
+    assert!(document.query(&call(foreign)).is_err());
+    let matched = E::value_match(
+        E::capture(vec![(
+            "operation".into(),
+            QueryOutput::Operations(vec![operation]),
+        )]),
+        vec![
+            A {
+                pattern: p(P::Record {
+                    fields: vec![(Located::new("operation".into(), 41..48), name())],
+                    ignore_rest: false,
+                }),
+                guard: None,
+                value: E::name("selected"),
+            },
+            A {
+                pattern: p(P::Wildcard),
+                guard: None,
+                value: E::operation(operation),
+            },
+        ],
+    )
+    .unwrap();
+    let identity = F::with_patterns(
+        "identity",
+        vec![PatternParameter {
+            pattern: p(P::Wildcard),
+            declaration: T::Integer,
+        }],
+        T::Native(N::Operation),
+        matched,
+    )
+    .unwrap();
+    assert_eq!(
+        document
+            .query(
+                &function_call::<Vec<zirium::semantic::OperationId>>("identity", [E::integer(0)])
+                    .with_functions(vec![identity])
+            )
+            .unwrap(),
+        vec![operation]
+    );
+    let source = "fn sum_to((n, total): tuple<int,int>) -> int { match (n) { 0 => total, _ => { let next = (n - 1, total + n); if true { sum_to(next) } else { 0 } } } } report sum_to((100,0))";
+    let mut values = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .with_function_limits(FunctionLimits { active_depth: 1 })
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, v| {
+            values.push(v);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(&values[0],QueryOutput::Native(NativeValue::Constructed(v)) if v.value().data()==&zirium::query::ConstructedValue::Integer(5050))
+    );
+    for source in [
+        "let (a,b) = (1,); report a",
+        "let {a} = {\"a\":1,\"b\":2}; report a",
+        "let (a,a) = (1,2); report a",
+        "let a = 1; report if true { 1 } else { let a = 2; a }",
+        "report match (1) { x if 1 => x, _ => 0 }",
+        "report match (1) { x if (1 div 0) == 0 => x, _ => 0 }",
+        "report match (1) { x => x }",
+        "report if true { let local = 1; local } else { local }",
+        "report match (0) { 0 => 1, _ => input | set_attr(\"tag\",\"x\") }",
+    ] {
+        let result = Query::parse(source).and_then(|query| {
+            query
+                .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+                .map_err(|error| zirium::query::QueryError {
+                    position: error.range().map_or(0, |range| range.start),
+                    message: error.to_string(),
+                })
+        });
+        let error = result.unwrap_err();
+        assert!(error.position < source.len(), "{source}: {error}");
     }
 }

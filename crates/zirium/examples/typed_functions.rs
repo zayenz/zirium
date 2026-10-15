@@ -1,11 +1,11 @@
-//! Native subtree cost and a scalar accumulator without generated query text.
+//! Native subtree cost and a destructured accumulator without generated query text.
 use zirium::{
     dialect::DialectRegistry,
     parser::ParsedFile,
     query::{
         FunctionDefinition, FunctionLimits, FunctionNativeType as N, FunctionParameter,
-        FunctionType as T, Located, ReportExpr as E, ReportGenerator, ValueBinaryOperator as B, op,
-        ops, report,
+        FunctionType as T, Located, PatternKind as P, PatternParameter, ReportExpr as E,
+        ReportGenerator, ReportMatchArm, ValueBinaryOperator as B, op, ops, report,
     },
     semantic::{LoweringMode, lower_with_dialect_registry},
 };
@@ -56,26 +56,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", cost.to_json_with_budget(&document, &mut budget)?);
     let n = E::name("n");
     let total = E::name("total");
-    let accumulate = FunctionDefinition::new(
+    let name = |name: &str| Located::new(P::Name(Located::new(name.to_owned(), 0..0)), 0..0);
+    let accumulate = FunctionDefinition::with_patterns(
         "accumulate",
-        vec![parameter("n", T::Integer), parameter("total", T::Integer)],
+        vec![PatternParameter {
+            pattern: Located::new(P::Tuple(vec![name("n"), name("total")]), 0..0),
+            declaration: T::Tuple(vec![T::Integer, T::Integer]),
+        }],
         T::Integer,
-        vec![],
-        E::conditional(
-            n.clone().binary(B::Equal, E::integer(0)),
-            total.clone(),
-            E::call(
-                "accumulate",
-                [
-                    n.clone().binary(B::Subtract, E::integer(1)),
-                    total.binary(B::Add, n),
-                ],
-            ),
-        ),
+        E::value_match(
+            n.clone(),
+            vec![
+                ReportMatchArm {
+                    pattern: Located::new(
+                        P::Literal(zirium::query::ConstructedValue::Integer(0)),
+                        0..0,
+                    ),
+                    guard: None,
+                    value: total.clone(),
+                },
+                ReportMatchArm {
+                    pattern: Located::new(P::Wildcard, 0..0),
+                    guard: None,
+                    value: E::block(
+                        vec![(name("next_total"), total.binary(B::Add, n.clone()))],
+                        E::call(
+                            "accumulate",
+                            [E::tuple([
+                                n.binary(B::Subtract, E::integer(1)),
+                                E::name("next_total"),
+                            ])],
+                        ),
+                    )?,
+                },
+            ],
+        )?,
     )?;
-    let result = report(E::call("accumulate", [E::integer(1000), E::integer(0)]))
-        .with_functions(vec![accumulate])
-        .with_function_limits(FunctionLimits { active_depth: 1 });
+    let result = report(E::call(
+        "accumulate",
+        [E::tuple([E::integer(1000), E::integer(0)])],
+    ))
+    .with_functions(vec![accumulate])
+    .with_function_limits(FunctionLimits { active_depth: 1 });
     let mut budget = result.new_budget(zirium::query::EvaluationLimits::default());
     let result = result.evaluate_output_with_budget(
         &document,

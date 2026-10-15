@@ -143,6 +143,148 @@ fn same_value(left: &SsaQuery, right: &SsaQuery) -> MatchPredicate {
 pub(super) struct ReportExpr {
     inner: core::ReportExpr,
 }
+/// Python owners retain reusable common patterns; builders copy only metadata.
+#[pyclass(frozen, module = "zirium.query")]
+#[derive(Clone)]
+pub(super) struct ReportPattern {
+    inner: std::sync::Arc<core::Pattern>,
+}
+fn pattern_budget() -> core::Budget {
+    let limits = core::EvaluationLimits::default();
+    core::Budget::for_program(core::ProgramLimits {
+        work: limits.max_work,
+        results: 1_000_000,
+        nesting: core::parser::DEFAULT_NESTING_LIMIT,
+        stream_items: limits.max_items,
+    })
+}
+impl ReportPattern {
+    fn pattern(&self, budget: &mut core::Budget) -> PyResult<core::Pattern> {
+        core::copy_pattern(&self.inner, budget).map_err(|e| PyTypeError::new_err(e.to_string()))
+    }
+    fn node(kind: core::PatternKind) -> Self {
+        Self {
+            inner: std::sync::Arc::new(core::Located::new(kind, 0..0)),
+        }
+    }
+}
+#[pymethods]
+impl ReportPattern {
+    #[staticmethod]
+    fn name(name: String) -> Self {
+        Self::node(core::PatternKind::Name(core::Located::new(name, 0..0)))
+    }
+    #[staticmethod]
+    fn wildcard() -> Self {
+        Self::node(core::PatternKind::Wildcard)
+    }
+    #[staticmethod]
+    fn absent() -> Self {
+        Self::node(core::PatternKind::Absent)
+    }
+    #[staticmethod]
+    fn present(pattern: &ReportPattern) -> PyResult<Self> {
+        Ok(Self::node(core::PatternKind::Present(Box::new(
+            pattern.pattern(&mut pattern_budget())?,
+        ))))
+    }
+    #[staticmethod]
+    fn tuple(patterns: Vec<PyRef<'_, ReportPattern>>) -> PyResult<Self> {
+        let mut budget = pattern_budget();
+        Ok(Self::node(core::PatternKind::Tuple(
+            patterns
+                .iter()
+                .map(|p| p.pattern(&mut budget))
+                .collect::<PyResult<_>>()?,
+        )))
+    }
+    #[staticmethod]
+    #[pyo3(signature = (fields, *, ignore_rest=false))]
+    fn record(fields: &Bound<'_, PyDict>, ignore_rest: bool) -> PyResult<Self> {
+        let mut budget = pattern_budget();
+        let fields = fields
+            .iter()
+            .map(|(label, pattern)| {
+                let name = label.extract::<String>()?;
+                let pattern = pattern.extract::<PyRef<'_, ReportPattern>>()?;
+                Ok((
+                    core::Located::new(name, 0..0),
+                    pattern.pattern(&mut budget)?,
+                ))
+            })
+            .collect::<PyResult<_>>()?;
+        Ok(Self::node(core::PatternKind::Record {
+            fields,
+            ignore_rest,
+        }))
+    }
+    #[staticmethod]
+    fn literal(value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let value = if value.is_instance_of::<PyBool>() {
+            core::ConstructedValue::Boolean(value.extract()?)
+        } else if value.is_instance_of::<PyInt>() {
+            core::ConstructedValue::Integer(value.extract()?)
+        } else if value.is_instance_of::<PyFloat>() {
+            let value: f64 = value.extract()?;
+            if !value.is_finite() {
+                return Err(PyTypeError::new_err("pattern literals must be finite"));
+            }
+            core::ConstructedValue::Float(value)
+        } else if value.is_instance_of::<PyString>() {
+            core::ConstructedValue::String(value.extract()?)
+        } else {
+            return Err(PyTypeError::new_err(
+                "pattern literals require a present scalar",
+            ));
+        };
+        Ok(Self::node(core::PatternKind::Literal(value)))
+    }
+    fn located(&self, start: usize, end: usize) -> PyResult<Self> {
+        if start > end {
+            return Err(PyTypeError::new_err("pattern range must be ordered"));
+        }
+        let mut pattern = self.pattern(&mut pattern_budget())?;
+        pattern.range = start..end;
+        if let core::PatternKind::Name(name) = &mut pattern.value {
+            name.range = start..end;
+        }
+        Ok(Self {
+            inner: std::sync::Arc::new(pattern),
+        })
+    }
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyTypeError::new_err("patterns have no Python truth value"))
+    }
+}
+#[pyclass(frozen, module = "zirium.query")]
+#[derive(Clone)]
+pub(super) struct ReportMatchArm {
+    pattern: ReportPattern,
+    guard: Option<core::ReportExpr>,
+    value: core::ReportExpr,
+}
+#[pymethods]
+impl ReportMatchArm {
+    #[new]
+    #[pyo3(signature = (pattern, value, *, guard=None))]
+    fn new(
+        pattern: &ReportPattern,
+        value: &Bound<'_, PyAny>,
+        guard: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            pattern: pattern.clone(),
+            value: report_expression(value)?,
+            guard: guard.map(report_expression).transpose()?,
+        })
+    }
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyTypeError::new_err(
+            "match arms have no Python truth value",
+        ))
+    }
+}
+
 #[pyclass(frozen, module = "zirium.query")]
 #[derive(Clone)]
 pub(super) struct ReportQuery {
@@ -256,6 +398,67 @@ impl ReportExpr {
                     .collect::<PyResult<Vec<_>>>()?,
                 report_expression(value)?,
             ),
+        })
+    }
+    #[staticmethod]
+    fn tuple(values: Vec<Bound<'_, PyAny>>) -> PyResult<Self> {
+        Ok(Self {
+            inner: core::ReportExpr::tuple(
+                values
+                    .iter()
+                    .map(report_expression)
+                    .collect::<PyResult<Vec<_>>>()?,
+            ),
+        })
+    }
+    #[staticmethod]
+    fn block(
+        bindings: Vec<(PyRef<'_, ReportPattern>, Bound<'_, PyAny>)>,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let mut budget = pattern_budget();
+        let bindings = bindings
+            .iter()
+            .map(|(pattern, value)| Ok((pattern.pattern(&mut budget)?, report_expression(value)?)))
+            .collect::<PyResult<_>>()?;
+        Ok(Self {
+            inner: core::ReportExpr::block(bindings, report_expression(value)?)
+                .map_err(py_error)?,
+        })
+    }
+    #[staticmethod]
+    fn conditional(
+        condition: &Bound<'_, PyAny>,
+        selected: &Bound<'_, PyAny>,
+        otherwise: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: core::ReportExpr::conditional(
+                report_expression(condition)?,
+                report_expression(selected)?,
+                report_expression(otherwise)?,
+            ),
+        })
+    }
+    #[staticmethod]
+    fn value_match(
+        subject: &Bound<'_, PyAny>,
+        arms: Vec<PyRef<'_, ReportMatchArm>>,
+    ) -> PyResult<Self> {
+        let mut budget = pattern_budget();
+        let arms = arms
+            .iter()
+            .map(|arm| {
+                Ok(core::ReportMatchArm {
+                    pattern: arm.pattern.pattern(&mut budget)?,
+                    guard: arm.guard.clone(),
+                    value: arm.value.clone(),
+                })
+            })
+            .collect::<PyResult<_>>()?;
+        Ok(Self {
+            inner: core::ReportExpr::value_match(report_expression(subject)?, arms)
+                .map_err(py_error)?,
         })
     }
     fn field(&self, name: String) -> Self {
@@ -1549,6 +1752,8 @@ pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(capture_ssa, module)?)?;
     module.add_function(wrap_pyfunction!(same_value, module)?)?;
     module.add_class::<ReportExpr>()?;
+    module.add_class::<ReportPattern>()?;
+    module.add_class::<ReportMatchArm>()?;
     module.add_class::<ReportQuery>()?;
     module.add_class::<ReportGenerator>()?;
     module.add_function(wrap_pyfunction!(bound_ops, module)?)?;

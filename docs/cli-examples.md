@@ -430,6 +430,36 @@ one activation; work and produced data remain bounded by `--max-work` and
 See [typed functions](query-language.md#typed-recursive-functions) for signature
 syntax, lexical scope, purity and independent limits.
 
+## Destructure report values
+
+The [saved destructuring program](../examples/cli/destructured-report.zirql)
+binds tuple and record fields, then passes a tuple to a typed function:
+
+```sh
+zirium -f examples/cli/destructured-report.zirql examples/cli/function-report.mlir
+```
+
+```json
+{"summary":{"label":"alpha","total":5},"title":"operations","count":3}
+```
+
+The [guarded value match](../examples/cli/guarded-match.zirql) tests an optional
+lookup. Its false guards skip their bodies, then a local block computes the
+selected result:
+
+```sh
+zirium -f examples/cli/guarded-match.zirql examples/cli/function-report.mlir
+```
+
+```json
+{"kind":"small","cost":5}
+```
+
+Passing either program inline produces the same result. The CLI buffers all
+output until the whole program succeeds, including failures in a later match
+guard. See [pattern rules](query-language.md#destructuring-and-guarded-value-matches)
+and [Rust and Python report builders](query-dsl.md#destructuring-reports).
+
 ## Filter projected names with exact string matching
 
 ```sh

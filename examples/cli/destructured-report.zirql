@@ -1,0 +1,14 @@
+fn add_cost((label, {cost: (_, cost), ..}):
+    tuple<string, record {cost: tuple<string, int>, ignored: int}>)
+    -> record {label: string, total: int} {
+    if cost >= 0 {
+        let answer = cost + 1;
+        {"label": label, "total": answer}
+    } else {
+        {"label": label, "total": 0}
+    }
+}
+let {name: title, counts: (_, amount), ..} =
+    {"name": "operations", "counts": (0, 3), "ignored": "unused"};
+let (label, details) = ("alpha", {"cost": ("estimate", 4), "ignored": 99});
+report {"summary": add_cost((label, details)), "title": title, "count": amount} | json;

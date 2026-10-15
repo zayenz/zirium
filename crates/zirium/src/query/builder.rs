@@ -313,16 +313,17 @@ impl<T> QueryExpr<T> {
         let function_host = report::ReportHost {
             functions: &self.functions,
         };
-        let mut functions = if self.functions.is_empty() {
-            None
-        } else {
-            Some(functions::Session::new(
-                &self.functions,
-                &function_host,
-                self.function_limits,
-                budget,
-            )?)
-        };
+        let mut functions =
+            if self.functions.is_empty() && !report::requires_session(&self.expression) {
+                None
+            } else {
+                Some(functions::Session::new(
+                    &self.functions,
+                    &function_host,
+                    self.function_limits,
+                    budget,
+                )?)
+            };
         if let Some(session) = &mut functions {
             session.prepare_expression(
                 &self.expression,
@@ -1167,6 +1168,14 @@ pub struct ReportExpr {
     parameters: Vec<ParameterDeclaration>,
     value: ParsedComprehension,
 }
+/// One ordered value-match arm. Its pattern binds only in its guard and value.
+#[derive(Debug)]
+pub struct ReportMatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<ReportExpr>,
+    pub value: ReportExpr,
+}
+
 impl ReportExpr {
     fn with_metadata(
         mut self,
@@ -1293,6 +1302,91 @@ impl ReportExpr {
             })
             .collect();
         Self::node(zirql::ValueExpressionKind::Array(values)).with_metadata(parameters, functions)
+    }
+    /// Construct a positional tuple, distinct from a report array.
+    pub fn tuple(values: impl IntoIterator<Item = Self>) -> Self {
+        let mut functions = Vec::new();
+        let mut parameters = Vec::new();
+        let values = values
+            .into_iter()
+            .map(|value| {
+                functions = functions::merge(&functions, &value.functions);
+                parameters = merge_parameters(&parameters, &value.parameters);
+                functions::normalize(value.into_expression())
+            })
+            .collect();
+        Self::node(zirql::ValueExpressionKind::Tuple(values)).with_metadata(parameters, functions)
+    }
+    /// Evaluate immutable pattern bindings in order, then return the final value.
+    pub fn block(bindings: Vec<(Pattern, Self)>, value: Self) -> Result<Self, EvaluationError> {
+        if bindings.is_empty() {
+            return Ok(value);
+        }
+        let mut functions = Vec::new();
+        let mut parameters = Vec::new();
+        let mut budget = Budget::for_program(comprehension::default_limits());
+        if let Err(error) = bindings
+            .iter()
+            .try_for_each(|(pattern, _)| functions::validate_pattern(pattern, &mut budget))
+        {
+            for (pattern, _) in bindings {
+                zirql::dispose_pattern(pattern);
+            }
+            return Err(error);
+        }
+        let bindings = bindings
+            .into_iter()
+            .map(|(pattern, value)| {
+                functions = functions::merge(&functions, &value.functions);
+                parameters = merge_parameters(&parameters, &value.parameters);
+                (pattern, functions::normalize(value.into_expression()))
+            })
+            .collect();
+        functions = functions::merge(&functions, &value.functions);
+        parameters = merge_parameters(&parameters, &value.parameters);
+        Ok(Self::node(zirql::ValueExpressionKind::Block {
+            bindings,
+            value: Box::new(functions::normalize(value.into_expression())),
+        })
+        .with_metadata(parameters, functions))
+    }
+    /// Select the first matching arm with a true known-Boolean guard.
+    pub fn value_match(subject: Self, arms: Vec<ReportMatchArm>) -> Result<Self, EvaluationError> {
+        let mut functions = subject.functions.clone();
+        let mut parameters = subject.parameters.clone();
+        let mut budget = Budget::for_program(comprehension::default_limits());
+        if let Err(error) = arms
+            .iter()
+            .try_for_each(|arm| functions::validate_pattern(&arm.pattern, &mut budget))
+        {
+            for arm in arms {
+                zirql::dispose_pattern(arm.pattern);
+            }
+            return Err(error);
+        }
+        let arms = arms
+            .into_iter()
+            .map(|arm| {
+                if let Some(guard) = &arm.guard {
+                    functions = functions::merge(&functions, &guard.functions);
+                    parameters = merge_parameters(&parameters, &guard.parameters);
+                }
+                functions = functions::merge(&functions, &arm.value.functions);
+                parameters = merge_parameters(&parameters, &arm.value.parameters);
+                zirql::ValueMatchArm {
+                    pattern: arm.pattern,
+                    guard: arm
+                        .guard
+                        .map(|guard| functions::normalize(guard.into_expression())),
+                    value: functions::normalize(arm.value.into_expression()),
+                }
+            })
+            .collect();
+        Ok(Self::node(zirql::ValueExpressionKind::ValueMatch {
+            subject: Box::new(functions::normalize(subject.into_expression())),
+            arms,
+        })
+        .with_metadata(parameters, functions))
     }
     pub fn record<S: Into<String>>(fields: impl IntoIterator<Item = (S, Self)>) -> Self {
         let mut functions = Vec::new();
@@ -2043,6 +2137,13 @@ impl ReportExpr {
     /// Supply an exact SSA identity; admission checks its current document owner.
     pub fn ssa_value(value: ValueId) -> Self {
         Self::native_input(QueryOutput::Native(NativeValue::Ssa(value)))
+    }
+    /// Supply an explicit native record view. Pattern admission checks retained
+    /// handles against the current document before exposing selected fields.
+    pub fn capture(fields: Vec<(String, QueryOutput)>) -> Self {
+        Self::native_input(QueryOutput::Native(NativeValue::Capture(
+            zirql::NativeCapture { fields },
+        )))
     }
     /// Supply a sequence whose cardinality remains explicit, including zero or one.
     pub fn operation_sequence(operations: Vec<OperationId>) -> Self {

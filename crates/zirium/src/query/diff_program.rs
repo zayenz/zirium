@@ -173,6 +173,7 @@ pub(super) fn dispose_statements(
     for statement in statements {
         let expression = match statement.value {
             zirql::Statement::Bind { expression, .. }
+            | zirql::Statement::BindFields { expression, .. }
             | zirql::Statement::Evaluate { expression, .. } => expression,
         };
         dispose_expression(expression);
@@ -1606,6 +1607,11 @@ fn validate_program(
 ) -> Result<(), EvaluationError> {
     for statement in program.statements() {
         let (expression, name) = match &statement.value {
+            zirql::Statement::BindFields { .. } => {
+                return Err(EvaluationError::new(
+                    "pattern bindings are unsupported in diff queries",
+                ));
+            }
             zirql::Statement::Bind { name, expression } => (expression, Some(name)),
             zirql::Statement::Evaluate { expression, .. } => (expression, None),
         };

@@ -63,6 +63,13 @@ pub(super) fn lower(
                     expression: lower_expression(expression),
                 },
             ),
+            model::Statement::PatternBinding { names, expression } => (
+                expression,
+                zirql::Statement::BindFields {
+                    names: names.clone(),
+                    expression: lower_expression(expression),
+                },
+            ),
             model::Statement::Do(expression) => (
                 expression,
                 zirql::Statement::Evaluate {
@@ -795,6 +802,7 @@ pub(super) fn validate(
         }
         let expression = match statement {
             model::Statement::Binding { expression, .. }
+            | model::Statement::PatternBinding { expression, .. }
             | model::Statement::Do(expression)
             | model::Statement::Query(expression) => expression,
         };
@@ -858,13 +866,23 @@ impl Validator<'_> {
             let failure = |message: &str| EvaluationError::new(message).at(range(stage.range()));
             let require = |valid, message: &str| if valid { Ok(()) } else { Err(failure(message)) };
             match stage {
+                S::PatternBinding { .. } => {
+                    return Err(failure("pattern binding requires program preparation"));
+                }
                 S::FunctionInput { value, .. } => {
                     kind = report::output_kind(value, budget, &range(stage.range()))?;
                 }
                 S::FunctionValue { value, .. } => {
-                    kind =
+                    kind = if self.host.functions.is_empty()
+                        && !report::value_requires_session(&value.expression)
+                    {
+                        Kind::Constructed(std::sync::Arc::new(report::types(
+                            value, kind, names, budget,
+                        )?))
+                    } else {
                         functions::value_kind(&self.host, &value.expression, kind, names, budget)
-                            .map_err(core_error)?;
+                            .map_err(core_error)?
+                    };
                 }
                 S::FunctionPrimitive {
                     primitive,

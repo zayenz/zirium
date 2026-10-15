@@ -3,7 +3,7 @@ use super::*;
 use std::{ops::Range, sync::Arc};
 use zirql::{DeclaredType as D, FunctionHost, ProjectionHost, RuntimeTypeHost, ValueType};
 
-pub use zirql::{FunctionLimits, FunctionParameter};
+pub use zirql::{FunctionLimits, FunctionParameter, Pattern, PatternKind, PatternParameter};
 /// Native signature identities; `SSAValue` is Zirium's checked `ValueId`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunctionNativeType {
@@ -11,7 +11,7 @@ pub enum FunctionNativeType {
     SSAValue,
 }
 pub type FunctionType = D<FunctionNativeType>;
-pub(super) type Declaration = zirql::FunctionDeclaration<report::Operand, program::Kind>;
+pub(super) type Declaration = zirql::PatternFunctionDeclaration<report::Operand, program::Kind>;
 pub(super) const DEFAULT_LIMITS: FunctionLimits = FunctionLimits { active_depth: 64 };
 
 /// A located function definition shared through typed query composition.
@@ -35,8 +35,8 @@ impl Eq for FunctionDefinition {}
 impl Drop for FunctionDefinition {
     fn drop(&mut self) {
         if let Some(d) = Arc::get_mut(&mut self.declaration) {
-            for (_, value) in std::mem::take(&mut d.bindings) {
-                report::dispose_value(value.value);
+            for parameter in std::mem::take(&mut d.parameters) {
+                zirql::dispose_pattern(parameter.value.pattern);
             }
             let value = std::mem::replace(
                 &mut d.value.value,
@@ -127,6 +127,12 @@ pub(super) fn scalar_facts(
                 elements: scalar_facts(value, budget, range)?,
             })],
             D::Native(_) => vec![ValueType::Unestablished],
+            D::Queue(_) | D::IdentitySet(_) => {
+                return Err(zirql::QueryError::query(
+                    range.clone(),
+                    "computational collection signatures are not supported in Zirium",
+                ));
+            }
         })
     }
 }
@@ -278,6 +284,12 @@ impl<'q> RuntimeTypeHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
                         )?;
                     }
                 }
+                (
+                    D::Native(kind @ (program::Kind::Capture(_) | program::Kind::Captures(_))),
+                    value,
+                ) => {
+                    admit_view_kind(value, kind, context, budget, range)?;
+                }
                 _ => {
                     return Err(zirql::QueryError::query(
                         range.clone(),
@@ -290,6 +302,78 @@ impl<'q> RuntimeTypeHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
         }
     }
 }
+fn admit_view_kind(
+    value: &QueryOutput,
+    expected: &program::Kind,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<(), zirql::EvaluationError<EvaluationError>> {
+    let mut pending = vec![(value, expected)];
+    while let Some((value, expected)) = pending.pop() {
+        budget.charge(1, ValueLocation::Query(range.clone()))?;
+        match (expected, unretained(value)) {
+            (
+                program::Kind::Operations,
+                QueryOutput::Operations(values)
+                | QueryOutput::Native(NativeValue::OperationSequence(values)),
+            ) => check_operations(context.document, values, budget, range)?,
+            (program::Kind::Ssa, QueryOutput::Native(NativeValue::Ssa(value))) => {
+                capture::check_value(context.document, *value, range)
+                    .map_err(zirql::EvaluationError::Host)?
+            }
+            (program::Kind::Capture(schema), QueryOutput::Native(NativeValue::Capture(record))) => {
+                if schema.fields.len() != record.fields.len() {
+                    return Err(zirql::QueryError::query(
+                        range.clone(),
+                        "native capture shape changed",
+                    )
+                    .into());
+                }
+                budget.charge_results(schema.fields.len(), ValueLocation::Query(range.clone()))?;
+                for (label, kind) in &schema.fields {
+                    let child = record.get(&Located::new(label.as_str(), range.clone()), budget)?;
+                    pending.push((child, kind));
+                }
+            }
+            (
+                program::Kind::Captures(schema),
+                QueryOutput::Native(NativeValue::Captures(records)),
+            ) => {
+                budget.charge_results(records.len(), ValueLocation::Query(range.clone()))?;
+                for record in records.rows() {
+                    if schema.fields.len() != record.fields.len() {
+                        return Err(zirql::QueryError::query(
+                            range.clone(),
+                            "native capture shape changed",
+                        )
+                        .into());
+                    }
+                    budget
+                        .charge_results(schema.fields.len(), ValueLocation::Query(range.clone()))?;
+                    for (label, kind) in &schema.fields {
+                        let child =
+                            record.get(&Located::new(label.as_str(), range.clone()), budget)?;
+                        pending.push((child, kind));
+                    }
+                }
+            }
+            (kind, value)
+                if report::output_kind(value, budget, range)
+                    .map_err(zirql::EvaluationError::Host)?
+                    == *kind => {}
+            _ => {
+                return Err(zirql::QueryError::query(
+                    range.clone(),
+                    "native view does not satisfy its kind",
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_operations(
     document: &Document,
     operations: &[OperationId],
@@ -419,104 +503,8 @@ pub(super) fn primitive(
     }
 }
 
-/// The declaration pass supplies facts only. Execution and complete admission
-/// belong to the shared prepared unit below.
-struct Facts<'f, 's> {
-    host: &'s report::ReportHost<'f>,
-    scope: &'s BTreeMap<String, program::Kind>,
-    relative: program::Kind,
-}
-impl zirql::ValueQueryHost<report::Operand> for Facts<'_, '_> {
-    type Error = zirql::QueryError;
-    fn function(
-        &mut self,
-        name: &Located<String>,
-        budget: &mut Budget,
-    ) -> Result<(usize, usize), zirql::QueryError> {
-        for (index, function) in self.host.functions.iter().enumerate() {
-            budget.charge(
-                name.value.len() + 1,
-                ValueLocation::Query(name.range.clone()),
-            )?;
-            if function.declaration.name.value == name.value {
-                return Ok((index, function.declaration.parameters.len()));
-            }
-        }
-        Err(zirql::QueryError::query(
-            name.range.clone(),
-            format!("undefined function: {}", name.value),
-        ))
-    }
-    fn function_types(
-        &mut self,
-        name: &Located<String>,
-        budget: &mut Budget,
-    ) -> Result<Vec<ValueType>, zirql::QueryError> {
-        let (index, _) = self.function(name, budget)?;
-        scalar_facts(
-            &self.host.functions[index].declaration.result.value,
-            budget,
-            &name.range,
-        )
-    }
-    fn native_value_types(
-        &mut self,
-        query: &report::Operand,
-        locals: &[(&str, Vec<ValueType>)],
-        budget: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<Vec<ValueType>, zirql::QueryError> {
-        self.query_types(query, locals, budget, range)
-    }
-    fn query_types(
-        &mut self,
-        query: &report::Operand,
-        locals: &[(&str, Vec<ValueType>)],
-        budget: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<Vec<ValueType>, zirql::QueryError> {
-        let mut scope = copy_scope(self.scope, budget, range)?;
-        for (name, types) in locals {
-            if !scope.contains_key(*name) {
-                scope.insert(
-                    (*name).to_owned(),
-                    program::Kind::Constructed(Arc::new(zirql::copy_value_types(
-                        types,
-                        budget,
-                        ValueLocation::Query(range.clone()),
-                    )?)),
-                );
-            }
-        }
-        let kind = zirql::native_expression_kind::<EvaluationContext<'_, '_, '_>, _>(
-            query,
-            self.host,
-            &self.relative,
-            &scope,
-            budget,
-        )?;
-        Ok(self
-            .host
-            .scalar_types(&kind, budget, range)?
-            .unwrap_or_else(|| vec![ValueType::Unestablished]))
-    }
-    fn evaluate_query(
-        &mut self,
-        _: &report::Operand,
-        _: &[(&str, ConstructedValue)],
-        _: &mut Budget,
-    ) -> Result<ConstructedValue, zirql::QueryError> {
-        unreachable!("facts do not execute")
-    }
-    fn read_binding(
-        &mut self,
-        _: &str,
-        _: &Range<usize>,
-        _: &mut Budget,
-    ) -> Result<ConstructedValue, zirql::QueryError> {
-        unreachable!("facts do not execute")
-    }
-}
+/// Signature-only discovery is safe inside native preparation callbacks. The
+/// submitted request separately prepares every complete body in `Session::new`.
 pub(super) fn value_kind(
     host: &report::ReportHost<'_>,
     value: &zirql::ValueExpression<report::Operand>,
@@ -524,82 +512,48 @@ pub(super) fn value_kind(
     scope: &BTreeMap<String, program::Kind>,
     budget: &mut Budget,
 ) -> Result<program::Kind, zirql::QueryError> {
-    value_kind_at(host, value, relative, scope, budget, 0)
+    zirql::pattern_function_value_kind(
+        host.functions
+            .iter()
+            .map(|function| function.declaration.as_ref()),
+        host,
+        value,
+        scope,
+        Some(relative),
+        budget,
+    )
 }
-fn value_kind_at(
-    host: &report::ReportHost<'_>,
-    value: &zirql::ValueExpression<report::Operand>,
-    relative: program::Kind,
-    scope: &BTreeMap<String, program::Kind>,
-    budget: &mut Budget,
-    depth: usize,
-) -> Result<program::Kind, zirql::QueryError> {
-    use zirql::ValueExpressionKind as V;
-    if depth >= parser::DEFAULT_NESTING_LIMIT {
-        return Err(zirql::QueryError::query(
-            value.range.clone(),
-            "function value nesting limit exceeded",
-        ));
-    }
-    budget.charge(1, ValueLocation::Query(value.range.clone()))?;
-    if let V::Conditional {
-        branches,
-        otherwise,
-    } = &value.value
-    {
-        let kind = value_kind_at(host, otherwise, relative.clone(), scope, budget, depth + 1)?;
-        let mut same = true;
-        for (_, branch) in branches {
-            same &=
-                value_kind_at(host, branch, relative.clone(), scope, budget, depth + 1)? == kind;
-        }
-        if same {
-            return Ok(kind);
+
+/// A checked textual top-level pattern binding. Clone retains its immutable tree.
+#[derive(Debug, PartialEq)]
+pub struct ParsedBinding {
+    pub(super) pattern: Arc<Pattern>,
+    pub(super) value: ParsedComprehension,
+}
+impl Clone for ParsedBinding {
+    fn clone(&self) -> Self {
+        Self {
+            pattern: Arc::clone(&self.pattern),
+            value: self.value.clone(),
         }
     }
-    match &value.value {
-        V::Name(name) => scope.get(name).cloned().ok_or_else(|| {
-            zirql::QueryError::query(value.range.clone(), format!("undefined binding: {name}"))
-        }),
-        V::Call { function: name, .. } => {
-            let mut facts = Facts {
-                host,
-                scope,
-                relative,
-            };
-            let (index, _) = zirql::ValueQueryHost::function(&mut facts, name, budget)?;
-            host.declaration_kind(
-                &host.functions[index].declaration.result.value,
-                budget,
-                &value.range,
-            )
+}
+impl Eq for ParsedBinding {}
+impl Drop for ParsedBinding {
+    fn drop(&mut self) {
+        if let Some(pattern) = Arc::get_mut(&mut self.pattern) {
+            zirql::dispose_pattern(std::mem::replace(
+                pattern,
+                Located::new(PatternKind::Wildcard, 0..0),
+            ));
         }
-        V::NativeValue(query) | V::NativeQuery(query) => {
-            zirql::native_expression_kind::<EvaluationContext<'_, '_, '_>, _>(
-                query, host, &relative, scope, budget,
-            )
-        }
-        _ => {
-            let mut names = BTreeMap::new();
-            for (name, kind) in scope {
-                budget.charge(name.len() + 1, ValueLocation::Query(value.range.clone()))?;
-                names.insert(
-                    name.clone(),
-                    host.scalar_types(kind, budget, &value.range)?
-                        .unwrap_or_else(|| vec![ValueType::Unestablished]),
-                );
-            }
-            let types = zirql::query_value_types(
-                value,
-                &names,
-                &mut Facts {
-                    host,
-                    scope,
-                    relative,
-                },
-                budget,
-            )?;
-            Ok(host.constructed_kind(types))
+    }
+}
+impl ParsedBinding {
+    pub(super) fn new(pattern: Pattern, value: ParsedComprehension) -> Self {
+        Self {
+            pattern: Arc::new(pattern),
+            value,
         }
     }
 }
@@ -611,6 +565,7 @@ pub(super) struct Session<'q, 'a, 'd> {
     pub(super) host: &'a report::ReportHost<'q>,
     unit: zirql::PreparedFunctions<'q, 'a, EvaluationContext<'a, 'd, 'q>, report::ReportHost<'q>>,
     entries: BTreeMap<(usize, usize), Entry<'q>>,
+    bindings: BTreeMap<usize, zirql::PreparedPatternBinding<'q, report::Operand, program::Kind>>,
     limits: FunctionLimits,
 }
 impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
@@ -622,13 +577,14 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
     ) -> Result<Self, EvaluationError> {
         Ok(Self {
             host,
-            unit: zirql::PreparedFunctions::prepare(
+            unit: zirql::PreparedFunctions::prepare_patterns(
                 functions.iter().map(|f| f.declaration.as_ref()),
                 host,
                 budget,
             )
             .map_err(error)?,
             entries: BTreeMap::new(),
+            bindings: BTreeMap::new(),
             limits,
         })
     }
@@ -736,8 +692,40 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                 let (d, _) = parameters.next().unwrap();
                 names.extend(program::parameter_names(std::slice::from_ref(d), budget)?);
             }
+            if let model::Statement::PatternBinding { expression, .. } = statement {
+                let [model::Stage::PatternBinding { value, .. }] = expression.first.as_slice()
+                else {
+                    unreachable!("lowered pattern binding stage");
+                };
+                let entry = self
+                    .unit
+                    .prepare_binding(
+                        &value.pattern,
+                        &value.value.expression,
+                        &names,
+                        Some(program::Kind::Operations),
+                        budget,
+                    )
+                    .map_err(error)?;
+                for (name, kind) in entry.bindings() {
+                    budget
+                        .charge(
+                            name.value.len() + 1,
+                            ValueLocation::Query(name.range.clone()),
+                        )
+                        .map_err(core_error)?;
+                    names.insert(name.value.clone(), kind.clone());
+                }
+                budget
+                    .charge_results(1, ValueLocation::Query(program::range(expression.range)))
+                    .map_err(core_error)?;
+                self.bindings
+                    .insert(&expression.first[0] as *const _ as usize, entry);
+                continue;
+            }
             let expression = match statement {
                 model::Statement::Binding { expression, .. }
+                | model::Statement::PatternBinding { expression, .. }
                 | model::Statement::Do(expression)
                 | model::Statement::Query(expression) => expression,
             };
@@ -763,6 +751,22 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
             budget,
         )?;
         Ok(())
+    }
+    pub(super) fn run_binding(
+        &self,
+        context: &mut EvaluationContext<'a, 'd, 'q>,
+        input: &QueryOutput,
+        bindings: &zirql::Bindings<QueryOutput>,
+        budget: &mut Budget,
+    ) -> Result<QueryOutput, EvaluationError> {
+        let entry = self
+            .bindings
+            .get(&context.current_stage)
+            .ok_or_else(|| EvaluationError::new("pattern binding was not prepared"))?;
+        self.unit
+            .evaluate_binding(entry, bindings, Some(input), context, budget, self.limits)
+            .map(|capture| QueryOutput::Native(NativeValue::Capture(capture)))
+            .map_err(error)
     }
     pub(super) fn run(
         &self,
@@ -832,31 +836,93 @@ impl FunctionDefinition {
         bindings: Vec<(String, ReportExpr)>,
         body: ReportExpr,
     ) -> Result<Self, EvaluationError> {
-        let parameters = parameters
-            .into_iter()
-            .map(|p| {
-                Ok(Located::new(
-                    FunctionParameter {
-                        name: p.name,
-                        declaration: native_type(p.declaration, 0)?,
-                    },
-                    0..0,
-                ))
-            })
-            .collect::<Result<_, EvaluationError>>()?;
-        let bindings = bindings
-            .into_iter()
-            .map(|(name, value)| (Located::new(name, 0..0), normalize(value.into_expression())))
-            .collect();
-        Ok(Self::parsed(zirql::FunctionDeclaration {
+        Self::with_patterns(
+            name,
+            parameters
+                .into_iter()
+                .map(|p| PatternParameter {
+                    pattern: Located::new(PatternKind::Name(p.name), 0..0),
+                    declaration: p.declaration,
+                })
+                .collect(),
+            result,
+            ReportExpr::block(
+                bindings
+                    .into_iter()
+                    .map(|(name, value)| {
+                        (
+                            Located::new(PatternKind::Name(Located::new(name, 0..0)), 0..0),
+                            value,
+                        )
+                    })
+                    .collect(),
+                body,
+            )?,
+        )
+    }
+
+    /// Construct whole typed parameter patterns and a pure lexical body.
+    /// All arguments are admitted before any parameter pattern installs names.
+    pub fn with_patterns(
+        name: impl Into<String>,
+        parameters: Vec<PatternParameter<FunctionNativeType>>,
+        result: FunctionType,
+        body: ReportExpr,
+    ) -> Result<Self, EvaluationError> {
+        let mut budget = Budget::for_program(comprehension::default_limits());
+        let mut incoming = parameters.into_iter();
+        let mut parameters: Vec<Located<PatternParameter<program::Kind>>> = Vec::new();
+        while let Some(parameter) = incoming.next() {
+            let declaration = validate_pattern(&parameter.pattern, &mut budget)
+                .and_then(|()| native_type(parameter.declaration, 0));
+            let declaration = match declaration {
+                Ok(declaration) => declaration,
+                Err(error) => {
+                    zirql::dispose_pattern(parameter.pattern);
+                    for parameter in incoming {
+                        zirql::dispose_pattern(parameter.pattern);
+                    }
+                    for parameter in parameters {
+                        zirql::dispose_pattern(parameter.value.pattern);
+                    }
+                    return Err(error);
+                }
+            };
+            parameters.push(Located::new(
+                PatternParameter {
+                    pattern: parameter.pattern,
+                    declaration,
+                },
+                0..0,
+            ));
+        }
+        let result = match native_type(result, 0) {
+            Ok(result) => result,
+            Err(error) => {
+                for parameter in parameters {
+                    zirql::dispose_pattern(parameter.value.pattern);
+                }
+                return Err(error);
+            }
+        };
+        Ok(Self::parsed(zirql::PatternFunctionDeclaration {
             name: Located::new(name.into(), 0..0),
             parameters,
-            result: Located::new(native_type(result, 0)?, 0..0),
-            bindings,
+            result: Located::new(result, 0..0),
             value: normalize(body.into_expression()),
         }))
     }
 }
+
+pub(super) fn validate_pattern(
+    pattern: &Pattern,
+    budget: &mut Budget,
+) -> Result<(), EvaluationError> {
+    zirql::pattern_names(pattern, budget)
+        .map(|_| ())
+        .map_err(core_error)
+}
+
 fn native_type(ty: FunctionType, depth: usize) -> Result<D<program::Kind>, EvaluationError> {
     if depth >= parser::DEFAULT_NESTING_LIMIT {
         return Err(EvaluationError::new(
@@ -886,13 +952,46 @@ fn native_type(ty: FunctionType, depth: usize) -> Result<D<program::Kind>, Evalu
         D::String => D::String,
         D::Member(v) => D::Member(v),
         D::Set(v) => D::Set(v),
+        D::Queue(_) | D::IdentitySet(_) => {
+            return Err(EvaluationError::new(
+                "computational collection signatures are not supported in Zirium",
+            ));
+        }
     })
 }
 // Shared typed values use an explicit source wrapper when another owner keeps
 // the tree alive. In a function that wrapper must retain native values too.
 pub(super) fn normalize(
-    mut value: zirql::ValueExpression<report::Operand>,
+    value: zirql::ValueExpression<report::Operand>,
 ) -> zirql::ValueExpression<report::Operand> {
+    normalize_with(value, |_| Ok(())).expect("retained wrapper normalization cannot fail")
+}
+/// Outer native scalar bindings use the existing explicit projection boundary.
+/// Lexical pattern names remain ordinary shared slots; shadowing an outer name
+/// is rejected by common preflight before this lowered value can execute.
+pub(super) fn normalize_outer(
+    value: zirql::ValueExpression<report::Operand>,
+    names: &std::collections::HashSet<String>,
+    budget: &mut Budget,
+) -> Result<zirql::ValueExpression<report::Operand>, zirql::QueryError> {
+    normalize_with(value, |value| {
+        if let zirql::ValueExpressionKind::Name(name) = &value.value
+            && names.contains(name)
+        {
+            budget.charge(name.len() + 2, ValueLocation::Query(value.range.clone()))?;
+            budget.charge_results(2, ValueLocation::Query(value.range.clone()))?;
+            value.value = zirql::ValueExpressionKind::NativeValue(Box::new(Located::new(
+                zirql::ExpressionKind::Binding(name.clone()),
+                value.range.clone(),
+            )));
+        }
+        Ok(())
+    })
+}
+fn normalize_with(
+    mut value: zirql::ValueExpression<report::Operand>,
+    mut lower: impl FnMut(&mut zirql::ValueExpression<report::Operand>) -> Result<(), zirql::QueryError>,
+) -> Result<zirql::ValueExpression<report::Operand>, zirql::QueryError> {
     use zirql::ValueExpressionKind as K;
     fn clauses<'v>(
         clauses: &'v mut [Located<zirql::ValueGenerator<report::Operand>>],
@@ -914,6 +1013,7 @@ pub(super) fn normalize(
     }
     let mut pending = vec![&mut value];
     while let Some(value) = pending.pop() {
+        lower(value)?;
         if matches!(&value.value,K::NativeQuery(q) if matches!(&q.value,zirql::ExpressionKind::Sequence{steps,..} if steps.len()==1 && matches!(&steps[0].value,zirql::ExpressionStep::Stage(model::Stage::FunctionValue{..}))))
         {
             let K::NativeQuery(query) =
@@ -924,12 +1024,39 @@ pub(super) fn normalize(
             value.value = K::NativeValue(query);
         }
         match &mut value.value {
-            K::Literal(_) | K::Name(_) | K::NativeQuery(_) | K::NativeValue(_) => {}
+            K::Literal(_)
+            | K::Name(_)
+            | K::NativeQuery(_)
+            | K::NativeValue(_)
+            | K::IdentitySet { .. } => {}
+            K::Block { bindings, value } => {
+                pending.extend(bindings.iter_mut().map(|(_, v)| v));
+                pending.push(value);
+            }
+            K::ValueMatch { subject, arms } => {
+                pending.push(subject);
+                for arm in arms {
+                    pending.extend(&mut arm.guard);
+                    pending.push(&mut arm.value);
+                }
+            }
+            K::Loop { states, body } => {
+                pending.extend(states.iter_mut().map(|(_, v)| v));
+                pending.push(body);
+            }
+            K::Fold { items, initial, .. } | K::Scan { items, initial, .. } => {
+                pending.push(items);
+                pending.push(initial);
+            }
             K::Call { arguments, .. }
+            | K::Continue(arguments)
             | K::Array(arguments)
             | K::Tuple(arguments)
             | K::Set(arguments) => pending.extend(arguments),
-            K::Occurs(v)
+            K::Queue { items: v, .. }
+            | K::PopFront(v)
+            | K::Break(v)
+            | K::Occurs(v)
             | K::Absent(v)
             | K::One(v)
             | K::IndexSet(v)
@@ -956,7 +1083,16 @@ pub(super) fn normalize(
                 pending.push(value);
                 pending.push(fallback)
             }
-            K::Binary { left, right, .. } | K::ZipExact { left, right } => {
+            K::Binary { left, right, .. }
+            | K::ZipExact { left, right }
+            | K::PushBackAll {
+                queue: left,
+                items: right,
+            }
+            | K::Insert {
+                set: left,
+                item: right,
+            } => {
                 pending.push(left);
                 pending.push(right)
             }
@@ -1007,15 +1143,12 @@ pub(super) fn normalize(
             }
         }
     }
-    value
+    Ok(value)
 }
 
 pub(super) fn expression_roots(functions: &[FunctionDefinition]) -> Vec<&model::Expression> {
     let mut roots = Vec::new();
     for function in functions {
-        for (_, value) in &function.declaration.bindings {
-            report::visit_value(value, &mut roots);
-        }
         report::visit_value(&function.declaration.value, &mut roots);
     }
     roots
