@@ -3955,3 +3955,20 @@ fn worklist_examples_agree_inline_file_and_buffer_later_failures() {
         assert!(String::from_utf8_lossy(&failed.stderr).contains("computational"));
     }
 }
+
+#[test]
+fn common_index_sets_and_tuple_positions_work_inline() {
+    let output = run_stdin(
+        include_str!("../../../examples/cli/index-sets-and-tuples.zirql"),
+        include_str!("../../../examples/cli/function-report.mlir"),
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!([
+            {"position": 1, "name": "double"},
+            {"position": 2, "name": "mix"},
+            {"position": 3, "name": "plain"},
+        ])
+    );
+}

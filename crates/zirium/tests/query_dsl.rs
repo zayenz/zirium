@@ -3227,3 +3227,36 @@ fn typed_native_reducers_retain_queue_aliases_and_scan_states() {
     };
     assert!(initial.is_empty());
 }
+
+#[test]
+fn common_index_sets_and_tuple_positions_read_projected_names() {
+    let mut document = document_from(FUNCTION_REPORT_SOURCE);
+    let source = include_str!("../../../examples/cli/index-sets-and-tuples.zirql");
+    let mut outputs = Vec::new();
+    Query::parse(source.trim_end().strip_suffix(" | json;").unwrap())
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(zirium::query::NativeValue::Constructed(value)) = &outputs[0] else {
+        panic!("constructed report")
+    };
+    use zirium::query::ConstructedValue as V;
+    assert_eq!(
+        value.value(),
+        &V::Array(
+            ["double", "mix", "plain"]
+                .into_iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    V::Record(vec![
+                        ("position".into(), V::Integer(i64::try_from(i + 1).unwrap())),
+                        ("name".into(), V::String(name.into())),
+                    ])
+                })
+                .collect()
+        )
+    );
+}

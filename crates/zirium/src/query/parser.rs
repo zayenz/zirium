@@ -600,6 +600,7 @@ impl Parser<'_, '_> {
                                     | "occurs"
                                     | "absent"
                                     | "entries"
+                                    | "index_set"
                                     | "one"
                                     | "op"
                                     | "dialect"

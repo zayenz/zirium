@@ -1167,6 +1167,28 @@ suppresses duplicate implicit output and remains pass-through. Bare saved names
 new value bodies use shared scalar rules; ordinary JSON literals retain their
 interpolation and null behavior.
 
+Common value expressions use `index_set(a)` for the keys of a positional array
+or a rank-one keyed array, and `tuple.1` for a positive one-based tuple
+position. Record fields, tuple positions and array lookups compose from left
+to right: `({"rows": [(2, 5)]}, 0).1.rows[1].2` returns `5`. These accesses
+bind more tightly than arithmetic and ranges.
+
+This [saved program](../examples/cli/index-sets-and-tuples.zirql) pairs each
+projected function name with its array position:
+
+```zirql
+let labels = filter(op("func.func")) | attr("sym_name");
+report [{"position": i, "name": (labels[i], i).1}
+        for i in index_set(labels)] | json;
+```
+
+Run it inline or with `zirium --program-file examples/cli/index-sets-and-tuples.zirql
+examples/cli/function-report.mlir`. It returns positions `1`, `2` and `3` for
+`double`, `mix` and `plain`. Empty positional input has an empty integer index
+set. A keyed index set preserves its axis's integer or nominal key identity,
+including typed empty axes, and uses the existing set order. Non-array or
+higher-rank input and missing tuple positions fail with query locations.
+
 This complete program uses local literal arguments:
 
 ```zirql

@@ -1,0 +1,3 @@
+let labels = filter(op("func.func")) | attr("sym_name");
+report [{"position": i, "name": (labels[i], i).1}
+        for i in index_set(labels)] | json;
