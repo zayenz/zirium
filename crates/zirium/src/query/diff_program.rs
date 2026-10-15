@@ -231,6 +231,7 @@ pub(super) enum DiffStage {
     Subtree,
     Graph(OperationTraversal),
     Fixpoint(Box<OwnedExpression>),
+    WhereExists(Box<OwnedExpression>),
     Reverse,
     Head(usize),
     Tail(usize),
@@ -847,6 +848,7 @@ fn evaluate_stage(
         | DiffStage::Root(_)
         | DiffStage::Subtree
         | DiffStage::Graph(_) => navigate(diff, value, stage, context.options, budget, range),
+        DiffStage::WhereExists(body) => where_exists(value, body, context, bindings, budget, range),
         DiffStage::Fixpoint(body) => fixed_point(value, body, context, bindings, budget, range),
         DiffStage::Names
         | DiffStage::Attr(_)
@@ -1112,6 +1114,89 @@ fn breadth_first_subtrees(
         }
     }
     Ok(expanded)
+}
+
+fn where_exists(
+    value: DiffProgramOutput,
+    body: &Expression,
+    context: &mut Context<'_, '_>,
+    bindings: &Bindings<DiffProgramOutput>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<DiffProgramOutput, EvaluationError> {
+    let (kind, items) = rows(value)?;
+    zirql::filter_native_exists(
+        items,
+        budget,
+        zirql::Location::Query(range.clone()),
+        |item, budget| {
+            validate_row(context.diff, item).map_err(zirql::EvaluationError::Host)?;
+            charge(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            admit(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            let input = from_rows(kind, vec![item.clone()]);
+            let result = evaluate_expression(body, input, context, bindings, budget)
+                .map_err(zirql::EvaluationError::Host)?;
+            let (result_kind, result) = rows(result).map_err(zirql::EvaluationError::Host)?;
+            if result_kind != kind {
+                return Err(zirql::EvaluationError::Host(failure(
+                    "where_exists relation must preserve its native kind and projected diff side",
+                    range,
+                )));
+            }
+            for item in &result {
+                validate_row(context.diff, item).map_err(zirql::EvaluationError::Host)?;
+            }
+            Ok(result)
+        },
+    )
+    .map(|items| from_rows(kind, items))
+    .map_err(program::evaluation_error)
+}
+
+fn validate_relation_purity(expression: &Expression) -> Result<(), EvaluationError> {
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        match &expression.value {
+            ExpressionKind::Input | ExpressionKind::Binding(_) => {}
+            ExpressionKind::Group(value) | ExpressionKind::Field { value, .. } => {
+                pending.push(value)
+            }
+            ExpressionKind::Set { left, right, .. } => {
+                pending.push(left);
+                pending.push(right);
+            }
+            ExpressionKind::Record(fields) => pending.extend(fields.iter().map(|(_, value)| value)),
+            ExpressionKind::Sequence { input, steps } => {
+                pending.push(input);
+                for step in steps {
+                    let ExpressionStep::Stage(stage) = &step.value else {
+                        return Err(failure("where_exists relation cannot emit", &step.range));
+                    };
+                    match stage {
+                        DiffStage::Noop
+                        | DiffStage::Json
+                        | DiffStage::Markdown
+                        | DiffStage::Print(_) => {
+                            return Err(failure(
+                                "where_exists relation cannot render or emit",
+                                &step.range,
+                            ));
+                        }
+                        DiffStage::Nested(body)
+                        | DiffStage::Fixpoint(body)
+                        | DiffStage::WhereExists(body) => pending.push(body),
+                        DiffStage::Order { selector, .. } => pending.push(selector),
+                        DiffStage::MapBy { key, value } => {
+                            pending.push(key);
+                            pending.push(value);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn fixed_point(
@@ -1883,6 +1968,19 @@ fn validate_stage(
             require(
                 matches!(input, Kind::Operations(_)),
                 "navigation requires projected operations",
+            )?;
+            input
+        }
+        DiffStage::WhereExists(body) => {
+            require(
+                selection,
+                "where_exists requires changes or projected operations",
+            )?;
+            validate_relation_purity(body)?;
+            let result = validate_expression(body, input, names)?;
+            require(
+                result == input,
+                "where_exists relation must preserve its native kind and projected diff side",
             )?;
             input
         }

@@ -3657,3 +3657,78 @@ fn textual_map_ranking_keeps_saved_order_with_prepared_bounds() {
         matches!(outputs.as_slice(), [QueryOutput::Native(zirium::query::NativeValue::Constructed(value))] if value.value().data() == &zirium::query::ConstructedValue::Integer(2))
     );
 }
+
+#[test]
+fn text_existence_keeps_typed_identities_duplicates_and_prepared_scope() {
+    let mut document = document();
+    let selected = ops()
+        .filter(op("test.add") | op("test.end"))
+        .reverse()
+        .defs();
+    let expected = document
+        .query(&selected.where_exists(&input().users()))
+        .unwrap();
+    assert_eq!(expected.len(), 3);
+    assert_eq!(expected[1], expected[2]);
+    let mut actual = vec![];
+    Query::parse(
+        r#"filter(op("test.add") or op("test.end")) | reverse | defs | where_exists(users)"#,
+    )
+    .unwrap()
+    .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+        actual.push(value);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(actual, [QueryOutput::Operations(expected)]);
+
+    let source = r#"fn select(scope: Operation, needle: string) -> sequence<Operation> {
+        let saved = scope;
+        let local = needle;
+        direct_children(scope) | where_exists((users | filter(op(local))) intersect (saved | children))
+    }
+    let scope = filter(op("test.scope")) | head(1);
+    select(scope, "test.add") | names"#;
+    let mut actual = vec![];
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            actual.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let expected = document.query(&ops().filter(op("test.seed"))).unwrap();
+    let QueryOutput::Native(zirium::query::NativeValue::Constructed(value)) = &actual[0] else {
+        panic!("native names")
+    };
+    assert_eq!(
+        value.value(),
+        &zirium::query::ConstructedValue::Array(vec![zirium::query::ConstructedValue::String(
+            "test.seed".into()
+        )])
+    );
+    assert_eq!(expected.len(), 1);
+    // The ordinary saved-input path also retains a relation without projecting it.
+    let mut empty = vec![];
+    Query::parse("let saved = filter(false); where_exists(saved)")
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            empty.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(empty, [QueryOutput::Operations(vec![])]);
+    for source in [
+        "filter(false) | where_exists(names)",
+        "filter(false) | where_exists(unknown)",
+        "filter(false) | where_exists(emit)",
+        "where_exists(users | check(1))",
+    ] {
+        if let Ok(query) = Query::parse(source) {
+            let error = query
+                .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+                .unwrap_err();
+            assert!(error.range().is_some(), "{source}: {error}");
+        }
+    }
+}

@@ -193,6 +193,9 @@ fn parse_stage(
             };
             DiffStage::Root(filter)
         }
+        _ if stage.starts_with("where_exists(") => DiffStage::WhereExists(
+            super::diff_program::nested(parse_expression(source, one("where_exists")?, depth + 1)?),
+        ),
         _ if stage.starts_with("fixpoint(") => DiffStage::Fixpoint(super::diff_program::nested(
             parse_expression(source, one("fixpoint")?, depth + 1)?,
         )),

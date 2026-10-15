@@ -674,3 +674,63 @@ fn dictionaries_and_sets_retain_operand_order_and_native_sides() {
     );
     assert_eq!(outputs[9], outputs[5]);
 }
+
+#[test]
+fn diff_existence_preserves_subjects_and_preflights_empty_sides() {
+    use zirium::query::{DiffProgram, DiffProgramOutput, EvaluationLimits, EvaluationOptions};
+    let before = document("module { %x = arith.constant 1 : i32 %y = arith.addi %x, %x : i32 }");
+    let after = document("module { %x = arith.constant 4 : i32 %y = arith.addi %x, %x : i32 }");
+    let diff = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits::default(),
+    )
+    .unwrap();
+    let selected = changes().after().users().defs();
+    let expected = diff
+        .query(&selected.where_exists(&diff_op_input().users()))
+        .unwrap();
+    assert_eq!(expected.len(), 4);
+    assert_eq!(expected.operations()[0], expected.operations()[1]);
+    let mut actual = vec![];
+    DiffProgram::parse("after | users | defs | where_exists(users)")
+        .unwrap()
+        .evaluate(
+            &diff,
+            ("before", "after"),
+            EvaluationLimits::default(),
+            EvaluationOptions::default(),
+            |_, value, _| {
+                actual.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        actual,
+        [DiffProgramOutput::Operations(
+            expected.side(),
+            expected.operations().to_vec()
+        )]
+    );
+    for source in [
+        "after | filter(false) | where_exists(input | before)",
+        "after | filter(false) | where_exists(names)",
+        "after | filter(false) | where_exists(emit)",
+        "after | where_exists(users | check(99))",
+    ] {
+        let error = DiffProgram::parse(source)
+            .unwrap()
+            .evaluate(
+                &diff,
+                ("before", "after"),
+                EvaluationLimits::default(),
+                EvaluationOptions::default(),
+                |_, _, _| Ok(()),
+            )
+            .unwrap_err();
+        assert!(error.range().is_some(), "{source}: {error}");
+    }
+}

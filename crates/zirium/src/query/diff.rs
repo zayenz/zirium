@@ -26,6 +26,7 @@ enum Stage {
     Slice,
     ForwardSlice,
     Fixpoint(Vec<Stage>),
+    WhereExists(Vec<Stage>),
     Unique,
     Reverse,
     Head(usize),
@@ -300,6 +301,26 @@ impl DiffOpQuery {
     pub fn forward_slice(&self) -> Self {
         self.append(Stage::ForwardSlice)
     }
+    /// Keep operations whose pure singleton-relative relation is nonempty.
+    pub fn where_exists(&self, body: &DiffOpQuery) -> Self {
+        let depth = self.depth.max(body.depth.saturating_add(1));
+        let invalid = self
+            .invalid
+            .or(body.invalid)
+            .or((depth > super::parser::DEFAULT_NESTING_LIMIT)
+                .then_some("query nesting limit exceeded"));
+        if invalid.is_some() {
+            return Self {
+                stages: Vec::new(),
+                depth,
+                invalid,
+                result: PhantomData,
+            };
+        }
+        let mut result = self.append(Stage::WhereExists(body.stages.clone()));
+        result.depth = depth;
+        result
+    }
     pub fn fixpoint(&self, body: &DiffOpQuery) -> Self {
         let depth = self.depth.max(body.depth.saturating_add(1));
         let invalid = self
@@ -534,6 +555,7 @@ fn lower(stages: &[Stage]) -> Result<Expression, EvaluationError> {
             Stage::Closure => DiffStage::Graph(OperationTraversal::Closure),
             Stage::Slice => DiffStage::Graph(OperationTraversal::Slice),
             Stage::ForwardSlice => DiffStage::Graph(OperationTraversal::ForwardSlice),
+            Stage::WhereExists(body) => DiffStage::WhereExists(diff_program::nested(lower(body)?)),
             Stage::Fixpoint(body) => DiffStage::Fixpoint(diff_program::nested(lower(body)?)),
             Stage::Unique => diff_program::stream(Shared::Unique, 0..0)?,
             Stage::Head(count) => diff_program::stream(Shared::Head(*count), 0..0)?,

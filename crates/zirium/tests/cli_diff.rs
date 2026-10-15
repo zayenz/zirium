@@ -587,3 +587,47 @@ fn diff_print_interpolates_document_labels_and_scalar_bindings() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn diff_existence_buffers_a_later_nested_failure() {
+    let (before, after) = pair();
+    let source = "after | where_exists(filter(true)) | names";
+    let inline = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--diff")
+        .arg(&before)
+        .arg(&after)
+        .arg(source)
+        .output()
+        .unwrap();
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    let path = before.with_extension("zirql");
+    fs::write(&path, source).unwrap();
+    let file = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--program-file")
+        .arg(&path)
+        .arg("--diff")
+        .arg(&before)
+        .arg(&after)
+        .output()
+        .unwrap();
+    assert!(
+        file.status.success(),
+        "{}",
+        String::from_utf8_lossy(&file.stderr)
+    );
+    assert_eq!(inline.stdout, file.stdout);
+    let failure = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--diff")
+        .arg(&before)
+        .arg(&after)
+        .arg("after | names; after | where_exists(users | check(99))")
+        .output()
+        .unwrap();
+    assert_eq!(failure.status.code(), Some(1));
+    assert!(failure.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("check"));
+}

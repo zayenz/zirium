@@ -1276,6 +1276,48 @@ impl Parser<'_, '_> {
                     range: self.span(start),
                 }
             }
+            "where_exists" => {
+                self.expect(TokenKind::LParen, "expected `(` after where_exists")?;
+                let mut reader = zirql::ArgumentReader::new(
+                    self.source,
+                    self.current().range().start() as usize,
+                )
+                .ok()?;
+                let mut host = NativeReader {
+                    source: self.source,
+                    tokens: self.tokens,
+                    function_mode: self.function_mode,
+                    bindings: &self.bindings,
+                    nesting: self.nesting_limit.saturating_sub(depth + 1),
+                };
+                let nesting = host.nesting;
+                let query = match zirql::read_native_expression(
+                    &mut reader,
+                    &mut host,
+                    self.budget,
+                    nesting,
+                ) {
+                    Ok(query) => query,
+                    Err(error) => {
+                        self.shared_error(error);
+                        return None;
+                    }
+                };
+                self.sync(reader.position());
+                self.expect(
+                    TokenKind::RParen,
+                    "expected `)` after where_exists relation",
+                )?;
+                let relation = super::report::native_selector(query);
+                if !super::report::native_body_is_read_only(&relation) {
+                    self.error("where_exists relation cannot edit or emit");
+                    return None;
+                }
+                Stage::WhereExists {
+                    relation,
+                    range: self.span(start),
+                }
+            }
             "fixpoint" => {
                 self.expect(TokenKind::LParen, "expected `(` after fixpoint")?;
                 let expression = Box::new(self.expression(depth + 1)?);
@@ -2051,6 +2093,7 @@ fn is_native_stage(name: &str) -> bool {
             | "result_types"
             | "operand_types"
             | "fixpoint"
+            | "where_exists"
             | "set_attr"
             | "remove_attr"
             | "check"
@@ -2107,6 +2150,7 @@ pub(super) fn is_reserved(name: &str) -> bool {
             | "result_types"
             | "operand_types"
             | "fixpoint"
+            | "where_exists"
             | "set_attr"
             | "remove_attr"
             | "check"
@@ -2267,6 +2311,24 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
             range: TextRange::new(range.start as u32, range.end as u32)
                 .expect("ordered query range"),
         }
+    }
+    fn where_exists(
+        &mut self,
+        query: super::report::Operand,
+        range: std::ops::Range<usize>,
+    ) -> Result<Stage, zirql::QueryError> {
+        let relation = super::report::native_selector(query);
+        if !super::report::native_body_is_read_only(&relation) {
+            return Err(zirql::QueryError::query(
+                range,
+                "where_exists relation cannot edit or emit",
+            ));
+        }
+        Ok(Stage::WhereExists {
+            relation,
+            range: TextRange::new(range.start as u32, range.end as u32)
+                .expect("ordered query range"),
+        })
     }
     fn fixed_point(
         &mut self,

@@ -48,7 +48,19 @@ programs are read-only.
 After projection, `users`, `defs`, `parent`, `children`, `root`, `subtree`,
 `slice`, `closure`, and `reachable` inspect the selected complete document.
 `fixpoint(...)` is supported on projected operations and must remain on the
-same side. `--strict` makes `reachable` reject operations whose reference
+same side. `where_exists(relation)` keeps original changes or projected
+operations when a pure singleton-relative relation is nonempty. It preserves
+order, duplicates and side ownership, and checks the relation even on empty
+input. A relation must return its incoming native kind and projected side.
+Explicit `input` still resets to the original changes; a relation that then
+projects the other side refuses. Nested errors propagate.
+
+```sh
+zirium --diff examples/cli/diff-before.mlir examples/cli/diff-after.mlir 'after | where_exists(users) | names'
+```
+
+Rust callers use `changed_ops.where_exists(&diff_op_input().users())`.
+`--strict` makes `reachable` reject operations whose reference
 semantics are unknown.
 
 Change and projected-operation streams support `unique`, bounds, reversal,

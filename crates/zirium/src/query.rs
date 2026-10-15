@@ -965,6 +965,16 @@ fn evaluate_host_stage(
             program::charge_results(budget, entries.len().saturating_add(1), &range)?;
             current = QueryOutput::Map(entries);
         }
+        model::Stage::WhereExists { relation, .. } => {
+            current = report::evaluate_exists(
+                relation,
+                context,
+                current,
+                bindings,
+                budget,
+                &program::range(stage.range()),
+            )?;
+        }
         model::Stage::NativeMap { mapping, .. } => {
             current = report::evaluate_map(
                 mapping,

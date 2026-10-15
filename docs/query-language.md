@@ -896,6 +896,20 @@ filter(op("func.call")) | fixpoint(closure)
 Closure requires registered reference semantics. Unregistered operations and
 unsupported symbol or successor references produce errors.
 
+`where_exists(query)` keeps each original operation whose pure relation returns
+at least one operation. The relation receives one operation and retains saved
+bindings, parameters and function locals. Order and duplicates survive. A complete
+empty relation drops the subject; unresolved navigation or a nested error fails
+the request. Kinds and effects are checked even for empty input.
+
+```sh
+zirium 'where_exists(users) | names' examples/cli/arithmetic.mlir
+```
+
+The Rust and Python `where_exists` builders use the same filtering algorithm.
+Relations cannot edit, render or emit. Native handles stay native until an
+explicit output stage.
+
 `fixpoint(query)` repeatedly replaces the selection with the query's result
 until its ordered values, including duplicates, are unchanged. Zirql owns this
 replacement and cycle policy, retaining one checkpoint. Its body can contain navigation, filters,
@@ -1100,6 +1114,7 @@ stage      = object | array | identifier | "markdown" | "print" "(" string ")"
            | "backward_slice" | "forward_slice" | "reachable"
            | "root" "(" predicate ")" | "subtree" | "unique"
            | "attr" "(" string ")" | "names" | "result_types" | "operand_types" | "json"
+           | "where_exists" "(" query ")"
            | "fixpoint" "(" query ")" | "(" query ")"
            | "set_attr" "(" string "," string ")"
            | "remove_attr" "(" string ")" | "emit" | "count"

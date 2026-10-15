@@ -1,7 +1,9 @@
 //! Native program lowering. Domain operations and emission snapshots stay in Zirium.
 use super::*;
 use std::ops::Range;
-use zirql::{Bindings, EmissionPolicy, ExpressionKind, ExpressionStep, Located, ProgramHost};
+use zirql::{
+    Bindings, EmissionPolicy, ExpressionKind, ExpressionStep, Located, ProgramHost, ProjectionHost,
+};
 
 pub(super) type Expression<'q> = zirql::Expression<Stages<'q>, model::SetOperator, Emitter<'q>>;
 
@@ -1039,6 +1041,22 @@ impl Validator<'_> {
                 S::Group { expression, .. } => {
                     kind = self.expression(expression, kind, names, budget)?
                 }
+                S::WhereExists { relation, .. } => {
+                    require(kind == Kind::Operations, "where_exists requires operations")?;
+                    require(
+                        report::native_body_is_read_only(relation),
+                        "where_exists relation cannot edit or emit",
+                    )?;
+                    let subject = self
+                        .host
+                        .subject_kind(&kind, budget, &range(stage.range()))
+                        .map_err(core_error)?;
+                    require(
+                        report::native_body_kind(relation, &subject, names, budget, &self.host)?
+                            == Kind::Operations,
+                        "where_exists relation requires operations",
+                    )?;
+                }
                 S::Fixpoint { expression, .. } => {
                     require(
                         matches!(kind, Kind::Operations | Kind::Strings),
@@ -1049,7 +1067,7 @@ impl Validator<'_> {
                             self.expression(expression, kind, names, budget)?
                         }
                         model::FixedPointBody::Native(value) => {
-                            report::fixed_point_kind(value, &kind, names, budget, &self.host)?
+                            report::native_body_kind(value, &kind, names, budget, &self.host)?
                         }
                     };
                     require(

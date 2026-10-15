@@ -462,6 +462,10 @@ pub enum Stage {
         expression: Box<Expression>,
         range: TextRange,
     },
+    WhereExists {
+        relation: super::comprehension::ParsedComprehension,
+        range: TextRange,
+    },
     Fixpoint {
         expression: FixedPointBody,
         range: TextRange,
@@ -534,6 +538,9 @@ impl Stage {
             | Stage::Print { .. } => false,
             Stage::Group { expression, .. } => expression.is_read_only(),
             Stage::Fixpoint { expression, .. } => expression.is_read_only(),
+            Stage::WhereExists { relation, .. } => {
+                super::report::native_body_is_read_only(relation)
+            }
             Stage::SortBy { selector, .. }
             | Stage::MinBy { selector, .. }
             | Stage::MinAllBy { selector, .. }
@@ -600,6 +607,7 @@ impl Stage {
             | Self::OperandTypes { range }
             | Self::Group { range, .. }
             | Self::Fixpoint { range, .. }
+            | Self::WhereExists { range, .. }
             | Self::SetAttr { range, .. }
             | Self::RemoveAttr { range, .. }
             | Self::Check { range, .. }

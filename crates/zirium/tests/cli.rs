@@ -4064,3 +4064,41 @@ fn common_index_sets_and_tuple_positions_work_inline() {
         ])
     );
 }
+
+#[test]
+fn existence_inline_file_and_later_failure_share_buffering() {
+    let source = "where_exists(users) | names";
+    let inline = run_stdin(source, INPUT);
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    let path = temporary_path("existence", "zirql");
+    fs::write(&path, source).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--program-file", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(INPUT.as_bytes())
+        .unwrap();
+    let file = child.wait_with_output().unwrap();
+    assert!(
+        file.status.success(),
+        "{}",
+        String::from_utf8_lossy(&file.stderr)
+    );
+    assert_eq!(file.stdout, inline.stdout);
+    let failure = run_stdin("names; where_exists(users | check(99))", INPUT);
+    assert_eq!(failure.status.code(), Some(1));
+    assert!(failure.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("check"));
+    fs::remove_file(path).unwrap();
+}

@@ -137,7 +137,7 @@ fn map_keys(
         _ => None,
     })
 }
-fn evaluate_map_selector(
+fn evaluate_selector(
     selector: &comprehension::ParsedComprehension,
     input: QueryOutput,
     context: &mut EvaluationContext<'_, '_, '_>,
@@ -160,6 +160,49 @@ fn evaluate_map_selector(
     };
     map_result(value, budget, range)
 }
+pub(super) fn native_body_is_read_only(value: &comprehension::ParsedComprehension) -> bool {
+    operand_is_read_only(map_operand(value))
+}
+fn exists_operations(
+    value: QueryOutput,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    match functions::owned(value, budget, range)? {
+        QueryOutput::Native(NativeValue::OperationSequence(operations)) => Ok(operations),
+        value => take_operations(value, "where_exists"),
+    }
+}
+pub(super) fn evaluate_exists(
+    relation: &comprehension::ParsedComprehension,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    input: QueryOutput,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    let selected = exists_operations(input, budget, range)?;
+    zirql::filter_native_exists(
+        selected,
+        budget,
+        Location::Query(range.clone()),
+        |operation, budget| {
+            program::charge_results(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            let output = evaluate_selector(
+                relation,
+                QueryOutput::Operations(vec![*operation]),
+                context,
+                bindings,
+                budget,
+                range,
+            )
+            .map_err(zirql::EvaluationError::Host)?;
+            exists_operations(output, budget, range).map_err(zirql::EvaluationError::Host)
+        },
+    )
+    .map(QueryOutput::Operations)
+    .map_err(program::evaluation_error)
+}
 pub(super) fn evaluate_map(
     mapping: &zirql::NativeMap<comprehension::ParsedComprehension>,
     context: &mut EvaluationContext<'_, '_, '_>,
@@ -178,7 +221,7 @@ pub(super) fn evaluate_map(
         Location::Query(range.clone()),
         |operation, context, budget| {
             program::charge_results(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
-            let key = evaluate_map_selector(
+            let key = evaluate_selector(
                 &mapping.key,
                 QueryOutput::Operations(vec![*operation]),
                 context,
@@ -191,7 +234,7 @@ pub(super) fn evaluate_map(
         },
         |operation, context, budget| {
             program::charge_results(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
-            let value = evaluate_map_selector(
+            let value = evaluate_selector(
                 &mapping.value,
                 QueryOutput::Operations(vec![operation]),
                 context,
@@ -649,6 +692,9 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         if let model::Stage::Fixpoint {
             expression: model::FixedPointBody::Native(value),
             ..
+        }
+        | model::Stage::WhereExists {
+            relation: value, ..
         } = stage
         {
             budget.charge(1, Location::Query(range.clone()))?;
@@ -731,7 +777,14 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         zirql::ScopedNativeValueArguments<'s, EvaluationContext<'_, '_, 'q>, Self>,
         zirql::QueryError,
     > {
-        let arguments = if let model::Stage::Fixpoint {
+        let arguments = if let model::Stage::WhereExists { relation, .. } = stage {
+            budget.charge(1, Location::Query(range.clone()))?;
+            budget.charge_results(1, Location::Query(range.clone()))?;
+            vec![(
+                &*relation.expression,
+                self.subject_kind(input, budget, range)?,
+            )]
+        } else if let model::Stage::Fixpoint {
             expression: model::FixedPointBody::Native(value),
             ..
         } = stage
@@ -768,6 +821,42 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        if let model::Stage::WhereExists { relation, .. } = stage {
+            let native_sequence = matches!(
+                functions::unretained(&input),
+                QueryOutput::Native(NativeValue::OperationSequence(_))
+            );
+            let selected =
+                exists_operations(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+            return zirql::filter_native_exists(
+                selected,
+                budget,
+                Location::Query(range.clone()),
+                |operation, budget| {
+                    program::charge_results(budget, 1, range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let result = arguments.evaluate_native(
+                        &relation.expression,
+                        QueryOutput::Operations(vec![*operation]),
+                        budget,
+                    )?;
+                    let result = map_result(
+                        QueryOutput::Native(NativeValue::Retained(result.into_shared())),
+                        budget,
+                        range,
+                    )
+                    .map_err(zirql::EvaluationError::Host)?;
+                    exists_operations(result, budget, range).map_err(zirql::EvaluationError::Host)
+                },
+            )
+            .map(|operations| {
+                if native_sequence {
+                    QueryOutput::Native(NativeValue::OperationSequence(operations))
+                } else {
+                    QueryOutput::Operations(operations)
+                }
+            });
+        }
         if let model::Stage::NativeMap { mapping, .. } = stage {
             let input =
                 functions::owned(input, budget, range).map_err(zirql::EvaluationError::Host)?;
@@ -1304,6 +1393,7 @@ fn operand_size(query: &Operand) -> usize {
 fn stage_size(stage: &model::Stage) -> usize {
     use model::{Stage as S, StructuredStage as T};
     let payload = match stage {
+        S::WhereExists { relation, .. } => operand_size(map_operand(relation)),
         S::NativeMap { mapping, .. } => operand_size(map_operand(&mapping.key))
             .saturating_add(operand_size(map_operand(&mapping.value))),
         S::Binding { name, .. }
@@ -1530,6 +1620,9 @@ pub(super) fn push_expressions<'a>(
         model::Stage::Fixpoint {
             expression: model::FixedPointBody::Native(value),
             ..
+        }
+        | model::Stage::WhereExists {
+            relation: value, ..
         } => visit_value(&value.expression, pending),
         model::Stage::SortBy { selector, .. }
         | model::Stage::MinBy { selector, .. }
@@ -1904,7 +1997,10 @@ pub(super) fn requires_session(expression: &model::Expression) -> bool {
         .any(stage_requires_session)
 }
 fn stage_requires_session(stage: &model::Stage) -> bool {
-    if matches!(stage, model::Stage::NativeMap { .. }) {
+    if matches!(
+        stage,
+        model::Stage::NativeMap { .. } | model::Stage::WhereExists { .. }
+    ) {
         return true;
     }
     if ordering_selector(stage).is_some_and(|(selector, _)| selector.body().is_some()) {
@@ -2126,7 +2222,7 @@ pub(super) fn has_constructed(expression: &model::Expression) -> bool {
         .any(|stage| {
             matches!(
                 stage,
-                model::Stage::Fixpoint { expression: model::FixedPointBody::Native(_), .. } | model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::FunctionPrimitive{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
+                model::Stage::WhereExists { .. } | model::Stage::Fixpoint { expression: model::FixedPointBody::Native(_), .. } | model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::FunctionPrimitive{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
             ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
             || nested(stage).into_iter().any(has_constructed)
         })
@@ -2294,7 +2390,7 @@ fn ordering_name(order: zirql::NativeOrder) -> &'static str {
     }
 }
 
-pub(super) fn fixed_point_kind(
+pub(super) fn native_body_kind(
     value: &comprehension::ParsedComprehension,
     input: &program::Kind,
     names: &BTreeMap<String, program::Kind>,

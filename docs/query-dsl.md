@@ -234,7 +234,11 @@ with_add_users = matmuls.where_exists(
 ```
 
 `where_exists` accepts an operation query and keeps an input operation when that
-query returns a nonempty selection. Errors in the nested query propagate.
+query returns a nonempty selection. It preserves the original operations,
+order and duplicates. A complete empty relation rejects its subject; unresolved
+relations and nested errors fail. The text form is `where_exists(users |
+filter(op("stablehlo.add")))`. Relations are pure and are checked even when the
+outer input is empty.
 
 `sort_by`, `min_by`, `max_by`, `min_all_by`, and `max_all_by` accept scalar string
 or count queries. For example, `functions.sort_by(input().children().count())`

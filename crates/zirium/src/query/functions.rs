@@ -889,6 +889,12 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                     } => {
                         self.prepare_value(stage, &value.expression, kind.clone(), names, budget)?
                     }
+                    model::Stage::WhereExists { relation, .. } => {
+                        let subject = host
+                            .subject_kind(&kind, budget, &program::range(stage.range()))
+                            .map_err(core_error)?;
+                        self.prepare_value(stage, &relation.expression, subject, names, budget)?;
+                    }
                     model::Stage::Projection { value, .. } => {
                         let mut scope = copy_scope(names, budget, &program::range(stage.range()))
                             .map_err(core_error)?;
