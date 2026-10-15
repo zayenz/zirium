@@ -3441,3 +3441,69 @@ fn prepared_map_selectors_keep_parameters_saved_inputs_and_native_values() {
     assert!(error.to_string().contains("exactly one string"), "{error}");
     assert!(error.range().is_some());
 }
+
+#[test]
+fn prepared_fixed_point_keeps_function_locals_saved_bindings_and_native_kind() {
+    let mut document = document_from("module { \"test.z\"() : () -> () \"test.a\"() : () -> () }");
+    let query = Query::parse(
+        r#"
+        fn labels(root: Operation, needle: string) -> sequence<string> {
+            let saved = root;
+            let local = needle;
+            direct_children(root) | fixpoint(filter(op(local)) union saved) | names
+        }
+        let selected_root = filter(op("builtin.module"));
+        report labels(selected_root, "test.z") | json
+    "#,
+    )
+    .unwrap();
+    let mut outputs = vec![];
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        outputs,
+        [QueryOutput::Json(
+            "[\n  \"builtin.module\",\n  \"test.z\"\n]\n".into()
+        )]
+    );
+
+    let query = Query::parse(
+        r#"
+        fn names_stable(root: Operation) -> sequence<string> {
+            direct_children(root) | names | fixpoint(input)
+        }
+        let selected = filter(op("builtin.module"));
+        report names_stable(selected) | json
+    "#,
+    )
+    .unwrap();
+    let mut outputs = vec![];
+    query
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        outputs,
+        [QueryOutput::Json(
+            "[\n  \"test.z\",\n  \"test.a\"\n]\n".into()
+        )]
+    );
+
+    let mut outputs = vec![];
+    Query::parse("N = names; fixpoint(N)")
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(&outputs[..], [QueryOutput::Values(values)] if values == &["builtin.module", "test.z", "test.a"])
+    );
+}

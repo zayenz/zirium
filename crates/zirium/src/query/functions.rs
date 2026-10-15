@@ -882,7 +882,11 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
             for stage in stages {
                 match stage {
                     model::Stage::Comprehension { value, .. }
-                    | model::Stage::FunctionValue { value, .. } => {
+                    | model::Stage::FunctionValue { value, .. }
+                    | model::Stage::Fixpoint {
+                        expression: model::FixedPointBody::Native(value),
+                        ..
+                    } => {
                         self.prepare_value(stage, &value.expression, kind.clone(), names, budget)?
                     }
                     model::Stage::Projection { value, .. } => {
@@ -908,7 +912,14 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                 for nested in report::nested(stage) {
                     self.prepare_expression(
                         nested,
-                        program::Kind::Operations,
+                        if matches!(
+                            stage,
+                            model::Stage::Fixpoint { .. } | model::Stage::Group { .. }
+                        ) {
+                            kind.clone()
+                        } else {
+                            program::Kind::Operations
+                        },
                         names,
                         host,
                         budget,

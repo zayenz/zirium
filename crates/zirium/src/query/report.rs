@@ -646,6 +646,17 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             }
             return Ok(values);
         }
+        if let model::Stage::Fixpoint {
+            expression: model::FixedPointBody::Native(value),
+            ..
+        } = stage
+        {
+            budget.charge(1, Location::Query(range.clone()))?;
+            budget.charge_results(1, Location::Query(range.clone()))?;
+            // Resolution records this exact body; scoped preparation supplies
+            // the actual incoming operation or string kind.
+            return Ok(vec![(&value.expression, program::Kind::Operations)]);
+        }
         if let Some((selector, _)) = ordering_selector(stage)
             && let Some(value) = selector.body()
         {
@@ -709,11 +720,51 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         }
         Ok(values)
     }
+    fn scoped_value_arguments<'s>(
+        &self,
+        stage: &'s model::Stage,
+        input: &program::Kind,
+        _: &BTreeMap<String, program::Kind>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<
+        zirql::ScopedNativeValueArguments<'s, EvaluationContext<'_, '_, 'q>, Self>,
+        zirql::QueryError,
+    > {
+        let arguments = if let model::Stage::Fixpoint {
+            expression: model::FixedPointBody::Native(value),
+            ..
+        } = stage
+        {
+            budget.charge(1, Location::Query(range.clone()))?;
+            budget.charge_results(1, Location::Query(range.clone()))?;
+            vec![(&*value.expression, input.clone())]
+        } else {
+            self.value_arguments(stage, budget, range)?
+        };
+        capture::slots::<zirql::ScopedNativeArgument<'_, Operand, program::Kind>>(
+            arguments.len(),
+            budget,
+            range,
+        )
+        .map_err(query_error)?;
+        if budget.remaining_results().is_none() {
+            budget.charge(arguments.len(), Location::Query(range.clone()))?;
+        }
+        Ok(arguments
+            .into_iter()
+            .map(|(expression, kind)| zirql::ScopedNativeArgument {
+                expression,
+                relative: (!self.is_explicit_source(stage)).then_some(kind),
+                locals: Vec::new(),
+            })
+            .collect())
+    }
     fn evaluate_stage_with_arguments(
         &self,
         stage: &model::Stage,
         input: QueryOutput,
-        arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, Self>,
+        mut arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, Self>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -771,6 +822,52 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 },
             )?;
             return Ok(QueryOutput::Native(NativeValue::Map(entries)));
+        }
+        if let model::Stage::Fixpoint {
+            expression: model::FixedPointBody::Native(value),
+            ..
+        } = stage
+        {
+            let input = fixed_point_selection(input, budget, range)
+                .map_err(zirql::EvaluationError::Host)?;
+            if fixed_point_is_closure(value) {
+                let context = arguments.parts().0;
+                return evaluate_closure(
+                    context.document,
+                    take_operations(input, "closure").map_err(zirql::EvaluationError::Host)?,
+                    context.registry,
+                    true,
+                    budget,
+                )
+                .map(QueryOutput::Operations)
+                .map_err(zirql::EvaluationError::Host);
+            }
+            return zirql::evaluate_native_fixed_point(
+                input,
+                &mut arguments,
+                budget,
+                Location::Query(range.clone()),
+                |current, arguments, budget| {
+                    let input = fixed_point_copy(current, budget, range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let output = arguments.evaluate_native(&value.expression, input, budget)?;
+                    let output = QueryOutput::Native(NativeValue::Retained(output.into_shared()));
+                    fixed_point_selection(
+                        fixed_point_result(output, budget, range)
+                            .map_err(zirql::EvaluationError::Host)?,
+                        budget,
+                        range,
+                    )
+                    .map_err(zirql::EvaluationError::Host)
+                },
+                |current, _, budget| {
+                    fixed_point_copy(current, budget, range).map_err(zirql::EvaluationError::Host)
+                },
+                |left, right, _, budget| {
+                    fixed_point_equal(left, right, budget, range)
+                        .map_err(zirql::EvaluationError::Host)
+                },
+            );
         }
         if let Some((selector, order)) = ordering_selector(stage)
             && let Some(value) = selector.body()
@@ -1147,7 +1244,11 @@ pub(super) fn query_error(error: EvaluationError) -> zirql::QueryError {
 pub(super) fn nested(stage: &model::Stage) -> Vec<&model::Expression> {
     use model::{Stage as S, StructuredStage as T};
     match stage {
-        S::Group { expression, .. } | S::Fixpoint { expression, .. } => vec![expression],
+        S::Group { expression, .. }
+        | S::Fixpoint {
+            expression: model::FixedPointBody::Selection(expression),
+            ..
+        } => vec![expression],
         S::MapBy { key, value, .. }
         | S::Structured {
             step: T::MapBy { key, value },
@@ -1428,6 +1529,10 @@ pub(super) fn push_expressions<'a>(
             visit_value(&mapping.value.expression, pending);
         }
 
+        model::Stage::Fixpoint {
+            expression: model::FixedPointBody::Native(value),
+            ..
+        } => visit_value(&value.expression, pending),
         model::Stage::SortBy { selector, .. }
         | model::Stage::MinBy { selector, .. }
         | model::Stage::MaxBy { selector, .. }
@@ -2023,7 +2128,7 @@ pub(super) fn has_constructed(expression: &model::Expression) -> bool {
         .any(|stage| {
             matches!(
                 stage,
-                model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::FunctionPrimitive{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
+                model::Stage::Fixpoint { expression: model::FixedPointBody::Native(_), .. } | model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::FunctionPrimitive{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
             ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
             || nested(stage).into_iter().any(has_constructed)
         })
@@ -2189,4 +2294,45 @@ fn ordering_name(order: zirql::NativeOrder) -> &'static str {
         zirql::NativeOrder::MinAll => "min_all_by",
         zirql::NativeOrder::MaxAll => "max_all_by",
     }
+}
+
+pub(super) fn fixed_point_kind(
+    value: &comprehension::ParsedComprehension,
+    input: &program::Kind,
+    names: &BTreeMap<String, program::Kind>,
+    budget: &mut Budget,
+    host: &ReportHost<'_>,
+) -> Result<program::Kind, EvaluationError> {
+    let zirql::ValueExpressionKind::NativeValue(query) = &value.expression.value else {
+        unreachable!("fixed points retain a native body")
+    };
+    let kind =
+        zirql::native_expression_kind(query, host, input, names, budget).map_err(core_error)?;
+    let program::Kind::Capture(fields) = kind else {
+        unreachable!("fixed points retain one native selection field")
+    };
+    Ok(fields.fields[0].1.clone())
+}
+
+pub(super) fn fixed_point_is_closure(value: &comprehension::ParsedComprehension) -> bool {
+    fn closure(query: &Operand) -> bool {
+        match &query.value {
+            X::Group(query) => closure(query),
+            X::Sequence { input, steps } => match steps.as_slice() {
+                [] => closure(input),
+                [step] if matches!(input.value, X::Input) => {
+                    matches!(step.value, Step::Stage(model::Stage::Closure { .. }))
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    let zirql::ValueExpressionKind::NativeValue(query) = &value.expression.value else {
+        return false;
+    };
+    let X::Sequence { input, .. } = &query.value else {
+        return false;
+    };
+    closure(input)
 }

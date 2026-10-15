@@ -2572,6 +2572,10 @@ fn closure_is_one_step_and_fixpoint_repeats_arbitrary_selection_queries() {
     assert!(!cycle.status.success());
     assert!(cycle.stdout.is_empty());
     assert!(String::from_utf8_lossy(&cycle.stderr).contains("cycles"));
+    let emitted_cycle = run_stdin("fixpoint((input except filter(true)) | emit)", &input);
+    assert!(!emitted_cycle.status.success());
+    assert!(emitted_cycle.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&emitted_cycle.stderr).contains("cycles"));
 }
 
 #[test]

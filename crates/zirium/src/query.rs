@@ -1244,53 +1244,57 @@ fn evaluate_host_stage(
                 )?);
                 return Ok(current);
             }
-            // Brent's cycle detection keeps one checkpoint instead of storing
-            // every intermediate selection. Read-only bodies produce deterministic selections.
-            let mut checkpoint =
-                program::copy_value(&current, budget, &program::range(stage.range()))?;
-            let mut power = 1usize;
-            let mut distance = 0usize;
-            loop {
-                let next = evaluate_expression(
-                    expression,
-                    context,
-                    program::copy_value(&current, budget, &program::range(stage.range()))?,
-                    bindings,
-                    budget,
-                )?;
-                if matches!(
-                    next,
-                    QueryOutput::Count(_)
-                        | QueryOutput::Json(_)
-                        | QueryOutput::Text(_)
-                        | QueryOutput::Map(_)
-                        | QueryOutput::RankedMap(_)
-                        | QueryOutput::Array(_)
-                ) {
-                    return Err(EvaluationError::new(
-                        "fixpoint requires an operation or value stream",
-                    ));
-                }
-                charge(budget, 1)?;
-                if next == current {
-                    break;
-                }
-                if next == checkpoint {
-                    return Err(EvaluationError {
-                        range: None,
-                        message: "fixpoint query cycles without reaching an unchanged selection"
-                            .into(),
-                    });
-                }
-                current = next;
-                distance += 1;
-                if distance == power {
-                    checkpoint =
-                        program::copy_value(&current, budget, &program::range(stage.range()))?;
-                    power = power.saturating_mul(2);
-                    distance = 0;
-                }
-            }
+            let range = program::range(stage.range());
+            current = fixed_point_selection(current, budget, &range)?;
+            current = zirql::evaluate_native_fixed_point(
+                current,
+                context,
+                budget,
+                zirql::Location::Query(range.clone()),
+                |current, context, budget| {
+                    let input = fixed_point_copy(current, budget, &range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let next = match expression {
+                        model::FixedPointBody::Selection(expression) => {
+                            evaluate_expression(expression, context, input, bindings, budget)
+                                .map_err(zirql::EvaluationError::Host)?
+                        }
+                        model::FixedPointBody::Native(value) => {
+                            let output = if let Some(session) = context.functions {
+                                session
+                                    .run(&value.expression, context, &input, bindings, budget)
+                                    .map_err(zirql::EvaluationError::Host)?
+                            } else {
+                                let zirql::ValueExpressionKind::NativeValue(query) =
+                                    &value.expression.value
+                                else {
+                                    unreachable!("fixed points retain a native body")
+                                };
+                                zirql::evaluate_expression(
+                                    query,
+                                    &report::ReportHost,
+                                    input,
+                                    context,
+                                    bindings,
+                                    budget,
+                                )?
+                            };
+                            fixed_point_result(output, budget, &range)
+                                .map_err(zirql::EvaluationError::Host)?
+                        }
+                    };
+                    fixed_point_selection(next, budget, &range)
+                        .map_err(zirql::EvaluationError::Host)
+                },
+                |current, _, budget| {
+                    fixed_point_copy(current, budget, &range).map_err(zirql::EvaluationError::Host)
+                },
+                |left, right, _, budget| {
+                    fixed_point_equal(left, right, budget, &range)
+                        .map_err(zirql::EvaluationError::Host)
+                },
+            )
+            .map_err(program::evaluation_error)?;
         }
         model::Stage::SetAttr { name, value, .. } => {
             let selected = operations(&current, "set_attr")?;
@@ -2489,4 +2493,124 @@ fn append_subtree(
         pending.extend(children.into_iter().rev());
     }
     Ok(())
+}
+
+fn fixed_point_selection(
+    value: QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    let value = functions::owned(value, budget, range)?;
+    match value {
+        QueryOutput::Native(NativeValue::OperationSequence(operations)) => {
+            Ok(QueryOutput::Operations(operations))
+        }
+        QueryOutput::Operations(_) | QueryOutput::Values(_) => Ok(value),
+        _ => Err(
+            EvaluationError::new("fixpoint requires an operation or value stream")
+                .at(range.clone()),
+        ),
+    }
+}
+
+fn fixed_point_result(
+    value: QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    let QueryOutput::Native(NativeValue::Capture(mut capture)) =
+        functions::owned(value, budget, range)?
+    else {
+        return Err(
+            EvaluationError::new("fixpoint requires a retained native selection").at(range.clone()),
+        );
+    };
+    Ok(capture
+        .fields
+        .pop()
+        .expect("one retained selection field")
+        .1)
+}
+
+fn fixed_point_copy(
+    value: &QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    let location = zirql::Location::Query(range.clone());
+    let (count, element_bytes) = match value {
+        QueryOutput::Operations(values) => (values.len(), std::mem::size_of::<OperationId>()),
+        QueryOutput::Values(values) => (values.len(), std::mem::size_of::<String>()),
+        _ => {
+            return Err(
+                EvaluationError::new("fixpoint requires an operation or value stream")
+                    .at(range.clone()),
+            );
+        }
+    };
+    budget
+        .check_items(count, location.clone())
+        .map_err(core_error)?;
+    let work = count
+        .checked_add(1)
+        .filter(|_| {
+            count
+                .checked_mul(element_bytes)
+                .is_some_and(|bytes| bytes <= isize::MAX as usize)
+        })
+        .ok_or_else(|| {
+            EvaluationError::new("fixpoint allocation size overflow").at(range.clone())
+        })?;
+    budget.charge(work, location.clone()).map_err(core_error)?;
+    if budget.remaining_results().is_none()
+        && let QueryOutput::Values(values) = value
+    {
+        for value in values {
+            budget
+                .charge(value.len(), location.clone())
+                .map_err(core_error)?;
+        }
+    }
+    program::copy_value(value, budget, range)
+}
+
+fn fixed_point_equal(
+    left: &QueryOutput,
+    right: &QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<bool, EvaluationError> {
+    let location = zirql::Location::Query(range.clone());
+    match (left, right) {
+        (QueryOutput::Operations(left), QueryOutput::Operations(right)) => {
+            zirql::ordered_native_equal(left, right, budget, location, |left, right, _| {
+                Ok(left == right)
+            })
+            .map_err(program::evaluation_error)
+        }
+        (QueryOutput::Values(left), QueryOutput::Values(right)) => zirql::ordered_native_equal(
+            left,
+            right,
+            budget,
+            location.clone(),
+            |left, right, budget| {
+                budget.charge(1, location.clone())?;
+                if left.len() != right.len() {
+                    return Ok(false);
+                }
+                for (left, right) in left.bytes().zip(right.bytes()) {
+                    budget.charge(1, location.clone())?;
+                    if left != right {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            },
+        )
+        .map_err(program::evaluation_error),
+        _ => {
+            budget.charge(1, location).map_err(core_error)?;
+            Ok(false)
+        }
+    }
 }

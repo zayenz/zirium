@@ -198,7 +198,10 @@ pub(super) fn expressions<'q>(
             report::push_expressions(stage, &mut pending);
             match stage {
                 model::Stage::Group { expression, .. }
-                | model::Stage::Fixpoint { expression, .. } => pending.push(expression),
+                | model::Stage::Fixpoint {
+                    expression: model::FixedPointBody::Selection(expression),
+                    ..
+                } => pending.push(expression),
                 model::Stage::MapBy { key, value, .. } => {
                     pending.push(key);
                     pending.push(value);
@@ -1028,7 +1031,14 @@ impl Validator<'_> {
                         matches!(kind, Kind::Operations | Kind::Strings),
                         "fixpoint requires an operation or value stream",
                     )?;
-                    kind = self.expression(expression, kind, names, budget)?;
+                    kind = match expression {
+                        model::FixedPointBody::Selection(expression) => {
+                            self.expression(expression, kind, names, budget)?
+                        }
+                        model::FixedPointBody::Native(value) => {
+                            report::fixed_point_kind(value, &kind, names, budget, &self.host)?
+                        }
+                    };
                     require(
                         matches!(kind, Kind::Operations | Kind::Strings),
                         "fixpoint requires an operation or value stream",

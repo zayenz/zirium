@@ -1067,45 +1067,56 @@ fn fixed_point(
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<DiffProgramOutput, EvaluationError> {
-    let DiffProgramOutput::Operations(side, mut current) = value else {
+    let DiffProgramOutput::Operations(side, current) = value else {
         return Err(failure("fixpoint requires projected operations", range));
     };
-    let mut checkpoint = copy_operations(side, &current, budget, range)?;
-    let mut power = 1usize;
-    let mut distance = 0usize;
-    loop {
-        let input = copy_operations(side, &current, budget, range)?;
-        let next = evaluate_expression(body, input, context, bindings, budget)?;
-        let DiffProgramOutput::Operations(next_side, next) = next else {
-            return Err(failure("fixpoint body must return operations", range));
-        };
-        if next_side != side {
-            return Err(failure(
-                "fixpoint body must preserve the projected diff side",
-                range,
-            ));
-        }
-        charge(budget, 1, range)?;
-        if next == current {
-            return Ok(DiffProgramOutput::Operations(side, current));
-        }
-        if let DiffProgramOutput::Operations(_, checkpoint) = &checkpoint
-            && next == *checkpoint
-        {
-            return Err(failure(
-                "fixpoint query cycles without reaching an unchanged selection",
-                range,
-            ));
-        }
-        current = next;
-        distance = distance.saturating_add(1);
-        if distance == power {
-            checkpoint = copy_operations(side, &current, budget, range)?;
-            power = power.saturating_mul(2);
-            distance = 0;
-        }
-    }
+    zirql::evaluate_native_fixed_point(
+        current,
+        context,
+        budget,
+        zirql::Location::Query(range.clone()),
+        |current, context, budget| {
+            let input = copy_operations(side, current, budget, range)
+                .map_err(zirql::EvaluationError::Host)?;
+            let next = evaluate_expression(body, input, context, bindings, budget)
+                .map_err(zirql::EvaluationError::Host)?;
+            let DiffProgramOutput::Operations(next_side, next) = next else {
+                return Err(zirql::EvaluationError::Host(failure(
+                    "fixpoint body must return operations",
+                    range,
+                )));
+            };
+            if next_side != side {
+                return Err(zirql::EvaluationError::Host(failure(
+                    "fixpoint body must preserve the projected diff side",
+                    range,
+                )));
+            }
+            Ok(next)
+        },
+        |current, _, budget| {
+            let DiffProgramOutput::Operations(_, copied) =
+                copy_operations(side, current, budget, range)
+                    .map_err(zirql::EvaluationError::Host)?
+            else {
+                unreachable!("copied operations");
+            };
+            Ok(copied)
+        },
+        |left, right, _, budget| {
+            zirql::ordered_native_equal(
+                left,
+                right,
+                budget,
+                zirql::Location::Query(range.clone()),
+                |left, right, _| Ok(left == right),
+            )
+        },
+    )
+    .map(|current| DiffProgramOutput::Operations(side, current))
+    .map_err(program::evaluation_error)
 }
+
 fn copy_operations(
     side: DiffSide,
     operations: &[DiffOperation],
@@ -1113,6 +1124,17 @@ fn copy_operations(
     range: &Range<usize>,
 ) -> Result<DiffProgramOutput, EvaluationError> {
     check(budget, operations.len(), range)?;
+    let work = operations
+        .len()
+        .checked_add(1)
+        .filter(|_| {
+            operations
+                .len()
+                .checked_mul(std::mem::size_of::<DiffOperation>())
+                .is_some_and(|bytes| bytes <= isize::MAX as usize)
+        })
+        .ok_or_else(|| failure("fixpoint allocation size overflow", range))?;
+    charge(budget, work, range)?;
     admit(budget, operations.len(), range)?;
     Ok(DiffProgramOutput::Operations(side, operations.to_vec()))
 }

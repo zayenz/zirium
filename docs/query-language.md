@@ -882,7 +882,8 @@ Closure requires registered reference semantics. Unregistered operations and
 unsupported symbol or successor references produce errors.
 
 `fixpoint(query)` repeatedly replaces the selection with the query's result
-until the selection is unchanged. Its body can contain navigation, filters,
+until its ordered values, including duplicates, are unchanged. Zirql owns this
+replacement and cycle policy, retaining one checkpoint. Its body can contain navigation, filters,
 set expressions, grouping, and nested fixed points. It cannot edit, count, or construct maps.
 Use `fixpoint(closure | emit)` to inspect each iteration, including the final
 unchanged result. If selections cycle without becoming unchanged, evaluation
@@ -906,10 +907,15 @@ Duplicate-preserving expansion need not converge: `fixpoint(subtree)` keeps
 adding copies when an ancestor and its descendant are selected. Use
 `fixpoint(subtree | unique)` when a set is intended. Cycle detection catches
 repeating selections; evaluation limits also stop streams that keep growing.
+Native kind and diff-side checks apply even to empty selections. Pure function
+bodies use the same reader and runner while retaining parameters, locals and
+saved selections. Domain closure and the optimized `fixpoint(closure)` worklist
+remain host operations.
 
 By default, each evaluation permits 10,000,000 work units and 1,000,000 items per
 stream. Work counts stage input items (at least one per stage), fixed-point
-iterations, and dependency, ancestor, and subtree visits. These limits do not
+iterations, ordered comparisons, retained checkpoint and body-input copies,
+and dependency, ancestor, and subtree visits. These limits do not
 bound time or memory bytes. CLI callers can set `--max-work N` and
 `--max-items N`; Rust callers can use `Query::evaluate_with_limits` and
 `EvaluationLimits`. A limit error follows the usual no-stdout CLI contract.

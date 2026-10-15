@@ -526,6 +526,10 @@ fn diff_fixed_points_refuse_ordered_cycles_and_side_replacement() {
             "after | fixpoint(input | before)",
             "preserve the projected diff side",
         ),
+        (
+            "after | filter(false) | fixpoint(input | before | filter(false))",
+            "preserve the projected diff side",
+        ),
     ] {
         let error = DiffProgram::parse(source)
             .unwrap()

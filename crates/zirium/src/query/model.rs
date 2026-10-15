@@ -463,7 +463,7 @@ pub enum Stage {
         range: TextRange,
     },
     Fixpoint {
-        expression: Box<Expression>,
+        expression: FixedPointBody,
         range: TextRange,
     },
     SetAttr {
@@ -495,6 +495,33 @@ pub enum Stage {
     },
 }
 
+/// Fixed-point bodies retain legacy emit-capable selections or pure native calls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FixedPointBody {
+    Selection(Box<Expression>),
+    Native(super::comprehension::ParsedComprehension),
+}
+impl FixedPointBody {
+    pub(super) fn is_single_closure(&self) -> bool {
+        match self {
+            Self::Selection(expression) => expression.is_single_closure(),
+            Self::Native(value) => super::report::fixed_point_is_closure(value),
+        }
+    }
+    fn is_read_only(&self) -> bool {
+        match self {
+            Self::Selection(expression) => expression.is_read_only(),
+            Self::Native(_) => true,
+        }
+    }
+    fn is_selection_only(&self) -> bool {
+        match self {
+            Self::Selection(expression) => expression.is_selection_only(),
+            Self::Native(_) => true,
+        }
+    }
+}
+
 impl Stage {
     pub(super) fn is_read_only(&self) -> bool {
         match self {
@@ -505,9 +532,8 @@ impl Stage {
             | Stage::Json { .. }
             | Stage::Markdown { .. }
             | Stage::Print { .. } => false,
-            Stage::Group { expression, .. } | Stage::Fixpoint { expression, .. } => {
-                expression.is_read_only()
-            }
+            Stage::Group { expression, .. } => expression.is_read_only(),
+            Stage::Fixpoint { expression, .. } => expression.is_read_only(),
             Stage::SortBy { selector, .. }
             | Stage::MinBy { selector, .. }
             | Stage::MinAllBy { selector, .. }
@@ -600,17 +626,18 @@ impl Stage {
             | Self::Literal { .. }
             | Self::Comprehension { .. }
             | Self::Projection { .. } => false,
-            Self::Group { expression, .. } | Self::Fixpoint { expression, .. } => {
-                expression.is_selection_only()
-            }
+            Self::Group { expression, .. } => expression.is_selection_only(),
+            Self::Fixpoint { expression, .. } => expression.is_selection_only(),
             _ => true,
         }
     }
     fn first_non_selection_stage(&self) -> Option<&Stage> {
         match self {
-            Self::Group { expression, .. } | Self::Fixpoint { expression, .. } => {
-                expression.first_non_selection_stage()
-            }
+            Self::Group { expression, .. }
+            | Self::Fixpoint {
+                expression: FixedPointBody::Selection(expression),
+                ..
+            } => expression.first_non_selection_stage(),
             _ if !self.is_selection_only() => Some(self),
             _ => None,
         }

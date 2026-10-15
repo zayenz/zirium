@@ -1288,7 +1288,7 @@ impl Parser<'_, '_> {
                     });
                 }
                 Stage::Fixpoint {
-                    expression,
+                    expression: super::model::FixedPointBody::Selection(expression),
                     range: self.span(start),
                 }
             }
@@ -2267,6 +2267,27 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
             range: TextRange::new(range.start as u32, range.end as u32)
                 .expect("ordered query range"),
         }
+    }
+    fn fixed_point(
+        &mut self,
+        query: super::report::Operand,
+        range: std::ops::Range<usize>,
+    ) -> Result<Stage, zirql::QueryError> {
+        let selector = super::report::OrderingSelector::from_operand(query);
+        if !selector.is_read_only() {
+            return Err(zirql::QueryError::query(
+                range,
+                "fixpoint body cannot edit or emit",
+            ));
+        }
+        let super::report::OrderingSelector::Query(value) = selector else {
+            unreachable!("native fixed-point body");
+        };
+        Ok(Stage::Fixpoint {
+            expression: super::model::FixedPointBody::Native(value),
+            range: TextRange::new(range.start as u32, range.end as u32)
+                .expect("ordered query range"),
+        })
     }
     fn ordering(
         &mut self,

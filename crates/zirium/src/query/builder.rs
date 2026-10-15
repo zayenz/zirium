@@ -605,7 +605,9 @@ impl OpQuery {
         self.nested(
             body,
             Stage::Fixpoint {
-                expression: Box::new(body.expression.clone()),
+                expression: super::model::FixedPointBody::Selection(Box::new(
+                    body.expression.clone(),
+                )),
                 range: range(),
             },
         )
