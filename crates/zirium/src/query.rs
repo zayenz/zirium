@@ -1074,11 +1074,11 @@ fn evaluate_host_stage(
             }
         }
         model::Stage::Reverse { .. } => match &mut current {
-            QueryOutput::Operations(values) => values.reverse(),
-            QueryOutput::Values(values) => values.reverse(),
-            QueryOutput::Native(NativeValue::Types(values)) => values.reverse(),
-            QueryOutput::Native(NativeValue::Attributes(values)) => values.reverse(),
-            QueryOutput::RankedMap(entries) => entries.reverse(),
+            QueryOutput::Operations(values) => zirql::reverse(values),
+            QueryOutput::Values(values) => zirql::reverse(values),
+            QueryOutput::Native(NativeValue::Types(values)) => zirql::reverse(values),
+            QueryOutput::Native(NativeValue::Attributes(values)) => zirql::reverse(values),
+            QueryOutput::RankedMap(entries) => zirql::reverse(entries),
             _ => {
                 return Err(EvaluationError::new(
                     "reverse requires an operation stream, value stream, or ranked map",
@@ -1287,20 +1287,13 @@ fn evaluate_host_stage(
             expected, message, ..
         } => {
             let actual = countable_len(&current, "check")?;
-            let failure = match expected {
-                Some(expected) if actual != *expected => {
-                    Some(format!("expected {expected} items, got {actual}"))
-                }
-                None if actual == 0 => Some("expected at least one item, got 0".to_owned()),
-                _ => None,
-            };
-            if let Some(failure) = failure {
-                let message = match message {
-                    Some(message) => format!("{failure}: {message}"),
-                    None => failure,
-                };
-                return Err(EvaluationError::new(format!("check failed: {message}")));
-            }
+            zirql::check_cardinality(
+                actual,
+                *expected,
+                message.as_deref(),
+                program::range(stage.range()),
+            )
+            .map_err(core_error)?;
         }
         model::Stage::Count { .. } => {
             program::charge_results(budget, 1, &program::range(stage.range()))?;
@@ -1409,8 +1402,7 @@ fn truncate_stream(
 ) -> Result<(), EvaluationError> {
     fn truncate<T>(values: &mut Vec<T>, count: usize, from_end: bool) {
         if from_end {
-            let keep_from = values.len().saturating_sub(count);
-            values.drain(..keep_from);
+            zirql::tail(values, count);
         } else {
             values.truncate(count);
         }

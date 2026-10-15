@@ -860,10 +860,8 @@ fn evaluate_stage(
         DiffStage::Reverse | DiffStage::Tail(_) => {
             let (kind, mut items) = rows(value)?;
             match stage {
-                DiffStage::Reverse => items.reverse(),
-                DiffStage::Tail(count) if items.len() > *count => {
-                    items.drain(..items.len() - count);
-                }
+                DiffStage::Reverse => zirql::reverse(&mut items),
+                DiffStage::Tail(count) => zirql::tail(&mut items, *count),
                 _ => {}
             }
             Ok(from_rows(kind, items))
@@ -900,17 +898,8 @@ fn evaluate_stage(
         } => map(value, key, expression, context, bindings, budget, range),
         DiffStage::Check(expected) => {
             let actual = value.len();
-            if expected.map_or(actual == 0, |expected| actual != expected) {
-                return Err(failure(
-                    match expected {
-                        Some(expected) => {
-                            format!("check failed: expected {expected} items, got {actual}")
-                        }
-                        None => format!("check failed: expected at least one item, got {actual}"),
-                    },
-                    range,
-                ));
-            }
+            zirql::check_cardinality(actual, *expected, None, range.clone())
+                .map_err(super::core_error)?;
             Ok(value)
         }
         DiffStage::Json => {
@@ -1735,7 +1724,11 @@ fn validate_stage(
                             }
                         }
                     }
-                    Stage::Head(_) | Stage::Unique => require(stream, "stage requires a stream")?,
+                    Stage::Head(_)
+                    | Stage::Tail(_)
+                    | Stage::Reverse
+                    | Stage::Check { .. }
+                    | Stage::Unique => require(stream, "stage requires a stream")?,
                     Stage::Count => {
                         require(stream, "count requires a stream")?;
                         kind = Kind::Count;

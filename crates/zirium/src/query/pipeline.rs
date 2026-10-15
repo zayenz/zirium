@@ -190,6 +190,8 @@ pub(super) fn lower(stages: &[model::Stage]) -> Result<NativePipeline<'_>, Evalu
             let value = match stage {
                 model::Stage::Filter { predicate, .. } => Stage::Filter(lower_predicate(predicate)),
                 model::Stage::Head { count, .. } => Stage::Head(*count),
+                model::Stage::Tail { count, .. } => Stage::Tail(*count),
+                model::Stage::Reverse { .. } => Stage::Reverse,
                 model::Stage::Unique { .. } => Stage::Unique,
                 model::Stage::Count { .. } => Stage::Count,
                 model::Stage::Tally { .. } => Stage::Tally,
