@@ -867,8 +867,15 @@ fn evaluate_host_stage(
                 &program::range(*range),
             )?));
         }
-        model::Stage::Literal { value, .. } => {
-            let value = literal::evaluate(value, context.document, bindings, budget, &mut 0)?;
+        model::Stage::Literal { value, range } => {
+            let value = literal::evaluate(
+                value,
+                context.document,
+                bindings,
+                budget,
+                &mut 0,
+                &program::range(*range),
+            )?;
             if value_depth(&value) > parser::DEFAULT_NESTING_LIMIT {
                 return Err(EvaluationError::new("JSON nesting limit exceeded"));
             }
@@ -1374,8 +1381,19 @@ fn evaluate_host_stage(
         | model::Stage::Format { .. }
         | model::Stage::Markdown { .. }
         | model::Stage::Json { .. } => unreachable!("program emitters are shared expression steps"),
-        model::Stage::Print { parts, .. } => {
-            let mut text = render::interpolate(parts, bindings, budget)?;
+        model::Stage::Print { parts, range } => {
+            let range = program::range(*range);
+            let mut text = render::interpolate(parts, bindings, budget, &range)?;
+            text.len()
+                .checked_add(1)
+                .filter(|bytes| *bytes <= isize::MAX as usize)
+                .ok_or_else(|| {
+                    EvaluationError::new("print storage limit exceeded").at(range.clone())
+                })?;
+            budget
+                .charge(1, zirql::Location::Query(range.clone()))
+                .map_err(core_error)?;
+            program::charge_results(budget, 1, &range)?;
             text.push('\n');
             (context.emit)(context.document, QueryOutput::Text(text), budget)?;
         }

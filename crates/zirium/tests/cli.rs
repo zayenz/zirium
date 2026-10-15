@@ -3225,6 +3225,10 @@ fn json_literal_errors_are_specific_and_leave_stdout_empty() {
             r#"K = ["a"]; {"a": 1, "{K}": 2}"#,
             "duplicate JSON object key",
         ),
+        (
+            r#"K = ["a"]; Bad = [1, 2]; {"a": 1, "{K}": "{Bad}"}"#,
+            "duplicate JSON object key",
+        ),
         (r#"{"x": missing}"#, "earlier binding"),
         (r#"{"x": "{missing}"}"#, "earlier binding"),
         (r#"A = [1, 2]; {"x": "{A}"}"#, "count or exactly one string"),

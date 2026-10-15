@@ -864,6 +864,53 @@ fn library_emissions_and_committed_edits_survive_a_later_failure() {
     );
 }
 
+#[test]
+fn json_literal_snapshots_remain_saved_after_an_edit() {
+    let mut document = document();
+    let source = r#"kept = filter(op("test.seed")); saved = {"nodes": kept};
+        do kept | set_attr("tag", "edited"); {"saved": saved, "current": kept}"#;
+    let mut outputs = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(outputs.len(), 1);
+    let QueryOutput::Map(entries) = &outputs[0] else {
+        panic!("JSON object snapshot")
+    };
+    assert_eq!(
+        entries["saved"]["nodes"][0]["attributes"]["tag"],
+        "\"start\""
+    );
+    assert_eq!(entries["current"][0]["attributes"]["tag"], "\"edited\"");
+}
+
+#[test]
+fn legacy_json_containers_use_the_active_located_nesting_limit() {
+    let source = r#"{"nested": [0]}"#;
+    let query = Query::parse(source).unwrap();
+    let error = query
+        .evaluate_with_program_limits(
+            &mut document(),
+            DialectRegistry::baseline(),
+            None,
+            EvaluationOptions::default(),
+            zirium::query::ProgramLimits {
+                work: 10_000,
+                results: 10_000,
+                stream_items: 1_000,
+                nesting: 1,
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("nesting limit"));
+    assert_eq!(error.range(), Some(0..source.len()));
+}
+
 const FUNCTION_REPORT_SOURCE: &str = include_str!("../../../examples/cli/function-report.mlir");
 const FUNCTION_REPORT_PROGRAM: &str = include_str!("../../../examples/cli/function-report.zirql");
 #[test]

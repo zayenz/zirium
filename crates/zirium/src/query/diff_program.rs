@@ -8,7 +8,7 @@ use crate::{
     diff::{ChangeField, ChangeId, ChangeKind, Diff, DiffOperation, DiffSide},
     semantic::{AttributeValue, OperationId},
 };
-use std::{collections::BTreeMap, ops::Range};
+use std::{borrow::Cow, collections::BTreeMap, ops::Range};
 use zirql::{
     Bindings, Budget, ExpressionKind, ExpressionStep, Host, Located, NativeInput, ProgramHost,
     Stage, Truth,
@@ -1556,56 +1556,100 @@ fn markdown(
     };
     Ok(text)
 }
+enum PrintFragment<'a> {
+    Literal(&'a str),
+    Binding(&'a str),
+}
+
+// Diff print escapes only doubled opening braces; closing braces are literal.
+struct PrintFragments<'a> {
+    rest: &'a str,
+}
+
+impl<'a> PrintFragments<'a> {
+    fn new(template: &'a str) -> Self {
+        Self { rest: template }
+    }
+}
+
+impl<'a> Iterator for PrintFragments<'a> {
+    type Item = Result<PrintFragment<'a>, &'static str>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.rest.is_empty() {
+            return None;
+        }
+        let Some(open) = self.rest.find('{') else {
+            return Some(Ok(PrintFragment::Literal(std::mem::take(&mut self.rest))));
+        };
+        if open != 0 {
+            let text = &self.rest[..open];
+            self.rest = &self.rest[open..];
+            return Some(Ok(PrintFragment::Literal(text)));
+        }
+        self.rest = &self.rest[1..];
+        if self.rest.starts_with('{') {
+            self.rest = &self.rest[1..];
+            return Some(Ok(PrintFragment::Literal("{")));
+        }
+        let Some(close) = self.rest.find('}') else {
+            self.rest = "";
+            return Some(Err("unterminated interpolation in print"));
+        };
+        let name = &self.rest[..close];
+        self.rest = &self.rest[close + 1..];
+        Some(Ok(PrintFragment::Binding(name)))
+    }
+}
+
 fn interpolate(
     template: &str,
     bindings: &Bindings<DiffProgramOutput>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<String, EvaluationError> {
+    // Admit the host's token scan; the core admits output copies separately.
+    charge(budget, template.len(), range)?;
+    let mut output = zirql::expand_fragments(
+        PrintFragments::new(template),
+        &mut (),
+        budget,
+        zirql::Location::Query(range.clone()),
+        |part, _, budget| {
+            let part = part.map_err(|message| zirql::EvaluationError::Host(failure(message, range)))?;
+            Ok(match part {
+                PrintFragment::Literal(text) => Cow::Borrowed(text),
+                PrintFragment::Binding(name) => {
+                    let value = bindings.get(name, range.clone())?;
+                    match value {
+                        DiffProgramOutput::Count(count) => {
+                            let bytes = usize::try_from(count.checked_ilog10().unwrap_or(0))
+                                .expect("usize represents the number of decimal digits") + 1;
+                            budget.charge(bytes, zirql::Location::Query(range.clone()))?;
+                            budget.charge_results(bytes, zirql::Location::Query(range.clone()))?;
+                            Cow::Owned(count.to_string())
+                        }
+                        DiffProgramOutput::Strings(values) if values.len() == 1 => {
+                            Cow::Borrowed(values[0].as_str())
+                        }
+                        _ => {
+                            return Err(zirql::EvaluationError::Host(failure(
+                                format!("string interpolation `{{{name}}}` requires a count or exactly one string"),
+                                range,
+                            )));
+                        }
+                    }
+                }
+            })
+        },
+    ).map_err(program::evaluation_error)?;
+    output
+        .len()
+        .checked_add(1)
+        .filter(|bytes| *bytes <= isize::MAX as usize)
+        .ok_or_else(|| failure("print storage limit exceeded", range))?;
+    charge(budget, 1, range)?;
     admit(budget, 1, range)?;
-    program::charge_bytes(budget, template.len() + 1, range)?;
-    let mut output = String::new();
-    let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        output.push_str(&rest[..open]);
-        rest = &rest[open + 1..];
-        if rest.starts_with('{') {
-            output.push('{');
-            rest = &rest[1..];
-            continue;
-        }
-        let close = rest
-            .find('}')
-            .ok_or_else(|| failure("unterminated interpolation in print", range))?;
-        let name = &rest[..close];
-        let value = bindings.get(name, range.clone()).map_err(core_error)?;
-        match value {
-            DiffProgramOutput::Count(count) => {
-                charge(
-                    budget,
-                    usize::try_from(count.checked_ilog10().unwrap_or(0))
-                        .expect("usize represents the number of decimal digits")
-                        + 1,
-                    range,
-                )?;
-                output.push_str(&count.to_string());
-            }
-            DiffProgramOutput::Strings(values) if values.len() == 1 => {
-                charge(budget, values[0].len(), range)?;
-                output.push_str(&values[0]);
-            }
-            _ => {
-                return Err(failure(
-                    format!(
-                        "string interpolation `{{{name}}}` requires a count or exactly one string"
-                    ),
-                    range,
-                ));
-            }
-        }
-        rest = &rest[close + 1..];
-    }
-    output.push_str(rest);
     output.push('\n');
     Ok(output)
 }
@@ -1843,24 +1887,17 @@ fn validate_stage(
             Kind::Text
         }
         DiffStage::Print(template) => {
-            let mut rest = template.as_str();
-            while let Some(open) = rest.find('{') {
-                rest = &rest[open + 1..];
-                if rest.starts_with('{') {
-                    rest = &rest[1..];
-                    continue;
+            for part in PrintFragments::new(template) {
+                if let PrintFragment::Binding(name) =
+                    part.map_err(|message| failure(message, range))?
+                {
+                    require(
+                        names
+                            .get(name)
+                            .is_some_and(|kind| matches!(kind, Kind::Count | Kind::Strings)),
+                        &format!("binding `{name}` is unavailable or incompatible in diff mode"),
+                    )?;
                 }
-                let close = rest
-                    .find('}')
-                    .ok_or_else(|| failure("unterminated interpolation in print", range))?;
-                let name = &rest[..close];
-                require(
-                    names
-                        .get(name)
-                        .is_some_and(|kind| matches!(kind, Kind::Count | Kind::Strings)),
-                    &format!("binding `{name}` is unavailable or incompatible in diff mode"),
-                )?;
-                rest = &rest[close + 1..];
             }
             Kind::Text
         }

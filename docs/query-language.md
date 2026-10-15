@@ -603,6 +603,14 @@ does not evaluate expressions or traverse map fields. Write `{{` and `}}`
 for literal braces. Inserted values are plain text, with no Markdown escaping
 and no further interpolation.
 
+Ordinary print and JSON strings and keys delegate fragment expansion to Zirql.
+Computed object entries use its shared key-then-value constructor, which rejects
+a duplicate key before evaluating that entry's value. Zirium retains binding
+admission, saved JSON snapshots, JSON numbers and null, escaping and emission.
+Expansion bytes, object/array storage and nested construction share the active
+request limits. A limit refusal returns no partial result and keeps the enclosing
+print or literal location.
+
 The Markdown emitter supports these shapes:
 
 | Input | Output |

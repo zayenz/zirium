@@ -521,6 +521,37 @@ fn diff_print_interpolates_document_labels_and_scalar_bindings() {
         format!("{} -> {}: 1 change\n", before.display(), after.display())
     );
 
+    let brace_label = fixture("{missing}", "module { %x = arith.constant 4 : i32 }\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--diff")
+        .arg(&brace_label)
+        .arg(&after)
+        .arg(r#"N = count; print("{{literal}} } {{ {N} {before_document}")"#)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{{literal}}}} }} {{ 1 {}\n", brace_label.display())
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .arg("--diff")
+        .arg(&before)
+        .arg(&after)
+        .arg(r#"print("earlier"); print("unfinished {")"#)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unterminated interpolation in print")
+    );
+
     let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
         .args(["--diff"])
         .arg(&before)
