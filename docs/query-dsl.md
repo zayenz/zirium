@@ -752,6 +752,40 @@ or rendering output still pays for the produced data. External parameters keep
 their existing int/string/bool transport. Python keeps its existing query builders and native result conversion; there
 is no Python function builder API.
 
+## Building native worklists in Rust
+
+`ReportExpr::loop_`, `break_` and `continue_` construct shared control nodes.
+`fold` and `scan` take items, initial state and a named step.
+`queue`, `typed_queue`, `pop_front`, `push_back_all`, `identity_set`, `is_in`
+and `insert` expose the same computational operations as the textual reader.
+Use `FunctionType::Queue(Box::new(element))` and
+`FunctionType::IdentitySet(FunctionNativeType::Operation)` in signatures.
+`typed_queue` takes a `SignatureType` for an explicit empty element
+contract. All builders merge their operands' function and parameter metadata.
+
+The [complete typed reachability example](../crates/zirium/examples/typed_worklists.rs)
+constructs destructured native parameters, optional pop arms, a loop and explicit
+`user_info`/`same_operation` primitives without generating query text:
+
+```sh
+cargo run -p zirium --locked --example typed_worklists
+```
+
+It prints the same zero-edge, reachable and disconnected results as the
+[text program](../examples/cli/worklist-reachability.zirql).
+`evaluate_output_with_budget` retains native computational results. Supply a
+retained result with `ReportExpr::native_input(output)` for continued library
+use; handles and computational context are checked against the current document.
+Use one active budget for evaluation and explicit conversion. Ordinary native
+tuples and positional sequences can be converted to JSON. A queue or identity
+set anywhere inside a value produces a located conversion refusal.
+
+The shared runtime retains immutable queue/set roots and scan snapshots.
+Advancing a queue or inserting an identity preserves previously retained values.
+The host adapter supplies exact document owner/revision and checked object
+identity, plus complete direct SSA-user adjacency; it runs no second loop or
+worklist evaluator. Python keeps its existing query builder API.
+
 ## Match projected strings
 
 Rust `ReportExpr` and Python `ReportExpr` provide `contains`, `starts_with` and

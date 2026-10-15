@@ -146,7 +146,20 @@ fn has_control_values(lexed: &Lexed<'_>) -> bool {
             TokenKind::Identifier => {
                 let word = &lexed.source()[token.range().as_range()];
                 let next = tokens.peek().map(|token| token.kind());
-                if word == "match" && next == Some(TokenKind::LParen)
+                if matches!(
+                    word,
+                    "match"
+                        | "loop"
+                        | "fold"
+                        | "scan"
+                        | "queue"
+                        | "pop_front"
+                        | "push_back_all"
+                        | "identity_set"
+                        | "insert"
+                        | "same_operation"
+                        | "user_info"
+                ) && matches!(next, Some(TokenKind::LParen | TokenKind::Operator))
                     || word == "let" && matches!(next, Some(TokenKind::LParen | TokenKind::LBrace))
                 {
                     return true;
@@ -487,37 +500,35 @@ impl Parser<'_, '_> {
     }
     fn shared_value(&mut self, depth: usize) -> Option<super::comprehension::ParsedComprehension> {
         let mut end = self.source.len();
-        if self.function_mode {
-            let mut nesting = 0usize;
-            for (offset, token) in self.tokens[self.cursor..].iter().enumerate() {
-                match token.kind() {
-                    TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => nesting += 1,
-                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace if nesting == 0 => {
+        let mut nesting = 0usize;
+        for (offset, token) in self.tokens[self.cursor..].iter().enumerate() {
+            match token.kind() {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => nesting += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace if nesting == 0 => {
+                    break;
+                }
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => nesting -= 1,
+                TokenKind::Semicolon if nesting == 0 => break,
+                TokenKind::Pipe if nesting == 0 => {
+                    if let Some(next) = self.tokens[self.cursor + offset + 1..]
+                        .iter()
+                        .find(|t| t.kind() != TokenKind::Trivia)
+                        && matches!(
+                            &self.source[next.range().as_range()],
+                            "json"
+                                | "emit"
+                                | "markdown"
+                                | "print"
+                                | "format"
+                                | "set_attr"
+                                | "remove_attr"
+                        )
+                    {
+                        end = token.range().start() as usize;
                         break;
                     }
-                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => nesting -= 1,
-                    TokenKind::Semicolon if nesting == 0 => break,
-                    TokenKind::Pipe if nesting == 0 => {
-                        if let Some(next) = self.tokens[self.cursor + offset + 1..]
-                            .iter()
-                            .find(|t| t.kind() != TokenKind::Trivia)
-                            && matches!(
-                                &self.source[next.range().as_range()],
-                                "json"
-                                    | "emit"
-                                    | "markdown"
-                                    | "print"
-                                    | "format"
-                                    | "set_attr"
-                                    | "remove_attr"
-                            )
-                        {
-                            end = token.range().start() as usize;
-                            break;
-                        }
-                    }
-                    _ => {}
                 }
+                _ => {}
             }
         }
         let mut reader = zirql::ArgumentReader::new(
@@ -787,13 +798,16 @@ impl Parser<'_, '_> {
     fn value_expression(&mut self, depth: usize) -> Option<Expression> {
         let start = self.current().range().start();
         let value = self.shared_value(depth)?;
+        let range = self.span(start);
+        let stage = if self.function_mode {
+            Stage::FunctionValue { value, range }
+        } else {
+            Stage::Comprehension { value, range }
+        };
         Some(Expression {
-            first: vec![Stage::Comprehension {
-                value,
-                range: self.span(start),
-            }],
+            first: vec![stage],
             rest: vec![],
-            range: self.span(start),
+            range,
         })
     }
     fn shared_suffix(&mut self, expression: &mut Expression, depth: usize) -> Option<()> {
@@ -862,18 +876,31 @@ impl Parser<'_, '_> {
     fn stage(&mut self, depth: usize) -> Option<Stage> {
         self.skip_trivia();
         let start = self.current().range().start();
-        if (self.at_identifier("match") && self.next_kind() == Some(TokenKind::LParen))
-            || (self.at_identifier("if")
-                && self.function_mode
-                && self.next_kind().is_some_and(|kind| {
-                    matches!(
-                        kind,
-                        TokenKind::Identifier
-                            | TokenKind::LParen
-                            | TokenKind::Integer
-                            | TokenKind::String
-                    )
-                }))
+        if (matches!(
+            self.current_text(),
+            "match"
+                | "loop"
+                | "fold"
+                | "scan"
+                | "queue"
+                | "pop_front"
+                | "push_back_all"
+                | "identity_set"
+                | "insert"
+        ) && matches!(
+            self.next_kind(),
+            Some(TokenKind::LParen | TokenKind::Operator)
+        )) || (self.at_identifier("if")
+            && self.function_mode
+            && self.next_kind().is_some_and(|kind| {
+                matches!(
+                    kind,
+                    TokenKind::Identifier
+                        | TokenKind::LParen
+                        | TokenKind::Integer
+                        | TokenKind::String
+                )
+            }))
         {
             let value = self.shared_value(depth)?;
             return Some(Stage::FunctionValue {
@@ -881,17 +908,40 @@ impl Parser<'_, '_> {
                 range: self.span(start),
             });
         }
-        if matches!(self.current_text(), "direct_children" | "cost_annotation")
-            && self.next_kind() == Some(TokenKind::LParen)
+        if matches!(
+            self.current_text(),
+            "direct_children" | "cost_annotation" | "same_operation" | "user_info"
+        ) && self.next_kind() == Some(TokenKind::LParen)
         {
-            let primitive = if self.current_text() == "direct_children" {
-                super::functions::Primitive::DirectChildren
-            } else {
-                super::functions::Primitive::CostAnnotation
+            let primitive = match self.current_text() {
+                "direct_children" => super::functions::Primitive::DirectChildren,
+                "cost_annotation" => super::functions::Primitive::CostAnnotation,
+                "same_operation" => super::functions::Primitive::SameOperation,
+                "user_info" => super::functions::Primitive::UserInfo,
+                _ => unreachable!("recognized primitive"),
             };
             self.bump();
             self.expect(TokenKind::LParen, "expected `(`")?;
-            let argument = self.shared_value(depth + 1)?;
+            let mut argument = self.shared_value(depth + 1)?;
+            if primitive == super::functions::Primitive::SameOperation {
+                self.expect(TokenKind::Comma, "expected `,` between Operations")?;
+                let mut right = self.shared_value(depth + 1)?;
+                let take = |value: &mut super::comprehension::ParsedComprehension| {
+                    std::mem::replace(
+                        std::sync::Arc::get_mut(&mut value.expression)
+                            .expect("fresh parser expression"),
+                        zirql::Located::new(
+                            zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Absent),
+                            0..0,
+                        ),
+                    )
+                };
+                let values = vec![take(&mut argument), take(&mut right)];
+                argument = super::comprehension::ParsedComprehension::new(zirql::Located::new(
+                    zirql::ValueExpressionKind::Tuple(values),
+                    start as usize..self.current().range().start() as usize,
+                ));
+            }
             self.expect(TokenKind::RParen, "expected `)` after native argument")?;
             return Some(Stage::FunctionPrimitive {
                 primitive,
@@ -1968,6 +2018,8 @@ fn is_native_stage(name: &str) -> bool {
         "input"
             | "direct_children"
             | "cost_annotation"
+            | "same_operation"
+            | "user_info"
             | "operand"
             | "filter"
             | "reachable"
@@ -2022,6 +2074,8 @@ pub(super) fn is_reserved(name: &str) -> bool {
         "input"
             | "direct_children"
             | "cost_annotation"
+            | "same_operation"
+            | "user_info"
             | "do"
             | "filter"
             | "closure"

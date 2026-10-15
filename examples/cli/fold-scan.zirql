@@ -1,0 +1,9 @@
+fn accumulate((count, total): tuple<int, int>, item: int) -> tuple<int, int> {
+  (count + 1, total + item)
+}
+report {
+  "fold": fold([2, 3, 5], (0, 0), accumulate),
+  "scan": scan([2, 3, 5], (0, 0), accumulate),
+  "empty_fold": fold([], (0, 0), accumulate),
+  "empty_scan": scan([], (0, 0), accumulate)
+} | json

@@ -154,3 +154,130 @@ native observations and analysis remain under
 unfinished work, unchanged completed records, configuration mismatch, failure,
 timeout and analysis from saved records. This comparison changes no product
 source, installed command, benchmark driver, dependency pin or Python extension.
+
+## Explicit native worklists
+
+A separate release comparison measures the native worklist adapter, retained
+aliases and growing scan results. The compiled host source is
+`204d01024afc7c2f40e3cf61928bfccc29f33148`, with Zirql pinned to the actual Git
+revision `ea30035e010cea2e12047a1aa4e5bf39a3ac983e`. The unchanged-query baseline is
+host `7d5f56d5da990952de2fb992ff58a0de7fd3272f`, pinned to Zirql
+`4eaaafb7cfc112dbc0673fd67007a16f1f8e8ee2`. Both use their locked dependencies,
+Rust 1.98.1 (`48a229cea`, LLVM 22.1.8), and the same Apple M1 Max with 10 cores,
+64 GiB RAM and arm64 macOS 26.6.2. The final compiled-file identity is SHA-256
+`6a6dac05f84afae1fd351b1d6fd32e2736d59d5f94837d3c1bbc14a09a778cd4`.
+
+The private probe reuses the existing pre-lowered query profiling boundary.
+Generated valid SSA contains one start, `n` same-named nodes each consuming the
+start twice, one end consuming every node, and a disconnected target. There
+are `n + 3` operations and `3n` uses. The
+[complete reachability program](../../examples/cli/worklist-reachability.zirql)
+provides the traversal function; the measured request asks whether the start
+reaches the disconnected target, so it exhausts the reachable graph. Correctness
+warmup checks that the answer is false. The alias case drains a retained queue
+and returns its count with the unchanged original queue. The scan case appends
+one native operation per step and retains every queue snapshot; its first and
+last sizes are checked. These are native results, without JSON conversion.
+
+Each row has five fresh-process batches. Baseline and current small-query
+batches alternate order. A small-query batch has 500 requests; a warm worklist,
+alias or scan batch has three. A cold-index batch has one request. Parsing
+constructs and drops the query. Evaluation includes request preparation,
+evaluation, the native callback and drops between requests; the final result
+stays live for the retention checkpoint and is dropped after timing. Fixture
+construction, MLIR parsing/lowering, query parsing and correctness checks are
+outside evaluation timing. Only the small report includes JSON rendering.
+A separate document provides the cold case's correctness warmup: “cold” means
+this document's use index is unbuilt, not cold process startup or filesystem I/O.
+
+The probe explicitly uses 1,000,000,000 work units, 100,000,000 aggregate results,
+100,000 items and nesting 64. Product defaults are unchanged. The main campaign
+completed all 165 success samples and two separate budget-refusal controls,
+with no failed, timed-out or unfinished captures.
+
+### Unchanged small queries
+
+The 19-operation fixture uses `count`, `filter(op("graph.node")) | count` and
+`report {"sum": 2 + 3, "items": [1, 2, 3]} | json`. Times below are microseconds
+per request: median, with minimum–maximum in parentheses. Evaluation uses a
+pre-parsed query; the report includes its JSON emitter.
+
+| Query | Phase | Baseline µs | Current µs | Median change |
+| --- | --- | ---: | ---: | ---: |
+| count | parse | 0.351 (0.347–0.362) | 0.351 (0.347–0.359) | +0.2% |
+| count | evaluate | 1.392 (1.358–1.431) | 1.365 (1.345–1.399) | -1.9% |
+| filter | parse | 1.249 (1.234–1.262) | 1.281 (1.260–1.310) | +2.5% |
+| filter | evaluate | 2.428 (2.419–2.460) | 2.415 (2.404–2.423) | -0.5% |
+| report | parse | 3.358 (3.329–3.362) | 3.677 (3.666–3.764) | +9.5% |
+| report | evaluate | 8.191 (8.179–8.263) | 8.248 (8.225–8.447) | +0.7% |
+
+The report's 9.5% parsing increase costs 0.319 µs on this input. Inspection
+found that the host now scans ordinary report suffixes to preserve the `| json`
+boundary with the newer common reader. The comparison also includes added
+common-reader recognition, so it does not isolate either cost. The pre-parsed
+report's evaluation median differs by 0.7% and remains within the baseline's
+observed range.
+
+### Increasing native workloads
+
+Times are milliseconds per request, median (minimum–maximum). Cold and warm
+adjacency cases remain separate; their overlapping ranges do not establish a
+reliable isolated use-index cost.
+
+| Nodes `n` | Reachability, cold index | Reachability, warm index | Retained alias | Retained scan |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 3.315 (3.294–3.339) | 3.271 (3.239–4.359) | 0.557 (0.551–0.593) | 0.427 (0.423–0.435) |
+| 512 | 13.040 (12.907–13.532) | 12.819 (12.729–13.866) | 2.095 (2.079–2.213) | 1.661 (1.630–1.673) |
+| 2,048 | 51.727 (51.532–52.587) | 51.752 (51.331–53.316) | 8.294 (8.188–8.385) | 6.568 (6.514–7.054) |
+
+Across a 16-fold increase in node count, warm reachability takes 15.8 times as long,
+retained aliases 14.9 times and retained scans 15.4 times. These three sizes
+support roughly proportional growth for this wide, duplicate-route graph;
+they do not characterize every graph shape.
+
+### Allocation and result drops
+
+A separate release binary observes requested `System` allocation sizes. These
+observations do not supply the clean timing rows above. Each sample runs one
+warm request. “Retained” and “peak” are extra live KiB above the document/query
+checkpoint. Every result drop restores that checkpoint exactly. RSS is the
+exact child's process peak from macOS `os.wait4`, in MiB, and includes setup and
+warmup. It cannot show memory release after a drop.
+
+| Case | `n` | Retained KiB | Peak extra KiB | After-result excess bytes | Peak child RSS MiB, median (min–max) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| graph | 128 | 0.29 | 372.34 | 0 | 5.55 (5.55–5.58) |
+| graph | 512 | 0.29 | 1,375.10 | 0 | 8.00 (7.95–8.38) |
+| graph | 2,048 | 0.29 | 5,276.92 | 0 | 17.45 (16.80–19.69) |
+| alias | 128 | 18.58 | 58.14 | 0 | 5.02 (5.00–5.03) |
+| alias | 512 | 72.58 | 196.14 | 0 | 6.50 (6.48–6.59) |
+| alias | 2,048 | 288.58 | 748.14 | 0 | 11.80 (11.22–12.91) |
+| scan | 128 | 36.16 | 105.31 | 0 | 5.05 (5.05–5.05) |
+| scan | 512 | 144.16 | 393.31 | 0 | 6.67 (6.64–7.11) |
+| scan | 2,048 | 576.16 | 1,545.31 | 0 | 12.75 (11.70–13.86) |
+
+Retained and after-result-drop counts match across all five samples. Alias and
+scan peak allocations also match. Graph peak-extra ranges are 371.60–372.64 KiB
+at 128 nodes, 1,373.47–1,375.40 KiB at 512 and 5,274.69–5,280.63 KiB at 2,048.
+The table reports their medians; full live checkpoints remain in the raw data.
+
+Keeping every prefix scan state therefore retains about 288 bytes per item in
+this case, rather than the sum of all queued prefix lengths. After dropping the
+query, document, fixture and result, the original samples retain a constant
+268 bytes above the initial process checkpoint. A separate control lowers and
+drops one document before that checkpoint; its final excess is zero. This is
+consistent with the existing document-identity table retaining initial capacity,
+and is separate from request results.
+
+With work reduced to 50,000, the 512-node graph refuses with a query range at
+`474..495`. The allocator-observed refusal reaches 1,095,317 live bytes and,
+after all request/document data are dropped, leaves 375 bytes above its initial
+checkpoint: the same 268-byte startup difference plus the retained 107-byte
+diagnostic string capacity. Refusals are not successful throughput samples.
+
+Complete inputs and hashes, commands, streams, individual samples, binary and
+source identities, compiler details, allocation checkpoints and the focused
+controls remain under `/private/tmp/zirql045-measure`. The named main run is
+`final-ea30035-204d010-v2`; `collect-v2.py analyze --name final-ea30035-204d010-v2`
+regenerates its analysis without invoking a target. The private collector has
+no product dependency or installation effect.

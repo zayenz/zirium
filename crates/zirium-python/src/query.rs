@@ -1468,6 +1468,17 @@ fn native(
                 .map_err(py_error)?;
             return native(py, state, value, budget);
         }
+        QueryOutput::Native(NativeValue::Computational(value)) => {
+            return Err(py_error(format!(
+                "computational values cannot be converted to Python at query bytes {:?}",
+                value.range()
+            )));
+        }
+        QueryOutput::Native(NativeValue::Tuple(_) | NativeValue::Sequence(_)) => {
+            return Err(PyTypeError::new_err(
+                "unsupported native positional report kind",
+            ));
+        }
         QueryOutput::Native(NativeValue::Ssa(value)) => {
             budget
                 .charge(1, zirql_location(&(0..0)))

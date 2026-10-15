@@ -1680,12 +1680,20 @@ impl OpQuery {
 }
 /// Construct a typed read-only report without requesting an emitter.
 pub fn report(value: ReportExpr) -> ReportQuery {
-    QueryExpr::start(vec![Stage::Comprehension {
-        value: value.value,
-        range: range(),
-    }])
-    .with_parameters(value.parameters)
-    .with_functions(value.functions)
+    let stage = if report::value_requires_session(&value.value.expression) {
+        Stage::FunctionValue {
+            value: value.value,
+            range: range(),
+        }
+    } else {
+        Stage::Comprehension {
+            value: value.value,
+            range: range(),
+        }
+    };
+    QueryExpr::start(vec![stage])
+        .with_parameters(value.parameters)
+        .with_functions(value.functions)
 }
 macro_rules! report_query_conversion {
     ($result:ty) => {
@@ -2078,6 +2086,15 @@ impl ReportExpr {
         )))
         .with_metadata(query.parameters.clone(), query.functions.clone())
     }
+    pub fn user_info(operation: Self) -> Self {
+        Self::primitive(functions::Primitive::UserInfo, operation)
+    }
+    pub fn same_operation(left: Self, right: Self) -> Self {
+        Self::primitive(
+            functions::Primitive::SameOperation,
+            Self::tuple([left, right]),
+        )
+    }
     pub fn direct_children(operation: Self) -> Self {
         Self::primitive(functions::Primitive::DirectChildren, operation)
     }
@@ -2151,12 +2168,146 @@ impl ReportExpr {
             operations,
         )))
     }
-    fn native_input(value: QueryOutput) -> Self {
+    pub fn native_input(value: QueryOutput) -> Self {
         Self::node(zirql::ValueExpressionKind::NativeValue(Box::new(
             report::operand(&expression(vec![Stage::FunctionInput {
                 value: std::sync::Arc::new(value),
                 range: range(),
             }])),
         )))
+    }
+}
+
+impl ReportExpr {
+    /// Repeatedly replace all immutable state slots until a selected break.
+    pub fn loop_(states: impl IntoIterator<Item = (String, Self)>, body: Self) -> Self {
+        let mut parameters = body.parameters.clone();
+        let mut functions = body.functions.clone();
+        let states = states
+            .into_iter()
+            .map(|(name, value)| {
+                parameters = merge_parameters(&parameters, &value.parameters);
+                functions = functions::merge(&functions, &value.functions);
+                (
+                    Located::new(name, 0..0),
+                    functions::normalize(value.into_expression()),
+                )
+            })
+            .collect();
+        Self::node(zirql::ValueExpressionKind::Loop {
+            states,
+            body: Box::new(functions::normalize(body.into_expression())),
+        })
+        .with_metadata(parameters, functions)
+    }
+    /// Exit the innermost loop with this value.
+    pub fn break_(value: Self) -> Self {
+        let parameters = value.parameters.clone();
+        let functions = value.functions.clone();
+        Self::node(zirql::ValueExpressionKind::Break(Box::new(
+            functions::normalize(value.into_expression()),
+        )))
+        .with_metadata(parameters, functions)
+    }
+    /// Compute every successor against the old state, in written order.
+    pub fn continue_(values: impl IntoIterator<Item = Self>) -> Self {
+        let mut parameters = Vec::new();
+        let mut functions = Vec::new();
+        let values = values
+            .into_iter()
+            .map(|value| {
+                parameters = merge_parameters(&parameters, &value.parameters);
+                functions = functions::merge(&functions, &value.functions);
+                functions::normalize(value.into_expression())
+            })
+            .collect();
+        Self::node(zirql::ValueExpressionKind::Continue(values))
+            .with_metadata(parameters, functions)
+    }
+    /// Reduce an eager sequence using a resolved named pure step.
+    pub fn fold(items: Self, initial: Self, step: impl Into<String>) -> Self {
+        Self::named_reducer(items, initial, step.into(), false)
+    }
+    /// Retain every post-step state, excluding the initial state.
+    pub fn scan(items: Self, initial: Self, step: impl Into<String>) -> Self {
+        Self::named_reducer(items, initial, step.into(), true)
+    }
+    fn named_reducer(items: Self, initial: Self, step: String, scan: bool) -> Self {
+        let parameters = merge_parameters(&items.parameters, &initial.parameters);
+        let functions = functions::merge(&items.functions, &initial.functions);
+        let items = Box::new(functions::normalize(items.into_expression()));
+        let initial = Box::new(functions::normalize(initial.into_expression()));
+        let step = Located::new(step, 0..0);
+        Self::node(if scan {
+            zirql::ValueExpressionKind::Scan {
+                items,
+                initial,
+                step,
+            }
+        } else {
+            zirql::ValueExpressionKind::Fold {
+                items,
+                initial,
+                step,
+            }
+        })
+        .with_metadata(parameters, functions)
+    }
+    pub fn queue(items: Self) -> Self {
+        Self::queue_with_type(items, None)
+    }
+    /// Establish an element declaration even when the input is empty.
+    pub fn typed_queue(items: Self, element: zirql::SignatureType) -> Self {
+        Self::queue_with_type(items, Some(element))
+    }
+    fn queue_with_type(items: Self, element: Option<zirql::SignatureType>) -> Self {
+        let parameters = items.parameters.clone();
+        let functions = items.functions.clone();
+        Self::node(zirql::ValueExpressionKind::Queue {
+            items: Box::new(functions::normalize(items.into_expression())),
+            element: element.map(|value| Located::new(value, 0..0)),
+        })
+        .with_metadata(parameters, functions)
+    }
+    pub fn pop_front(queue: Self) -> Self {
+        let parameters = queue.parameters.clone();
+        let functions = queue.functions.clone();
+        Self::node(zirql::ValueExpressionKind::PopFront(Box::new(
+            functions::normalize(queue.into_expression()),
+        )))
+        .with_metadata(parameters, functions)
+    }
+    pub fn push_back_all(queue: Self, items: Self) -> Self {
+        let parameters = merge_parameters(&queue.parameters, &items.parameters);
+        let functions = functions::merge(&queue.functions, &items.functions);
+        Self::node(zirql::ValueExpressionKind::PushBackAll {
+            queue: Box::new(functions::normalize(queue.into_expression())),
+            items: Box::new(functions::normalize(items.into_expression())),
+        })
+        .with_metadata(parameters, functions)
+    }
+    pub fn identity_set(element: FunctionNativeType) -> Self {
+        let name = match element {
+            FunctionNativeType::Operation => "Operation",
+            FunctionNativeType::SSAValue => "SSAValue",
+        };
+        Self::node(zirql::ValueExpressionKind::IdentitySet {
+            element: Located::new(
+                zirql::SignatureType::Named(Located::new(name.to_owned(), 0..0)),
+                0..0,
+            ),
+        })
+    }
+    pub fn is_in(self, set: Self) -> Self {
+        self.binary(zirql::ValueBinaryOperator::In, set)
+    }
+    pub fn insert(set: Self, item: Self) -> Self {
+        let parameters = merge_parameters(&set.parameters, &item.parameters);
+        let functions = functions::merge(&set.functions, &item.functions);
+        Self::node(zirql::ValueExpressionKind::Insert {
+            set: Box::new(functions::normalize(set.into_expression())),
+            item: Box::new(functions::normalize(item.into_expression())),
+        })
+        .with_metadata(parameters, functions)
     }
 }

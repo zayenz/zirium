@@ -780,6 +780,12 @@ fn run() -> Result<(), String> {
                     .map_err(output_staging_error)?;
                 return Ok(());
             }
+            if matches!(
+                &output,
+                QueryOutput::Native(zirium::query::NativeValue::Computational(_))
+            ) {
+                return output.to_json_with_budget(document, budget).map(|_| ());
+            }
             if ndjson {
                 let mut record = ReportWriter {
                     output: &mut staged_output,

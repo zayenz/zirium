@@ -1,6 +1,7 @@
 //! Native domain adaptation for shared correlated projection and report values.
 use super::*;
 use std::{ops::Range, sync::Arc};
+use zirql::FunctionHost;
 use zirql::{
     Bindings, Budget, ConstructedValue as V, ExpressionKind as X, ExpressionStep as Step, Located,
     Location, ProgramHost, ProjectionHost, ValueType,
@@ -241,6 +242,25 @@ pub(super) fn output_kind(
 ) -> Result<program::Kind, EvaluationError> {
     use program::Kind as K;
     Ok(match functions::unretained(value) {
+        QueryOutput::Native(NativeValue::Computational(value)) => K::Computational(Arc::new(
+            value
+                .value
+                .declaration(budget, &Location::Query(range.clone()))
+                .map_err(core_error)?,
+        )),
+        QueryOutput::Native(NativeValue::Tuple(value)) => {
+            capture::slots::<K>(value.values.len(), budget, range)?;
+            K::Tuple(Arc::new(
+                value
+                    .values
+                    .iter()
+                    .map(|v| output_kind(v, budget, range))
+                    .collect::<Result<_, _>>()?,
+            ))
+        }
+        QueryOutput::Native(NativeValue::Sequence(value)) => {
+            K::Sequence(Arc::clone(&value.element))
+        }
         QueryOutput::Native(NativeValue::Ssa(_)) => K::Ssa,
         QueryOutput::Native(NativeValue::Captures(value)) => K::Captures(Arc::clone(&value.schema)),
         QueryOutput::Native(NativeValue::Capture(record)) => {
@@ -285,10 +305,13 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn copy_value(
         &self,
         value: &QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_, 'q>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        if let Some(value) = worklists::share(value, self, context, budget, range)? {
+            return Ok(value);
+        }
         if let QueryOutput::Native(NativeValue::Constructed(value)) = functions::unretained(value) {
             budget.charge_results(1, Location::Query(range.clone()))?;
             return Ok(QueryOutput::Native(NativeValue::Constructed(value.clone())));
@@ -334,6 +357,12 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
         program::NativeHost.construct_record(fields, context, budget, range)
     }
+    fn tuple_view<'v>(&self, value: &'v QueryOutput) -> Option<&'v [QueryOutput]> {
+        match functions::unretained(value) {
+            QueryOutput::Native(NativeValue::Tuple(value)) => Some(&value.values),
+            _ => None,
+        }
+    }
     fn capture_record<'v>(
         &self,
         value: &'v QueryOutput,
@@ -356,6 +385,13 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
 }
 impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     type Kind = program::Kind;
+    fn tuple_view_kind<'k>(&self, kind: &'k program::Kind) -> Option<&'k [program::Kind]> {
+        match kind {
+            program::Kind::Tuple(values) => Some(values),
+            _ => None,
+        }
+    }
+
     fn value_arguments<'s>(
         &self,
         stage: &'s model::Stage,
@@ -585,9 +621,15 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         use program::Kind as K;
         budget.charge(1, Location::Query(range.clone()))?;
         Ok(match kind {
-            K::Operations | K::Ssa | K::Capture(_) | K::Captures(_) | K::Types | K::Attributes => {
-                None
-            }
+            K::Computational(_)
+            | K::Tuple(_)
+            | K::Sequence(_)
+            | K::Operations
+            | K::Ssa
+            | K::Capture(_)
+            | K::Captures(_)
+            | K::Types
+            | K::Attributes => None,
             K::Strings => Some(vec![ValueType::Array(zirql::ArrayType::Elements(vec![
                 ValueType::String,
             ]))]),
@@ -659,12 +701,22 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn subjects(
         &self,
         input: QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_, 'q>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Vec<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
         let input = functions::owned(input, budget, range).map_err(zirql::EvaluationError::Host)?;
         let values = match input {
+            QueryOutput::Native(NativeValue::Sequence(sequence)) => {
+                budget.check_items(sequence.values.len(), Location::Query(range.clone()))?;
+                capture::slots::<QueryOutput>(sequence.values.len(), budget, range)
+                    .map_err(zirql::EvaluationError::Host)?;
+                sequence
+                    .values
+                    .iter()
+                    .map(|value| self.copy_value(value, context, budget, range))
+                    .collect::<Result<_, _>>()?
+            }
             QueryOutput::Operations(operations)
             | QueryOutput::Native(NativeValue::OperationSequence(operations)) => {
                 capture::slots::<QueryOutput>(operations.len(), budget, range)
@@ -703,11 +755,12 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn subject_kind(
         &self,
         input: &program::Kind,
-        _: &mut Budget,
+        budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<program::Kind, zirql::QueryError> {
         use program::Kind as K;
         match input {
+            K::Sequence(element) => self.declaration_kind(element, budget, range),
             K::Operations | K::Ssa | K::Capture(_) => Ok(input.clone()),
             K::Captures(schema) => Ok(K::Capture(Arc::clone(schema))),
             _ => Err(zirql::QueryError::query(
@@ -1189,6 +1242,8 @@ pub(super) fn visit_value<'a>(
         | K::One(value)
         | K::IndexSet(value)
         | K::Entries(value)
+        | K::Unique(value)
+        | K::Tally(value)
         | K::Unary { operand: value, .. }
         | K::Field { value, .. }
         | K::TupleAccess { value, .. }
@@ -1416,6 +1471,20 @@ fn predicate_requires_session(predicate: &model::Predicate) -> bool {
     }
 }
 pub(super) fn value_requires_session(value: &zirql::ValueExpression<Operand>) -> bool {
+    value_requires_session_with_names(value, None)
+}
+
+pub(super) fn value_requires_session_in_scope(
+    value: &zirql::ValueExpression<Operand>,
+    names: &BTreeMap<String, program::Kind>,
+) -> bool {
+    value_requires_session_with_names(value, Some(names))
+}
+
+fn value_requires_session_with_names(
+    value: &zirql::ValueExpression<Operand>,
+    names: Option<&BTreeMap<String, program::Kind>>,
+) -> bool {
     use zirql::ValueExpressionKind as K;
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
@@ -1434,7 +1503,21 @@ pub(super) fn value_requires_session(value: &zirql::ValueExpression<Operand>) ->
             | K::PushBackAll { .. }
             | K::IdentitySet { .. }
             | K::Insert { .. } => return true,
-            K::Literal(_) | K::Name(_) => {}
+            K::Literal(_) => {}
+            K::Name(name) => {
+                if matches!(
+                    names.and_then(|names| names.get(name)),
+                    Some(
+                        program::Kind::Computational(_)
+                            | program::Kind::Tuple(_)
+                            | program::Kind::Sequence(_)
+                            | program::Kind::Capture(_)
+                            | program::Kind::Captures(_)
+                    )
+                ) {
+                    return true;
+                }
+            }
             K::NativeQuery(query) => {
                 let mut expressions = Vec::new();
                 visit_operand(query, &mut expressions);
@@ -1447,6 +1530,8 @@ pub(super) fn value_requires_session(value: &zirql::ValueExpression<Operand>) ->
             | K::One(v)
             | K::IndexSet(v)
             | K::Entries(v)
+            | K::Unique(v)
+            | K::Tally(v)
             | K::Unary { operand: v, .. }
             | K::Field { value: v, .. }
             | K::TupleAccess { value: v, .. }

@@ -127,16 +127,133 @@ pub(super) fn scalar_facts(
                 elements: scalar_facts(value, budget, range)?,
             })],
             D::Native(_) => vec![ValueType::Unestablished],
-            D::Queue(_) | D::IdentitySet(_) => {
-                return Err(zirql::QueryError::query(
-                    range.clone(),
-                    "computational collection signatures are not supported in Zirium",
-                ));
-            }
+            D::Queue(_) | D::IdentitySet(_) => vec![ValueType::Unestablished],
         })
     }
 }
 impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
+    fn retains_native_admission(&self) -> bool {
+        true
+    }
+    fn resolve_type_name(
+        &self,
+        name: Located<&str>,
+        budget: &mut Budget,
+    ) -> Result<D<program::Kind>, zirql::QueryError> {
+        budget.charge(
+            name.value.len() + 1,
+            ValueLocation::Query(name.range.clone()),
+        )?;
+        resolve_type(name, budget)
+    }
+    fn prepare_computational(
+        &self,
+        declaration: Option<&D<program::Kind>>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), zirql::QueryError> {
+        budget.charge(1, ValueLocation::Query(range.clone()))?;
+        if let Some(declaration) = declaration {
+            if matches!(declaration, D::IdentitySet(kind) if !matches!(kind, program::Kind::Operations | program::Kind::Ssa))
+            {
+                return Err(zirql::QueryError::query(
+                    range.clone(),
+                    "identity_set requires Operation or SSAValue",
+                ));
+            }
+            self.declaration_kind(declaration, budget, range)?;
+        }
+        Ok(())
+    }
+    fn computational_value<'v>(
+        &self,
+        value: &'v QueryOutput,
+    ) -> Option<&'v zirql::ComputationalValue<QueryOutput, program::Kind>> {
+        match unretained(value) {
+            QueryOutput::Native(NativeValue::Computational(value)) => Some(&value.value),
+            _ => None,
+        }
+    }
+    fn lift_computational(
+        &self,
+        value: zirql::ComputationalValue<QueryOutput, program::Kind>,
+        _: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        budget.charge_results(1, ValueLocation::Query(range.clone()))?;
+        Ok(QueryOutput::Native(NativeValue::Computational(
+            worklists::Computational {
+                value: Arc::new(value),
+                range: range.clone(),
+            },
+        )))
+    }
+    fn construct_tuple(
+        &self,
+        values: Vec<QueryOutput>,
+        _: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        budget.charge_results(values.len() + 1, ValueLocation::Query(range.clone()))?;
+        Ok(QueryOutput::Native(NativeValue::Tuple(worklists::Tuple {
+            values: Arc::new(values),
+            range: range.clone(),
+        })))
+    }
+    fn sequence_items(
+        &self,
+        value: &QueryOutput,
+        element: &D<program::Kind>,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
+        worklists::sequence_items(self, value, element, context, budget, range)
+    }
+    fn construct_sequence(
+        &self,
+        values: Vec<QueryOutput>,
+        element: &D<program::Kind>,
+        _: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        budget.charge_results(values.len() + 1, ValueLocation::Query(range.clone()))?;
+        Ok(QueryOutput::Native(NativeValue::Sequence(
+            worklists::Sequence {
+                values: Arc::new(values),
+                element: worklists::declaration(element, budget, range)?,
+                range: range.clone(),
+            },
+        )))
+    }
+    fn worklist_context(
+        &self,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::NativeContextId, zirql::EvaluationError<EvaluationError>> {
+        budget.charge(1, ValueLocation::Query(range.clone()))?;
+        let owner = context.document.owner_identity();
+        Ok(zirql::NativeContextId([
+            owner as u64,
+            (owner >> 64) as u64,
+            context.document.revision(),
+        ]))
+    }
+    fn native_identity(
+        &self,
+        value: &QueryOutput,
+        expected: &program::Kind,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::NativeIdentity, zirql::EvaluationError<EvaluationError>> {
+        worklists::identity(value, expected, context, budget, range)
+    }
+
     fn declaration_kind(
         &self,
         ty: &D<program::Kind>,
@@ -147,6 +264,38 @@ impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> 
             budget.charge(1, ValueLocation::Query(range.clone()))?;
             Ok(match ty {
                 D::Native(kind) => kind.clone(),
+                D::Queue(_) | D::IdentitySet(_) => {
+                    program::Kind::Computational(worklists::declaration(ty, budget, range)?)
+                }
+                D::Tuple(values) if contains_native(ty, budget, range)? => {
+                    capture::slots::<program::Kind>(values.len(), budget, range)
+                        .map_err(report::query_error)?;
+                    program::Kind::Tuple(Arc::new(
+                        values
+                            .iter()
+                            .map(|v| self.declaration_kind(v, budget, range))
+                            .collect::<Result<_, _>>()?,
+                    ))
+                }
+                D::Sequence(value) | D::Array(value)
+                    if matches!(value.as_ref(), D::Native(program::Kind::Operations)) =>
+                {
+                    program::Kind::Operations
+                }
+                D::Sequence(value) | D::Array(value)
+                    if matches!(value.as_ref(), D::Record(_))
+                        && contains_native(value, budget, range)? =>
+                {
+                    let program::Kind::Capture(schema) =
+                        self.declaration_kind(value, budget, range)?
+                    else {
+                        unreachable!("native record kind")
+                    };
+                    program::Kind::Captures(schema)
+                }
+                D::Sequence(value) | D::Array(value) if contains_native(value, budget, range)? => {
+                    program::Kind::Sequence(worklists::declaration(value, budget, range)?)
+                }
                 D::Optional(value) if contains_native(value, budget, range)? => {
                     self.declaration_kind(value, budget, range)?
                 }
@@ -161,22 +310,6 @@ impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> 
                     }
                     program::Kind::Capture(Arc::new(zirql::NativeCapture { fields: kinds }))
                 }
-                D::Sequence(value) | D::Array(value)
-                    if contains_native(value, budget, range)?
-                        && matches!(value.as_ref(), D::Record(_)) =>
-                {
-                    let program::Kind::Capture(schema) =
-                        self.declaration_kind(value, budget, range)?
-                    else {
-                        unreachable!("native record kind")
-                    };
-                    program::Kind::Captures(schema)
-                }
-                D::Sequence(value) | D::Array(value)
-                    if matches!(value.as_ref(), D::Native(program::Kind::Operations)) =>
-                {
-                    program::Kind::Operations
-                }
                 _ => self.constructed_kind(scalar_facts(ty, budget, range)?),
             })
         }
@@ -185,7 +318,14 @@ impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> 
         parser::is_reserved(name)
             || matches!(
                 name,
-                "direct_children" | "cost_annotation" | "operand" | "project" | "paths" | "match"
+                "direct_children"
+                    | "cost_annotation"
+                    | "same_operation"
+                    | "user_info"
+                    | "operand"
+                    | "project"
+                    | "paths"
+                    | "match"
             )
     }
 }
@@ -205,6 +345,9 @@ impl<'q> RuntimeTypeHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
         budget: &mut Budget,
         location: ValueLocation,
     ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
+        if zirql::admit_computational(value, expected, self, context, budget, location.clone())? {
+            return Ok(());
+        }
         let range = match &location {
             ValueLocation::Query(r) | ValueLocation::Source(r) => r,
         };
@@ -245,6 +388,29 @@ impl<'q> RuntimeTypeHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
                 {
                     for value in values {
                         budget.charge(value.len() + 1, location.clone())?;
+                    }
+                }
+                (D::Tuple(types), QueryOutput::Native(NativeValue::Tuple(tuple)))
+                    if types.len() == tuple.values.len() =>
+                {
+                    for (value, ty) in tuple.values.iter().zip(types) {
+                        zirql::admit_value(value, ty, self, context, budget, location.clone())?;
+                    }
+                }
+                (
+                    D::Sequence(element) | D::Array(element),
+                    QueryOutput::Native(NativeValue::Sequence(sequence)),
+                ) if element.as_ref() == sequence.element.as_ref() => {
+                    budget.check_items(sequence.values.len(), location.clone())?;
+                    for value in sequence.values.iter() {
+                        zirql::admit_value(
+                            value,
+                            element,
+                            self,
+                            context,
+                            budget,
+                            location.clone(),
+                        )?;
                     }
                 }
                 (D::Record(fields), QueryOutput::Native(NativeValue::Capture(record))) => {
@@ -415,6 +581,8 @@ pub(super) fn error(
 pub enum Primitive {
     DirectChildren,
     CostAnnotation,
+    SameOperation,
+    UserInfo,
 }
 pub(super) fn unretained(mut value: &QueryOutput) -> &QueryOutput {
     while let QueryOutput::Native(NativeValue::Retained(inner)) = value {
@@ -429,6 +597,34 @@ pub(super) fn primitive(
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
+    if primitive == Primitive::SameOperation {
+        let QueryOutput::Native(NativeValue::Tuple(tuple)) = unretained(argument) else {
+            return Err(
+                EvaluationError::new("same_operation requires two Operations").at(range.clone()),
+            );
+        };
+        let [left, right] = tuple.values.as_slice() else {
+            return Err(
+                EvaluationError::new("same_operation requires two Operations").at(range.clone()),
+            );
+        };
+        let single = |value| match unretained(value) {
+            QueryOutput::Operations(values) if values.len() == 1 => Ok(values[0]),
+            _ => Err(
+                EvaluationError::new("same_operation requires two Operations").at(range.clone()),
+            ),
+        };
+        let left = single(left)?;
+        let right = single(right)?;
+        check_operations(context.document, &[left, right], budget, range)
+            .map_err(program::evaluation_error)?;
+        return ConstructedReport::new(
+            ConstructedValue::Boolean(left == right),
+            range.clone(),
+            budget,
+        )
+        .map(|v| QueryOutput::Native(NativeValue::Constructed(v)));
+    }
     let QueryOutput::Operations(operations) = unretained(argument) else {
         return Err(
             EvaluationError::new("native primitive requires one Operation").at(range.clone()),
@@ -443,6 +639,68 @@ pub(super) fn primitive(
         .map_err(program::evaluation_error)?;
     let operation = operations[0];
     match primitive {
+        Primitive::SameOperation => unreachable!("binary primitive handled above"),
+        Primitive::UserInfo => {
+            if !context.document.is_semantically_complete() {
+                return Err(
+                    EvaluationError::new("user_info requires complete semantic adjacency")
+                        .at(range.clone()),
+                );
+            }
+            let mut targets = Vec::new();
+            for result in 0..context
+                .document
+                .result_types(operation)
+                .map_or(0, <[_]>::len)
+            {
+                let value = ValueId::OperationResult {
+                    operation,
+                    result: u32::try_from(result).map_err(|_| {
+                        EvaluationError::new("result index exceeds u32").at(range.clone())
+                    })?,
+                };
+                let uses = context.document.query_uses(value, |units| {
+                    capture::slots::<crate::semantic::UseSite>(units, budget, range)?;
+                    budget
+                        .charge(units, ValueLocation::Query(range.clone()))
+                        .map_err(core_error)?;
+                    budget
+                        .charge_results(units, ValueLocation::Query(range.clone()))
+                        .map_err(core_error)
+                })?;
+                budget
+                    .check_items(
+                        targets.len().saturating_add(uses.len()),
+                        ValueLocation::Query(range.clone()),
+                    )
+                    .map_err(core_error)?;
+                capture::slots::<OperationId>(uses.len(), budget, range)?;
+                targets.reserve(uses.len());
+                for site in uses {
+                    let user = match site {
+                        crate::semantic::UseSite::Operand { operation, .. }
+                        | crate::semantic::UseSite::SuccessorArgument { operation, .. } => {
+                            operation
+                        }
+                    };
+                    context
+                        .document
+                        .check_operation(user)
+                        .map_err(|e| EvaluationError::new(e.to_string()).at(range.clone()))?;
+                    targets.push(user);
+                }
+            }
+            program::charge_results(budget, 3, range)?;
+            program::charge_bytes(budget, "targets".len() + 1, range)?;
+            Ok(QueryOutput::Native(NativeValue::Capture(
+                zirql::NativeCapture {
+                    fields: vec![(
+                        "targets".to_owned(),
+                        QueryOutput::Native(NativeValue::OperationSequence(targets)),
+                    )],
+                },
+            )))
+        }
         Primitive::DirectChildren => {
             program::charge_results(budget, 1, range)?;
             evaluate_children(context.document, operations, budget)
@@ -952,11 +1210,9 @@ fn native_type(ty: FunctionType, depth: usize) -> Result<D<program::Kind>, Evalu
         D::String => D::String,
         D::Member(v) => D::Member(v),
         D::Set(v) => D::Set(v),
-        D::Queue(_) | D::IdentitySet(_) => {
-            return Err(EvaluationError::new(
-                "computational collection signatures are not supported in Zirium",
-            ));
-        }
+        D::Queue(value) => D::Queue(Box::new(native_type(*value, depth + 1)?)),
+        D::IdentitySet(FunctionNativeType::Operation) => D::IdentitySet(program::Kind::Operations),
+        D::IdentitySet(FunctionNativeType::SSAValue) => D::IdentitySet(program::Kind::Ssa),
     })
 }
 // Shared typed values use an explicit source wrapper when another owner keeps
@@ -1061,6 +1317,8 @@ fn normalize_with(
             | K::One(v)
             | K::IndexSet(v)
             | K::Entries(v)
+            | K::Unique(v)
+            | K::Tally(v)
             | K::Unary { operand: v, .. }
             | K::Field { value: v, .. }
             | K::TupleAccess { value: v, .. }
@@ -1203,7 +1461,7 @@ fn contains_native(
 ) -> Result<bool, zirql::QueryError> {
     budget.charge(1, ValueLocation::Query(range.clone()))?;
     Ok(match ty {
-        D::Native(_) => true,
+        D::Native(_) | D::Queue(_) | D::IdentitySet(_) => true,
         D::Optional(value) | D::Sequence(value) | D::Array(value) | D::Keyed(value) => {
             contains_native(value, budget, range)?
         }

@@ -1,0 +1,25 @@
+fn reaches((start, target): tuple<Operation, Operation>) -> bool {
+  loop (pending = queue([start]), seen = identity_set<Operation>()) {
+    match (pop_front(pending)) {
+      present((current, remaining)) => {
+        if current in seen {
+          continue (remaining, seen);
+        } else if same_operation(current, target) {
+          break true;
+        } else {
+          let {targets, ..} = user_info(current);
+          continue (push_back_all(remaining, targets), insert(seen, current));
+        }
+      },
+      _ => break false
+    }
+  }
+}
+let start = filter(op("graph.start"));
+let target = filter(op("graph.end"));
+let disconnected = filter(op("graph.disconnected"));
+report {
+  "zero_edges": reaches((start, start)),
+  "reachable": reaches((start, target)),
+  "disconnected": reaches((start, disconnected))
+} | json

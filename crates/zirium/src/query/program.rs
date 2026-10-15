@@ -288,6 +288,34 @@ pub(super) fn to_json(
 ) -> Result<serde_json::Value, EvaluationError> {
     let value = functions::unretained(value);
     match value {
+        QueryOutput::Native(NativeValue::Computational(value)) => {
+            return Err(EvaluationError::new(
+                "computational values cannot be rendered or serialized",
+            )
+            .at(if range.is_empty() {
+                value.range.clone()
+            } else {
+                range.clone()
+            }));
+        }
+        QueryOutput::Native(NativeValue::Tuple(value)) => {
+            charge_results(budget, value.values.len() + 1, range)?;
+            return value
+                .values
+                .iter()
+                .map(|v| to_json(document, v, budget, range))
+                .collect::<Result<Vec<_>, _>>()
+                .map(serde_json::Value::Array);
+        }
+        QueryOutput::Native(NativeValue::Sequence(value)) => {
+            charge_results(budget, value.values.len() + 1, range)?;
+            return value
+                .values
+                .iter()
+                .map(|v| to_json(document, v, budget, range))
+                .collect::<Result<Vec<_>, _>>()
+                .map(serde_json::Value::Array);
+        }
         QueryOutput::Native(NativeValue::Ssa(value)) => {
             capture::check_value(document, *value, range)?;
             let (kind, index) = match value {
@@ -489,6 +517,15 @@ pub(super) fn copy_value(
     budget: &mut zirql::Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
+    if matches!(
+        value,
+        QueryOutput::Native(
+            NativeValue::Computational(_) | NativeValue::Tuple(_) | NativeValue::Sequence(_)
+        )
+    ) {
+        charge_results(budget, 1, range)?;
+        return Ok(value.clone());
+    }
     if let QueryOutput::Native(NativeValue::Retained(value)) = value {
         charge_results(budget, 1, range)?;
         return Ok(QueryOutput::Native(NativeValue::Retained(
@@ -575,10 +612,13 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
     fn copy_value(
         &self,
         value: &QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_, 'q>,
         budget: &mut zirql::Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        if let Some(value) = worklists::share(value, &report::ReportHost, context, budget, range)? {
+            return Ok(value);
+        }
         copy_value(value, budget, range).map_err(zirql::EvaluationError::Host)
     }
     fn evaluate_stage(
@@ -667,16 +707,17 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
         range: &Range<usize>,
     ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
         match emitter {
-            Emitter::Result => (context.emit)(
-                context.document,
-                copy_value(value, budget, range).map_err(zirql::EvaluationError::Host)?,
-                budget,
-            )
-            .map_err(zirql::EvaluationError::Host)?,
+            Emitter::Result => {
+                let value = self.copy_value(value, context, budget, range)?;
+                (context.emit)(context.document, value, budget)
+                    .map_err(zirql::EvaluationError::Host)?;
+            }
             Emitter::Written(stage) => {
                 charge(budget, output_size(value).max(1)).map_err(zirql::EvaluationError::Host)?;
                 let output = match stage {
-                    model::Stage::Emit { .. } => copy_value(value, budget, range),
+                    model::Stage::Emit { .. } => self
+                        .copy_value(value, context, budget, range)
+                        .map_err(evaluation_error),
                     model::Stage::Format { options, .. } => {
                         let operations =
                             operations(value, "format").map_err(zirql::EvaluationError::Host)?;
@@ -708,6 +749,9 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
+    Computational(std::sync::Arc<zirql::DeclaredType<Kind>>),
+    Tuple(std::sync::Arc<Vec<Kind>>),
+    Sequence(std::sync::Arc<zirql::DeclaredType<Kind>>),
     Operations,
     Ssa,
     Capture(std::sync::Arc<zirql::NativeCapture<Kind>>),
@@ -874,7 +918,7 @@ impl Validator<'_> {
                 }
                 S::FunctionValue { value, .. } => {
                     kind = if self.host.functions.is_empty()
-                        && !report::value_requires_session(&value.expression)
+                        && !report::value_requires_session_in_scope(&value.expression, names)
                     {
                         Kind::Constructed(std::sync::Arc::new(report::types(
                             value, kind, names, budget,
@@ -898,11 +942,27 @@ impl Validator<'_> {
                     )
                     .map_err(core_error)?;
                     require(
-                        argument_kind == Kind::Operations,
-                        "native primitive requires one Operation",
+                        if *primitive == functions::Primitive::SameOperation {
+                            matches!(&argument_kind, Kind::Tuple(values) if values.as_slice() == [Kind::Operations, Kind::Operations])
+                        } else {
+                            argument_kind == Kind::Operations
+                        },
+                        if *primitive == functions::Primitive::SameOperation {
+                            "same_operation requires two Operations"
+                        } else {
+                            "native primitive requires one Operation"
+                        },
                     )?;
                     kind = match primitive {
                         functions::Primitive::DirectChildren => Kind::Operations,
+                        functions::Primitive::SameOperation => {
+                            Kind::Constructed(std::sync::Arc::new(vec![zirql::ValueType::Boolean]))
+                        }
+                        functions::Primitive::UserInfo => {
+                            Kind::Capture(std::sync::Arc::new(zirql::NativeCapture {
+                                fields: vec![("targets".to_owned(), Kind::Operations)],
+                            }))
+                        }
                         functions::Primitive::CostAnnotation => {
                             Kind::Constructed(std::sync::Arc::new(vec![
                                 zirql::ValueType::Integer,

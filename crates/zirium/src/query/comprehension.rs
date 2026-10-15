@@ -266,6 +266,9 @@ pub(super) fn has_syntax(source: &str) -> bool {
                     zirql::ArgumentReader::new(source, cursor).expect("source byte boundary");
                 lookahead.skip_whitespace();
                 let rest = lookahead.remaining();
+                if matches!(word, "queue" | "identity_set") && rest.starts_with('<') {
+                    return true;
+                }
                 if ordering_call(source, start) || word == "project" && rest.starts_with('(') {
                     return true;
                 }
@@ -299,7 +302,17 @@ pub(super) fn has_syntax(source: &str) -> bool {
                 }
                 if matches!(
                     word,
-                    "sum"
+                    "loop"
+                        | "fold"
+                        | "scan"
+                        | "queue"
+                        | "pop_front"
+                        | "push_back_all"
+                        | "identity_set"
+                        | "insert"
+                        | "same_operation"
+                        | "user_info"
+                        | "sum"
                         | "length"
                         | "forall"
                         | "exists"
@@ -522,6 +535,10 @@ pub(super) fn project(
     range: &Range<usize>,
 ) -> Result<V, EvaluationError> {
     match value {
+        QueryOutput::Native(NativeValue::Computational(_)) => Err(EvaluationError::new(
+            "computational values cannot be projected to report data",
+        )
+        .at(range.clone())),
         QueryOutput::Native(NativeValue::Constructed(value)) => {
             zirql::copy_constructed_value(value.value(), budget, Location::Query(range.clone()))
                 .map_err(core_error)

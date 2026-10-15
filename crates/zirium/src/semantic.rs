@@ -1932,6 +1932,15 @@ impl Document {
             && self.operation_generations.get(id.index()).copied() == Some(id.generation)
     }
 
+    pub(crate) fn owner_identity(&self) -> u128 {
+        self.identity.0
+    }
+
+    pub(crate) fn operation_key(&self, operation: OperationId) -> Result<u64, EditError> {
+        self.check_operation(operation)?;
+        Ok((u64::from(operation.generation) << 32) | u64::from(operation.index))
+    }
+
     pub fn check_operation(&self, operation: OperationId) -> Result<(), EditError> {
         if operation.owner != self.identity.0 {
             return Err(EditError::ForeignOperation(operation));
@@ -2018,6 +2027,49 @@ impl Document {
     /// Monotonically changes after each committed semantic transaction.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    // Admit the lazy index scan and storage before building it. Warm access
+    // only admits the requested adjacency, preserving the established use order.
+    pub(crate) fn query_uses<E>(
+        &self,
+        value: ValueId,
+        mut charge: impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<Vec<UseSite>, E> {
+        let warm = self
+            .analyses
+            .borrow()
+            .uses
+            .as_ref()
+            .is_some_and(|index| index.revision == self.revision);
+        if !warm {
+            for operation in self.operations() {
+                charge(1)?;
+                charge(
+                    self.operands(operation)
+                        .unwrap_or(&[])
+                        .len()
+                        .saturating_mul(3),
+                )?;
+                for successor in self.successors(operation).unwrap_or(&[]) {
+                    charge(1)?;
+                    charge(
+                        self.successor_arguments(*successor)
+                            .unwrap_or(&[])
+                            .len()
+                            .saturating_mul(3),
+                    )?;
+                }
+            }
+            self.ensure_use_index();
+        }
+        let analyses = self.analyses.borrow();
+        let uses = analyses
+            .uses
+            .as_ref()
+            .and_then(|index| index.uses.get(&value));
+        charge(uses.map_or(0, Vec::len))?;
+        Ok(uses.cloned().unwrap_or_default())
     }
 
     /// Returns all operand and successor-argument uses of a value. The backing

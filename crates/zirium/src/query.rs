@@ -28,8 +28,8 @@ pub use builder::*;
 pub use diff::*;
 pub use zirql::{
     Budget, ConstructedValue, Located, Location as ValueLocation, NativeCapture,
-    ParameterDeclaration, ParameterInputs, ParameterType, ProgramLimits, ValueBinaryOperator,
-    ValueUnaryOperator, constructed_value_type, copy_pattern,
+    ParameterDeclaration, ParameterInputs, ParameterType, ProgramLimits, SignatureType,
+    ValueBinaryOperator, ValueUnaryOperator, constructed_value_type, copy_pattern,
 };
 mod functions;
 mod literal;
@@ -38,9 +38,13 @@ mod pipeline;
 mod program;
 mod render;
 mod report;
+mod worklists;
 pub use functions::{
     FunctionDefinition, FunctionLimits, FunctionNativeType, FunctionParameter, FunctionType,
     Pattern, PatternKind, PatternParameter,
+};
+pub use worklists::{
+    Computational as ComputationalResult, Sequence as NativeSequence, Tuple as NativeTuple,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -230,6 +234,9 @@ impl QueryOutput {
         let range = match self {
             Self::Native(NativeValue::Constructed(value)) => value.range(),
             Self::Native(NativeValue::Captures(value)) => value.range(),
+            Self::Native(NativeValue::Computational(value)) => value.range.clone(),
+            Self::Native(NativeValue::Tuple(value)) => value.range.clone(),
+            Self::Native(NativeValue::Sequence(value)) => value.range.clone(),
             _ => 0..0,
         };
         program::to_json(document, self, budget, &range)
@@ -239,6 +246,12 @@ impl QueryOutput {
 /// Native structured data before explicit rendering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeValue {
+    /// An internal queue or identity set, retained for native library use.
+    Computational(worklists::Computational),
+    /// A positional tuple preserving native members.
+    Tuple(worklists::Tuple),
+    /// A positional sequence preserving its whole element declaration.
+    Sequence(worklists::Sequence),
     Constructed(ConstructedReport),
     /// An unchanged argument retains its shared owner across a native callback.
     Retained(std::sync::Arc<QueryOutput>),
@@ -781,6 +794,8 @@ fn evaluate_host_stage(
     }
     match stage {
         model::Stage::FunctionInput { value, range } => {
+            worklists::admit_input(value, context, budget, &program::range(*range))
+                .map_err(program::evaluation_error)?;
             program::charge_results(budget, 1, &program::range(*range))?;
             current = QueryOutput::Native(NativeValue::Retained(std::sync::Arc::clone(value)));
         }
@@ -1337,9 +1352,15 @@ fn countable_len(output: &QueryOutput, stage: &str) -> Result<usize, EvaluationE
         QueryOutput::Native(NativeValue::Types(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Attributes(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Captures(values)) => Ok(values.len()),
-        QueryOutput::Native(NativeValue::Ssa(_) | NativeValue::Capture(_)) => Err(
-            EvaluationError::new(format!("{stage} requires a stream, map, or array")),
-        ),
+        QueryOutput::Native(NativeValue::Sequence(value)) => Ok(value.values.len()),
+        QueryOutput::Native(
+            NativeValue::Computational(_)
+            | NativeValue::Tuple(_)
+            | NativeValue::Ssa(_)
+            | NativeValue::Capture(_),
+        ) => Err(EvaluationError::new(format!(
+            "{stage} requires a stream, map, or array"
+        ))),
         QueryOutput::Native(NativeValue::Map(values)) => Ok(values.len()),
         QueryOutput::Native(NativeValue::Constructed(_))
         | QueryOutput::Native(NativeValue::String(_))
@@ -1364,7 +1385,13 @@ fn output_len(output: &QueryOutput) -> usize {
         QueryOutput::Native(NativeValue::Types(values)) => values.len(),
         QueryOutput::Native(NativeValue::Attributes(values)) => values.len(),
         QueryOutput::Native(NativeValue::Captures(values)) => values.len(),
-        QueryOutput::Native(NativeValue::Ssa(_) | NativeValue::Capture(_)) => 1,
+        QueryOutput::Native(NativeValue::Sequence(value)) => value.values.len(),
+        QueryOutput::Native(
+            NativeValue::Computational(_)
+            | NativeValue::Tuple(_)
+            | NativeValue::Ssa(_)
+            | NativeValue::Capture(_),
+        ) => 1,
         QueryOutput::Native(NativeValue::Map(values)) => values.len(),
         QueryOutput::Native(NativeValue::Constructed(_))
         | QueryOutput::Native(NativeValue::String(_))
@@ -1589,6 +1616,16 @@ fn json_size(value: &serde_json::Value) -> usize {
 
 fn output_size(output: &QueryOutput) -> usize {
     match output {
+        QueryOutput::Native(NativeValue::Tuple(value)) => {
+            value.values.iter().fold(1usize, |size, value| {
+                size.saturating_add(output_size(value))
+            })
+        }
+        QueryOutput::Native(NativeValue::Sequence(value)) => {
+            value.values.iter().fold(1usize, |size, value| {
+                size.saturating_add(output_size(value))
+            })
+        }
         QueryOutput::Native(NativeValue::Constructed(value)) => value.size(),
         QueryOutput::Native(NativeValue::Map(entries)) => {
             entries.values().map(|value| 1 + output_size(value)).sum()
@@ -1829,7 +1866,10 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
     match output {
         QueryOutput::Native(value) => match value {
             NativeValue::Retained(value) => output_value(document, value),
-            NativeValue::Ssa(_)
+            NativeValue::Computational(_)
+            | NativeValue::Tuple(_)
+            | NativeValue::Sequence(_)
+            | NativeValue::Ssa(_)
             | NativeValue::Capture(_)
             | NativeValue::Captures(_)
             | NativeValue::Constructed(_) => {

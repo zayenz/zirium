@@ -1469,6 +1469,121 @@ The [destructured report](../examples/cli/destructured-report.zirql) and
 Their [typed builders](query-dsl.md#destructuring-reports) construct the same
 values without parsing generated source.
 
+## Explicit loops and native worklists
+
+A loop names its immutable state and ends each body path with `continue` or
+`break`. Initializers run in the outer scope. A continue computes every next
+value against the old state, from left to right, then replaces all slots
+together. Each slot retains its established type. Break returns the loop value;
+nested transfers target the innermost loop and cannot cross a function call.
+Iterations spend work without adding active function calls.
+
+```zirql
+loop (n = 5, total = 0) {
+  if n == 0 { break total; }
+  else { continue (n - 1, total + n); }
+} | json
+```
+
+This short inline query returns `15` without a declaration preamble. Every
+written branch must be pure and finish with a transfer. A missing transfer,
+wrong continue arity or incompatible successor state is an error. Infinite
+loops exhaust the existing work allowance.
+
+`queue(items)` creates a FIFO from an eager positional sequence.
+`queue<Operation>([])` supplies the element type for empty input.
+`pop_front(q)` returns `absent` or `present((item, remaining))`, and
+`push_back_all(q, items)` appends in input order. Decomposing a pop result retains
+the remaining queue; it does not reconstruct its elements.
+`identity_set<Operation>()`, `item in seen` and `insert(seen, item)` use checked
+native identity. Insertion is idempotent. The set exposes neither iteration
+order nor general set algebra. `SSAValue` identity includes the exact result or
+block argument; same-named operations remain distinct.
+
+The [complete reachability program](../examples/cli/worklist-reachability.zirql)
+uses a destructured parameter and optional pop pattern:
+
+```zirql
+fn reaches((start, target): tuple<Operation, Operation>) -> bool {
+  loop (pending = queue([start]), seen = identity_set<Operation>()) {
+    match (pop_front(pending)) {
+      present((current, remaining)) => {
+        if current in seen {
+          continue (remaining, seen);
+        } else if same_operation(current, target) {
+          break true;
+        } else {
+          let {targets, ..} = user_info(current);
+          continue (push_back_all(remaining, targets), insert(seen, current));
+        }
+      },
+      _ => break false
+    }
+  }
+}
+let start = filter(op("graph.start"));
+let target = filter(op("graph.end"));
+let disconnected = filter(op("graph.disconnected"));
+report {
+  "zero_edges": reaches((start, start)),
+  "reachable": reaches((start, target)),
+  "disconnected": reaches((start, disconnected))
+} | json
+```
+
+Run it against the [valid SSA fixture](../examples/cli/worklist-reachability.mlir):
+
+```sh
+zirium --program-file examples/cli/worklist-reachability.zirql \
+  examples/cli/worklist-reachability.mlir
+```
+
+The result has `zero_edges: true`, `reachable: true` and `disconnected: false`.
+`same_operation(a, b)` compares checked
+Operation handles. `user_info(op)` returns the explicit native record
+`{targets: sequence<Operation>}`. Targets follow result index, then the existing
+SSA use-site order, including successor arguments and repeated uses. The view
+reuses the document's use index. It returns complete adjacency or a located
+error; an incomplete document cannot become an empty adjacency list or false
+reachability. The fixture includes duplicate routes and two distinct
+`graph.node` operations.
+
+Queues and identity sets are computational values. They can occur in locals,
+function signatures, native results and loop state. Rendering or serializing
+one, including inside a tuple, sequence or record, fails at the expression or
+emitter. Native Rust callers can retain results and supply them to another
+request against the same unchanged document. An edit or different document
+invalidates the context even for empty queues and sets. Retained aliases and
+earlier scan states keep their original values.
+
+## Named fold and scan steps
+
+`fold(items, initial, step)` applies a named pure function from left to right.
+`scan` retains each post-step state and excludes the initial state. Both resolve
+the step's arity, purity and state contract before iteration, including on empty
+input. Items then initial are evaluated once; a step error fails the request.
+Keyed arrays require an explicit positional conversion.
+
+```zirql
+fn accumulate((count, total): tuple<int, int>, item: int) -> tuple<int, int> {
+  (count + 1, total + item)
+}
+report {
+  "fold": fold([2, 3, 5], (0, 0), accumulate),
+  "scan": scan([2, 3, 5], (0, 0), accumulate),
+  "empty_fold": fold([], (0, 0), accumulate),
+  "empty_scan": scan([], (0, 0), accumulate)
+} | json
+```
+
+The [saved program](../examples/cli/fold-scan.zirql) returns fold `[3, 10]`, scan
+`[[1, 2], [2, 5], [3, 10]]`, empty fold `[0, 0]` and empty scan `[]`. Signatures
+also accept `queue<T>` and `identity_set<T>` with native set element types.
+Loops, reducers, native inspection, copying and rendering share the existing
+request budget. The
+64-call default, expression nesting, reentry and CLI output buffering remain
+unchanged.
+
 ## A bounded constructed report
 
 This report combines a tail accumulator with optional scores, exact string

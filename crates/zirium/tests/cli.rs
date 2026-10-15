@@ -3914,3 +3914,44 @@ fn pattern_examples_agree_inline_file_and_buffer_later_failures() {
         assert!(failed.stdout.is_empty());
     }
 }
+
+#[test]
+fn worklist_examples_agree_inline_file_and_buffer_later_failures() {
+    let input = include_str!("../../../examples/cli/worklist-reachability.mlir");
+    for program in [
+        include_str!("../../../examples/cli/worklist-reachability.zirql"),
+        include_str!("../../../examples/cli/fold-scan.zirql"),
+    ] {
+        let inline = run_stdin(program, input);
+        assert!(
+            inline.status.success(),
+            "{}",
+            String::from_utf8_lossy(&inline.stderr)
+        );
+        let path = temporary_path("worklist-report", "zirql");
+        fs::write(&path, program).unwrap();
+        let file = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args([
+                "--program-file",
+                path.to_str().unwrap(),
+                "examples/cli/worklist-reachability.mlir",
+            ])
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+            .output()
+            .unwrap();
+        fs::remove_file(path).unwrap();
+        assert!(
+            file.status.success(),
+            "{}",
+            String::from_utf8_lossy(&file.stderr)
+        );
+        assert_eq!(file.stdout, inline.stdout);
+        let failed = run_stdin(
+            &format!("{program}; report queue<Operation>([]) | json;"),
+            input,
+        );
+        assert!(!failed.status.success());
+        assert!(failed.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&failed.stderr).contains("computational"));
+    }
+}

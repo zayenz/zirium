@@ -2775,3 +2775,455 @@ fn pattern_native_views_tail_calls_and_refusals_keep_host_contracts() {
         assert!(error.position < source.len(), "{source}: {error}");
     }
 }
+
+#[test]
+fn native_worklists_and_named_reducers_use_the_shared_runner() {
+    use zirium::query::{ConstructedValue as V, NativeValue, ReportExpr as E, report};
+    let mut document = document_from(include_str!(
+        "../../../examples/cli/worklist-reachability.mlir"
+    ));
+    let mut outputs = Vec::new();
+    Query::parse(include_str!(
+        "../../../examples/cli/worklist-reachability.zirql"
+    ))
+    .unwrap()
+    .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+        outputs.push(value);
+        Ok(())
+    })
+    .unwrap();
+    let QueryOutput::Json(json) = &outputs[0] else {
+        panic!("JSON report")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(json).unwrap(),
+        serde_json::json!({"zero_edges":true,"reachable":true,"disconnected":false})
+    );
+    let mut outputs = Vec::new();
+    Query::parse(include_str!("../../../examples/cli/fold-scan.zirql"))
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Json(json) = &outputs[0] else {
+        panic!("JSON report")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(json).unwrap(),
+        serde_json::json!({"fold":[3,10],"scan":[[1,2],[2,5],[3,10]],"empty_fold":[0,0],"empty_scan":[]})
+    );
+
+    let nodes = document.query(&ops().filter(op("graph.node"))).unwrap();
+    let same = report(E::same_operation(
+        E::operation(nodes[0]),
+        E::operation(nodes[1]),
+    ));
+    assert_eq!(
+        document.query(&same).unwrap().value().data(),
+        &V::Boolean(false)
+    );
+    let membership = report(E::record([
+        (
+            "same",
+            E::operation(nodes[0]).is_in(E::insert(
+                E::identity_set(zirium::query::FunctionNativeType::Operation),
+                E::operation(nodes[0]),
+            )),
+        ),
+        (
+            "different",
+            E::operation(nodes[1]).is_in(E::insert(
+                E::identity_set(zirium::query::FunctionNativeType::Operation),
+                E::operation(nodes[0]),
+            )),
+        ),
+    ]));
+    assert_eq!(
+        document
+            .query(&membership)
+            .unwrap()
+            .to_json_with_budget(&mut zirium::query::Budget::for_program(
+                zirium::query::ProgramLimits {
+                    work: 100000,
+                    results: 100000,
+                    nesting: 64,
+                    stream_items: 1000
+                }
+            ))
+            .unwrap(),
+        serde_json::json!({"same":true,"different":false})
+    );
+    let mut retained = Vec::new();
+    for value in [
+        E::queue(E::operation_sequence(vec![])),
+        E::identity_set(zirium::query::FunctionNativeType::Operation),
+        E::insert(
+            E::identity_set(zirium::query::FunctionNativeType::Operation),
+            E::operation(nodes[0]),
+        ),
+    ] {
+        let query = report(value);
+        let mut budget = query.new_budget(EvaluationLimits::default());
+        retained.push(
+            query
+                .evaluate_output_with_budget(
+                    &document,
+                    DialectRegistry::baseline(),
+                    EvaluationOptions::default(),
+                    &mut budget,
+                )
+                .unwrap(),
+        );
+    }
+    let queue = report(E::queue(E::operation_sequence(nodes.clone())));
+    let mut budget = queue.new_budget(EvaluationLimits::default());
+    let queue = queue
+        .evaluate_output_with_budget(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationOptions::default(),
+            &mut budget,
+        )
+        .unwrap();
+    assert!(matches!(
+        queue,
+        QueryOutput::Native(NativeValue::Computational(_))
+    ));
+    let pop = report(
+        E::value_match(
+            E::pop_front(E::native_input(queue.clone())),
+            vec![
+                zirium::query::ReportMatchArm {
+                    pattern: zirium::query::Located::new(
+                        zirium::query::PatternKind::Present(Box::new(zirium::query::Located::new(
+                            zirium::query::PatternKind::Wildcard,
+                            0..0,
+                        ))),
+                        0..0,
+                    ),
+                    guard: None,
+                    value: E::boolean(true),
+                },
+                zirium::query::ReportMatchArm {
+                    pattern: zirium::query::Located::new(
+                        zirium::query::PatternKind::Wildcard,
+                        0..0,
+                    ),
+                    guard: None,
+                    value: E::boolean(false),
+                },
+            ],
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        document.query(&pop).unwrap().value().data(),
+        &V::Boolean(true)
+    );
+    assert!(
+        queue
+            .to_json_with_budget(&document, &mut budget)
+            .unwrap_err()
+            .range()
+            .is_some()
+    );
+    let nested = report(E::tuple([E::native_input(queue.clone()), E::integer(1)]));
+    let mut nested_budget = nested.new_budget(EvaluationLimits::default());
+    retained.push(
+        nested
+            .evaluate_output_with_budget(
+                &document,
+                DialectRegistry::baseline(),
+                EvaluationOptions::default(),
+                &mut nested_budget,
+            )
+            .unwrap(),
+    );
+    let foreign = document_from(include_str!(
+        "../../../examples/cli/worklist-reachability.mlir"
+    ));
+    assert!(foreign.query(&pop).is_err());
+    for value in &retained {
+        let query = report(E::native_input(value.clone()));
+        let mut budget = query.new_budget(EvaluationLimits::default());
+        assert!(
+            query
+                .evaluate_output_with_budget(
+                    &foreign,
+                    DialectRegistry::baseline(),
+                    EvaluationOptions::default(),
+                    &mut budget
+                )
+                .is_err()
+        );
+    }
+
+    let disconnected = document
+        .query(&ops().filter(op("graph.disconnected")))
+        .unwrap()[0];
+    let mut edit = document.edit(DialectRegistry::baseline()).unwrap();
+    edit.erase(disconnected).unwrap();
+    edit.commit().unwrap();
+    assert!(document.query(&pop).is_err());
+    for value in retained {
+        let query = report(E::native_input(value));
+        let mut budget = query.new_budget(EvaluationLimits::default());
+        assert!(
+            query
+                .evaluate_output_with_budget(
+                    &document,
+                    DialectRegistry::baseline(),
+                    EvaluationOptions::default(),
+                    &mut budget
+                )
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn worklist_refusals_are_located_and_preflight_unused_paths() {
+    let mut document = document();
+    for source in [
+        "report loop (n = 0) { continue (n + 1, n); }",
+        "report loop (n = 0) { if true { break 1; } else { 2 } }",
+        "report loop (n = 0) { continue (\"wrong\"); }",
+        "report queue([])",
+        "report break 1",
+        "report continue (0)",
+        "fn transfer() -> int { break 1 } report loop (n=0) { break transfer(); }",
+        "fn bad(state:int,item:int)->int { input | set_attr(\"x\",\"y\") } report fold([],0,bad)",
+        "fn bad(state: int, item: int) -> string { \"bad\" } report fold([], 0, bad)",
+        "fn bad(state: int) -> int { state } report scan([], 0, bad)",
+        "report if true { 1 } else { loop (n = 0) { input | set_attr(\"x\",\"y\") } }",
+        "report queue<Operation>([]) | json",
+        "report {\"nested\": identity_set<Operation>()} | json",
+    ] {
+        let result = Query::parse(source)
+            .map_err(|e| e.to_string())
+            .and_then(|query| {
+                query
+                    .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+                    .map_err(|e| {
+                        assert!(e.range().is_some(), "{source}: {e}");
+                        e.to_string()
+                    })
+            });
+        assert!(result.is_err(), "{source}");
+    }
+    let query = Query::parse("report loop (n = 0) { continue (n + 1); }").unwrap();
+    assert!(
+        query
+            .evaluate_with_limits(
+                &mut document,
+                DialectRegistry::baseline(),
+                EvaluationLimits {
+                    max_work: 1000,
+                    ..EvaluationLimits::default()
+                },
+                |_, _| Ok(())
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn native_queue_aliases_and_scan_snapshots_remain_immutable() {
+    let mut document = document_from(include_str!(
+        "../../../examples/cli/worklist-reachability.mlir"
+    ));
+    let source = r#"
+fn size(initial: queue<Operation>) -> int {
+  loop (pending = initial, count = 0) {
+    match (pop_front(pending)) {
+      present((_, remaining)) => continue (remaining, count + 1),
+      _ => break count
+    }
+  }
+}
+fn append(state: queue<Operation>, item: Operation) -> queue<Operation> {
+  push_back_all(state, [item])
+}
+let nodes = filter(op("graph.node"));
+let original = queue(nodes);
+let advanced = push_back_all(original, nodes);
+let snapshots = scan(nodes, queue<Operation>([]), append);
+report {"aliases": (size(original), size(advanced)), "snapshots": [size(snapshot) for snapshot in snapshots]} | json
+"#;
+    let mut values = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            values.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Json(json) = &values[0] else {
+        panic!("JSON report")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(json).unwrap(),
+        serde_json::json!({"aliases":[2,4],"snapshots":[1,2]})
+    );
+}
+
+#[test]
+fn user_info_refuses_incomplete_adjacency_and_keeps_successor_use_order() {
+    use zirium::query::{ReportExpr as E, report};
+    let parsed = ParsedFile::parse(b"vendor.outer @entry { vendor.inner }".as_slice()).unwrap();
+    let lowered =
+        lower_with_dialect_registry(&parsed, LoweringMode::BestEffort, &DialectRegistry::EMPTY);
+    assert!(!lowered.semantically_complete);
+    let document = lowered.document.unwrap();
+    let query = report(E::user_info(E::operation(document.root_operations()[0])));
+    let mut budget = query.new_budget(EvaluationLimits::default());
+    let error = query
+        .evaluate_output_with_budget(
+            &document,
+            &DialectRegistry::EMPTY,
+            EvaluationOptions::default(),
+            &mut budget,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("complete semantic adjacency"));
+    assert!(error.range().is_some());
+    let document = document_from(
+        r#"module {
+      func.func @f() -> i32 {
+        %seed = arith.constant 1 : i32
+        cf.br ^next(%seed : i32)
+      ^next(%arg: i32):
+        %twice = arith.addi %seed, %seed : i32
+        func.return %arg : i32
+      }
+    }"#,
+    );
+    let seed = document.query(&ops().filter(op("arith.constant"))).unwrap()[0];
+    let expected = document
+        .query(&ops().filter(op("arith.constant")).users())
+        .unwrap();
+    let query = report(E::user_info(E::operation(seed)));
+    let mut budget = query.new_budget(EvaluationLimits::default());
+    let output = query
+        .evaluate_output_with_budget(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationOptions::default(),
+            &mut budget,
+        )
+        .unwrap()
+        .into_owned_with_budget(&mut budget)
+        .unwrap();
+    let QueryOutput::Native(zirium::query::NativeValue::Capture(record)) = output else {
+        panic!("native view")
+    };
+    let QueryOutput::Native(zirium::query::NativeValue::OperationSequence(targets)) =
+        &record.fields[0].1
+    else {
+        panic!("native targets")
+    };
+    assert_eq!(targets, &expected);
+    assert_eq!(targets.len(), 3);
+    assert_eq!(targets[1], targets[2]);
+}
+
+#[test]
+fn typed_native_reducers_retain_queue_aliases_and_scan_states() {
+    use zirium::query::{
+        FunctionDefinition as F, FunctionNativeType as N, FunctionParameter, FunctionType as T,
+        Located, NativeValue, ReportExpr as E, SignatureType, report,
+    };
+    let document = document_from(include_str!(
+        "../../../examples/cli/worklist-reachability.mlir"
+    ));
+    let nodes = document.query(&ops().filter(op("graph.node"))).unwrap();
+    let append = F::new(
+        "append",
+        vec![
+            FunctionParameter {
+                name: Located::new("state".into(), 0..0),
+                declaration: T::Queue(Box::new(T::Native(N::Operation))),
+            },
+            FunctionParameter {
+                name: Located::new("item".into(), 0..0),
+                declaration: T::Native(N::Operation),
+            },
+        ],
+        T::Queue(Box::new(T::Native(N::Operation))),
+        vec![],
+        E::push_back_all(E::name("state"), E::array([E::name("item")])),
+    )
+    .unwrap();
+    let empty = report(E::typed_queue(
+        E::array([]),
+        SignatureType::Named(Located::new("Operation".into(), 0..0)),
+    ));
+    let mut budget = empty.new_budget(EvaluationLimits::default());
+    let empty = empty
+        .evaluate_output_with_budget(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationOptions::default(),
+            &mut budget,
+        )
+        .unwrap();
+    let scan = report(E::scan(
+        E::operation_sequence(nodes.clone()),
+        E::native_input(empty.clone()),
+        "append",
+    ))
+    .with_functions(vec![append.clone()]);
+    let mut budget = scan.new_budget(EvaluationLimits::default());
+    let result = scan
+        .evaluate_output_with_budget(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationOptions::default(),
+            &mut budget,
+        )
+        .unwrap()
+        .into_owned_with_budget(&mut budget)
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Sequence(states)) = result else {
+        panic!("native snapshots")
+    };
+    let lengths = states
+        .values()
+        .iter()
+        .map(|value| {
+            let value = value.clone().into_owned_with_budget(&mut budget).unwrap();
+            let QueryOutput::Native(NativeValue::Computational(queue)) = value else {
+                panic!("queue state")
+            };
+            queue.len()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lengths, [1, 2]);
+    let fold = report(E::fold(
+        E::operation_sequence(nodes),
+        E::native_input(empty.clone()),
+        "append",
+    ))
+    .with_functions(vec![append]);
+    let mut budget = fold.new_budget(EvaluationLimits::default());
+    let result = fold
+        .evaluate_output_with_budget(
+            &document,
+            DialectRegistry::baseline(),
+            EvaluationOptions::default(),
+            &mut budget,
+        )
+        .unwrap()
+        .into_owned_with_budget(&mut budget)
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Computational(queue)) = result else {
+        panic!("fold queue")
+    };
+    assert_eq!(queue.len(), 2);
+    let QueryOutput::Native(NativeValue::Computational(initial)) = empty else {
+        panic!("empty queue")
+    };
+    assert!(initial.is_empty());
+}
