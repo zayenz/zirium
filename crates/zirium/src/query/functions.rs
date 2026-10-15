@@ -1081,6 +1081,10 @@ pub(super) fn constructed(
 ) -> Result<ConstructedReport, EvaluationError> {
     match owned(value, budget, range)? {
         QueryOutput::Native(NativeValue::Constructed(value)) => Ok(value),
+        value @ QueryOutput::Native(NativeValue::Map(_)) => {
+            let value = comprehension::project(&value, budget, range)?;
+            ConstructedReport::new(value, range.clone(), budget)
+        }
         _ => Err(EvaluationError::new("report requires a constructed value").at(range.clone())),
     }
 }

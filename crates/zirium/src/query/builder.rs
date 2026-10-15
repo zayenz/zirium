@@ -1039,31 +1039,50 @@ pub(super) fn evaluate_structured(
             .map_err(program::evaluation_error)?,
         ),
         StructuredStage::MapBy { key, value } => {
-            program::charge_results(budget, 1, &(0..0))?;
-            let mut entries = BTreeMap::new();
+            let selected = take_operations(current, "map_by")?;
+            let mapping = zirql::NativeMap {
+                key: &**key,
+                value: &**value,
+            };
             let mut items = 0usize;
-            for operation in take_operations(current, "map_by")? {
-                program::charge_results(budget, 1, &(0..0))?;
-                let seed = QueryOutput::Operations(vec![operation]);
-                let key = String::from_query_output(evaluate_expression(
-                    key,
-                    context,
-                    program::copy_value(&seed, budget, &(0..0))?,
-                    bindings,
-                    budget,
-                )?)?;
-                if entries.contains_key(&key) {
-                    return Err(EvaluationError::new(format!(
-                        "map_by encountered duplicate key `{key}`; select unique keys"
-                    )));
-                }
-                let value = evaluate_expression(value, context, seed, bindings, budget)?;
-                items = items.saturating_add(output_size(&value).saturating_add(1));
-                check_items(budget, items)?;
-                charge(budget, output_size(&value))?;
-                program::charge_results(budget, 1, &(0..0))?;
-                entries.insert(key, value);
-            }
+            let entries = zirql::map_native_by(
+                selected,
+                context,
+                budget,
+                zirql::Location::Query(0..0),
+                |operation, context, budget| {
+                    program::charge_results(budget, 1, &(0..0))
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let seed = QueryOutput::Operations(vec![*operation]);
+                    let input = program::copy_value(&seed, budget, &(0..0))
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let key = String::from_query_output(
+                        evaluate_expression(mapping.key, context, input, bindings, budget)
+                            .map_err(zirql::EvaluationError::Host)?,
+                    )
+                    .map_err(zirql::EvaluationError::Host)?;
+                    program::charge_results(budget, 1, &(0..0))
+                        .map_err(zirql::EvaluationError::Host)?;
+                    Ok(Some(vec![key]))
+                },
+                |operation, context, budget| {
+                    program::charge_results(budget, 1, &(0..0))
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let value = evaluate_expression(
+                        mapping.value,
+                        context,
+                        QueryOutput::Operations(vec![operation]),
+                        bindings,
+                        budget,
+                    )
+                    .map_err(zirql::EvaluationError::Host)?;
+                    items = items.saturating_add(output_size(&value).saturating_add(1));
+                    check_items(budget, items).map_err(zirql::EvaluationError::Host)?;
+                    charge(budget, output_size(&value)).map_err(zirql::EvaluationError::Host)?;
+                    Ok(value)
+                },
+            )
+            .map_err(program::evaluation_error)?;
             QueryOutput::Native(NativeValue::Map(entries))
         }
         StructuredStage::StringAttr(name) => {

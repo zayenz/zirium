@@ -2308,6 +2308,27 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
             O::MaxAll => Stage::MaxAllBy { selector, range },
         })
     }
+    fn mapping(
+        &mut self,
+        mapping: zirql::NativeMap<super::report::Operand>,
+        range: std::ops::Range<usize>,
+    ) -> Result<Stage, zirql::QueryError> {
+        let mapping = zirql::NativeMap {
+            key: super::report::native_selector(mapping.key),
+            value: super::report::native_selector(mapping.value),
+        };
+        if !super::report::map_is_read_only(&mapping) {
+            return Err(zirql::QueryError::query(
+                range,
+                "map_by queries cannot edit or emit",
+            ));
+        }
+        Ok(Stage::NativeMap {
+            mapping,
+            range: TextRange::new(range.start as u32, range.end as u32)
+                .expect("ordered query range"),
+        })
+    }
     fn matching(
         &mut self,
         matching: zirql::NativeMatch<super::report::Operand, Predicate>,

@@ -901,52 +901,68 @@ fn evaluate_host_stage(
         }
         model::Stage::MapBy { key, value, .. } => {
             let selected = take_operations(current, "map_by")?;
-            program::charge_results(budget, 1, &program::range(stage.range()))?;
-            let mut entries = serde_json::Map::new();
+            let range = program::range(stage.range());
+            let mapping = zirql::NativeMap {
+                key: &**key,
+                value: &**value,
+            };
             let mut items = 0usize;
-            for operation in selected {
-                program::charge_results(budget, 1, &program::range(stage.range()))?;
-                let item = QueryOutput::Operations(vec![operation]);
-                let key = evaluate_expression(
-                    key,
-                    context,
-                    program::copy_value(&item, budget, &program::range(stage.range()))?,
-                    bindings,
-                    budget,
-                )?;
-                let QueryOutput::Values(mut keys) = key else {
-                    return Err(EvaluationError::new(
-                        "map_by key must produce exactly one string",
-                    ));
-                };
-                if keys.len() != 1 {
-                    return Err(EvaluationError::new(
-                        "map_by key must produce exactly one string",
-                    ));
-                }
-                let key = keys.pop().unwrap();
-                if entries.contains_key(&key) {
-                    return Err(EvaluationError::new(format!(
-                        "map_by encountered duplicate key `{key}`; select unique keys"
-                    )));
-                }
-                let value = evaluate_expression(value, context, item, bindings, budget)?;
-                items = items.saturating_add(output_size(&value).saturating_add(1));
-                check_items(budget, items)?;
-                charge(budget, output_size(&value))?;
-                program::charge_results(budget, 1, &program::range(stage.range()))?;
-                let value = program::to_json(
-                    context.document,
-                    &value,
-                    budget,
-                    &program::range(stage.range()),
-                )?;
-                if value_depth(&value) >= parser::DEFAULT_NESTING_LIMIT {
-                    return Err(EvaluationError::new("map nesting limit exceeded"));
-                }
-                entries.insert(key, value);
-            }
-            current = QueryOutput::Map(entries);
+            let entries = zirql::map_native_by(
+                selected,
+                context,
+                budget,
+                zirql::Location::Query(range.clone()),
+                |operation, context, budget| {
+                    program::charge_results(budget, 1, &range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let seed = QueryOutput::Operations(vec![*operation]);
+                    let input = program::copy_value(&seed, budget, &range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let key = evaluate_expression(mapping.key, context, input, bindings, budget)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    Ok(if let QueryOutput::Values(keys) = key {
+                        Some(keys)
+                    } else {
+                        None
+                    })
+                },
+                |operation, context, budget| {
+                    program::charge_results(budget, 1, &range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let value = evaluate_expression(
+                        mapping.value,
+                        context,
+                        QueryOutput::Operations(vec![operation]),
+                        bindings,
+                        budget,
+                    )
+                    .map_err(zirql::EvaluationError::Host)?;
+                    items = items.saturating_add(output_size(&value).saturating_add(1));
+                    check_items(budget, items).map_err(zirql::EvaluationError::Host)?;
+                    charge(budget, output_size(&value)).map_err(zirql::EvaluationError::Host)?;
+                    let value = program::to_json(context.document, &value, budget, &range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    if value_depth(&value) >= parser::DEFAULT_NESTING_LIMIT {
+                        return Err(zirql::EvaluationError::Host(EvaluationError::new(
+                            "map nesting limit exceeded",
+                        )));
+                    }
+                    Ok(value)
+                },
+            )
+            .map_err(program::evaluation_error)?;
+            program::charge_results(budget, entries.len().saturating_add(1), &range)?;
+            current = QueryOutput::Map(entries.into_iter().collect());
+        }
+        model::Stage::NativeMap { mapping, .. } => {
+            current = report::evaluate_map(
+                mapping,
+                context,
+                current,
+                bindings,
+                budget,
+                &program::range(stage.range()),
+            )?;
         }
         model::Stage::Reachable { .. } => {
             current = QueryOutput::Operations(evaluate_reachable(
@@ -1044,7 +1060,7 @@ fn evaluate_host_stage(
                 "unique requires an operation or value stream",
             ));
         }
-        model::Stage::RetainOrderingKey { .. } => {
+        model::Stage::RetainSelector { .. } => {
             let range = program::range(stage.range());
             program::charge_bytes(budget, 4, &range)?;
             program::charge_results(budget, 3, &range)?;

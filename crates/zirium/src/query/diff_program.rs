@@ -1343,31 +1343,40 @@ fn map(
             range,
         ));
     }
-    admit(budget, 1, range)?;
-    let mut entries = BTreeMap::new();
-    for item in items {
-        admit(budget, 1, range)?;
-        let input = from_rows(kind, vec![item]);
-        let key_input = copy(&input, budget, range)?;
-        let result = evaluate_expression(key, key_input, context, bindings, budget)?;
-        let DiffProgramOutput::Strings(mut keys) = result else {
-            return Err(failure("map_by key must produce exactly one string", range));
-        };
-        if keys.len() != 1 {
-            return Err(failure("map_by key must produce exactly one string", range));
-        }
-        let key = keys.pop().unwrap();
-        if entries.contains_key(&key) {
-            return Err(failure(
-                format!("map_by encountered duplicate key `{key}`; select unique keys"),
-                range,
-            ));
-        }
-        let mapped = evaluate_expression(expression, input, context, bindings, budget)?;
-        check(budget, entries.len().saturating_add(1), range)?;
-        admit(budget, 1, range)?;
-        entries.insert(key, mapped);
-    }
+    let mapping = zirql::NativeMap {
+        key,
+        value: expression,
+    };
+    let entries = zirql::map_native_by(
+        items,
+        context,
+        budget,
+        zirql::Location::Query(range.clone()),
+        |item, context, budget| {
+            admit(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            let input = from_rows(kind, vec![item.clone()]);
+            let key_input = copy(&input, budget, range).map_err(zirql::EvaluationError::Host)?;
+            let key = evaluate_expression(mapping.key, key_input, context, bindings, budget)
+                .map_err(zirql::EvaluationError::Host)?;
+            Ok(if let DiffProgramOutput::Strings(keys) = key {
+                Some(keys)
+            } else {
+                None
+            })
+        },
+        |item, context, budget| {
+            admit(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            evaluate_expression(
+                mapping.value,
+                from_rows(kind, vec![item]),
+                context,
+                bindings,
+                budget,
+            )
+            .map_err(zirql::EvaluationError::Host)
+        },
+    )
+    .map_err(program::evaluation_error)?;
     Ok(DiffProgramOutput::Map(entries))
 }
 

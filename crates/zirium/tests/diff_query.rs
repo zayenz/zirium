@@ -193,6 +193,47 @@ fn text_programs_keep_native_side_results_and_the_typed_projection_contract() {
             [DiffProgramOutput::Operations(DiffSide::After, expected)]
         );
     }
+    let mut maps = Vec::new();
+    DiffProgram::parse("map_by(names, before | filter(op(\"missing\")))")
+        .unwrap()
+        .evaluate(
+            &diff,
+            ("before", "after"),
+            EvaluationLimits::default(),
+            EvaluationOptions::default(),
+            |_, value, _| {
+                maps.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    let DiffProgramOutput::Map(entries) = &maps[0] else {
+        panic!("native map")
+    };
+    assert!(
+        matches!(&entries["arith.constant"], DiffProgramOutput::Operations(DiffSide::Before, operations) if operations.is_empty())
+    );
+    maps.clear();
+    DiffProgram::parse("map_by(names, after | map_by(names, count))")
+        .unwrap()
+        .evaluate(
+            &diff,
+            ("before", "after"),
+            EvaluationLimits::default(),
+            EvaluationOptions::default(),
+            |_, value, _| {
+                maps.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    let DiffProgramOutput::Map(entries) = &maps[0] else {
+        panic!("native map")
+    };
+    assert!(
+        matches!(&entries["arith.constant"], DiffProgramOutput::Map(nested) if nested["arith.constant"] == DiffProgramOutput::Count(1))
+    );
+
     assert_eq!(
         diff.query(&changes().names().unique()).unwrap(),
         ["arith.constant"]

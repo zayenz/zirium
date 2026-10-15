@@ -349,6 +349,10 @@ pub enum Stage {
         value: Box<Expression>,
         range: TextRange,
     },
+    NativeMap {
+        mapping: zirql::NativeMap<super::comprehension::ParsedComprehension>,
+        range: TextRange,
+    },
     Reachable {
         range: TextRange,
     },
@@ -399,7 +403,7 @@ pub enum Stage {
         selector: super::report::OrderingSelector,
         range: TextRange,
     },
-    RetainOrderingKey {
+    RetainSelector {
         range: TextRange,
     },
     Reverse {
@@ -509,6 +513,7 @@ impl Stage {
             | Stage::MinAllBy { selector, .. }
             | Stage::MaxBy { selector, .. }
             | Stage::MaxAllBy { selector, .. } => selector.is_read_only(),
+            Stage::NativeMap { mapping, .. } => super::report::map_is_read_only(mapping),
             Stage::MapBy { key, value, .. } => key.is_read_only() && value.is_read_only(),
             _ => true,
         }
@@ -534,6 +539,7 @@ impl Stage {
             | Self::Binding { range, .. }
             | Self::Tally { range }
             | Self::Value { range }
+            | Self::NativeMap { range, .. }
             | Self::MapBy { range, .. }
             | Self::Reachable { range }
             | Self::Input { range }
@@ -550,7 +556,7 @@ impl Stage {
             | Self::Unique { range }
             | Self::Sort { range }
             | Self::SortBy { range, .. }
-            | Self::RetainOrderingKey { range }
+            | Self::RetainSelector { range }
             | Self::Reverse { range }
             | Self::Head { range, .. }
             | Self::Tail { range, .. }
@@ -588,7 +594,8 @@ impl Stage {
             | Self::Count { .. }
             | Self::Tally { .. }
             | Self::Value { .. }
-            | Self::RetainOrderingKey { .. }
+            | Self::RetainSelector { .. }
+            | Self::NativeMap { .. }
             | Self::MapBy { .. }
             | Self::Literal { .. }
             | Self::Comprehension { .. }

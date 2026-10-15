@@ -742,6 +742,7 @@ pub(super) enum Kind {
     Strings,
     Count,
     Map,
+    NativeMap,
     Array,
     String,
     Types,
@@ -1082,7 +1083,7 @@ impl Validator<'_> {
                 | S::MaxAll { .. } => {
                     require(kind == Kind::Strings, "ordering requires a value stream")?
                 }
-                S::RetainOrderingKey { .. } => {
+                S::RetainSelector { .. } => {
                     charge_bytes(budget, 4, &range(stage.range()))?;
                     charge_results(budget, 3, &range(stage.range()))?;
                     kind = Kind::Capture(std::sync::Arc::new(zirql::NativeCapture {
@@ -1152,6 +1153,37 @@ impl Validator<'_> {
                         kind = Kind::Count;
                     }
                 }
+                S::NativeMap { mapping, .. } => {
+                    require(kind == Kind::Operations, "map_by requires operations")?;
+                    require(
+                        report::map_is_read_only(mapping),
+                        "map_by queries cannot edit or emit",
+                    )?;
+                    let key = functions::value_kind(
+                        &self.host,
+                        &mapping.key.expression,
+                        Kind::Operations,
+                        names,
+                        budget,
+                    )
+                    .map_err(core_error)?;
+                    let Kind::Capture(schema) = key else {
+                        unreachable!("map key retains a native field")
+                    };
+                    require(
+                        matches!(schema.fields.as_slice(), [(name, Kind::Strings | Kind::String)] if name == "key"),
+                        "map_by key must produce exactly one string",
+                    )?;
+                    functions::value_kind(
+                        &self.host,
+                        &mapping.value.expression,
+                        Kind::Operations,
+                        names,
+                        budget,
+                    )
+                    .map_err(core_error)?;
+                    kind = Kind::NativeMap;
+                }
                 S::MapBy { key, value, .. } => {
                     require(kind == Kind::Operations, "map_by requires operations")?;
                     require(
@@ -1181,7 +1213,7 @@ impl Validator<'_> {
                             "map_by key must produce exactly one string",
                         )?;
                         self.expression(value, Kind::Operations, names, budget)?;
-                        kind = Kind::Map;
+                        kind = Kind::NativeMap;
                     }
                     N::StringAttr(_) => {
                         require(kind == Kind::Operations, "string_attr requires operations")?;
@@ -1207,7 +1239,10 @@ impl Validator<'_> {
                     require(kind == Kind::Operations, "format requires operations")?
                 }
                 S::Markdown { .. } => require(
-                    matches!(kind, Kind::Map | Kind::Array | Kind::Strings | Kind::Count),
+                    matches!(
+                        kind,
+                        Kind::Map | Kind::NativeMap | Kind::Array | Kind::Strings | Kind::Count
+                    ),
                     "markdown requires values, a count, or a map of scalars or maps of scalars",
                 )?,
                 S::Print { parts, .. } => {

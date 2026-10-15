@@ -84,6 +84,10 @@ def test_nested_queries_maps_ordering_and_relative_input():
     selections = doc.query(scopes.map_by(key, input().children()))
     assert_type(selections, dict[str, list[zirium.SemanticOperation]])
     assert selections["first"][0].name == "test.seed"
+    types = doc.query(scopes.map_by(key, input().children().result_types()))
+    assert types["first"][0].spelling == "i32"
+    attributes = doc.query(scopes.map_by(key, input().attributes("sym_name")))
+    assert attributes["second"][0].spelling == '"second"'
     assert doc.query(
         ops().where_exists(input().users().filter(op("test.add"))).names()
     ) == ["test.seed"]

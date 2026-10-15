@@ -232,6 +232,17 @@ fn nested_queries_distinguish_relative_input_from_the_document() {
         document.operation_name(selections["first"][0]),
         Some("test.seed")
     );
+    let types = document
+        .query(&scopes.map_by(&key, &input().children().result_types()))
+        .unwrap();
+    assert_eq!(document.type_spelling(types["first"][0]), Some("i32"));
+    let attributes = document
+        .query(&scopes.map_by(&key, &input().attributes("sym_name")))
+        .unwrap();
+    assert_eq!(
+        document.attribute_spelling_value(attributes["second"][0]),
+        Some("\"second\"")
+    );
     let selected = document
         .query(
             &ops()
@@ -3355,4 +3366,78 @@ fn prepared_ordering_selector_keeps_parameter_and_saved_outer_input() {
             "[\n  \"test.a\",\n  \"test.z\"\n]\n".into()
         )]
     );
+}
+
+#[test]
+fn prepared_map_selectors_keep_parameters_saved_inputs_and_native_values() {
+    let mut document = document_from(
+        r#"module {
+        "test.z"() {sym_name = "z"} : () -> ()
+        "test.a"() {sym_name = "a"} : () -> ()
+    }"#,
+    );
+    let source = r#"fn summary(root: Operation, needle: string) -> record {a: int, z: int} {
+        let saved = root;
+        direct_children(root) | map_by(attr("sym_name"), (filter(op(needle)) union saved) | count)
+    }
+    let selected_root = filter(op("builtin.module")); report summary(selected_root, "test.z") | json"#;
+    let mut outputs = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        outputs,
+        [QueryOutput::Json("{\n  \"a\": 1,\n  \"z\": 2\n}\n".into())]
+    );
+
+    let source = r#"fn selected(root: Operation) -> record {a: Operation, z: Operation} {
+        direct_children(root) | map_by(attr("sym_name"), input)
+    }
+    let selected_root = filter(op("builtin.module")); selected(selected_root)"#;
+    let mut result = None;
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            result = Some(value);
+            Ok(())
+        })
+        .unwrap();
+    let result = result.unwrap();
+    let mut value = &result;
+    while let QueryOutput::Native(zirium::query::NativeValue::Retained(retained)) = value {
+        value = retained;
+    }
+    let QueryOutput::Native(zirium::query::NativeValue::Map(entries)) = value else {
+        panic!("native map")
+    };
+    let QueryOutput::Operations(operations) = &entries["z"] else {
+        panic!("native operations")
+    };
+    assert_eq!(document.operation_name(operations[0]), Some("test.z"));
+
+    let source = r#"fn duplicate(root: Operation, needle: string) -> int {
+        direct_children(root) | map_by(parent | names, filter(op(needle)) | check(1)) | count
+    }
+    let selected_root = filter(op("builtin.module")); duplicate(selected_root, "test.z")"#;
+    let error = Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(error.to_string().contains("duplicate key"), "{error}");
+    assert!(error.range().is_some());
+
+    let source = r#"fn invalid(root: Operation) -> int {
+        direct_children(root) | filter(false) | map_by(children, count) | count
+    }
+    let selected_root = filter(op("builtin.module")); invalid(selected_root)"#;
+    let error = Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(error.to_string().contains("exactly one string"), "{error}");
+    assert!(error.range().is_some());
 }

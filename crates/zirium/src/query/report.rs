@@ -53,25 +53,7 @@ impl OrderingSelector {
         }
     }
     pub(super) fn from_operand(expression: Operand) -> Self {
-        let range = expression.range.clone();
-        // The existing function runner projects scalar native results. Retain
-        // the key in a native field so Count keeps its full unsigned range.
-        let query_range = crate::source::TextRange::new(range.start as u32, range.end as u32)
-            .expect("ordered selector range");
-        let expression = Located::new(
-            X::Sequence {
-                input: Box::new(expression),
-                steps: vec![Located::new(
-                    Step::Stage(model::Stage::RetainOrderingKey { range: query_range }),
-                    range.clone(),
-                )],
-            },
-            range.clone(),
-        );
-        Self::Query(comprehension::ParsedComprehension::new(Located::new(
-            zirql::ValueExpressionKind::NativeValue(Box::new(expression)),
-            range,
-        )))
+        Self::Query(native_selector(expression))
     }
     pub(super) fn is_map_value(&self) -> bool {
         matches!(self, Self::MapValue(_))
@@ -97,6 +79,135 @@ impl OrderingSelector {
         };
         operand_is_read_only(query)
     }
+}
+/// Retain the selector's native result through the active argument runner.
+pub(super) fn native_selector(expression: Operand) -> comprehension::ParsedComprehension {
+    let range = expression.range.clone();
+    let query_range = crate::source::TextRange::new(range.start as u32, range.end as u32)
+        .expect("ordered selector range");
+    let expression = Located::new(
+        X::Sequence {
+            input: Box::new(expression),
+            steps: vec![Located::new(
+                Step::Stage(model::Stage::RetainSelector { range: query_range }),
+                range.clone(),
+            )],
+        },
+        range.clone(),
+    );
+    comprehension::ParsedComprehension::new(Located::new(
+        zirql::ValueExpressionKind::NativeValue(Box::new(expression)),
+        range,
+    ))
+}
+fn map_operand(value: &comprehension::ParsedComprehension) -> &Operand {
+    let zirql::ValueExpressionKind::NativeValue(query) = &value.expression.value else {
+        unreachable!("map selector retains a native query")
+    };
+    query
+}
+pub(super) fn map_is_read_only(
+    mapping: &zirql::NativeMap<comprehension::ParsedComprehension>,
+) -> bool {
+    operand_is_read_only(map_operand(&mapping.key))
+        && operand_is_read_only(map_operand(&mapping.value))
+}
+fn map_result(
+    value: QueryOutput,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    let value = functions::owned(value, budget, range)?;
+    let QueryOutput::Native(NativeValue::Capture(mut record)) = value else {
+        unreachable!("map selector retains one native field")
+    };
+    Ok(record.fields.pop().expect("map selector field").1)
+}
+fn map_keys(
+    value: QueryOutput,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<Option<Vec<String>>, EvaluationError> {
+    Ok(match functions::owned(value, budget, range)? {
+        QueryOutput::Values(keys) => Some(keys),
+        QueryOutput::Native(NativeValue::String(key)) => {
+            program::charge_results(budget, 1, range)?;
+            Some(vec![key])
+        }
+        _ => None,
+    })
+}
+fn evaluate_map_selector(
+    selector: &comprehension::ParsedComprehension,
+    input: QueryOutput,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    let value = if let Some(session) = context.functions {
+        session.run(&selector.expression, context, &input, bindings, budget)?
+    } else {
+        zirql::evaluate_expression(
+            map_operand(selector),
+            &ReportHost,
+            input,
+            context,
+            bindings,
+            budget,
+        )
+        .map_err(program::evaluation_error)?
+    };
+    map_result(value, budget, range)
+}
+pub(super) fn evaluate_map(
+    mapping: &zirql::NativeMap<comprehension::ParsedComprehension>,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    input: QueryOutput,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    let input = functions::owned(input, budget, range)?;
+    let selected = take_operations(input, "map_by")?;
+    let mut items = 0usize;
+    let entries = zirql::map_native_by(
+        selected,
+        context,
+        budget,
+        Location::Query(range.clone()),
+        |operation, context, budget| {
+            program::charge_results(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            let key = evaluate_map_selector(
+                &mapping.key,
+                QueryOutput::Operations(vec![*operation]),
+                context,
+                bindings,
+                budget,
+                range,
+            )
+            .map_err(zirql::EvaluationError::Host)?;
+            map_keys(key, budget, range).map_err(zirql::EvaluationError::Host)
+        },
+        |operation, context, budget| {
+            program::charge_results(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
+            let value = evaluate_map_selector(
+                &mapping.value,
+                QueryOutput::Operations(vec![operation]),
+                context,
+                bindings,
+                budget,
+                range,
+            )
+            .map_err(zirql::EvaluationError::Host)?;
+            items = items.saturating_add(output_size(&value).saturating_add(1));
+            check_items(budget, items).map_err(zirql::EvaluationError::Host)?;
+            charge(budget, output_size(&value)).map_err(zirql::EvaluationError::Host)?;
+            Ok(value)
+        },
+    )
+    .map_err(program::evaluation_error)?;
+    Ok(QueryOutput::Native(NativeValue::Map(entries)))
 }
 fn operand_is_read_only(query: &Operand) -> bool {
     let mut pending = vec![query];
@@ -362,9 +473,8 @@ pub(super) fn output_kind(
         }
         QueryOutput::Values(_) => K::Strings,
         QueryOutput::Count(_) => K::Count,
-        QueryOutput::Map(_)
-        | QueryOutput::RankedMap(_)
-        | QueryOutput::Native(NativeValue::Map(_)) => K::Map,
+        QueryOutput::Map(_) | QueryOutput::RankedMap(_) => K::Map,
+        QueryOutput::Native(NativeValue::Map(_)) => K::NativeMap,
         QueryOutput::Array(_) => K::Array,
         QueryOutput::Native(NativeValue::String(_)) => K::String,
         QueryOutput::Native(NativeValue::Types(_)) => K::Types,
@@ -524,6 +634,18 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 }
             }
         }
+        if let model::Stage::NativeMap { mapping, .. } = stage {
+            let mut values = Vec::new();
+            budget.charge_results(2, Location::Query(range.clone()))?;
+            for selector in [&mapping.key, &mapping.value] {
+                budget.charge(
+                    operand_size(map_operand(selector)),
+                    Location::Query(range.clone()),
+                )?;
+                values.push((&*selector.expression, program::Kind::Operations));
+            }
+            return Ok(values);
+        }
         if let Some((selector, _)) = ordering_selector(stage)
             && let Some(value) = selector.body()
         {
@@ -595,6 +717,61 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        if let model::Stage::NativeMap { mapping, .. } = stage {
+            let input =
+                functions::owned(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+            let input = match input {
+                QueryOutput::Native(NativeValue::OperationSequence(operations)) => {
+                    QueryOutput::Operations(operations)
+                }
+                input => input,
+            };
+            let selected =
+                take_operations(input, "map_by").map_err(zirql::EvaluationError::Host)?;
+            let mut items = 0usize;
+            let entries = zirql::map_native_by(
+                selected,
+                arguments,
+                budget,
+                Location::Query(range.clone()),
+                |operation, arguments, budget| {
+                    program::charge_results(budget, 1, range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let value = arguments.evaluate_native(
+                        &mapping.key.expression,
+                        QueryOutput::Operations(vec![*operation]),
+                        budget,
+                    )?;
+                    let value = map_result(
+                        QueryOutput::Native(NativeValue::Retained(value.into_shared())),
+                        budget,
+                        range,
+                    )
+                    .map_err(zirql::EvaluationError::Host)?;
+                    map_keys(value, budget, range).map_err(zirql::EvaluationError::Host)
+                },
+                |operation, arguments, budget| {
+                    program::charge_results(budget, 1, range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let value = arguments.evaluate_native(
+                        &mapping.value.expression,
+                        QueryOutput::Operations(vec![operation]),
+                        budget,
+                    )?;
+                    let value = map_result(
+                        QueryOutput::Native(NativeValue::Retained(value.into_shared())),
+                        budget,
+                        range,
+                    )
+                    .map_err(zirql::EvaluationError::Host)?;
+                    items = items.saturating_add(output_size(&value).saturating_add(1));
+                    check_items(budget, items).map_err(zirql::EvaluationError::Host)?;
+                    charge(budget, output_size(&value)).map_err(zirql::EvaluationError::Host)?;
+                    Ok(value)
+                },
+            )?;
+            return Ok(QueryOutput::Native(NativeValue::Map(entries)));
+        }
         if let Some((selector, order)) = ordering_selector(stage)
             && let Some(value) = selector.body()
         {
@@ -763,7 +940,8 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         use program::Kind as K;
         budget.charge(1, Location::Query(range.clone()))?;
         Ok(match kind {
-            K::Computational(_)
+            K::NativeMap
+            | K::Computational(_)
             | K::Tuple(_)
             | K::Sequence(_)
             | K::Operations
@@ -1027,6 +1205,8 @@ fn operand_size(query: &Operand) -> usize {
 fn stage_size(stage: &model::Stage) -> usize {
     use model::{Stage as S, StructuredStage as T};
     let payload = match stage {
+        S::NativeMap { mapping, .. } => operand_size(map_operand(&mapping.key))
+            .saturating_add(operand_size(map_operand(&mapping.value))),
         S::Binding { name, .. }
         | S::Attr { name, .. }
         | S::RemoveAttr { name, .. }
@@ -1243,6 +1423,11 @@ pub(super) fn push_expressions<'a>(
     pending: &mut Vec<&'a model::Expression>,
 ) {
     match stage {
+        model::Stage::NativeMap { mapping, .. } => {
+            visit_value(&mapping.key.expression, pending);
+            visit_value(&mapping.value.expression, pending);
+        }
+
         model::Stage::SortBy { selector, .. }
         | model::Stage::MinBy { selector, .. }
         | model::Stage::MaxBy { selector, .. }
@@ -1616,6 +1801,9 @@ pub(super) fn requires_session(expression: &model::Expression) -> bool {
         .any(stage_requires_session)
 }
 fn stage_requires_session(stage: &model::Stage) -> bool {
+    if matches!(stage, model::Stage::NativeMap { .. }) {
+        return true;
+    }
     if ordering_selector(stage).is_some_and(|(selector, _)| selector.body().is_some()) {
         return true;
     }
