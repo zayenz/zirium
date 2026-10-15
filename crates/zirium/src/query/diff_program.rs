@@ -8,10 +8,7 @@ use crate::{
     diff::{ChangeField, ChangeId, ChangeKind, Diff, DiffOperation, DiffSide},
     semantic::{AttributeValue, OperationId},
 };
-use std::{
-    collections::{BTreeMap, HashSet},
-    ops::Range,
-};
+use std::{collections::BTreeMap, ops::Range};
 use zirql::{
     Bindings, Budget, ExpressionKind, ExpressionStep, Host, Located, NativeInput, ProgramHost,
     Stage, Truth,
@@ -205,12 +202,7 @@ fn dispose_expression(expression: Expression) {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) enum SetOperator {
-    Union,
-    Intersect,
-    Except,
-}
+pub(super) use zirql::NativeSetOperator as SetOperator;
 
 #[derive(Clone, Debug)]
 pub(super) enum Leaf {
@@ -1221,60 +1213,67 @@ fn combine(
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<DiffProgramOutput, EvaluationError> {
-    let (left_kind, left) = rows(left)?;
-    let (right_kind, right) = rows(right)?;
-    if left_kind != right_kind {
-        return Err(failure(
-            if matches!(
-                (left_kind, right_kind),
-                (Kind::Operations(_), Kind::Operations(_))
-            ) {
-                "set operations require operation selections from the same diff side"
-            } else {
-                "set operations require selections of the same kind"
-            },
+    let location = zirql::Location::Query(range.clone());
+    match (left, right) {
+        (DiffProgramOutput::Changes(left), DiffProgramOutput::Changes(right)) => {
+            for id in left.iter().chain(&right) {
+                charge(budget, 1, range)?;
+                diff.change(*id).map_err(diff_error)?;
+            }
+            zirql::combine_native_set(
+                operator,
+                left.into_iter(),
+                right.into_iter(),
+                diff.change_ids().map(Ok),
+                budget,
+                location,
+                |_, _| Ok(()),
+            )
+            .map(DiffProgramOutput::Changes)
+            .map_err(program::evaluation_error)
+        }
+        (
+            DiffProgramOutput::Operations(side, left),
+            DiffProgramOutput::Operations(right_side, right),
+        ) => {
+            if side != right_side {
+                return Err(failure(
+                    "set operations require operation selections from the same diff side",
+                    range,
+                ));
+            }
+            for operation in left.iter().chain(&right) {
+                charge(budget, 1, range)?;
+                diff.operation_id(*operation).map_err(diff_error)?;
+            }
+            let selected = zirql::combine_native_set(
+                operator,
+                left.into_iter(),
+                right.into_iter(),
+                diff.document(side).operations().map(|id| {
+                    diff.scoped_operation(side, id)
+                        .map_err(|error| zirql::EvaluationError::Host(diff_error(error)))
+                }),
+                budget,
+                location,
+                |_, _| Ok(()),
+            )
+            .map_err(program::evaluation_error)?;
+            Ok(DiffProgramOutput::Operations(side, selected))
+        }
+        (
+            DiffProgramOutput::Changes(_)
+            | DiffProgramOutput::Operations(_, _)
+            | DiffProgramOutput::Strings(_),
+            DiffProgramOutput::Changes(_)
+            | DiffProgramOutput::Operations(_, _)
+            | DiffProgramOutput::Strings(_),
+        ) => Err(failure(
+            "set operations require selections of the same kind",
             range,
-        ));
+        )),
+        _ => Err(failure("stage requires a stream", range)),
     }
-    for row in left.iter().chain(&right) {
-        validate_row(diff, row)?;
-    }
-    charge(budget, left.len().saturating_add(right.len()), range)?;
-    let left: HashSet<_> = left.into_iter().collect();
-    let right: HashSet<_> = right.into_iter().collect();
-    let mut selected = Vec::new();
-    let mut append = |row: Row| -> Result<(), EvaluationError> {
-        charge(budget, 1, range)?;
-        if match operator {
-            SetOperator::Union => left.contains(&row) || right.contains(&row),
-            SetOperator::Intersect => left.contains(&row) && right.contains(&row),
-            SetOperator::Except => left.contains(&row) && !right.contains(&row),
-        } {
-            push(&mut selected, row, budget, range)?;
-        }
-        Ok(())
-    };
-    match left_kind {
-        Kind::Changes => {
-            for id in diff.change_ids() {
-                append(Row::Change(id))?;
-            }
-        }
-        Kind::Operations(side) => {
-            for id in diff.document(side).operations() {
-                append(Row::Operation(
-                    diff.scoped_operation(side, id).map_err(diff_error)?,
-                ))?;
-            }
-        }
-        _ => {
-            return Err(failure(
-                "set operations require selections of the same kind",
-                range,
-            ));
-        }
-    }
-    Ok(from_rows(left_kind, selected))
 }
 
 fn order(

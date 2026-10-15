@@ -3,12 +3,7 @@
 use crate::{formatter::FormatOptions, source::TextRange};
 
 /// Set operators have equal precedence and associate left to right.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SetOperator {
-    Union,
-    Intersect,
-    Except,
-}
+pub use zirql::NativeSetOperator as SetOperator;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {

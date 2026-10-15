@@ -81,6 +81,10 @@ fn structured_and_textual_queries_agree_on_stream_and_set_semantics() {
             r#"filter(op("test.seed")) | (users union filter(true))"#,
         ),
         (
+            seed.users().intersect(&seed.users()),
+            r#"filter(op("test.seed")) | (users intersect users)"#,
+        ),
+        (
             seed.users().difference(&seed.users()).union(&seed).users(),
             r#"filter(op("test.seed")) | ((users except users) union filter(true)) | users"#,
         ),
@@ -103,6 +107,63 @@ fn structured_and_textual_queries_agree_on_stream_and_set_semantics() {
     }
     assert_eq!(document.query(&seed.users().count()).unwrap(), 2);
     assert_eq!(document.query(&seed.users().unique().count()).unwrap(), 1);
+    let names = seed.users().names();
+    for (expression, source, expected) in [
+        (
+            names.union(&seed.names()),
+            r#"filter(op("test.seed")) | (users | names union names)"#,
+            vec!["test.add", "test.seed"],
+        ),
+        (
+            names.intersect(&names),
+            r#"filter(op("test.seed")) | (users | names intersect users | names)"#,
+            vec!["test.add"],
+        ),
+        (
+            names.difference(&seed.names()),
+            r#"filter(op("test.seed")) | (users | names except names)"#,
+            vec!["test.add"],
+        ),
+    ] {
+        assert_eq!(document.query(&expression).unwrap(), expected);
+        let mut actual = None;
+        Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, output| {
+                actual = Some(output);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            actual,
+            Some(QueryOutput::Values(
+                expected.into_iter().map(str::to_owned).collect()
+            ))
+        );
+    }
+    let source =
+        r#"filter(op("test.seed")) union filter(op("test.add")) intersect filter(op("test.add"))"#;
+    let mut actual = None;
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, output| {
+            actual = Some(output);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        actual,
+        Some(QueryOutput::Operations(
+            document.query(&seed.users().unique()).unwrap()
+        ))
+    );
+    let source = "(filter(false)) union (filter(false) | names)";
+    let error = Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(error.to_string().contains("same kind"));
+    assert!(error.range().is_some());
 }
 
 #[test]

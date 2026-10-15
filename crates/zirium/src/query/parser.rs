@@ -832,11 +832,8 @@ impl Parser<'_, '_> {
         let mut rest = Vec::new();
         loop {
             self.skip_trivia();
-            let operator = match self.current_text() {
-                "union" => SetOperator::Union,
-                "intersect" => SetOperator::Intersect,
-                "except" => SetOperator::Except,
-                _ => break,
+            let Some(operator) = SetOperator::from_keyword(self.current_text()) else {
+                break;
             };
             self.bump();
             rest.push((operator, self.pipeline(depth)?));
@@ -2340,12 +2337,7 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         })
     }
     fn set_operator(&self, word: &str) -> Option<SetOperator> {
-        match word {
-            "union" => Some(SetOperator::Union),
-            "intersect" => Some(SetOperator::Intersect),
-            "except" => Some(SetOperator::Except),
-            _ => None,
-        }
+        SetOperator::from_keyword(word)
     }
 }
 fn lower_shared_predicate(predicate: zirql::Predicate<Predicate>) -> Predicate {

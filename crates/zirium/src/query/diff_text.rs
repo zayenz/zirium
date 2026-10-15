@@ -450,12 +450,7 @@ fn split_diff_sets(source: &str) -> Result<Vec<(Option<DiffSetOperator>, &str)>,
                 {
                     cursor += 1;
                 }
-                let next = match &source[word_start..cursor] {
-                    "union" => Some(DiffSetOperator::Union),
-                    "intersect" => Some(DiffSetOperator::Intersect),
-                    "except" => Some(DiffSetOperator::Except),
-                    _ => None,
-                };
+                let next = DiffSetOperator::from_keyword(&source[word_start..cursor]);
                 if let Some(next) = next {
                     let pipeline = source[start..word_start].trim();
                     if pipeline.is_empty() {

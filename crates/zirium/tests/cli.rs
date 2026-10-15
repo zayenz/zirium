@@ -1103,6 +1103,20 @@ fn set_queries_are_ordered_and_composable() {
     assert!(intersect.status.success());
     assert_eq!(String::from_utf8(intersect.stdout).unwrap(), "1\n");
 
+    let strings = run_stdin(
+        r#"(filter(has_attr("group")) | names | reverse union filter(op("test.c")) | names) | json"#,
+        input,
+    );
+    assert!(
+        strings.status.success(),
+        "{}",
+        String::from_utf8_lossy(&strings.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&strings.stdout).unwrap(),
+        serde_json::json!(["test.b", "test.a", "test.c"])
+    );
+
     for query in [
         r#"(filter(has_attr("group")) except filter(string_attr_eq("group", "keep"))) | count"#,
         r#"(filter(op("missing")) union filter(op("missing"))) | count"#,

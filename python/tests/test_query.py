@@ -34,6 +34,10 @@ def test_navigation_composition_and_native_types():
     assert doc.query(seed.users().union(seed).names()) == ["test.seed", "test.add"]
     assert doc.query(seed.users().difference(seed.users()).count()) == 0
     assert doc.query(seed.users().intersect(ops().filter(op("test.add"))).count()) == 1
+    names = seed.users().names()
+    assert doc.query(names.union(seed.names())) == ["test.add", "test.seed"]
+    assert doc.query(names.intersect(names)) == ["test.add"]
+    assert doc.query(names.difference(seed.names())) == ["test.add"]
     assert doc.query(seed.fixpoint(input().union(input().users())).names()) == [
         "test.seed",
         "test.add",

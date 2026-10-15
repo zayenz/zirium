@@ -1381,7 +1381,7 @@ pub(super) fn visit_value<'a>(
         }
     };
     match &value.value {
-        K::Literal(_) | K::Name(_) | K::IdentitySet { .. } => {}
+        K::Literal(_) | K::CurrentInput | K::Name(_) | K::IdentitySet { .. } => {}
         K::NativeQuery(query) | K::NativeValue(query) => visit_operand(query, pending),
         K::Block { bindings, value } => {
             for (_, source) in bindings {
@@ -1428,6 +1428,7 @@ pub(super) fn visit_value<'a>(
         | K::TupleAccess { value, .. }
         | K::GroupBy { rows: value, .. }
         | K::Reduce { array: value, .. }
+        | K::FilterStartsWith { array: value, .. }
         | K::Sort { array: value, .. }
         | K::Extremum { array: value, .. } => visit_value(value, pending),
         K::Array(values) | K::Tuple(values) | K::Set(values) => {
@@ -1710,7 +1711,7 @@ fn value_requires_session_with_names(
             | K::PushBackAll { .. }
             | K::IdentitySet { .. }
             | K::Insert { .. } => return true,
-            K::Literal(_) => {}
+            K::Literal(_) | K::CurrentInput => {}
             K::Name(name) => {
                 if matches!(
                     names.and_then(|names| names.get(name)),
@@ -1742,6 +1743,7 @@ fn value_requires_session_with_names(
             | K::TupleAccess { value: v, .. }
             | K::GroupBy { rows: v, .. }
             | K::Reduce { array: v, .. }
+            | K::FilterStartsWith { array: v, .. }
             | K::Sort { array: v, .. }
             | K::Extremum { array: v, .. } => pending.push(v),
             K::Array(values) | K::Tuple(values) | K::Set(values) => pending.extend(values),

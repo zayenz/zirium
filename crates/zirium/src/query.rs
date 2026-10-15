@@ -1743,27 +1743,53 @@ fn evaluate_set_operator(
     operator: model::SetOperator,
     left: QueryOutput,
     right: QueryOutput,
+    budget: &mut zirql::Budget,
+    range: &std::ops::Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
+    let location = zirql::Location::Query(range.clone());
     match (left, right) {
         (QueryOutput::Operations(left), QueryOutput::Operations(right)) => {
-            let mut left = left.into_iter().collect::<HashSet<_>>();
-            let right = right.into_iter().collect::<HashSet<_>>();
-            match operator {
-                model::SetOperator::Union => left.extend(right),
-                model::SetOperator::Intersect => left.retain(|operation| right.contains(operation)),
-                model::SetOperator::Except => left.retain(|operation| !right.contains(operation)),
+            for id in left.iter().chain(&right) {
+                budget.charge(1, location.clone()).map_err(core_error)?;
+                document
+                    .check_operation(*id)
+                    .map_err(|error| EvaluationError::new(error.to_string()))?;
             }
-            Ok(QueryOutput::Operations(source_ordered(document, left)))
+            zirql::combine_native_set(
+                operator,
+                left.into_iter(),
+                right.into_iter(),
+                document.operations().map(Ok),
+                budget,
+                location,
+                |_, _| Ok(()),
+            )
+            .map(QueryOutput::Operations)
+            .map_err(program::evaluation_error)
         }
-        (QueryOutput::Values(mut left), QueryOutput::Values(right)) => {
-            let right_set = right.iter().cloned().collect::<HashSet<_>>();
-            match operator {
-                model::SetOperator::Union => left.extend(right),
-                model::SetOperator::Intersect => left.retain(|value| right_set.contains(value)),
-                model::SetOperator::Except => left.retain(|value| !right_set.contains(value)),
+        (QueryOutput::Values(left), QueryOutput::Values(right)) => {
+            let selected = zirql::combine_native_set(
+                operator,
+                left.iter().map(String::as_str),
+                right.iter().map(String::as_str),
+                left.iter().chain(&right).map(|text| Ok(text.as_str())),
+                budget,
+                location.clone(),
+                |text, budget| Ok(budget.charge(text.len(), location.clone())?),
+            )
+            .map_err(program::evaluation_error)?;
+            budget
+                .charge(selected.len() + 1, location.clone())
+                .map_err(core_error)?;
+            program::charge_results(budget, selected.len() + 1, range)?;
+            let mut values = Vec::with_capacity(selected.len());
+            for text in selected {
+                budget
+                    .charge(text.len(), location.clone())
+                    .map_err(core_error)?;
+                values.push(text.to_owned());
             }
-            retain_unique(&mut left);
-            Ok(QueryOutput::Values(left))
+            Ok(QueryOutput::Values(values))
         }
         (QueryOutput::Operations(_), QueryOutput::Values(_))
         | (QueryOutput::Values(_), QueryOutput::Operations(_)) => Err(EvaluationError::new(
@@ -1773,11 +1799,6 @@ fn evaluate_set_operator(
             "set operands require operation or value streams",
         )),
     }
-}
-
-fn retain_unique<T: Clone + Eq + std::hash::Hash>(values: &mut Vec<T>) {
-    let mut seen = HashSet::new();
-    values.retain(|value| seen.insert(value.clone()));
 }
 
 fn evaluate_defs(

@@ -162,6 +162,37 @@ fn text_programs_keep_native_side_results_and_the_typed_projection_contract() {
         )]
     );
     assert_eq!(typed.side(), DiffSide::After);
+    let selected = diff.query(&changes().after()).unwrap();
+    for (source, expected) in [
+        (
+            "after | reverse union after",
+            selected.operations().to_vec(),
+        ),
+        (
+            "after | reverse intersect after",
+            selected.operations().to_vec(),
+        ),
+        ("after except after", vec![]),
+    ] {
+        let mut actual = Vec::new();
+        DiffProgram::parse(source)
+            .unwrap()
+            .evaluate(
+                &diff,
+                ("before", "after"),
+                EvaluationLimits::default(),
+                EvaluationOptions::default(),
+                |_, value, _| {
+                    actual.push(value);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            actual,
+            [DiffProgramOutput::Operations(DiffSide::After, expected)]
+        );
+    }
     assert_eq!(
         diff.query(&changes().names().unique()).unwrap(),
         ["arith.constant"]

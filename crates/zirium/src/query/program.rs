@@ -658,20 +658,8 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
         budget: &mut zirql::Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
-        // Set construction retains temporary identity sets as well as its result.
-        charge_results(budget, 3 * (output_len(&left) + output_len(&right)), range)
-            .map_err(zirql::EvaluationError::Host)?;
-        charge_bytes(
-            budget,
-            copied_bytes(&left) + 2 * copied_bytes(&right),
-            range,
-        )
-        .map_err(zirql::EvaluationError::Host)?;
-        let result = evaluate_set_operator(context.document, *operator, left, right)
-            .map_err(zirql::EvaluationError::Host)?;
-        check_items(budget, output_len(&result))
-            .map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))?;
-        Ok(result)
+        evaluate_set_operator(context.document, *operator, left, right, budget, range)
+            .map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))
     }
     fn construct_record(
         &self,

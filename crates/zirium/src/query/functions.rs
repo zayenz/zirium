@@ -1281,6 +1281,7 @@ fn normalize_with(
         }
         match &mut value.value {
             K::Literal(_)
+            | K::CurrentInput
             | K::Name(_)
             | K::NativeQuery(_)
             | K::NativeValue(_)
@@ -1324,6 +1325,7 @@ fn normalize_with(
             | K::TupleAccess { value: v, .. }
             | K::GroupBy { rows: v, .. }
             | K::Reduce { array: v, .. }
+            | K::FilterStartsWith { array: v, .. }
             | K::Sort { array: v, .. }
             | K::Extremum { array: v, .. } => pending.push(v),
             K::Record(fields) => pending.extend(fields.iter_mut().map(|(_, v)| v)),

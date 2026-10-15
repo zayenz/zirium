@@ -299,6 +299,30 @@ fn diff_sets_preserve_kind_and_reject_cross_side_empty_selections() {
         .unwrap();
     assert!(output.status.success());
     assert_eq!(output.stdout, b"test.a\ntest.b\n");
+    for (query, expected) in [
+        (
+            "(after | reverse intersect after) | names",
+            &b"test.a\ntest.b\n"[..],
+        ),
+        (
+            r#"(after | reverse except after | filter(op("test.a"))) | names"#,
+            &b"test.b\n"[..],
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args(["--diff"])
+            .arg(&before)
+            .arg(&after)
+            .arg(query)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, expected);
+    }
 }
 
 #[test]
