@@ -1017,23 +1017,27 @@ pub(super) fn evaluate_structured(
             })?;
             QueryOutput::Native(NativeValue::String(value))
         }
-        StructuredStage::WhereExists(query) => {
-            let mut selected = Vec::new();
-            for operation in take_operations(current, "where_exists")? {
-                let result = evaluate_expression(
-                    query,
-                    context,
-                    QueryOutput::Operations(vec![operation]),
-                    bindings,
-                    budget,
-                )?;
-                if !operations(&result, "where_exists")?.is_empty() {
-                    program::charge_results(budget, 1, &(0..0))?;
-                    selected.push(operation);
-                }
-            }
-            QueryOutput::Operations(selected)
-        }
+        StructuredStage::WhereExists(query) => QueryOutput::Operations(
+            zirql::filter_native_exists(
+                take_operations(current, "where_exists")?,
+                budget,
+                zirql::Location::Query(0..0),
+                |operation, budget| {
+                    program::charge_results(budget, 1, &(0..0))
+                        .map_err(zirql::EvaluationError::Host)?;
+                    let result = evaluate_expression(
+                        query,
+                        context,
+                        QueryOutput::Operations(vec![*operation]),
+                        bindings,
+                        budget,
+                    )
+                    .map_err(zirql::EvaluationError::Host)?;
+                    take_operations(result, "where_exists").map_err(zirql::EvaluationError::Host)
+                },
+            )
+            .map_err(program::evaluation_error)?,
+        ),
         StructuredStage::MapBy { key, value } => {
             program::charge_results(budget, 1, &(0..0))?;
             let mut entries = BTreeMap::new();

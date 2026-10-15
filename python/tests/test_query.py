@@ -83,6 +83,11 @@ def test_nested_queries_maps_ordering_and_relative_input():
     assert doc.query(
         ops().where_exists(input().users().filter(op("test.add"))).names()
     ) == ["test.seed"]
+    assert doc.query(ops().where_exists(input().filter(always(False)))) == []
+    with pytest.raises(ValueError, match="exactly one"):
+        doc.query(
+            ops().where_exists(input().sort_by(input().string_attr("missing").one()))
+        )
     assert doc.query(
         scopes.sort_by(input().children().count()).string_attr("sym_name")
     ) == ["second", "first"]

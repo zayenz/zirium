@@ -179,6 +179,17 @@ fn nested_queries_distinguish_relative_input_from_the_document() {
         )
         .unwrap();
     assert_eq!(selected, ["test.seed"]);
+    assert!(
+        document
+            .query(&ops().where_exists(&input().filter(always(false))))
+            .unwrap()
+            .is_empty()
+    );
+    let error = document
+        .query(&ops().where_exists(&input().sort_by(&input().string_attr("missing").one())))
+        .unwrap_err();
+    assert!(error.to_string().contains("exactly one"));
+
     assert_eq!(
         document
             .query(
