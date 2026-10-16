@@ -130,8 +130,8 @@ Bindings make a longer query easier to read and let several parts reuse the same
 selection. Each binding is evaluated once for each input document:
 
 ```zirql
-adds = filter(op("stablehlo.add"));
-matmuls = filter(op("stablehlo.dot_general"));
+let adds = filter(op("stablehlo.add"));
+let matmuls = filter(op("stablehlo.dot_general"));
 
 (adds union matmuls) | names | tally | json
 ```
@@ -153,9 +153,53 @@ and aggregates retain their saved values. Bindings cannot edit or emit; put
 those stages in a query statement. Use `union` to combine saved selections;
 `or` combines predicates inside `filter`.
 
+## Calculate with shared values
+
+Bindings can also hold ordinary values. Save this program as `counts.zirql`:
+
+```zirql title="counts.zirql"
+let samples = [
+  {"label": "pear", "count": 2},
+  {"label": "apple", "count": 1},
+  {"label": "ash", "count": 2},
+  {"label": "birch", "count": 3}
+];
+let selected = [row for row in samples if row.count > 1];
+sort_by({row.label: row.count for row in selected}, value, descending=true)
+```
+
+Run it against the small example document:
+
+```sh
+zirium -f counts.zirql examples/cli/function-report.mlir
+```
+
+```json
+{"birch":3,"pear":2,"ash":2}
+```
+
+`selected` contains pear, ash and birch in their input order. The dictionary uses
+their labels as string keys and their counts as values. `descending=true` puts
+the largest count first. Pear and ash both have count 2, so their incoming order
+stays pear, then ash. Sorting retains the dictionary kind. Zirium prints this
+JSON with indentation.
+
+This program calculates only from `samples`; it does not inspect the document.
+The [Zirql language guide](https://zayenz.se/zirql/guides/language-reference/)
+uses the same report in its [CSV application](https://zayenz.se/zirql/guides/csv/).
+[Zincite](https://zayenz.se/zincite/guides/queries/) uses its MiniZinc array
+comprehension spelling and retains integer type tags in JSON. Bindings,
+filtering, dictionary keys, sorting and tie order follow the same rules.
+
+Use native selections to supply values from MLIR. For example,
+`filter(op("func.func")) | attr("sym_name")` projects names, while a saved
+operation selection retains its identities and source coordinates. The
+[projection section](#correlated-constructed-reports) constructs a report from those
+operations without a text or JSON conversion.
+
 ## Counting values and building maps
 
-`tally` counts how many times each value occurs and returns a map from strings
+`tally` counts how many times each value occurs and returns a dictionary from strings
 to counts. For example, `names | tally` counts operations by their full names.
 An empty value stream produces `{}`. Dictionaries print as JSON objects, with
 keys in first-occurrence order. `json` can also emit a map explicitly.
@@ -163,7 +207,7 @@ keys in first-occurrence order. `json` can also emit a map explicitly.
 To map function names to their number of matmuls:
 
 ```zirql
-matmuls = filter(op("stablehlo.dot_general"));
+let matmuls = filter(op("stablehlo.dot_general"));
 
 matmuls | root(op("func.func")) | attr("sym_name") | tally | json
 ```
@@ -176,7 +220,7 @@ without matmuls are absent. On `examples/cli/stablelm-decode.mlir`, this produce
 For a separate analysis of each function, use `map_by(key_query, value_query)`:
 
 ```zirql
-functions = filter(op("func.func"));
+let functions = filter(op("func.func"));
 
 functions
 | map_by(
@@ -243,9 +287,9 @@ bounds share the request's work and result limits.
 Object and array literals combine saved results into a larger report:
 
 ```zirql
-functions = filter(op("func.func"));
-n = functions | count;
-counts = functions
+let functions = filter(op("func.func"));
+let n = functions | count;
+let counts = functions
   | map_by(attr("sym_name"), children | subtree | names | tally);
 
 {
@@ -280,8 +324,8 @@ with `{` or `[`; scalars occur inside objects and arrays. Literals may be saved
 in bindings or embedded within one another:
 
 ```zirql
-totals = names | tally;
-report = {"totals": totals, "complete": true};
+let totals = names | tally;
+let report = {"totals": totals, "complete": true};
 [report, {"note": "Counts include container operations"}] | json
 ```
 
@@ -309,7 +353,7 @@ projected values. The filter is optional. For this complete input:
 this query projects operation names, constructs records, then emits JSON:
 
 ```zirql
-labels = names;
+let labels = names;
 [{"name": n, "label": "data:" ++ n} for n in labels] | json
 ```
 
@@ -326,7 +370,7 @@ Repeated `for` clauses can depend on earlier bindings. The rightmost generator
 varies fastest; each `if` filters its own clause before later clauses run:
 
 ```zirql
-labels = names;
+let labels = names;
 [{"name": n, "label": "data:" ++ s}
  for n in labels
  for s in [n, n ++ "!"] if s != "beta!"] | json
@@ -595,8 +639,8 @@ Use `markdown` to emit a table from a histogram or a map of histograms.
 Use `print("text")` for headings and explanatory text between results:
 
 ```zirql
-functions = filter(op("func.func"));
-n = functions | count;
+let functions = filter(op("func.func"));
+let n = functions | count;
 
 print("# Function operation report");
 print("");
@@ -718,7 +762,7 @@ interpolation error leaves CLI stdout empty, including earlier `print` output.
 Adding `reachable` includes supported dependencies and referenced bodies:
 
 ```zirql
-functions = filter(op("func.func"));
+let functions = filter(op("func.func"));
 
 functions
 | map_by(
