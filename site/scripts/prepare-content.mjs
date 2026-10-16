@@ -33,7 +33,7 @@ for (const name of guides) {
   });
   const target = resolve(output, `guides/${name}.md`);
   await mkdir(dirname(target), { recursive: true });
-  await writeFile(target, `---\ntitle: ${JSON.stringify(title[1])}\neditUrl: https://github.com/zayenz/zirium/edit/main/docs/${name}.md\n---\n${body}`);
+  await writeFile(target, `---\ntitle: ${JSON.stringify(title[1])}\neditUrl: false\n---\n${body}`);
 }
 
 await mkdir(resolve(site, 'public'), { recursive: true });
