@@ -540,50 +540,19 @@ pub(super) fn project(
                 .clone()),
         );
     }
-    if let Some(session) = context.functions {
-        let subjects = ReportHost
-            .subjects(input, context, budget, range)
-            .map_err(program::evaluation_error)?;
-        capture::slots::<V>(subjects.len(), budget, range)?;
-        program::charge_results(budget, subjects.len() + 1, range)?;
-        let mut rows = Vec::with_capacity(subjects.len());
-        for subject in subjects {
-            let relative = program::copy_value(&subject, budget, range)?;
-            let scope = bindings
-                .with_local(
-                    Located::new(
-                        value.projection.subject.value.clone(),
-                        value.projection.subject.range.clone(),
-                    ),
-                    subject,
-                    budget,
-                )
-                .map_err(core_error)?;
-            capture::slots::<(String, V)>(value.projection.fields.len(), budget, range)?;
-            program::charge_results(budget, value.projection.fields.len() + 1, range)?;
-            let mut fields = Vec::with_capacity(value.projection.fields.len());
-            for (name, field) in &value.projection.fields {
-                let result = session.run(field, context, &relative, &scope, budget)?;
-                let result = functions::owned(result, budget, &field.range)?;
-                let result = ReportHost
-                    .project_value(result, context, budget, &field.range)
-                    .map_err(program::evaluation_error)?;
-                program::charge_bytes(budget, name.value.len(), &name.range)?;
-                fields.push((name.value.clone(), result));
-            }
-            rows.push(V::Record(fields));
-        }
-        return ConstructedReport::new(V::Array(rows), range.clone(), budget);
-    }
-    let result = zirql::evaluate_projection_with_types(
-        &value.projection,
-        &ReportHost,
-        input,
-        context,
-        bindings,
-        budget,
-    )
-    .map_err(program::evaluation_error)?;
+    let result = if let Some(session) = context.functions {
+        session.run_projection(&value.projection, context, input, bindings, budget)?
+    } else {
+        zirql::evaluate_projection_with_types(
+            &value.projection,
+            &ReportHost,
+            input,
+            context,
+            bindings,
+            budget,
+        )
+        .map_err(program::evaluation_error)?
+    };
     comprehension::ConstructedReport::with_types(result.value, result.types, range.clone(), budget)
 }
 pub(super) fn runtime_kinds(

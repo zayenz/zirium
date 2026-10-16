@@ -3814,6 +3814,18 @@ fn typed_functions_agree_inline_file_and_buffer_later_runtime_failure() {
     for (source, expected) in [
         (program, Some(inline.stdout.as_slice())),
         (
+            r#"filter(op("example.root")) | head(1) | project(row, {"cost":1+(row | children | count)}) | json"#,
+            Some(b"[\n  {\n    \"cost\": 3\n  }\n]\n".as_slice()),
+        ),
+        (
+            r#"fn bump(n:int)->int{n+1} fn label()->string{"example.root"} filter(op(label())) | head(bump(0)) | project(row, {"cost":bump(row | children | count)}) | json"#,
+            Some(b"[\n  {\n    \"cost\": 3\n  }\n]\n".as_slice()),
+        ),
+        (
+            r#"fn broken(n:int)->int{10 div n} report 1 | json; filter(op("example.root")) | project(row, {"cost":broken(row | parent | count)}) | json"#,
+            None,
+        ),
+        (
             "fn fail(n:int)->int {10 div n} report 1 | json; report fail(0) | json",
             None,
         ),
@@ -3841,6 +3853,12 @@ fn typed_functions_agree_inline_file_and_buffer_later_runtime_failure() {
                 String::from_utf8_lossy(&file.stderr)
             );
             assert_eq!(file.stdout, expected);
+            assert!(
+                inline.status.success(),
+                "{}",
+                String::from_utf8_lossy(&inline.stderr)
+            );
+            assert_eq!(inline.stdout, expected);
         } else {
             assert!(!file.status.success());
             assert!(file.stdout.is_empty());

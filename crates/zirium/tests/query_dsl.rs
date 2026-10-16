@@ -2159,19 +2159,68 @@ fn functions_prepare_fields_arguments_and_all_written_bodies_before_execution() 
         fn label() -> string { "example.root" }
         filter(op(label())) | head(bump(0)) | project(row, {"cost":bump(row | children | count)}) | json"#;
     let mut outputs = Vec::new();
-    Query::parse(source)
+    for source in [
+        source,
+        r#"filter(op("example.root")) | head(1) | project(row, {"cost":1+(row | children | count)}) | json"#,
+    ] {
+        outputs.clear();
+        Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                outputs.push(value);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            outputs,
+            vec![QueryOutput::Json(
+                "[\n  {\n    \"cost\": 3\n  }\n]\n".into()
+            )]
+        );
+    }
+    let mut repeated = self::document();
+    outputs.clear();
+    Query::parse(r#"let outer=7; let original=input; fn bump(n:int)->int{n+1} filter(op("test.seed")) | users | project(row, {"z":row | names, "a":bump(outer), "relative":count, "original":original | count}) | emit"#)
         .unwrap()
-        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
-            outputs.push(value);
-            Ok(())
-        })
+        .evaluate(&mut repeated, DialectRegistry::baseline(), |_, value| { outputs.push(value); Ok(()) })
         .unwrap();
+    use zirium::query::{ConstructedValue as V, NativeValue};
+    let QueryOutput::Native(NativeValue::Constructed(report)) = &outputs[0] else {
+        panic!("projection report")
+    };
+    let V::Array(rows) = report.value().data() else {
+        panic!("projection rows")
+    };
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], rows[1]);
+    let V::Record(fields) = rows[0].data() else {
+        panic!("projection record")
+    };
     assert_eq!(
-        outputs,
-        vec![QueryOutput::Json(
-            "[\n  {\n    \"cost\": 3\n  }\n]\n".to_owned()
-        )]
+        fields
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.data()))
+            .collect::<Vec<_>>(),
+        [
+            ("z", &V::Array(vec![V::String("test.add".into())])),
+            ("a", &V::Integer(8)),
+            ("relative", &V::Integer(1)),
+            ("original", &V::Integer(6)),
+        ]
     );
+    outputs.clear();
+    Query::parse(r#"fn bump(n:int)->int{n+1} let rows=filter(false) | project(row, {"cost":bump(row | children | count)}); report [r.cost for r in rows] | json"#)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| { outputs.push(value); Ok(()) })
+        .unwrap();
+    assert_eq!(outputs, vec![QueryOutput::Json("[]\n".into())]);
+    let failure = r#"fn broken(n:int)->int{10 div n} filter(op("example.root")) | project(row, {"cost":broken(row | parent | count)}) | json"#;
+    let error = Query::parse(failure)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(error.to_string().contains("division by zero"), "{error}");
+    assert!(error.range().is_some());
     let mut path_outputs = Vec::new();
     for source in [
         r#"filter(op("example.root")) | paths(users,to=op("example.root"),max_depth=0) | json"#,
@@ -2255,6 +2304,9 @@ fn functions_prepare_fields_arguments_and_all_written_bodies_before_execution() 
         "fn shadow(n:int) -> int {let n=2; n} emit; report 1",
         "fn impure(op:Operation) -> int { op | set_attr(\"x\",\"y\") | count } emit; report 1",
         "fn label()->string {\"example.root\"} emit; filter(false) | paths(users,to=op(missing()),max_depth=0)",
+        "fn bump(n:int)->int{n+1} emit; filter(false) | project(row, {\"x\":if true {bump(0)} else {missing()}})",
+        "fn identity(op:Operation)->Operation{op} emit; filter(false) | project(row, {\"x\":identity(row)})",
+        "fn bump(n:int)->int{n+1} emit; filter(false) | project(row, {\"x\":bump(0), \"x\":bump(1)})",
     ] {
         let mut emitted = 0;
         let query = Query::parse(source);

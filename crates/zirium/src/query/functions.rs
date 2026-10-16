@@ -1043,6 +1043,41 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
             .map(|capture| QueryOutput::Native(NativeValue::Capture(capture)))
             .map_err(error)
     }
+    pub(super) fn run_projection(
+        &self,
+        projection: &zirql::Projection<report::Operand>,
+        context: &mut EvaluationContext<'a, 'd, 'q>,
+        input: QueryOutput,
+        bindings: &zirql::Bindings<QueryOutput>,
+        budget: &mut Budget,
+    ) -> Result<zirql::ConstructedResult, EvaluationError> {
+        capture::slots::<&Entry<'_>>(projection.fields.len(), budget, &projection.subject.range)?;
+        let mut fields = Vec::with_capacity(projection.fields.len());
+        for (_, value) in &projection.fields {
+            fields.push(
+                self.entries
+                    .get(&(context.current_stage, value as *const _ as usize))
+                    .ok_or_else(|| {
+                        EvaluationError::new(
+                            "written function entry was not prepared in this scope",
+                        )
+                        .at(value.range.clone())
+                    })?,
+            );
+        }
+        self.unit
+            .evaluate_projection(
+                projection,
+                &fields,
+                input,
+                bindings,
+                context,
+                budget,
+                self.limits,
+            )
+            .map_err(error)
+    }
+
     pub(super) fn run(
         &self,
         value: &zirql::ValueExpression<report::Operand>,
