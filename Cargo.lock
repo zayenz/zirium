@@ -274,7 +274,8 @@ dependencies = [
 [[package]]
 name = "zirql"
 version = "0.1.0"
-source = "git+https://github.com/zayenz/zirql?rev=860247d1cc703d058979d39344c72d7e669092ce#860247d1cc703d058979d39344c72d7e669092ce"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b37ea71fdef74cdf87fedbde2dc68cfb310396c1424c45073d873ed9a2c2e66"
 dependencies = [
  "serde_json",
 ]

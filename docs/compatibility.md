@@ -31,13 +31,11 @@ cargo +stable test --doc --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo +stable doc --workspace --all-features --no-deps
 ```
 
-The 0.5.0 candidate uses the reviewed Zirql 0.1.0 Git revision with matching
-registry metadata. The final release uses the registry dependency; see the
-[finalization steps](releasing.md#zirql-dependency-and-source-distributions).
-Registry package verification belongs to release preparation: Cargo replaces Git dependencies
-with their published versions when verifying a crate archive. Run
-`cargo +stable package -p zirium --locked` once the required Zirql version is
-published. The release workflow enables this check before publication.
+Zirium 0.5.0 uses the verified Zirql 0.1.0 registry release. The
+[release guide](releasing.md#zirql-dependency-and-source-distributions) describes
+the registry dependency and sdist contents. Run
+`cargo +stable package -p zirium --locked` to verify the Rust archive against
+crates.io. The release workflow enables this check before publication.
 
 ## CPython compatibility
 
@@ -108,7 +106,7 @@ uv pip install --no-cache --python "$sdist_check/venv/bin/python" target/sdist/z
 ```
 
 The [release guide](releasing.md#zirql-dependency-and-source-distributions) records
-the candidate Git contract and the final registry-backed sdist requirement.
+the registry dependency and sdist requirements.
 
 ## Resource limits
 

@@ -41,38 +41,21 @@ candidate run therefore does not establish registry resolution.
 
 ## Zirql dependency and source distributions
 
-Before Zirql 0.1.0 is published, the candidate manifest uses both the reviewed
-Git revision and a matching registry version:
-
-```toml
-zirql = { git = "https://github.com/zayenz/zirql", rev = "860247d1cc703d058979d39344c72d7e669092ce", version = "=0.1.0" }
-```
-
-Cargo source builds use that public Git commit. Cargo normalizes the Rust crate
-archive to the registry requirement `=0.1.0`; it cannot verify that archive
-against crates.io until Zirql 0.1.0 is published. A local staged package check
-is separate evidence and does not replace this registry check.
-
-The candidate sdist retains the Git-plus-version declaration in
-`crates/zirium/Cargo.toml` and the Git revision in its root `Cargo.lock`.
-It contains both Rust crates, so the extension's `../zirium` path resolves
-inside the archive. Installing it needs Rust and access to the declared Git
-and registry dependencies, but no sibling checkout. The wheel contains the
-compiled extension and needs no Rust toolchain.
-
-For the final registry-backed release, first publish and verify Zirql 0.1.0.
-Then replace the Zirql dependency above with:
+The final release resolves the verified Zirql 0.1.0 release from crates.io:
 
 ```toml
 zirql = "=0.1.0"
 ```
 
-Refresh `Cargo.lock` and the locked Python environment, rebuild every final
-artifact, and repeat the clean wheel/sdist installations. Inspect the sdist's
-stored manifests and lockfile again: Zirql must resolve from crates.io. Commit
-that final source and run the candidate workflow against its exact commit.
-Do not publish artifacts built before this finalization as the registry-backed
-source distribution.
+The sdist contains both Rust crates, so the extension's `../zirium` path
+resolves inside the archive. Its stored manifests and root `Cargo.lock` must
+resolve Zirql from crates.io, with no Git dependency or sibling checkout.
+Installing the sdist needs Rust and access to the registry dependencies. The
+wheel contains the compiled extension and needs no Rust toolchain.
+
+Refresh `Cargo.lock` without upgrading unrelated dependencies, rebuild final
+artifacts, and repeat clean wheel/sdist installations after dependency changes.
+Commit the final source and run the candidate workflow against its exact commit.
 
 Run the real registry package checks with no path or registry patches:
 
