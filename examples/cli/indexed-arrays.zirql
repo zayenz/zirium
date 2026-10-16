@@ -1,0 +1,3 @@
+let counts = [2: 20, 5: 50] axes([5, 2, 9]);
+report {"keys": index_set(counts), "cells": entries(counts),
+        "second": counts[2], "has_nine": has_key(counts, 9)} | json;

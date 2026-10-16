@@ -1355,7 +1355,18 @@ fn normalize_with(
             | K::Sort { array: v, .. }
             | K::Extremum { array: v, .. } => pending.push(v),
             K::Record(fields) => pending.extend(fields.iter_mut().map(|(_, v)| v)),
-            K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
+            K::KeyedArray {
+                entries,
+                declared_axis_sources,
+                ..
+            } => {
+                pending.extend(declared_axis_sources.iter_mut().flatten());
+                for (k, v) in entries {
+                    pending.push(k);
+                    pending.push(v)
+                }
+            }
+            K::Dictionary(entries) => {
                 for (k, v) in entries {
                     pending.push(k);
                     pending.push(v)
@@ -1427,8 +1438,10 @@ fn normalize_with(
                 clauses: generators,
                 key,
                 head,
+                declared_axis_sources,
                 empty_axis_sources,
             } => {
+                pending.extend(declared_axis_sources.iter_mut().flatten());
                 clauses(generators, &mut pending);
                 pending.push(key);
                 pending.push(head);

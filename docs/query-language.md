@@ -1290,6 +1290,50 @@ set. A keyed index set preserves its axis's integer or nominal key identity,
 including typed empty axes, and uses the existing set order. Non-array or
 higher-rank input and missing tuple positions fail with query locations.
 
+An indexed array associates cells with integer keys instead of positional
+indices. `[5: 50, 2: 20]` infers the keys `2`, `5` in numeric order.
+To retain unused keys or choose their order, write
+`[2: 20, 5: 50] axes([5, 2, 9])`. The declared key domain is called an axis;
+key `9` belongs to the domain without storing a cell. `has_key(a, 9)` is
+therefore false, and `a[9]` fails.
+
+Tuple keys give each dimension its own ordered domain:
+
+```zirql
+let sparse = [(2,1):21, (5,8):58, (2,8):28] axes([5,2,9], [8,1,4]);
+let generated = [(i,j):i*10+j for i in [5,2] for j in [8,1]
+                 if i==2 or j==8] axes([5,2,9], [8,1,4]);
+report {"same": sparse==generated, "cells": entries(sparse)} | json;
+```
+
+Both arrays store three cells, ordered by the row keys and then the column
+keys. Missing cells stay missing. Declared domains evaluate once, left to
+right, in the surrounding scope before cells or comprehension generators.
+Keys must be unique integers or members of one supplied nominal type per
+dimension; all stored keys must belong to their domains. Zirium's text
+examples use integers.
+
+`[]` remains positional. `[] axes(set<int>(), [8,1])` is an empty rank-two
+indexed array with a typed empty row domain and two column keys.
+`[] axes([5,2,9])` retains all three keys without storing cells. An untyped
+empty domain `[] axes([])` is refused because it does not establish a key
+type. The `axes(...)` suffix belongs directly after an indexed bracket,
+before access or a pipeline; it is not a standalone value call.
+
+Rust library results retain the keyed array and its domains. CLI JSON output
+requires an ordinary view such as `entries`, `index_set`, access or `has_key`;
+direct keyed-array JSON remains unavailable. This
+[saved program](../examples/cli/indexed-arrays.zirql) shows unused keys and
+ordered stored cells:
+
+```sh
+zirium --program-file examples/cli/indexed-arrays.zirql examples/cli/function-report.mlir
+zirium 'let counts = [2:20, 5:50] axes([5,2,9]); report {"keys":index_set(counts), "cells":entries(counts), "second":counts[2], "has_nine":has_key(counts,9)} | json;' examples/cli/function-report.mlir
+```
+
+Both commands return keys `[5,2,9]`, cells for `5` and `2`, the value `20`
+for key `2`, and `false` for `has_nine`.
+
 This complete program uses local literal arguments:
 
 ```zirql

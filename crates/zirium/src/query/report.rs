@@ -1946,7 +1946,20 @@ pub(super) fn visit_value<'a>(
                 visit_value(value, pending)
             }
         }
-        K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
+        K::KeyedArray {
+            entries,
+            declared_axis_sources,
+            ..
+        } => {
+            for source in declared_axis_sources.iter().flatten() {
+                visit_value(source, pending)
+            }
+            for (key, value) in entries {
+                visit_value(key, pending);
+                visit_value(value, pending)
+            }
+        }
+        K::Dictionary(entries) => {
             for (key, value) in entries {
                 visit_value(key, pending);
                 visit_value(value, pending)
@@ -1965,8 +1978,12 @@ pub(super) fn visit_value<'a>(
             clauses: generators,
             key,
             head,
+            declared_axis_sources,
             empty_axis_sources,
         } => {
+            for source in declared_axis_sources.iter().flatten() {
+                visit_value(source, pending)
+            }
             clauses(generators, pending);
             visit_value(key, pending);
             visit_value(head, pending);
@@ -2268,7 +2285,18 @@ fn value_requires_session_with_names(
             | K::Extremum { array: v, .. } => pending.push(v),
             K::Array(values) | K::Tuple(values) | K::Set(values) => pending.extend(values),
             K::Record(fields) => pending.extend(fields.iter().map(|(_, value)| value)),
-            K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
+            K::KeyedArray {
+                entries,
+                declared_axis_sources,
+                ..
+            } => {
+                pending.extend(declared_axis_sources.iter().flatten());
+                for (k, v) in entries {
+                    pending.push(k);
+                    pending.push(v);
+                }
+            }
+            K::Dictionary(entries) => {
                 for (k, v) in entries {
                     pending.push(k);
                     pending.push(v);
@@ -2336,11 +2364,13 @@ fn value_requires_session_with_names(
                 }
                 if let K::KeyedComprehension {
                     key,
+                    declared_axis_sources,
                     empty_axis_sources,
                     ..
                 } = &value.value
                 {
                     pending.push(key);
+                    pending.extend(declared_axis_sources.iter().flatten());
                     if let Some(sources) = empty_axis_sources {
                         pending.extend(sources);
                     }

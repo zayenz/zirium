@@ -585,7 +585,7 @@ impl Parser<'_, '_> {
                         .take_while(|token| (token.range().start() as usize) < reader.position())
                         .filter(|token| token.kind() != TokenKind::Trivia)
                         .collect::<Vec<_>>();
-                    if let Some(pair) = written.windows(2).find(|pair| {
+                    if let Some((_, pair)) = written.windows(2).enumerate().find(|(index, pair)| {
                         pair[0].kind() == TokenKind::Identifier
                             && pair[1].kind() == TokenKind::LParen
                             && !is_native_stage(&self.source[pair[0].range().as_range()])
@@ -593,6 +593,9 @@ impl Parser<'_, '_> {
                             && !zirql::is_common_value_call(
                                 &self.source[pair[0].range().as_range()],
                             )
+                            && !(&self.source[pair[0].range().as_range()] == "axes"
+                                && *index > 0
+                                && written[*index - 1].kind() == TokenKind::RBracket)
                             && !matches!(
                                 &self.source[pair[0].range().as_range()],
                                 "default"

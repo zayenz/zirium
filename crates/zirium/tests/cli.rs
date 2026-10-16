@@ -3968,6 +3968,47 @@ fn report_ordering_inline_file_and_later_failure_keep_output_buffering() {
 }
 
 #[test]
+fn indexed_arrays_agree_inline_file_and_buffer_later_failures() {
+    let input = include_str!("../../../examples/cli/function-report.mlir");
+    let source = include_str!("../../../examples/cli/indexed-arrays.zirql");
+    let inline = run_stdin(source, input);
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&inline.stdout).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "keys": [5,2,9],
+            "cells": [{"key":5,"value":50},{"key":2,"value":20}],
+            "second": 20,
+            "has_nine": false,
+        })
+    );
+    let file = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args([
+            "--program-file",
+            "examples/cli/indexed-arrays.zirql",
+            "examples/cli/function-report.mlir",
+        ])
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .output()
+        .unwrap();
+    assert!(
+        file.status.success(),
+        "{}",
+        String::from_utf8_lossy(&file.stderr)
+    );
+    assert_eq!(inline.stdout, file.stdout);
+    let failure = run_stdin(&format!("{source} report 1 div 0;"), input);
+    assert!(!failure.status.success() && failure.stdout.is_empty());
+    let keyed_json = run_stdin("[2:20] | json", input);
+    assert!(!keyed_json.status.success() && keyed_json.stdout.is_empty());
+}
+
+#[test]
 fn pattern_examples_agree_inline_file_and_buffer_later_failures() {
     let input = include_str!("../../../examples/cli/function-report.mlir");
     for program in [

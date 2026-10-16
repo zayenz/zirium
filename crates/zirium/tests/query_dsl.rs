@@ -3802,6 +3802,105 @@ fn brace_collections_keep_native_data_order_and_function_locals() {
 }
 
 #[test]
+fn indexed_arrays_retain_declared_domains_and_sparse_native_cells() {
+    use zirium::query::{ConstructedValue as V, NativeValue};
+    use zirql::{KeyAxis, KeyedEntry, ValueKey as K, ValueKeyType};
+
+    let mut document = document();
+    let evaluate = |document: &mut Document, source: &str| {
+        let mut outputs = Vec::new();
+        Query::parse(source)
+            .unwrap()
+            .evaluate(document, DialectRegistry::baseline(), |_, value| {
+                outputs.push(value);
+                Ok(())
+            })
+            .unwrap();
+        outputs
+    };
+    let literal = evaluate(
+        &mut document,
+        "[(2,1):21, (5,8):58, (2,8):28] axes([5,2,9], [8,1,4])",
+    );
+    let generated = evaluate(
+        &mut document,
+        "let rows=[5,2,9]; let a=[(i,j):i*10+j for i in [5,2] for j in [8,1] if i==2 or j==8] axes(rows,[8,1,4]); a",
+    );
+    let QueryOutput::Native(NativeValue::Constructed(report)) = &literal[0] else {
+        panic!("native keyed report")
+    };
+    let QueryOutput::Native(NativeValue::Constructed(generated)) = &generated[0] else {
+        panic!("native keyed comprehension")
+    };
+    assert_eq!(report.value(), generated.value());
+    assert_eq!(
+        report.value().data(),
+        &V::KeyedArray {
+            axes: vec![
+                KeyAxis {
+                    key_type: ValueKeyType::Integer,
+                    keys: vec![K::Integer(5), K::Integer(2), K::Integer(9)],
+                },
+                KeyAxis {
+                    key_type: ValueKeyType::Integer,
+                    keys: vec![K::Integer(8), K::Integer(1), K::Integer(4)],
+                },
+            ],
+            entries: vec![
+                KeyedEntry {
+                    key: vec![K::Integer(5), K::Integer(8)],
+                    value: V::Integer(58)
+                },
+                KeyedEntry {
+                    key: vec![K::Integer(2), K::Integer(8)],
+                    value: V::Integer(28)
+                },
+                KeyedEntry {
+                    key: vec![K::Integer(2), K::Integer(1)],
+                    value: V::Integer(21)
+                },
+            ],
+        }
+    );
+    let empty = evaluate(
+        &mut document,
+        "fn empty_keys()->sequence<int>{ [] } [] axes(empty_keys(),[8,1])",
+    );
+    let QueryOutput::Native(NativeValue::Constructed(report)) = &empty[0] else {
+        panic!("typed empty keyed report")
+    };
+    assert!(
+        matches!(report.value().data(), V::KeyedArray { axes, entries }
+        if axes.len()==2 && axes[0].keys.is_empty()
+        && axes[0].key_type==ValueKeyType::Integer
+        && axes[1].keys==[K::Integer(8),K::Integer(1)] && entries.is_empty())
+    );
+    let native_domain = evaluate(
+        &mut document,
+        "let labels=input | names; [] axes(index_set(labels))",
+    );
+    let QueryOutput::Native(NativeValue::Constructed(report)) = &native_domain[0] else {
+        panic!("native source domain")
+    };
+    assert!(
+        matches!(report.value().data(), V::KeyedArray { axes, entries }
+        if axes[0].keys.len()==document.query(&ops().names()).unwrap().len()
+        && !axes[0].keys.is_empty() && entries.is_empty())
+    );
+    for source in [
+        "[i:1 for i in [1]] axes([i])",
+        "[2:1] axes([1])",
+        "[] axes([])",
+    ] {
+        let query = Query::parse(source).unwrap();
+        let error = query
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .unwrap_err();
+        assert!(error.range().is_some(), "{source}: {error}");
+    }
+}
+
+#[test]
 fn shared_value_calls_and_saved_suffixes_keep_constructed_and_native_sources() {
     use zirium::query::{ConstructedValue as V, NativeValue};
     let mut document = document();

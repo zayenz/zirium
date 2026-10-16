@@ -217,7 +217,8 @@ fn value_size(value: &V) -> usize {
 }
 
 // Keep legacy JSON objects on their interpolation/native-insertion path. Only
-// a set, an expression key, typed empty set or computed access needs this reader.
+// a set, an expression key, indexed array, typed empty set or computed access
+// needs this reader.
 fn collection_syntax(source: &str) -> bool {
     let mut reader = zirql::ArgumentReader::new(source, 0).expect("source boundary");
     let mut containers = [b' '; super::parser::DEFAULT_NESTING_LIMIT];
@@ -268,7 +269,15 @@ fn collection_syntax(source: &str) -> bool {
                         return true;
                     }
                 }
+                if character == ']' {
+                    let mut probe = zirql::ArgumentReader::new(source, reader.position())
+                        .expect("source boundary");
+                    if probe.keyword("axes") && probe.consume('(') {
+                        return true;
+                    }
+                }
             }
+            ':' if depth > 0 && containers[depth - 1] == b'[' => return true,
             ',' if depth > 0 && containers[depth - 1] == b'{' => containers[depth - 1] = b'k',
             _ if depth > 0 && containers[depth - 1] == b'k' => return true,
             ch if ch.is_ascii_alphabetic() || ch == '_' => {
