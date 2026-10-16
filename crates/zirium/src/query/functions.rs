@@ -1252,6 +1252,11 @@ pub(super) fn normalize_outer(
     budget: &mut Budget,
 ) -> Result<zirql::ValueExpression<report::Operand>, zirql::QueryError> {
     normalize_with(value, |value| {
+        if let zirql::ValueExpressionKind::NativeQuery(query)
+        | zirql::ValueExpressionKind::NativeValue(query) = &mut value.value
+        {
+            report::retain_tally_continuations(query, budget)?;
+        }
         if let zirql::ValueExpressionKind::Name(name) = &value.value
             && names.contains(name)
         {

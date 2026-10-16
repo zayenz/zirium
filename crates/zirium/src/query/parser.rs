@@ -226,7 +226,18 @@ impl Parser<'_, '_> {
                     self.nesting_limit,
                     super::functions::resolve_type,
                 ) {
-                    Ok(Some(declaration)) => {
+                    Ok(Some(mut declaration)) => {
+                        declaration.value = match super::functions::normalize_outer(
+                            declaration.value,
+                            &self.bindings,
+                            self.budget,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                self.shared_error(error);
+                                return None;
+                            }
+                        };
                         self.sync(reader.position());
                         self.function_mode = true;
                         functions.push(super::FunctionDefinition::parsed(declaration));
@@ -568,6 +579,9 @@ impl Parser<'_, '_> {
                             && pair[1].kind() == TokenKind::LParen
                             && !is_native_stage(&self.source[pair[0].range().as_range()])
                             && !is_reserved(&self.source[pair[0].range().as_range()])
+                            && !zirql::is_common_value_call(
+                                &self.source[pair[0].range().as_range()],
+                            )
                             && !matches!(
                                 &self.source[pair[0].range().as_range()],
                                 "default"
@@ -579,29 +593,6 @@ impl Parser<'_, '_> {
                                     | "else"
                                     | "match"
                                     | "present"
-                                    | "lookup"
-                                    | "has_key"
-                                    | "group_by"
-                                    | "sort"
-                                    | "sort_by"
-                                    | "min"
-                                    | "max"
-                                    | "min_by"
-                                    | "max_by"
-                                    | "zip_exact"
-                                    | "contains"
-                                    | "starts_with"
-                                    | "ends_with"
-                                    | "require"
-                                    | "length"
-                                    | "sum"
-                                    | "forall"
-                                    | "exists"
-                                    | "occurs"
-                                    | "absent"
-                                    | "entries"
-                                    | "index_set"
-                                    | "one"
                                     | "op"
                                     | "dialect"
                                     | "result_type"
@@ -872,6 +863,9 @@ impl Parser<'_, '_> {
     }
 
     fn stage(&mut self, depth: usize) -> Option<Stage> {
+        self.stage_inner(depth, true)
+    }
+    fn stage_inner(&mut self, depth: usize, shared_values: bool) -> Option<Stage> {
         self.skip_trivia();
         let start = self.current().range().start();
         if (matches!(
@@ -988,13 +982,37 @@ impl Parser<'_, '_> {
                 });
             }
         }
-        if super::comprehension::starts(self.source, self.tokens, self.cursor)
-            || ((self.at_identifier("group_by")
-                || self.at_identifier("contains")
-                || self.at_identifier("starts_with")
-                || self.at_identifier("ends_with"))
-                && self.next_kind() == Some(TokenKind::LParen))
-        {
+        if super::comprehension::constructed_filter_call(self.source, start as usize) {
+            self.bump();
+            let mut reader =
+                zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
+                    .ok()?;
+            let value = match zirql::read_constructed_filter(&mut reader, self.budget) {
+                Ok(prefix) => {
+                    self.sync(reader.position());
+                    let range = start as usize..reader.position();
+                    match super::report::lower_suffix(
+                        zirql::Located::new(zirql::ValueSuffix::FilterStartsWith(prefix), range),
+                        self.budget,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.shared_error(error);
+                            return None;
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.shared_error(error);
+                    return None;
+                }
+            };
+            return Some(Stage::ConstructedSuffix {
+                value,
+                range: self.span(start),
+            });
+        }
+        if shared_values && super::comprehension::starts(self.source, self.tokens, self.cursor) {
             let value = self.shared_value(depth)?;
             return Some(Stage::Comprehension {
                 value,
@@ -2260,13 +2278,30 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         budget: &mut zirql::Budget,
     ) -> Result<zirql::ExpressionStep<Stage, ()>, zirql::QueryError> {
         let mut parser = self.parser(reader.position(), locals, budget)?;
-        let result = parser.stage(0);
+        // The common reader has selected a native leaf; do not re-enter it.
+        let result = parser.stage_inner(0, false);
         if let Some(diagnostic) = parser.diagnostics.first() {
             return Err(Self::error(diagnostic));
         }
         let stage = result.ok_or_else(|| reader.error("expected a native stage"))?;
         reader.advance(stage.range().end() as usize - reader.position())?;
         Ok(zirql::ExpressionStep::Stage(stage))
+    }
+    fn parse_constructed_filter_in_scope(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        locals: &[&str],
+        budget: &mut zirql::Budget,
+    ) -> Result<Option<Stage>, zirql::QueryError> {
+        if !super::comprehension::constructed_filter_call(reader.source(), reader.position()) {
+            return Ok(None);
+        }
+        match self.parse_stage_in_scope(reader, locals, budget)? {
+            zirql::ExpressionStep::Stage(stage) => Ok(Some(stage)),
+            zirql::ExpressionStep::Emit { .. } => {
+                unreachable!("constructed filter is a value stage")
+            }
+        }
     }
     fn parse_predicate_leaf(
         &mut self,

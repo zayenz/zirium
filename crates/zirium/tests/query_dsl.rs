@@ -3800,3 +3800,103 @@ fn brace_collections_keep_native_data_order_and_function_locals() {
         matches!(value.value().data(), V::Set { elements, .. } if elements == &[V::Integer(3),V::Integer(1)])
     );
 }
+
+#[test]
+fn shared_value_calls_and_saved_suffixes_keep_constructed_and_native_sources() {
+    use zirium::query::{ConstructedValue as V, NativeValue};
+    let mut document = document();
+    let evaluate = |document: &mut Document, source: &str| {
+        let mut outputs = Vec::new();
+        Query::parse(source)
+            .unwrap()
+            .evaluate(document, DialectRegistry::baseline(), |_, value| {
+                outputs.push(value);
+                Ok(())
+            })
+            .unwrap();
+        outputs
+    };
+    let final_call = evaluate(&mut document, "let numbers=[3,1,3]; sum(numbers)");
+    let initializer = evaluate(
+        &mut document,
+        "let numbers=[3,1,3]; let total=sum(numbers); total",
+    );
+    for output in [&final_call[0], &initializer[0]] {
+        assert!(
+            matches!(output, QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Integer(7))
+        );
+    }
+    let saved = evaluate(
+        &mut document,
+        "let numbers=[3,1,3]; numbers | sort | unique | count",
+    );
+    assert!(
+        matches!(&saved[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Integer(2))
+    );
+    let functions = evaluate(
+        &mut document,
+        r#"fn numbers()->sequence<int> { [3,1,3] }
+        fn distinct()->int { let local=[3,1,3]; local | sort | unique | count }
+        numbers() | sort | unique | count; distinct();
+        let words=["ash","birch","apple","ash"]; words | filter(starts_with("a")) | sort | unique | count"#,
+    );
+    for output in functions {
+        assert!(
+            matches!(&output, QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Integer(2)),
+            "{output:?}"
+        );
+    }
+    let siblings = evaluate(
+        &mut document,
+        r#"let numbers=[3,1,3]; report {"distinct":numbers | sort | unique | count, "input":input | count}"#,
+    );
+    assert!(
+        matches!(&siblings[0], QueryOutput::Native(NativeValue::Constructed(value)) if matches!(value.value().data(), V::Record(fields) if fields[0].1.data()==&V::Integer(2) && fields[1].1.data()==&V::Integer(6)))
+    );
+    let request = "let numbers=[true]; numbers | sort";
+    let error = Query::parse(request)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert_eq!(&request[error.range().unwrap()], "sort");
+    let request =
+        r#"fn invalid()->record {"ash":int} {let words=["ash"]; words | tally | sort} invalid()"#;
+    let error = Query::parse(request)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("tally must be the terminal stage"),
+        "{error}"
+    );
+    let request = r#"fn invalid(root:Operation)->Operation {let words=["ash"]; words | tally | input} invalid(input | head(1))"#;
+    let error = Query::parse(request)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("tally must be the terminal stage"),
+        "{error}"
+    );
+    let native = evaluate(
+        &mut document,
+        r#"let saved=filter(op("test.scope")) | head(1); saved | children | sort_by(names)"#,
+    );
+    let QueryOutput::Operations(operations) = &native[0] else {
+        panic!("native operations: {native:?}");
+    };
+    let expected = document
+        .query(
+            &ops()
+                .filter(op("test.scope"))
+                .head(1)
+                .children()
+                .sort_by(&input().names().one()),
+        )
+        .unwrap();
+    assert_eq!(operations, &expected);
+}

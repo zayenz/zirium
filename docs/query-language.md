@@ -494,6 +494,20 @@ bound parsing with `Query::parse_with_program_limits()` and choose execution
 bounds with `Query::evaluate_with_program_limits()`; callbacks that render can
 use `Query::evaluate_with_budget()` with `Budget::for_program()`.
 
+Shared value calls work in both binding initializers and final expressions.
+For example, these commands print `7` and `2`:
+
+```sh
+zirium 'let numbers=[3,1,3]; sum(numbers)' examples/cli/function-report.mlir
+zirium 'let numbers=[3,1,3]; numbers | sort | unique | count' examples/cli/function-report.mlir
+```
+
+Saved constructed collections and constructed function results use the shared
+`sort`, `unique`, `count` and terminal string `tally` stages. A string array also
+accepts `filter(starts_with("prefix"))`. These stages retain their shared value
+type rules. Native sources keep native stages and selectors such as
+`sort_by(names)`.
+
 ## Sort constructed rows and select extrema
 
 `sort(xs)` sorts positional scalar values, and `sort_by(rows, "field")` sorts

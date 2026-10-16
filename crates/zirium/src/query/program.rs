@@ -908,10 +908,43 @@ impl Validator<'_> {
         budget: &mut zirql::Budget,
     ) -> Result<Kind, EvaluationError> {
         use model::{Stage as S, StructuredStage as N};
+        let mut constructed_tally = false;
         for stage in stages {
             let failure = |message: &str| EvaluationError::new(message).at(range(stage.range()));
             let require = |valid, message: &str| if valid { Ok(()) } else { Err(failure(message)) };
+            if constructed_tally
+                && !matches!(
+                    stage,
+                    S::Json { .. }
+                        | S::Emit { .. }
+                        | S::Format { .. }
+                        | S::Markdown { .. }
+                        | S::Print { .. }
+                )
+            {
+                return Err(failure("tally must be the terminal stage"));
+            }
+            if matches!(kind, Kind::Constructed(_))
+                && let Some(value) = report::constructed_suffix(stage, budget)?
+            {
+                let types = report::types_with_host(&value, kind, names, budget, &self.host)?;
+                kind = Kind::Constructed(std::sync::Arc::new(types));
+                constructed_tally =
+                    matches!(value.expression.value, zirql::ValueExpressionKind::Tally(_));
+                continue;
+            }
             match stage {
+                S::TallyContinuation { .. } => {
+                    require(
+                        !matches!(kind, Kind::Constructed(_)),
+                        "tally must be the terminal stage",
+                    )?;
+                }
+                S::ConstructedSuffix { .. } => {
+                    return Err(failure(
+                        "constructed suffix requires a constructed collection",
+                    ));
+                }
                 S::PatternBinding { .. } => {
                     return Err(failure("pattern binding requires program preparation"));
                 }

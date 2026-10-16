@@ -4161,3 +4161,37 @@ fn brace_reports_match_inline_files_and_buffer_duplicate_failures() {
     }
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn saved_collection_suffixes_agree_inline_file_and_buffer_later_errors() {
+    let source = "let numbers=[3,1,3]; sum(numbers); numbers | sort | unique | count";
+    let inline = run_stdin(source, INPUT);
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    let path = temporary_path("saved-values", "zirql");
+    fs::write(&path, source).unwrap();
+    let file = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args([
+            "--program-file",
+            path.to_str().unwrap(),
+            "examples/cli/function-report.mlir",
+        ])
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .output()
+        .unwrap();
+    assert!(
+        file.status.success(),
+        "{}",
+        String::from_utf8_lossy(&file.stderr)
+    );
+    assert_eq!(inline.stdout, file.stdout);
+    assert_eq!(String::from_utf8(inline.stdout).unwrap(), "7\n2\n");
+    let failed = run_stdin(&format!("{source}; report 1 div 0"), INPUT);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("zero"));
+    fs::remove_file(path).unwrap();
+}

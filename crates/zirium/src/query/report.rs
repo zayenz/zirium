@@ -371,6 +371,130 @@ pub(super) fn projection_types(
     )
     .map_err(core_error)
 }
+/// Preserve tally's following location when native preparation checks one stage
+/// at a time. Constructed tally is terminal; native tally may feed map stages.
+pub(super) fn retain_tally_continuations(
+    query: &mut Operand,
+    budget: &mut Budget,
+) -> Result<(), zirql::QueryError> {
+    let mut pending = vec![query];
+    while let Some(query) = pending.pop() {
+        match &mut query.value {
+            X::Sequence { input, steps } => {
+                pending.push(input);
+                let mut index = 1;
+                while index < steps.len() {
+                    if matches!(
+                        steps[index - 1].value,
+                        Step::Stage(model::Stage::Tally { .. })
+                    ) && !matches!(
+                        steps[index].value,
+                        Step::Stage(model::Stage::TallyContinuation { .. }) | Step::Emit { .. }
+                    ) {
+                        let range = steps[index].range.clone();
+                        budget.charge(
+                            std::mem::size_of::<model::Stage>(),
+                            Location::Query(range.clone()),
+                        )?;
+                        budget.charge_results(1, Location::Query(range.clone()))?;
+                        let native_range =
+                            crate::source::TextRange::new(range.start as u32, range.end as u32)
+                                .expect("ordered stage range");
+                        steps.insert(
+                            index,
+                            Located::new(
+                                Step::Stage(model::Stage::TallyContinuation {
+                                    range: native_range,
+                                }),
+                                range,
+                            ),
+                        );
+                        index += 1;
+                    }
+                    index += 1;
+                }
+            }
+            X::Group(query) | X::Field { value: query, .. } => pending.push(query),
+            X::Set { left, right, .. } => {
+                pending.push(left);
+                pending.push(right);
+            }
+            X::Record(fields) => pending.extend(fields.iter_mut().map(|(_, value)| value)),
+            X::Input | X::Binding(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Constructed and native collections share stage spellings. Only a caller
+/// with an established constructed kind uses this shared value tree.
+pub(super) fn constructed_suffix(
+    stage: &model::Stage,
+    budget: &mut Budget,
+) -> Result<Option<comprehension::ParsedComprehension>, EvaluationError> {
+    let suffix = match stage {
+        model::Stage::ConstructedSuffix { value, .. } => return Ok(Some(value.clone())),
+        model::Stage::Count { .. } => zirql::ValueSuffix::Count,
+        model::Stage::Sort { .. } => zirql::ValueSuffix::Sort,
+        model::Stage::Unique { .. } => zirql::ValueSuffix::Unique,
+        model::Stage::Tally { .. } => zirql::ValueSuffix::Tally,
+        _ => return Ok(None),
+    };
+    lower_suffix(Located::new(suffix, program::range(stage.range())), budget)
+        .map(Some)
+        .map_err(core_error)
+}
+
+pub(super) fn lower_suffix(
+    suffix: Located<zirql::ValueSuffix>,
+    budget: &mut Budget,
+) -> Result<comprehension::ParsedComprehension, zirql::QueryError> {
+    let range = suffix.range.clone();
+    budget.charge_results(3, Location::Query(range.clone()))?;
+    budget.charge(
+        range.len() + std::mem::size_of::<zirql::ValueExpression<Operand>>() * 3,
+        Location::Query(range.clone()),
+    )?;
+    let value = zirql::lower_value_suffix(
+        Located::new(
+            zirql::ValueExpressionKind::NativeQuery(Box::new(Located::new(
+                X::Input,
+                range.clone(),
+            ))),
+            range,
+        ),
+        suffix,
+    )?;
+    Ok(comprehension::ParsedComprehension::new(value))
+}
+
+pub(super) fn evaluate_suffix(
+    value: &comprehension::ParsedComprehension,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    input: QueryOutput,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+) -> Result<QueryOutput, EvaluationError> {
+    // This tree contains only the current constructed input and fixed suffixes;
+    // it has no function calls or native arguments needing session preparation.
+    let result = zirql::evaluate_native_value_with_types(
+        &value.expression,
+        &ReportHost,
+        input,
+        context,
+        bindings,
+        budget,
+    )
+    .map_err(program::evaluation_error)?;
+    comprehension::ConstructedReport::with_types(
+        result.value,
+        result.types,
+        value.expression.range.clone(),
+        budget,
+    )
+    .map(|value| QueryOutput::Native(NativeValue::Constructed(value)))
+}
+
 pub(super) fn evaluate(
     value: &comprehension::ParsedComprehension,
     context: &mut EvaluationContext<'_, '_, '_>,
@@ -2235,7 +2359,7 @@ pub(super) fn has_constructed(expression: &model::Expression) -> bool {
         .any(|stage| {
             matches!(
                 stage,
-                model::Stage::WhereExists { .. } | model::Stage::Fixpoint { expression: model::FixedPointBody::Native(_), .. } | model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::FunctionPrimitive{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
+                model::Stage::WhereExists { .. } | model::Stage::Fixpoint { expression: model::FixedPointBody::Native(_), .. } | model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::FunctionPrimitive{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::ConstructedSuffix { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
             ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
             || nested(stage).into_iter().any(has_constructed)
         })

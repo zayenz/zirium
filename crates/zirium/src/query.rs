@@ -781,10 +781,21 @@ fn evaluate_host_stage(
     budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     current = functions::owned(current, budget, &program::range(stage.range()))?;
+    if matches!(current, QueryOutput::Native(NativeValue::Constructed(_)))
+        && let Some(value) = report::constructed_suffix(stage, budget)?
+    {
+        return report::evaluate_suffix(&value, context, current, bindings, budget);
+    }
     if let QueryOutput::Native(NativeValue::OperationSequence(operations)) = current {
         current = QueryOutput::Operations(operations);
     }
     match stage {
+        model::Stage::TallyContinuation { .. } => {}
+        model::Stage::ConstructedSuffix { .. } => {
+            return Err(EvaluationError::new(
+                "constructed suffix requires a constructed collection",
+            ));
+        }
         model::Stage::FunctionInput { value, range } => {
             worklists::admit_input(value, context, budget, &program::range(*range))
                 .map_err(program::evaluation_error)?;

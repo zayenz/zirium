@@ -346,7 +346,15 @@ pub(super) fn has_syntax(source: &str) -> bool {
                 if matches!(word, "queue" | "identity_set") && rest.starts_with('<') {
                     return true;
                 }
-                if ordering_call(source, start) || word == "project" && rest.starts_with('(') {
+                if ordering_call(source, start)
+                    || zirql::is_common_value_call(word)
+                        && !matches!(
+                            word,
+                            "sort" | "sort_by" | "min" | "max" | "min_by" | "max_by"
+                        )
+                        && rest.starts_with('(')
+                    || word == "project" && rest.starts_with('(')
+                {
                     return true;
                 }
                 if statement_start
@@ -389,19 +397,6 @@ pub(super) fn has_syntax(source: &str) -> bool {
                         | "insert"
                         | "same_operation"
                         | "user_info"
-                        | "sum"
-                        | "length"
-                        | "forall"
-                        | "exists"
-                        | "require"
-                        | "group_by"
-                        | "contains"
-                        | "starts_with"
-                        | "ends_with"
-                        | "occurs"
-                        | "absent"
-                        | "lookup"
-                        | "has_key"
                 ) && rest.starts_with('(')
                 {
                     return true;
@@ -450,6 +445,16 @@ pub(super) fn has_syntax(source: &str) -> bool {
         }
     }
     false
+}
+
+pub(super) fn constructed_filter_call(source: &str, position: usize) -> bool {
+    let Ok(mut reader) = zirql::ArgumentReader::new(source, position) else {
+        return false;
+    };
+    reader.word().is_ok_and(|word| word.value == "filter")
+        && reader.consume('(')
+        && reader.word().is_ok_and(|word| word.value == "starts_with")
+        && reader.consume('(')
 }
 
 // Constructed calls and native stages share names. A *_by helper has an
@@ -558,19 +563,15 @@ pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
                 return true;
             }
             T::Identifier
-                if matches!(
-                    &source[token.range().as_range()],
-                    "occurs"
-                        | "absent"
-                        | "lookup"
-                        | "has_key"
-                        | "contains"
-                        | "starts_with"
-                        | "ends_with"
-                ) && tokens[i + 1..]
-                    .iter()
-                    .find(|t| t.kind() != T::Trivia)
-                    .is_some_and(|t| t.kind() == T::LParen) =>
+                if zirql::is_common_value_call(&source[token.range().as_range()])
+                    && !matches!(
+                        &source[token.range().as_range()],
+                        "sort" | "sort_by" | "min" | "max" | "min_by" | "max_by"
+                    )
+                    && tokens[i + 1..]
+                        .iter()
+                        .find(|t| t.kind() != T::Trivia)
+                        .is_some_and(|t| t.kind() == T::LParen) =>
             {
                 return true;
             }

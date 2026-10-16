@@ -319,6 +319,13 @@ pub enum Stage {
         value: super::comprehension::ParsedComprehension,
         range: TextRange,
     },
+    ConstructedSuffix {
+        value: super::comprehension::ParsedComprehension,
+        range: TextRange,
+    },
+    TallyContinuation {
+        range: TextRange,
+    },
     Projection {
         value: super::report::ParsedProjection,
         range: TextRange,
@@ -565,6 +572,8 @@ impl Stage {
             | Self::Computed { range, .. }
             | Self::Projection { range, .. }
             | Self::Comprehension { range, .. }
+            | Self::ConstructedSuffix { range, .. }
+            | Self::TallyContinuation { range }
             | Self::Structured { range, .. }
             | Self::Literal { range, .. }
             | Self::Markdown { range }
@@ -633,6 +642,7 @@ impl Stage {
             | Self::MapBy { .. }
             | Self::Literal { .. }
             | Self::Comprehension { .. }
+            | Self::ConstructedSuffix { .. }
             | Self::Projection { .. } => false,
             Self::Group { expression, .. } => expression.is_selection_only(),
             Self::Fixpoint { expression, .. } => expression.is_selection_only(),
