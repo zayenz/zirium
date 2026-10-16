@@ -510,6 +510,13 @@ impl Parser<'_, '_> {
         });
     }
     fn shared_value(&mut self, depth: usize) -> Option<super::comprehension::ParsedComprehension> {
+        self.read_shared_value(depth, false)
+    }
+    fn read_shared_value(
+        &mut self,
+        depth: usize,
+        stop_at_pipe: bool,
+    ) -> Option<super::comprehension::ParsedComprehension> {
         let mut end = self.source.len();
         let mut nesting = 0usize;
         for (offset, token) in self.tokens[self.cursor..].iter().enumerate() {
@@ -521,6 +528,10 @@ impl Parser<'_, '_> {
                 TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => nesting -= 1,
                 TokenKind::Semicolon if nesting == 0 => break,
                 TokenKind::Pipe if nesting == 0 => {
+                    if stop_at_pipe {
+                        end = token.range().start() as usize;
+                        break;
+                    }
                     if let Some(next) = self.tokens[self.cursor + offset + 1..]
                         .iter()
                         .find(|t| t.kind() != TokenKind::Trivia)
@@ -974,7 +985,10 @@ impl Parser<'_, '_> {
             let next = self.tokens[self.cursor + 1..]
                 .iter()
                 .find(|token| token.kind() != TokenKind::Trivia)?;
-            if &self.source[next.range().as_range()] == "." {
+            if &self.source[next.range().as_range()] == "."
+                && !(shared_values
+                    && super::comprehension::starts(self.source, self.tokens, self.cursor))
+            {
                 let value = self.shared_native(depth, true)?;
                 return Some(Stage::Native {
                     value,
@@ -1013,10 +1027,24 @@ impl Parser<'_, '_> {
             });
         }
         if shared_values && super::comprehension::starts(self.source, self.tokens, self.cursor) {
-            let value = self.shared_value(depth)?;
-            return Some(Stage::Comprehension {
-                value,
-                range: self.span(start),
+            // Named postfix results leave subsequent stages to the host's
+            // native/constructed routing, just as a saved result does.
+            let mut prefix = self.tokens[self.cursor..]
+                .iter()
+                .filter(|token| token.kind() != TokenKind::Trivia);
+            let name = prefix.find(|token| token.kind() != TokenKind::LParen);
+            let postfix = prefix.find(|token| token.kind() != TokenKind::RParen);
+            let postfix_result = name.is_some_and(|token| token.kind() == TokenKind::Identifier)
+                && postfix.is_some_and(|token| {
+                    token.kind() == TokenKind::Operator
+                        && &self.source[token.range().as_range()] == "."
+                });
+            let value = self.read_shared_value(depth, postfix_result)?;
+            let range = self.span(start);
+            return Some(if self.function_mode {
+                Stage::FunctionValue { value, range }
+            } else {
+                Stage::Comprehension { value, range }
             });
         }
         if self.at_identifier("project") && self.next_kind() == Some(TokenKind::LParen) {

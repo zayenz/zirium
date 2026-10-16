@@ -4164,7 +4164,10 @@ fn brace_reports_match_inline_files_and_buffer_duplicate_failures() {
 
 #[test]
 fn saved_collection_suffixes_agree_inline_file_and_buffer_later_errors() {
-    let source = "let numbers=[3,1,3]; sum(numbers); numbers | sort | unique | count";
+    let source = r#"1+2; let n=1; n+2; let total=n+2; total;
+        "a" ++ "b"; not false and n+2 == 3; (n+2)*3-1; [n,2][1]+2;
+        let d={"n":1}; d.n; (d.n);
+        let numbers=[3,1,3]; sum(numbers); numbers | sort | unique | count"#;
     let inline = run_stdin(source, INPUT);
     assert!(
         inline.status.success(),
@@ -4188,8 +4191,27 @@ fn saved_collection_suffixes_agree_inline_file_and_buffer_later_errors() {
         String::from_utf8_lossy(&file.stderr)
     );
     assert_eq!(inline.stdout, file.stdout);
-    assert_eq!(String::from_utf8(inline.stdout).unwrap(), "7\n2\n");
-    let failed = run_stdin(&format!("{source}; report 1 div 0"), INPUT);
+    assert_eq!(
+        String::from_utf8(inline.stdout).unwrap(),
+        "3\n3\n3\n\"ab\"\ntrue\n8\n3\n1\n1\n7\n2\n"
+    );
+    let native_fields = run_stdin(
+        r#"let selected=input | filter(op("arith.constant")) | head(1);
+        let row=user_info(selected);
+        row.targets | names; (row.targets) | names; (row.targets | names);
+        let answer=row.targets; answer | names; (answer | names)"#,
+        INPUT,
+    );
+    assert!(
+        native_fields.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native_fields.stderr)
+    );
+    assert_eq!(
+        native_fields.stdout,
+        b"arith.addi\narith.addi\narith.addi\narith.addi\narith.addi\narith.addi\narith.addi\narith.addi\narith.addi\narith.addi\n"
+    );
+    let failed = run_stdin(&format!("{source}; 1 div 0"), INPUT);
     assert!(!failed.status.success());
     assert!(failed.stdout.is_empty());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("zero"));

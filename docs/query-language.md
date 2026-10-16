@@ -346,6 +346,17 @@ Outside comprehensions, plain JSON-shaped literals keep their existing binding
 and interpolation rules. `for` and `if` remain ordinary binding names elsewhere,
 including a literal such as `[for]` when `for` is bound.
 
+A scalar expression can be a query result directly. An immutable binding lets
+later expressions reuse the value:
+
+```sh
+zirium '1+2' examples/cli/arithmetic.mlir
+zirium 'let n=1; n+2' examples/cli/arithmetic.mlir
+```
+
+Both commands print `3`. The same expressions work in program files and through
+`Query::parse`; no function declaration or `report` prefix is required.
+
 The supported expression forms are:
 
 - Absence (`null`), Boolean, signed integer, finite decimal float, and string literals; earlier

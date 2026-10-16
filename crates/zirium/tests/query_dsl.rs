@@ -3826,6 +3826,77 @@ fn shared_value_calls_and_saved_suffixes_keep_constructed_and_native_sources() {
             matches!(output, QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Integer(7))
         );
     }
+    for (expression, expected) in [
+        ("n+2", V::Integer(3)),
+        ("1+2", V::Integer(3)),
+        ("(n+2)*3-1", V::Integer(8)),
+        ("(n+2)", V::Integer(3)),
+        (r#""a" ++ "b""#, V::String("ab".into())),
+        ("not false and n+2 == 3", V::Boolean(true)),
+        ("[n,2][1]+2", V::Integer(3)),
+        (r#"{"n":n}.n+2"#, V::Integer(3)),
+    ] {
+        let direct = evaluate(&mut document, &format!("let n=1; {expression}"));
+        let saved = evaluate(
+            &mut document,
+            &format!("let n=1; let result={expression}; result"),
+        );
+        for output in [&direct[0], &saved[0]] {
+            assert!(
+                matches!(output, QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &expected),
+                "{expression}: {output:?}"
+            );
+        }
+    }
+    for expression in ["d.n", "(d.n)", "t.1"] {
+        let bindings = r#"let d={"n":1}; let t=(1,2);"#;
+        let direct = evaluate(&mut document, &format!("{bindings} {expression}"));
+        let saved = evaluate(
+            &mut document,
+            &format!("{bindings} let result={expression}; result"),
+        );
+        for output in [&direct[0], &saved[0]] {
+            assert!(
+                matches!(output, QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Integer(1)),
+                "{expression}: {output:?}"
+            );
+        }
+    }
+    let captured = evaluate(
+        &mut document,
+        "let selected=input | head(1); let row=user_info(selected); row.targets; (row.targets); legacy=user_info(selected); legacy.targets",
+    );
+    let expected = document.query(&ops().head(1).users()).unwrap();
+    for output in captured {
+        assert!(
+            matches!(output, QueryOutput::Native(NativeValue::OperationSequence(operations)) if operations == expected)
+        );
+    }
+    let native_fields = evaluate(
+        &mut document,
+        r#"let selected=input | filter(op("test.seed")) | head(1);
+        let row=user_info(selected);
+        row.targets | names; (row.targets) | names; (row.targets | names);
+        let answer=row.targets; answer | names; (answer | names)"#,
+    );
+    let expected = document
+        .query(&ops().filter(op("test.seed")).head(1).users().names())
+        .unwrap();
+    for output in native_fields {
+        assert_eq!(output, QueryOutput::Values(expected.clone()));
+    }
+    for (expression, message) in [
+        ("1 div 0", "zero"),
+        ("9223372036854775807+1", "overflow"),
+        (r#"1+"x""#, "numeric"),
+    ] {
+        let error = Query::parse(expression)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .unwrap_err();
+        assert!(error.to_string().contains(message), "{error}");
+        assert_eq!(&expression[error.range().unwrap()], expression);
+    }
     let saved = evaluate(
         &mut document,
         "let numbers=[3,1,3]; numbers | sort | unique | count",

@@ -501,6 +501,20 @@ pub(super) fn ordering_call(source: &str, position: usize) -> bool {
 }
 
 pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
+    if let Some(first) = tokens[cursor..]
+        .iter()
+        .find(|token| !matches!(token.kind(), T::Trivia | T::LParen))
+        && (matches!(first.kind(), T::Integer | T::Number | T::String)
+            || first.kind() == T::Operator
+                && matches!(&source[first.range().as_range()], "+" | "-")
+            || first.kind() == T::Identifier
+                && matches!(
+                    &source[first.range().as_range()],
+                    "true" | "false" | "null" | "not"
+                ))
+    {
+        return true;
+    }
     if let Some(first) = tokens.get(cursor) {
         let mut depth = 0usize;
         let mut end = source.len();
@@ -529,10 +543,16 @@ pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
     {
         return true;
     }
+    let groups = tokens[cursor..]
+        .iter()
+        .take_while(|token| matches!(token.kind(), T::Trivia | T::LParen))
+        .filter(|token| token.kind() == T::LParen)
+        .count();
     let mut depth = 0usize;
     let mut previous = T::LBracket;
     for (i, token) in tokens.iter().enumerate().skip(cursor) {
         match token.kind() {
+            T::LBracket if depth == 0 && previous == T::Identifier => return true,
             T::LBracket | T::LBrace | T::LParen => depth += 1,
             T::RBracket | T::RBrace | T::RParen => {
                 depth = depth.saturating_sub(1);
@@ -541,12 +561,30 @@ pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
                         .iter()
                         .find(|t| t.kind() != T::Trivia)
                         .is_some_and(|t| {
-                            t.kind() == T::Identifier && &source[t.range().as_range()] == "default"
+                            matches!(t.kind(), T::Operator | T::Equals | T::LBracket)
+                                || t.kind() == T::Identifier
+                                    && matches!(
+                                        &source[t.range().as_range()],
+                                        "default" | "div" | "mod" | "and" | "or"
+                                    )
                         });
                 }
             }
             T::Eof => return false,
             T::Pipe | T::Semicolon if depth == 0 => return false,
+            T::Operator
+                if depth > 0 && depth <= groups && &source[token.range().as_range()] == "." => {}
+            T::Comma if depth > 0 && depth <= groups => return true,
+            T::Operator | T::Equals if depth <= groups => return true,
+            T::Identifier
+                if depth <= groups
+                    && matches!(
+                        &source[token.range().as_range()],
+                        "div" | "mod" | "and" | "or"
+                    ) =>
+            {
+                return true;
+            }
             T::Identifier
                 if &source[token.range().as_range()] == "default"
                     && matches!(
