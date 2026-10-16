@@ -45,7 +45,7 @@ Before Zirql 0.1.0 is published, the candidate manifest uses both the reviewed
 Git revision and a matching registry version:
 
 ```toml
-zirql = { git = "https://github.com/zayenz/zirql", rev = "6529b0bcd82169ca828babb49f7a231f00366c97", version = "=0.1.0" }
+zirql = { git = "https://github.com/zayenz/zirql", rev = "860247d1cc703d058979d39344c72d7e669092ce", version = "=0.1.0" }
 ```
 
 Cargo source builds use that public Git commit. Cargo normalizes the Rust crate
