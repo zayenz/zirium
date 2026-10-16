@@ -770,6 +770,20 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 }
             }
         }
+        if let model::Stage::Projection { value, .. } = stage {
+            capture::slots::<(&zirql::ValueExpression<Operand>, program::Kind)>(
+                value.projection.fields.len(),
+                budget,
+                range,
+            )
+            .map_err(query_error)?;
+            return Ok(value
+                .projection
+                .fields
+                .iter()
+                .map(|(_, field)| (field, program::Kind::Operations))
+                .collect());
+        }
         if let model::Stage::NativeMap { mapping, .. } = stage {
             let mut values = Vec::new();
             budget.charge_results(2, Location::Query(range.clone()))?;
@@ -870,6 +884,31 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         zirql::ScopedNativeValueArguments<'s, EvaluationContext<'_, '_, 'q>, Self>,
         zirql::QueryError,
     > {
+        if let model::Stage::Projection { value, .. } = stage {
+            let projection = &value.projection;
+            let subject = self.subject_kind(input, budget, &projection.subject.range)?;
+            capture::slots::<zirql::ScopedNativeArgument<'_, Operand, program::Kind>>(
+                projection.fields.len(),
+                budget,
+                range,
+            )
+            .map_err(query_error)?;
+            let mut arguments = Vec::with_capacity(projection.fields.len());
+            for (_, expression) in &projection.fields {
+                capture::slots::<(zirql::Located<String>, program::Kind)>(1, budget, range)
+                    .map_err(query_error)?;
+                budget.charge(
+                    projection.subject.value.len(),
+                    Location::Query(projection.subject.range.clone()),
+                )?;
+                arguments.push(zirql::ScopedNativeArgument {
+                    expression,
+                    relative: Some(subject.clone()),
+                    locals: vec![(projection.subject.clone(), subject.clone())],
+                });
+            }
+            return Ok(arguments);
+        }
         let arguments = if let model::Stage::WhereExists { relation, .. } = stage {
             budget.charge(1, Location::Query(range.clone()))?;
             budget.charge_results(1, Location::Query(range.clone()))?;
@@ -914,6 +953,17 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        if let model::Stage::Projection { value, .. } = stage {
+            let result = arguments.evaluate_projection(&value.projection, input, budget)?;
+            return comprehension::ConstructedReport::with_types(
+                result.value,
+                result.types,
+                range.clone(),
+                budget,
+            )
+            .map(|value| QueryOutput::Native(NativeValue::Constructed(value)))
+            .map_err(zirql::EvaluationError::Host);
+        }
         if let model::Stage::WhereExists { relation, .. } = stage {
             let native_sequence = matches!(
                 functions::unretained(&input),

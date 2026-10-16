@@ -3811,23 +3811,52 @@ fn typed_functions_agree_inline_file_and_buffer_later_runtime_failure() {
     );
     assert_eq!(inline.stdout, b"8\n");
     let path = temporary_path("typed-functions", "zirql");
-    for (source, expected) in [
-        (program, Some(inline.stdout.as_slice())),
+    for (source, expected, input) in [
+        (program, Some(inline.stdout.as_slice()), input),
         (
             r#"filter(op("example.root")) | head(1) | project(row, {"cost":1+(row | children | count)}) | json"#,
             Some(b"[\n  {\n    \"cost\": 3\n  }\n]\n".as_slice()),
+            input,
         ),
         (
             r#"fn bump(n:int)->int{n+1} fn label()->string{"example.root"} filter(op(label())) | head(bump(0)) | project(row, {"cost":bump(row | children | count)}) | json"#,
             Some(b"[\n  {\n    \"cost\": 3\n  }\n]\n".as_slice()),
+            input,
         ),
         (
             r#"fn broken(n:int)->int{10 div n} report 1 | json; filter(op("example.root")) | project(row, {"cost":broken(row | parent | count)}) | json"#,
             None,
+            input,
         ),
         (
             "fn fail(n:int)->int {10 div n} report 1 | json; report fail(0) | json",
             None,
+            input,
+        ),
+        (
+            r#"project(row,{"z":one(row | names)})"#,
+            Some(b"[\n  {\n    \"z\": \"test.a\"\n  }\n]\n".as_slice()),
+            r#""test.a"() : () -> ()"#,
+        ),
+        (
+            r#"fn n()->int{1} project(row,{"z":one(row | names)})"#,
+            Some(b"[\n  {\n    \"z\": \"test.a\"\n  }\n]\n".as_slice()),
+            r#""test.a"() : () -> ()"#,
+        ),
+        (
+            r#"fn make(root:Operation)->sequence<record {"z":int}> {root | project(row,{"z":1})} make(input | head(1))"#,
+            Some(b"[\n  {\n    \"z\": 1\n  }\n]\n".as_slice()),
+            r#""test.a"() : () -> ()"#,
+        ),
+        (
+            r#"fn make(root:Operation)->sequence<record {"z":int}> {root | filter(false) | project(row,{"z":1})} let rows=make(input | head(1)); report [r.z for r in rows] | json"#,
+            Some(b"[]\n".as_slice()),
+            r#""test.a"() : () -> ()"#,
+        ),
+        (
+            r#"fn make(root:Operation)->sequence<record {"z":int}> {root | project(row,{"z":1 div (count-1)})} report 1 | json; make(input | head(1))"#,
+            None,
+            r#""test.a"() : () -> ()"#,
         ),
     ] {
         fs::write(&path, source).unwrap();

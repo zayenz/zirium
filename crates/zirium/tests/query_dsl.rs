@@ -2149,6 +2149,84 @@ fn function_native_contracts_preserve_ids_sequences_and_current_owners() {
 }
 
 #[test]
+fn projections_compose_with_prepared_values_and_function_results() {
+    use zirium::query::{ConstructedValue as V, NativeValue};
+    let mut document = document_from(r#""test.a"() : () -> ()"#);
+    for (source, expected) in [
+        (
+            r#"project(row,{"z":one(row | names)})"#,
+            V::String("test.a".into()),
+        ),
+        (
+            r#"fn n()->int{1} project(row,{"z":one(row | names)})"#,
+            V::String("test.a".into()),
+        ),
+        (
+            r#"fn make(root:Operation)->sequence<record {"z":int}> {root | project(row,{"z":1})} make(input | head(1))"#,
+            V::Integer(1),
+        ),
+    ] {
+        let mut outputs = Vec::new();
+        Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                outputs.push(value);
+                Ok(())
+            })
+            .unwrap();
+        let [QueryOutput::Native(NativeValue::Constructed(report))] = outputs.as_slice() else {
+            panic!("projected report")
+        };
+        assert_eq!(
+            report.value().data(),
+            &V::Array(vec![V::Record(vec![("z".into(), expected)])])
+        );
+    }
+    for (source, expected) in [
+        (
+            r#"fn make(root:Operation,n:int)->sequence<record {"nested":sequence<record {"z":int}>}> {let offset=n+1; root | project(row,{"nested":row | project(inner,{"z":offset+count})})} make(input | head(1),7) | json"#,
+            serde_json::json!([{"nested":[{"z":9}]}]),
+        ),
+        (
+            r#"fn make(root:Operation)->sequence<record {"z":int}> {root | filter(false) | project(row,{"z":1})} let rows=make(input | head(1)); report [r.z for r in rows] | json"#,
+            serde_json::json!([]),
+        ),
+    ] {
+        let mut outputs = Vec::new();
+        Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                outputs.push(value);
+                Ok(())
+            })
+            .unwrap();
+        let [QueryOutput::Json(json)] = outputs.as_slice() else {
+            panic!("rendered report")
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(json).unwrap(),
+            expected
+        );
+    }
+    let invalid = r#"fn n()->int{1} filter(false) | project(row,{"z":one(row | names),"bad":row})"#;
+    assert!(
+        Query::parse(invalid)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .is_err()
+    );
+    let failure = r#"fn make(root:Operation)->sequence<record {"z":int}> {root | project(row,{"z":1 div (count-1)})} make(input | head(1))"#;
+    let error = Query::parse(failure)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(error.to_string().contains("division by zero"), "{error}");
+    assert!(error.to_string().contains("make"), "{error}");
+    let start = failure.find("1 div").unwrap();
+    assert_eq!(error.range(), Some(start..start + "1 div (count-1)".len()));
+}
+
+#[test]
 fn functions_prepare_fields_arguments_and_all_written_bodies_before_execution() {
     use zirium::query::{
         FunctionDefinition as F, FunctionLimits, FunctionType as T, PathEdge, ReportExpr as E,
@@ -2180,7 +2258,7 @@ fn functions_prepare_fields_arguments_and_all_written_bodies_before_execution() 
     }
     let mut repeated = self::document();
     outputs.clear();
-    Query::parse(r#"let outer=7; let original=input; fn bump(n:int)->int{n+1} filter(op("test.seed")) | users | project(row, {"z":row | names, "a":bump(outer), "relative":count, "original":original | count}) | emit"#)
+    Query::parse(r#"let outer=7; let original=input; fn bump(n:int)->int{n+1} filter(op("test.seed")) | users | project(row, {"z":one(row | names), "names":row | names, "a":bump(outer), "relative":count, "original":original | count}) | emit"#)
         .unwrap()
         .evaluate(&mut repeated, DialectRegistry::baseline(), |_, value| { outputs.push(value); Ok(()) })
         .unwrap();
@@ -2202,7 +2280,8 @@ fn functions_prepare_fields_arguments_and_all_written_bodies_before_execution() 
             .map(|(name, value)| (name.as_str(), value.data()))
             .collect::<Vec<_>>(),
         [
-            ("z", &V::Array(vec![V::String("test.add".into())])),
+            ("z", &V::String("test.add".into())),
+            ("names", &V::Array(vec![V::String("test.add".into())])),
             ("a", &V::Integer(8)),
             ("relative", &V::Integer(1)),
             ("original", &V::Integer(6)),

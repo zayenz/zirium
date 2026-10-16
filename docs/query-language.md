@@ -1572,6 +1572,20 @@ example, an `identity(op: Operation) -> Operation` call can feed
 An explicit call source receives its written arguments rather than the
 surrounding pipeline selection.
 
+A function can return projected records. Fields inside its projection can read
+the function's parameters and earlier locals; each field's relative input is
+the singleton subject. Nested projections keep that lexical scope. For example:
+
+```sh
+zirium 'fn summarize(root: Operation) -> sequence<record {"name": string, "children": int}> {
+  root | project(row, {"name": one(row | names), "children": children | count})
+} summarize(input | head(1)) | json' examples/cli/function-report.mlir
+```
+
+Every written field is checked before subjects are selected. Empty projections
+retain their record schema, and native handles still need a scalar projection
+such as `names` or `count` before they can become report fields.
+
 Signatures accept `int`, `float`, `bool`, `string`, `opt T`, `sequence<T>`,
 `tuple<T, ...>`, `record {field: T, ...}`, `set<T>` and `keyed<T>`.
 Nested declarations use the same grammar. Sets retain their existing supported
