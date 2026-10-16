@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile, copyFile, rm } from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import { resolve, relative, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,7 +30,8 @@ for (const name of guides) {
     if (slug && guides.includes(slug)) {
       return `](${posix.relative(`guides/${name}`, `guides/${slug}`) || '.'}/${suffix})`;
     }
-    return `](https://github.com/zayenz/zirium/blob/main/${resolved}${suffix})`;
+    const view = statSync(resolve(root, resolved)).isDirectory() ? 'tree' : 'blob';
+    return `](https://github.com/zayenz/zirium/${view}/v0.5.0/${resolved}${suffix})`;
   });
   const target = resolve(output, `guides/${name}.md`);
   await mkdir(dirname(target), { recursive: true });

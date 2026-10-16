@@ -1,5 +1,9 @@
 # Zirium query language
 
+These examples use Zirium 0.5.0. Repository-relative inputs are in the
+[`v0.5.0` checkout](https://github.com/zayenz/zirium/tree/v0.5.0);
+see [getting started](getting-started.md) for installation.
+
 A query transforms an ordered stream. It starts with every operation
 in the input document. A pipe passes the current stream to the next stage:
 

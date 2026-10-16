@@ -1,5 +1,9 @@
 # Structured queries in Rust and Python
 
+These examples use Zirium 0.5.0. Repository-relative inputs are in the
+[`v0.5.0` checkout](https://github.com/zayenz/zirium/tree/v0.5.0);
+see [getting started](getting-started.md) for installation.
+
 Build queries with methods and predicates, then evaluate them against a semantic
 document. Rust and Python use the same expression tree and return native values.
 Queries are read-only; use the [textual language](query-language.md) for CLI

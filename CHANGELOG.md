@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0
+
+Zirium 0.5.0 uses Zirql 0.1.0 for shared query execution and constructed
+reports. Native MLIR operations, SSA identities, dialect semantics and edits
+retain Zirium's existing contracts. The API remains experimental.
+
+- Add typed query parameters, pure named functions, optional values, patterns,
+  conditionals, bounded loops, fold/scan and native worklist operations.
+- Construct reports with projections, comprehensions, grouping and keyed arrays.
+  Sets and dictionaries retain insertion order; sorting keeps equal-key order.
+- Compose saved native selections and report values without rendering them.
+  Shared execution retains source locations and cumulative resource limits.
+- Provide consistent 0.5.0 Rust, Python and CLI packages, with version-specific
+  CPython 3.11–3.14 wheels and the existing Linux x86_64/macOS arm64 support.
+  Release candidates can build checked artifacts without publishing them.
+
 ## 0.4.0
 
 Zirium 0.4.0 adds source-aware MLIR formatting and explicit forward and

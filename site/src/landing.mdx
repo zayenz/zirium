@@ -18,7 +18,7 @@ hero:
 
 import { LinkCard, CardGrid } from '@astrojs/starlight/components';
 
-<div className="project-note">Rust · Python · CLI · Experimental</div>
+<div className="project-note">Zirium 0.5.0 · Rust · Python · CLI · Experimental</div>
 
 ## Keep the source. Inspect the structure.
 
@@ -38,7 +38,7 @@ representation that fits the work.
 Install the published Python package:
 
 ```sh
-python -m pip install zirium
+python -m pip install zirium==0.5.0
 ```
 
 Wheels cover conventional CPython 3.11–3.14 on Linux x86_64 and macOS arm64.
@@ -48,20 +48,20 @@ does not include the CLI.
 With Rust 1.88 or newer, install the published CLI:
 
 ```sh
-cargo install zirium --locked
+cargo install zirium --version '=0.5.0' --locked
 ```
 
-For a Rust application, add the library with `cargo add zirium` and consult the
-[Rust API reference](https://docs.rs/zirium). The
+For a Rust application, add the library with `cargo add zirium@=0.5.0` and consult the
+[Rust API reference](https://docs.rs/zirium/0.5.0/zirium/). The
 [getting-started guide](./guides/getting-started/) covers library usage and
 building from a checkout.
 
 ### CLI binaries
 
-[GitHub Releases](https://github.com/zayenz/zirium/releases) provides standalone
+[GitHub Releases](https://github.com/zayenz/zirium/releases/tag/v0.5.0) provides standalone
 CLI archives for Linux x86_64 (static musl) and macOS arm64. These do not require
 Rust, Python or LLVM. Follow the
-[download and checksum instructions](https://github.com/zayenz/zirium#cli-binaries)
+[download and checksum instructions](https://github.com/zayenz/zirium/blob/v0.5.0/README.md#cli-binaries)
 for your platform.
 
 ## Try a query
@@ -69,7 +69,7 @@ for your platform.
 This example reads generic MLIR from stdin and needs no dialect registry:
 
 ```sh
-printf '%s\n' '"example.make"() : () -> i32' | zirium 'names | tally | json'
+printf '%s\n' '%value = "example.make"() : () -> i32' | zirium 'names | tally | json'
 ```
 
 For a file using registered custom syntax, choose a preset and use strict

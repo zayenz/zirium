@@ -1,6 +1,9 @@
 # Publish Zirium at zayenz.se/zirium/
 
-Build from the Zirium repository, using Node 22.12 or newer:
+Build the accepted Zirium 0.5.0 release source, using Node 22.12 or newer.
+The homepage and guides select 0.5.0 installation commands, Rust API pages and
+repository source links. Check that the release tag and API destinations exist
+after package publication before importing the final site:
 
 ```sh
 cd site
@@ -30,3 +33,6 @@ build configuration in `site/`. Do not edit the imported HTML. To add a guide,
 include it in `scripts/prepare-content.mjs` and the sidebar in
 `astro.config.mjs`. The package lock fixes website dependencies independently
 of Rust and Python releases.
+
+Local checks and candidate artifacts do not deploy the site. Retain the source
+commit and reviewed build; import and deployment are separate maintainer actions.

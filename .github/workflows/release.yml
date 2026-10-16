@@ -6,9 +6,19 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
+      mode:
+        description: Build a candidate or publish an existing release tag
+        required: true
+        default: publish
+        type: choice
+        options: [publish, candidate]
+      source_ref:
+        description: Exact 40-character commit for candidate mode
+        required: false
+        type: string
       tag:
         description: Existing release tag to publish
-        required: true
+        required: false
         type: string
       registry:
         description: Distribution to publish (both means crates.io and PyPI)
@@ -26,53 +36,72 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.mode || 'publish' }}-${{ inputs.source_ref || inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   validate:
-    name: Validate release tag
+    name: Validate selected source
     runs-on: ubuntu-latest
     outputs:
       commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.packages.outputs.version }}
     steps:
-      - name: Check release tag name
+      - name: Check source selection
         shell: bash
         env:
+          MODE: ${{ inputs.mode || 'publish' }}
+          SOURCE_REF: ${{ inputs.source_ref }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          if [[ "$MODE" == candidate ]]; then
+            if [[ ! "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "candidate mode requires an exact commit ID" >&2
+              exit 1
+            fi
+            exit 0
+          fi
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "invalid release tag: $RELEASE_TAG" >&2
             exit 1
           fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          ref: ${{ inputs.mode == 'candidate' && inputs.source_ref || format('refs/tags/{0}', inputs.tag || github.ref_name) }}
           fetch-depth: 0
-      - name: Resolve the tag to a commit on main
+      - name: Resolve and check the selected commit
         id: source
         shell: bash
         env:
+          MODE: ${{ inputs.mode || 'publish' }}
+          SOURCE_REF: ${{ inputs.source_ref }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -eu
-          commit=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
+          if [[ "$MODE" == candidate ]]; then
+            commit=$(git rev-parse --verify "${SOURCE_REF}^{commit}")
+            test "$commit" = "$SOURCE_REF"
+          else
+            commit=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor "$commit" FETCH_HEAD
+          fi
           test "$(git rev-parse HEAD)" = "$commit"
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor "$commit" FETCH_HEAD
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
-      - name: Match tag and package versions
+      - name: Check package versions and release notes
+        id: packages
         shell: bash
         env:
+          MODE: ${{ inputs.mode || 'publish' }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -eu
-          python3 - "$RELEASE_TAG" <<'PY'
+          python3 - "$MODE" "$RELEASE_TAG" <<'PY'
+          import os
+          import re
           import sys
           import tomllib
           from pathlib import Path
-
-          version = sys.argv[1][1:]
 
           with Path("crates/zirium/Cargo.toml").open("rb") as file:
               cargo = tomllib.load(file)
@@ -81,6 +110,11 @@ jobs:
           with Path("pyproject.toml").open("rb") as file:
               python = tomllib.load(file)
 
+          version = cargo["package"]["version"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+              raise SystemExit(f"invalid package version: {version}")
+          if sys.argv[1] != "candidate" and sys.argv[2] != f"v{version}":
+              raise SystemExit(f"tag {sys.argv[2]} does not match package version {version}")
           versions = {
               "Rust crate": cargo["package"]["version"],
               "Python extension crate": python_crate["package"]["version"],
@@ -89,10 +123,18 @@ jobs:
           mismatches = {name: value for name, value in versions.items() if value != version}
           if mismatches:
               raise SystemExit(f"tag v{version} does not match package versions: {mismatches}")
+          for filename in ("Cargo.lock", "uv.lock"):
+              with Path(filename).open("rb") as file:
+                  lock = tomllib.load(file)
+              for package in lock["package"]:
+                  if package["name"] in ("zirium", "zirium-python") and package["version"] != version:
+                      raise SystemExit(f"{filename}: {package['name']} has version {package['version']}")
           if python_crate["package"].get("publish") is not False:
               raise SystemExit("zirium-python must remain non-publishable")
           if f"## {version}" not in Path("CHANGELOG.md").read_text():
               raise SystemExit(f"CHANGELOG.md has no {version} entry")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\n")
           PY
 
   quality:
@@ -101,11 +143,11 @@ jobs:
     uses: ./.github/workflows/quality.yml
     with:
       source_ref: ${{ needs.validate.outputs.commit }}
-      registry_package: true
+      registry_package: ${{ inputs.mode != 'candidate' }}
 
   publish-crates:
     name: Publish to crates.io
-    if: github.repository == 'zayenz/zirium' && (github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'both' || inputs.registry == 'crates-io')
+    if: inputs.mode != 'candidate' && github.repository == 'zayenz/zirium' && (github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'both' || inputs.registry == 'crates-io')
     needs: [validate, quality]
     runs-on: ubuntu-latest
     environment:
@@ -127,7 +169,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    if: github.repository == 'zayenz/zirium' && (github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'both' || inputs.registry == 'pypi')
+    if: inputs.mode != 'candidate' && github.repository == 'zayenz/zirium' && (github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'both' || inputs.registry == 'pypi')
     needs: [validate, quality]
     runs-on: ubuntu-latest
     environment:
@@ -147,7 +189,7 @@ jobs:
 
   build-binaries:
     name: CLI ${{ matrix.target }}
-    if: github.repository == 'zayenz/zirium' && (github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'binaries')
+    if: github.repository == 'zayenz/zirium' && (inputs.mode == 'candidate' || github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'binaries')
     needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
@@ -159,7 +201,7 @@ jobs:
           - os: macos-15
             target: aarch64-apple-darwin
     env:
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
       TARGET: ${{ matrix.target }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
@@ -191,7 +233,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package="zirium-${RELEASE_TAG#v}-$TARGET"
+          package="zirium-$RELEASE_VERSION-$TARGET"
           mkdir -p "dist/$package"
           cp "target/$TARGET/release/zirium" "dist/$package/"
           cp LICENSE-MIT LICENSE-APACHE "dist/$package/"
@@ -206,7 +248,7 @@ jobs:
           tar -xzf "$archive"
           test -s "$package/LICENSE-MIT"
           test -s "$package/LICENSE-APACHE"
-          test "$("./$package/zirium" --version)" = "zirium ${RELEASE_TAG#v}"
+          test "$("./$package/zirium" --version)" = "zirium $RELEASE_VERSION"
           printf '%s\n' 'module { %c = stablehlo.constant dense<1.0> : tensor<2xf32> %a = stablehlo.add %c, %c : tensor<2xf32> }' > input.mlir
           test "$("./$package/zirium" --preset stablehlo --strict 'filter(op("stablehlo.add")) | count' input.mlir)" = 1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -220,6 +262,7 @@ jobs:
 
   publish-binaries:
     name: Publish CLI archives
+    if: inputs.mode != 'candidate' && github.repository == 'zayenz/zirium' && (github.event_name == 'push' || inputs.registry == 'all' || inputs.registry == 'binaries')
     needs: [validate, quality, build-binaries]
     runs-on: ubuntu-latest
     permissions:

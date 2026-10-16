@@ -52,7 +52,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
-      - run: cargo fmt --check
+      - run: cargo fmt --all -- --check
       - run: cargo test --doc --workspace --all-features
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
       - name: Verify registry package
@@ -74,9 +74,13 @@ jobs:
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
       - run: uv python install ${{ matrix.python-version }}
       - run: uv sync --locked --python ${{ matrix.python-version }}
+      - run: uv run --locked --no-sync maturin develop --locked --manifest-path crates/zirium-python/Cargo.toml
       - run: uv run --locked --no-sync ruff format --check python
       - run: uv run --locked --no-sync ruff check python
       - run: uv run --locked --no-sync ty check python
+      - run: >-
+          uv run --locked --no-sync python -c
+          'import importlib.metadata, pathlib, tomllib, zirium, zirium._zirium; v=tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert zirium.__version__ == importlib.metadata.version("zirium") == v; print(zirium._zirium.__file__)'
       - run: uv run --locked --no-sync pytest -q
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
@@ -93,8 +97,8 @@ jobs:
       - run: uv venv --python ${{ matrix.python-version }} wheel-venv
       - run: uv pip install --python wheel-venv/bin/python dist/*.whl
       - run: >-
-          wheel-venv/bin/python -c
-          'import zirium; d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d.operation_table().count == 1; assert d.canonical_bytes()'
+          wheel-venv/bin/python -I -c
+          'import importlib.metadata, pathlib, sys, tomllib, zirium, zirium._zirium; from zirium.query import ops; assert zirium.__version__ == importlib.metadata.version("zirium") == tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert pathlib.Path(zirium.__file__).is_relative_to(sys.prefix); assert pathlib.Path(zirium._zirium.__file__).is_relative_to(sys.prefix); d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.query(ops().names().tally()) == {"test": 1}; assert d.canonical_bytes()'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: quality-wheel-cp${{ matrix.python-version }}-linux-x86_64
@@ -117,6 +121,7 @@ jobs:
       - run: test "$(uname -m)" = arm64
       - run: uv python install ${{ matrix.python-version }}
       - run: uv sync --locked --python ${{ matrix.python-version }}
+      - run: uv run --locked --no-sync maturin develop --locked --manifest-path crates/zirium-python/Cargo.toml
       - run: uv run --locked --no-sync pytest -q
       - run: >-
           uv run --locked --no-sync maturin build --release --locked
@@ -136,8 +141,8 @@ jobs:
           esac
           uv venv --python "${{ matrix.python-version }}" wheel-venv
           uv pip install --python wheel-venv/bin/python "$wheel"
-          wheel-venv/bin/python -c \
-            'import zirium; d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.operation_table().count == 1; assert d.canonical_bytes()'
+          wheel-venv/bin/python -I -c \
+            'import importlib.metadata, pathlib, sys, tomllib, zirium, zirium._zirium; from zirium.query import ops; assert zirium.__version__ == importlib.metadata.version("zirium") == tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert pathlib.Path(zirium.__file__).is_relative_to(sys.prefix); assert pathlib.Path(zirium._zirium.__file__).is_relative_to(sys.prefix); d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.query(ops().names().tally()) == {"test": 1}; assert d.canonical_bytes()'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: quality-wheel-cp${{ matrix.python-version }}-macos-arm64
@@ -168,8 +173,8 @@ jobs:
           tar -tzf "$archive" | grep '/LICENSE-MIT$'
           uv venv --python 3.14 sdist-venv
           uv pip install --python sdist-venv/bin/python "$archive"
-          sdist-venv/bin/python -c \
-            'import zirium; d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d.operation_table().count == 1; assert d.canonical_bytes()'
+          sdist-venv/bin/python -I -c \
+            'import importlib.metadata, pathlib, sys, tomllib, zirium, zirium._zirium; from zirium.query import ops; assert zirium.__version__ == importlib.metadata.version("zirium") == tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert pathlib.Path(zirium.__file__).is_relative_to(sys.prefix); assert pathlib.Path(zirium._zirium.__file__).is_relative_to(sys.prefix); d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.query(ops().names().tally()) == {"test": 1}; assert d.canonical_bytes()'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: quality-sdist

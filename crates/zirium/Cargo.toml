@@ -1,6 +1,6 @@
 [package]
 name = "zirium"
-version = "0.4.0"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -8,11 +8,11 @@ description = "Lossless textual MLIR syntax parsing and semantic processing"
 repository = "https://github.com/zayenz/zirium"
 readme = "../../README.md"
 homepage = "https://zayenz.se/zirium/"
-documentation = "https://docs.rs/zirium"
+documentation = "https://docs.rs/zirium/0.5.0/zirium/"
 keywords = ["mlir", "parser", "compiler"]
 categories = ["parser-implementations", "compilers"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-zirql = { git = "https://github.com/zayenz/zirql", rev = "63824d0d041477ed7deba3e945cccf47db45120d", version = "=0.1.0-alpha.5" }
+zirql = { git = "https://github.com/zayenz/zirql", rev = "6b6184fbf9998ece38c7e8cd5391770b5db32e04", version = "=0.1.0" }

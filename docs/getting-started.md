@@ -1,7 +1,7 @@
 # Getting started with Zirium
 
-This guide covers source setup and the Rust and Python APIs. For the published
-Python package, see [installation](../README.md#installation). Both APIs follow
+This guide covers Zirium 0.5.0 source setup and the Rust and Python APIs.
+For the published Python package, see [installation](../README.md#installation). Both APIs follow
 the same sequence:
 
 ```text
@@ -26,7 +26,7 @@ builds version-specific extensions and does not use `abi3`.
 Clone the repository, then run the workspace tests:
 
 ```sh
-git clone https://github.com/zayenz/zirium.git
+git clone --branch v0.5.0 --depth 1 https://github.com/zayenz/zirium.git
 cd zirium
 cargo test --workspace
 ```
@@ -40,12 +40,16 @@ cargo doc -p zirium --open
 
 ## Use Zirium from Rust
 
-For a local consumer next to the Zirium checkout, point Cargo at the core crate:
+Add the released library to your application:
 
 ```toml
 [dependencies]
-zirium = { path = "../zirium/crates/zirium" }
+zirium = "=0.5.0"
 ```
+
+For local development next to a matching checkout, use
+`zirium = { path = "../zirium/crates/zirium" }` instead. The
+[versioned Rust API](https://docs.rs/zirium/0.5.0/zirium/) describes the public modules.
 
 This program reports diagnostics, lowers generic MLIR strictly, validates the
 document, and prints canonical output:
@@ -115,13 +119,14 @@ Create the locked development environment and install the local extension:
 
 ```sh
 uv sync --locked --python 3.13
+uv run --locked --no-sync maturin develop --locked --manifest-path crates/zirium-python/Cargo.toml
 ```
 
 `uv.lock` pins the development tools. Replace `3.13` with another supported
 CPython version if needed. Check the import:
 
 ```sh
-.venv/bin/python -c 'import zirium; print("zirium imported")'
+.venv/bin/python -c 'import zirium, zirium._zirium; assert zirium.__version__ == "0.5.0"; print(zirium._zirium.__file__)'
 ```
 
 To check parsing as well as importing:
