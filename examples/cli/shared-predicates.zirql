@@ -1,0 +1,5 @@
+let [low, high, ..] = [1, 3, 99];
+let common = [(a, b) for a in [low, high] for b in [a, a + 1] if b <= 4];
+let alternate = [(a, b) | a in [low, high], b in [a, a + 1] where b <= 4];
+let selected = common | filter((a, b) => a + b > 4);
+report {"common": common, "alternate": alternate, "selected": selected} | json

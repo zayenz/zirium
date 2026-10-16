@@ -118,6 +118,10 @@ impl Expression {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Predicate {
+    Expression {
+        value: super::comprehension::ParsedComprehension,
+        range: TextRange,
+    },
     SameValue {
         left: super::capture::ParsedOperand,
         right: super::capture::ParsedOperand,
@@ -177,7 +181,8 @@ pub enum Predicate {
 impl Predicate {
     pub fn range(&self) -> TextRange {
         match self {
-            Self::SameValue { range, .. }
+            Self::Expression { range, .. }
+            | Self::SameValue { range, .. }
             | Self::Bool { range, .. }
             | Self::Op { range, .. }
             | Self::OpValue { range, .. }
@@ -369,6 +374,7 @@ pub enum Stage {
     Filter {
         predicate: Predicate,
         range: TextRange,
+        constructed: Option<super::comprehension::ParsedComprehension>,
     },
     Closure {
         range: TextRange,

@@ -458,7 +458,8 @@ impl<T> DiffQueryExpr<T> {
             DiffProgramOutput::Operations(side, items) => Runtime::Operations(side, items),
             DiffProgramOutput::Strings(items) => Runtime::Strings(items),
             DiffProgramOutput::Count(count) => Runtime::Count(count),
-            DiffProgramOutput::Map(_)
+            DiffProgramOutput::Constructed(_)
+            | DiffProgramOutput::Map(_)
             | DiffProgramOutput::Json(_, _)
             | DiffProgramOutput::Text(_) => {
                 return Err(EvaluationError::new(
@@ -617,7 +618,8 @@ fn lower_operation(
 ) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
     use zirql::PredicateKind as P;
     let node = match predicate {
-        model::Predicate::SameValue { .. }
+        model::Predicate::Expression { .. }
+        | model::Predicate::SameValue { .. }
         | model::Predicate::OpValue { .. }
         | model::Predicate::Computed { .. } => {
             return Err(EvaluationError::new(

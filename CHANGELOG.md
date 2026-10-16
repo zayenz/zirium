@@ -8,7 +8,11 @@ retain Zirium's existing contracts. The API remains experimental.
 
 - Add typed query parameters, pure named functions, optional values, patterns,
   conditionals, bounded loops, fold/scan and native worklist operations.
-- Construct reports with projections, comprehensions, grouping and keyed arrays.
+- Use named and implicit `_` predicate expressions in constructed/native filters,
+  roots, path targets, native match guards and diff queries. Shared list and
+  tuple patterns work across bindings, arguments and comprehension generators.
+- Construct reports with projections, both `for/in/if` and `pipe/where`
+  comprehensions, grouping and keyed arrays.
   Sets and dictionaries retain insertion order; sorting keeps equal-key order.
 - Compose saved native selections and report values without rendering them.
   Shared execution retains source locations and cumulative resource limits.

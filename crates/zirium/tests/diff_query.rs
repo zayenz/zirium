@@ -734,3 +734,59 @@ fn diff_existence_preserves_subjects_and_preflights_empty_sides() {
         assert!(error.range().is_some(), "{source}: {error}");
     }
 }
+
+#[test]
+fn shared_diff_predicates_keep_side_candidates_and_written_admission() {
+    use zirium::query::{DiffProgram, DiffProgramOutput, EvaluationLimits, EvaluationOptions};
+    let before = document("module { %x = arith.constant 1 : i32 }");
+    let after = document("module { %x = arith.constant 2 : i32 }");
+    let diff = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits::default(),
+    )
+    .unwrap();
+    let source = r#"selected = after; selected | filter(p => op(one(p | names)) and one(_ | names)=="arith.constant") | root(ancestor => op("builtin.module") and one(ancestor | names)=="builtin.module") | names"#;
+    let mut values = Vec::new();
+    DiffProgram::parse(source)
+        .unwrap()
+        .evaluate(
+            &diff,
+            ("before", "after"),
+            EvaluationLimits::default(),
+            EvaluationOptions::default(),
+            |_, value, _| {
+                values.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        values,
+        [DiffProgramOutput::Strings(vec!["builtin.module".into()])]
+    );
+    for source in [
+        "after | filter(false) | filter(p => p | json)",
+        "after | filter(false) | root(p => change(\"modified\"))",
+        "after | filter((a,b) => true)",
+    ] {
+        let mut emitted = false;
+        let error = DiffProgram::parse(source)
+            .unwrap()
+            .evaluate(
+                &diff,
+                ("before", "after"),
+                EvaluationLimits::default(),
+                EvaluationOptions::default(),
+                |_, _, _| {
+                    emitted = true;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+        assert!(error.range().is_some(), "{source}: {error}");
+        assert!(!emitted);
+    }
+}

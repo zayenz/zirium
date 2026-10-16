@@ -82,6 +82,7 @@ pub(crate) fn parse_with_budget(
         diagnostics: Vec::new(),
         nesting_limit,
         budget: &mut budget,
+        locals: Vec::new(),
         bindings: initial_bindings
             .iter()
             .map(|name| (*name).to_owned())
@@ -181,6 +182,7 @@ struct Parser<'a, 'b> {
     nesting_limit: usize,
     bindings: HashSet<String>,
     budget: &'b mut zirql::Budget,
+    locals: Vec<String>,
 }
 
 impl Parser<'_, '_> {
@@ -566,7 +568,14 @@ impl Parser<'_, '_> {
             nesting: self.nesting_limit.saturating_sub(depth),
         };
         let nesting = host.nesting;
-        match zirql::read_value_expression(&mut reader, &mut host, self.budget, nesting) {
+        let locals: Vec<_> = self.locals.iter().map(String::as_str).collect();
+        match zirql::read_value_expression_in_scope(
+            &mut reader,
+            &mut host,
+            &locals,
+            self.budget,
+            nesting,
+        ) {
             Ok(value) => {
                 let value = if self.function_mode {
                     match super::functions::normalize_outer(value, &self.bindings, self.budget) {
@@ -1004,12 +1013,27 @@ impl Parser<'_, '_> {
             let mut reader =
                 zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
                     .ok()?;
-            let value = match zirql::read_constructed_filter(&mut reader, self.budget) {
-                Ok(prefix) => {
+            let mut host = NativeReader {
+                source: self.source,
+                tokens: self.tokens,
+                bindings: &self.bindings,
+                nesting: self.nesting_limit.saturating_sub(depth),
+                function_mode: self.function_mode,
+            };
+            let nesting = host.nesting;
+            let locals: Vec<_> = self.locals.iter().map(String::as_str).collect();
+            let value = match zirql::read_constructed_filter(
+                &mut reader,
+                &mut host,
+                &locals,
+                self.budget,
+                nesting,
+            ) {
+                Ok(predicate) => {
                     self.sync(reader.position());
                     let range = start as usize..reader.position();
                     match super::report::lower_suffix(
-                        zirql::Located::new(zirql::ValueSuffix::FilterStartsWith(prefix), range),
+                        zirql::Located::new(zirql::ValueSuffix::Filter(predicate), range),
                         self.budget,
                     ) {
                         Ok(value) => value,
@@ -1311,10 +1335,7 @@ impl Parser<'_, '_> {
                 self.expect(TokenKind::LParen, "expected `(` after filter")?;
                 let predicate = self.predicate(depth + 1)?;
                 self.expect(TokenKind::RParen, "expected `)` after filter predicate")?;
-                Stage::Filter {
-                    predicate,
-                    range: self.span(start),
-                }
+                filter_stage(predicate, self.span(start))
             }
             "root" => {
                 self.expect(TokenKind::LParen, "expected `(` after root")?;
@@ -1487,88 +1508,39 @@ impl Parser<'_, '_> {
     }
 
     fn predicate(&mut self, depth: usize) -> Option<Predicate> {
-        self.or_predicate(depth)
-    }
-
-    fn or_predicate(&mut self, depth: usize) -> Option<Predicate> {
-        let first = self.and_predicate(depth)?;
-        let start = first.range().start();
-        let mut predicates = vec![first];
-        while self.at_identifier("or") {
-            self.bump();
-            predicates.push(self.and_predicate(depth)?);
-        }
-        if predicates.len() == 1 {
-            predicates.pop()
-        } else {
-            let end = predicates.last().unwrap().range().end();
-            Some(Predicate::Or {
-                predicates,
-                range: TextRange::new(start, end).unwrap(),
-            })
-        }
-    }
-
-    fn and_predicate(&mut self, depth: usize) -> Option<Predicate> {
-        let first = self.not_predicate(depth)?;
-        let start = first.range().start();
-        let mut predicates = vec![first];
-        while self.at_identifier("and") {
-            self.bump();
-            predicates.push(self.not_predicate(depth)?);
-        }
-        if predicates.len() == 1 {
-            predicates.pop()
-        } else {
-            let end = predicates.last().unwrap().range().end();
-            Some(Predicate::And {
-                predicates,
-                range: TextRange::new(start, end).unwrap(),
-            })
-        }
-    }
-
-    fn not_predicate(&mut self, depth: usize) -> Option<Predicate> {
-        self.skip_trivia();
-        let mut starts = Vec::new();
-        while self.at_identifier("not") {
-            if depth + starts.len() >= self.nesting_limit {
-                self.error("query nesting limit exceeded");
-                return None;
+        let mut reader =
+            zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
+                .ok()?;
+        let mut host = NativeReader {
+            source: self.source,
+            tokens: self.tokens,
+            bindings: &self.bindings,
+            nesting: self.nesting_limit.saturating_sub(depth).saturating_add(1),
+            function_mode: self.function_mode,
+        };
+        let locals: Vec<_> = self.locals.iter().map(String::as_str).collect();
+        let nesting = host.nesting;
+        match zirql::read_native_predicate_argument(
+            &mut reader,
+            &mut host,
+            &locals,
+            self.budget,
+            nesting,
+        ) {
+            Ok(predicate) => {
+                self.sync(reader.position());
+                Some(lower_shared_predicate(predicate))
             }
-            starts.push(self.current().range().start());
-            self.bump();
+            Err(error) => {
+                self.shared_error(error);
+                None
+            }
         }
-        let mut predicate = self.primary_predicate(depth + starts.len())?;
-        for start in starts.into_iter().rev() {
-            predicate = Predicate::Not {
-                range: TextRange::new(start, predicate.range().end()).unwrap(),
-                predicate: Box::new(predicate),
-            };
-        }
-        Some(predicate)
     }
 
     fn primary_predicate(&mut self, depth: usize) -> Option<Predicate> {
         self.skip_trivia();
         let start = self.current().range().start();
-        if self.at(TokenKind::LParen) {
-            if depth >= self.nesting_limit {
-                self.error("query nesting limit exceeded");
-                return None;
-            }
-            self.bump();
-            let predicate = self.predicate(depth + 1)?;
-            self.expect_recover(
-                TokenKind::RParen,
-                "expected `)` after predicate",
-                &[TokenKind::RParen, TokenKind::Pipe, TokenKind::Eof],
-            )?;
-            return Some(Predicate::Group {
-                predicate: Box::new(predicate),
-                range: self.span(start),
-            });
-        }
         let Some(kind) = self.identifier_text() else {
             self.error("expected a predicate");
             return None;
@@ -2102,7 +2074,7 @@ pub(super) fn valid_attribute_name(name: &str) -> bool {
         })
 }
 
-fn is_native_stage(name: &str) -> bool {
+pub(super) fn is_native_stage(name: &str) -> bool {
     matches!(
         name,
         "input"
@@ -2254,6 +2226,11 @@ impl NativeReader<'_> {
                 bindings.insert(name.to_owned());
             }
         }
+        budget.charge(
+            locals.iter().map(|name| name.len() + 1).sum(),
+            location.clone(),
+        )?;
+        budget.charge_results(locals.len(), location)?;
         Ok(Parser {
             source: self.source,
             tokens: self.tokens,
@@ -2264,6 +2241,7 @@ impl NativeReader<'_> {
             diagnostics: vec![],
             nesting_limit: self.nesting,
             bindings,
+            locals: locals.iter().map(|name| (*name).to_owned()).collect(),
             budget,
         })
     }
@@ -2278,6 +2256,9 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
     type Predicate = Predicate;
     fn retains_native_values(&self) -> bool {
         self.function_mode
+    }
+    fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
+        zirql::FieldPipelineSource::ValueArgument
     }
     fn value_source(
         &mut self,
@@ -2300,15 +2281,17 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         reader: &mut zirql::ArgumentReader<'_>,
         budget: &mut zirql::Budget,
     ) -> Result<zirql::ExpressionStep<Stage, ()>, zirql::QueryError> {
-        self.parse_stage_in_scope(reader, &[], budget)
+        self.parse_stage_in_scope(reader, &[], budget, self.nesting)
     }
     fn parse_stage_in_scope(
         &mut self,
         reader: &mut zirql::ArgumentReader<'_>,
         locals: &[&str],
         budget: &mut zirql::Budget,
+        nesting: usize,
     ) -> Result<zirql::ExpressionStep<Stage, ()>, zirql::QueryError> {
         let mut parser = self.parser(reader.position(), locals, budget)?;
+        parser.nesting_limit = nesting;
         // The common reader has selected a native leaf; do not re-enter it.
         let result = parser.stage_inner(0, false);
         if let Some(diagnostic) = parser.diagnostics.first() {
@@ -2323,11 +2306,12 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         reader: &mut zirql::ArgumentReader<'_>,
         locals: &[&str],
         budget: &mut zirql::Budget,
+        nesting: usize,
     ) -> Result<Option<Stage>, zirql::QueryError> {
         if !super::comprehension::constructed_filter_call(reader.source(), reader.position()) {
             return Ok(None);
         }
-        match self.parse_stage_in_scope(reader, locals, budget)? {
+        match self.parse_stage_in_scope(reader, locals, budget, nesting)? {
             zirql::ExpressionStep::Stage(stage) => Ok(Some(stage)),
             zirql::ExpressionStep::Emit { .. } => {
                 unreachable!("constructed filter is a value stage")
@@ -2339,15 +2323,17 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         reader: &mut zirql::ArgumentReader<'_>,
         budget: &mut zirql::Budget,
     ) -> Result<Predicate, zirql::QueryError> {
-        self.parse_predicate_leaf_in_scope(reader, &[], budget)
+        self.parse_predicate_leaf_in_scope(reader, &[], budget, self.nesting)
     }
     fn parse_predicate_leaf_in_scope(
         &mut self,
         reader: &mut zirql::ArgumentReader<'_>,
         locals: &[&str],
         budget: &mut zirql::Budget,
+        nesting: usize,
     ) -> Result<Predicate, zirql::QueryError> {
         let mut parser = self.parser(reader.position(), locals, budget)?;
+        parser.nesting_limit = nesting;
         let result = parser.primary_predicate(0);
         if let Some(diagnostic) = parser.diagnostics.first() {
             return Err(Self::error(diagnostic));
@@ -2356,17 +2342,77 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         reader.advance(predicate.range().end() as usize - reader.position())?;
         Ok(predicate)
     }
+    fn is_predicate_leaf(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "true"
+                | "false"
+                | "op"
+                | "dialect"
+                | "result_type"
+                | "has_attr"
+                | "string_attr_eq"
+                | "same_value"
+        )
+    }
+    fn predicate_expression(
+        &mut self,
+        predicate: zirql::PredicateArgument<super::report::Operand>,
+        range: std::ops::Range<usize>,
+    ) -> Result<Predicate, zirql::QueryError> {
+        let subject = predicate_input(range.clone());
+        Ok(Predicate::Expression {
+            value: super::comprehension::ParsedComprehension::new(predicate.bind(subject)),
+            range: TextRange::new(range.start as u32, range.end as u32).expect("ordered range"),
+        })
+    }
+    fn parse_predicate_leaf_in_argument(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        argument: Option<&zirql::Pattern>,
+        locals: &[&str],
+        budget: &mut zirql::Budget,
+        nesting: usize,
+    ) -> Result<Predicate, zirql::QueryError> {
+        let mut predicate = self.parse_predicate_leaf_in_scope(reader, locals, budget, nesting)?;
+        let mut bind = |value: &mut super::comprehension::ParsedComprehension| -> Result<(), zirql::QueryError> {
+            let argument = argument.map(|pattern| zirql::copy_pattern(pattern, budget)).transpose()?;
+            let body = std::mem::replace(&mut value.expression, std::sync::Arc::new(zirql::Located::new(zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Absent), 0..0)));
+            let body = std::sync::Arc::try_unwrap(body).expect("fresh parsed argument");
+            let subject = predicate_input(body.range.clone());
+            value.expression = std::sync::Arc::new(zirql::PredicateArgument { argument, body: Box::new(body) }.bind_value(subject));
+            Ok(())
+        };
+        match &mut predicate {
+            Predicate::SameValue { left, right, .. } => {
+                bind(&mut left.value)?;
+                bind(&mut right.value)?;
+            }
+            Predicate::OpValue { name, .. } => bind(name)?,
+            Predicate::Computed { value, .. } => match value {
+                ComputedPredicate::Dialect(value)
+                | ComputedPredicate::ResultType(value)
+                | ComputedPredicate::HasAttr(value) => bind(value)?,
+                ComputedPredicate::Attr { name, value } => {
+                    bind(name)?;
+                    bind(value)?;
+                }
+            },
+            _ => {}
+        }
+        Ok(predicate)
+    }
     fn filter(
         &mut self,
         predicate: zirql::Predicate<Predicate>,
         range: std::ops::Range<usize>,
     ) -> Stage {
-        Stage::Filter {
-            predicate: lower_shared_predicate(predicate),
-            range: TextRange::new(range.start as u32, range.end as u32)
-                .expect("ordered query range"),
-        }
+        filter_stage(
+            lower_shared_predicate(predicate),
+            TextRange::new(range.start as u32, range.end as u32).expect("ordered query range"),
+        )
     }
+
     fn projection(
         &mut self,
         projection: zirql::Projection<super::report::Operand>,
@@ -2559,6 +2605,106 @@ fn native_map_value(query: &super::report::Operand) -> bool {
     }
 }
 
+fn predicate_input(
+    range: std::ops::Range<usize>,
+) -> zirql::ValueExpression<super::report::Operand> {
+    zirql::Located::new(
+        zirql::ValueExpressionKind::NativeValue(Box::new(zirql::Located::new(
+            zirql::ExpressionKind::Input,
+            range.clone(),
+        ))),
+        range,
+    )
+}
+
+fn filter_stage(predicate: Predicate, range: TextRange) -> Stage {
+    fn value(predicate: &Predicate) -> Option<zirql::ValueExpression<super::report::Operand>> {
+        use zirql::ValueExpressionKind as K;
+        let range = predicate.range().as_range();
+        let kind = match predicate {
+            Predicate::Expression { value, .. } => K::NativeValue(Box::new(zirql::Located::new(
+                zirql::ExpressionKind::Sequence {
+                    input: Box::new(zirql::Located::new(
+                        zirql::ExpressionKind::Input,
+                        range.clone(),
+                    )),
+                    steps: vec![
+                        zirql::Located::new(
+                            zirql::ExpressionStep::Stage(Stage::FunctionValue {
+                                value: super::comprehension::ParsedComprehension::new(
+                                    zirql::Located::new(K::PredicateSubject, range.clone()),
+                                ),
+                                range: predicate.range(),
+                            }),
+                            range.clone(),
+                        ),
+                        zirql::Located::new(
+                            zirql::ExpressionStep::Stage(Stage::FunctionValue {
+                                value: value.clone(),
+                                range: predicate.range(),
+                            }),
+                            range.clone(),
+                        ),
+                    ],
+                },
+                range.clone(),
+            ))),
+            Predicate::Bool { value, .. } => K::Literal(zirql::ConstructedValue::Boolean(*value)),
+            Predicate::Group { predicate, .. } => return value(predicate),
+            Predicate::Not { predicate, .. } => K::Unary {
+                operator: zirql::ValueUnaryOperator::Not,
+                operand: Box::new(value(predicate)?),
+            },
+            Predicate::And { predicates, .. } | Predicate::Or { predicates, .. } => {
+                let operator = if matches!(predicate, Predicate::And { .. }) {
+                    zirql::ValueBinaryOperator::And
+                } else {
+                    zirql::ValueBinaryOperator::Or
+                };
+                let mut predicates = predicates.iter();
+                let mut result = value(predicates.next()?)?;
+                for predicate in predicates {
+                    result = zirql::Located::new(
+                        K::Binary {
+                            operator,
+                            left: Box::new(result),
+                            right: Box::new(value(predicate)?),
+                        },
+                        range.clone(),
+                    );
+                }
+                return Some(result);
+            }
+            _ => return None,
+        };
+        Some(zirql::Located::new(kind, range))
+    }
+    let constructed = value(&predicate).map(|body| {
+        let range = range.as_range();
+        super::comprehension::ParsedComprehension::new(zirql::Located::new(
+            zirql::ValueExpressionKind::Filter {
+                array: Box::new(zirql::Located::new(
+                    zirql::ValueExpressionKind::NativeQuery(Box::new(zirql::Located::new(
+                        zirql::ExpressionKind::Input,
+                        range.clone(),
+                    ))),
+                    range.clone(),
+                )),
+                predicate: zirql::PredicateArgument {
+                    argument: None,
+                    body: Box::new(body),
+                },
+            },
+            range,
+        ))
+    });
+    Stage::Filter {
+        predicate,
+        constructed,
+        range,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2571,6 +2717,7 @@ mod tests {
             source: lexed.source(),
             tokens: lexed.tokens(),
             function_mode: false,
+            locals: Vec::new(),
             cursor: 0,
             diagnostics: Vec::new(),
             nesting_limit: DEFAULT_NESTING_LIMIT,

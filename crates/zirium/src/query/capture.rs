@@ -1,6 +1,7 @@
 //! Native SSA primitives and retained shared match trees.
 use super::*;
 use std::{ops::Range, sync::Arc};
+use zirql::ProjectionHost;
 use zirql::{Bindings, ExpressionKind as X, Located, MatchHost, NativeCapture};
 
 /// A retained shared path query; cloning shares its immutable native tree.
@@ -170,15 +171,11 @@ impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::Truth, zirql::EvaluationError<EvaluationError>> {
-        let operation =
-            path_operation(input, context.document, range).map_err(zirql::EvaluationError::Host)?;
-        let target = report::resolve_predicate(target, context, bindings, budget)
-            .map_err(zirql::EvaluationError::Host)?;
-        Ok(pipeline::evaluate_leaf(
-            &target,
-            context.document,
-            operation,
-        ))
+        path_operation(input, context.document, range).map_err(zirql::EvaluationError::Host)?;
+        let input =
+            program::copy_value(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+        report::evaluate_predicate_leaf(target, input, context, bindings, budget)
+            .map_err(zirql::EvaluationError::Host)
     }
     fn evaluate_target_leaf_with_arguments(
         &self,
@@ -188,18 +185,11 @@ impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::Truth, zirql::EvaluationError<EvaluationError>> {
-        let operation = {
-            let (context, _) = arguments.parts();
-            path_operation(input, context.document, range).map_err(zirql::EvaluationError::Host)?
-        };
-        let target = report::resolve_prepared_predicate(target, arguments, budget)
+        path_operation(input, arguments.parts().0.document, range)
             .map_err(zirql::EvaluationError::Host)?;
-        let (context, _) = arguments.parts();
-        Ok(pipeline::evaluate_leaf(
-            &target,
-            context.document,
-            operation,
-        ))
+        let input =
+            program::copy_value(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+        report::evaluate_prepared_leaf(target, input, None, arguments, budget)
     }
     fn path_neighbors(
         &self,
@@ -270,10 +260,10 @@ impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
     }
 }
 
-/// A retained normalized native operand. Clone shares its immutable tree.
+/// A native operand retained as a shared value for scoped preparation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedOperand {
-    pub(super) expression: Arc<report::Operand>,
+    pub(super) value: super::comprehension::ParsedComprehension,
     pub(super) expected: Option<NativeKind>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -283,30 +273,25 @@ pub(super) enum NativeKind {
 }
 impl ParsedOperand {
     pub(super) fn new(expression: report::Operand) -> Self {
+        let range = expression.range.clone();
         Self {
-            expression: Arc::new(expression),
+            value: super::comprehension::ParsedComprehension::new(Located::new(
+                zirql::ValueExpressionKind::NativeValue(Box::new(expression)),
+                range,
+            )),
             expected: None,
         }
     }
     pub(super) fn field(subject: String, field: String, expected: NativeKind) -> Self {
-        Self {
-            expression: Arc::new(Located::new(
-                X::Field {
-                    value: Box::new(Located::new(X::Binding(subject), 0..0)),
-                    field: Located::new(field, 0..0),
-                },
-                0..0,
-            )),
-            expected: Some(expected),
-        }
-    }
-}
-impl Drop for ParsedOperand {
-    fn drop(&mut self) {
-        if let Some(expression) = Arc::get_mut(&mut self.expression) {
-            let expression = std::mem::replace(expression, Located::new(X::Input, 0..0));
-            zirql::dispose_expression(expression);
-        }
+        let mut value = Self::new(Located::new(
+            X::Field {
+                value: Box::new(Located::new(X::Binding(subject), 0..0)),
+                field: Located::new(field, 0..0),
+            },
+            0..0,
+        ));
+        value.expected = Some(expected);
+        value
     }
 }
 
@@ -316,7 +301,21 @@ pub struct ParsedMatch {
     pub(super) matching: Arc<zirql::NativeMatch<report::Operand, model::Predicate>>,
 }
 impl ParsedMatch {
-    pub(super) fn new(matching: zirql::NativeMatch<report::Operand, model::Predicate>) -> Self {
+    pub(super) fn new(mut matching: zirql::NativeMatch<report::Operand, model::Predicate>) -> Self {
+        for clause in &mut matching.clauses {
+            let source = match &mut clause.value {
+                zirql::MatchClause::From { source, .. }
+                | zirql::MatchClause::Bind { value: source, .. } => source,
+                zirql::MatchClause::Where { .. } => continue,
+            };
+            if matches!(&source.value, X::Sequence { steps, .. } if matches!(steps.as_slice(), [Located { value: zirql::ExpressionStep::Stage(model::Stage::Native { .. }), .. }]))
+            {
+                continue;
+            }
+            let range = source.range.clone();
+            let query = std::mem::replace(source, Located::new(X::Input, 0..0));
+            *source = native_source(ParsedOperand::new(query), range);
+        }
         Self {
             matching: Arc::new(matching),
         }
@@ -415,26 +414,34 @@ pub(super) fn types(
     input: &program::Kind,
     names: &BTreeMap<String, program::Kind>,
     budget: &mut Budget,
+    host: &report::ReportHost<'_>,
 ) -> Result<NativeCapture<program::Kind>, EvaluationError> {
-    zirql::match_types(&value.matching, &report::ReportHost, input, names, budget)
-        .map_err(core_error)
+    zirql::match_types(&value.matching, host, input, names, budget).map_err(core_error)
 }
 pub(super) fn operand_kind(
     value: &ParsedOperand,
     input: &program::Kind,
     names: &BTreeMap<String, program::Kind>,
     budget: &mut Budget,
+    host: &report::ReportHost<'_>,
 ) -> Result<program::Kind, EvaluationError> {
     let kind =
-        zirql::native_expression_kind(&value.expression, &report::ReportHost, input, names, budget)
-            .map_err(core_error)?;
+        if let zirql::ValueExpressionKind::NativeValue(query) = &value.value.expression.value {
+            zirql::native_expression_kind(query, host, input, names, budget)
+        } else {
+            functions::value_kind(host, &value.value.expression, input.clone(), names, budget)
+        }
+        .map_err(core_error)?;
     if value.expected.is_some_and(|expected| match expected {
         NativeKind::Operations => kind != program::Kind::Operations,
         NativeKind::Ssa => kind != program::Kind::Ssa,
     }) {
         return Err(
-            EvaluationError::new("capture field has an incompatible native kind")
-                .at(value.expression.range.clone()),
+            EvaluationError::new("capture field has an incompatible native kind").at(value
+                .value
+                .expression
+                .range
+                .clone()),
         );
     }
     Ok(kind)
@@ -449,16 +456,36 @@ pub(super) fn evaluate(
     let range = &value.matching.range;
     let input_kind = report::output_kind(&input, budget, range)?;
     let names = report::runtime_kinds(bindings, budget, range)?;
-    let schema = Arc::new(types(value, &input_kind, &names, budget)?);
-    let values = zirql::evaluate_match(
-        &value.matching,
-        &report::ReportHost,
-        input,
-        context,
-        bindings,
-        budget,
-    )
-    .map_err(program::evaluation_error)?;
+    let host = context
+        .functions
+        .map_or(&report::ReportHost, |session| session.host);
+    let schema = Arc::new(types(value, &input_kind, &names, budget, host)?);
+    let values = zirql::evaluate_match(&value.matching, host, input, context, bindings, budget)
+        .map_err(program::evaluation_error)?;
+    match_results(values, schema, budget, range)
+}
+pub(super) fn evaluate_with_arguments<'q, 'f>(
+    value: &ParsedMatch,
+    host: &report::ReportHost<'f>,
+    input: QueryOutput,
+    arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, report::ReportHost<'f>>,
+    budget: &mut Budget,
+) -> Result<CaptureMatches, EvaluationError> {
+    let range = &value.matching.range;
+    let kind = report::output_kind(&input, budget, range)?;
+    let names = report::runtime_kinds(arguments.parts().1, budget, range)?;
+    let schema = Arc::new(types(value, &kind, &names, budget, host)?);
+    let values =
+        zirql::evaluate_match_with_arguments(&value.matching, host, input, arguments, budget)
+            .map_err(program::evaluation_error)?;
+    match_results(values, schema, budget, range)
+}
+fn match_results(
+    values: Vec<QueryOutput>,
+    schema: Arc<NativeCapture<program::Kind>>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<CaptureMatches, EvaluationError> {
     slots::<NativeCapture<QueryOutput>>(values.len(), budget, range)?;
     program::charge_results(budget, values.len() + 1, range)?;
     let mut rows = Vec::with_capacity(values.len());
@@ -474,6 +501,53 @@ pub(super) fn evaluate(
         schema,
     })
 }
+pub(super) fn native_source(value: ParsedOperand, range: Range<usize>) -> report::Operand {
+    Located::new(
+        X::Sequence {
+            input: Box::new(Located::new(X::Input, range.clone())),
+            steps: vec![Located::new(
+                zirql::ExpressionStep::Stage(model::Stage::Native {
+                    value,
+                    range: crate::source::TextRange::new(range.start as u32, range.end as u32)
+                        .expect("ordered native source range"),
+                }),
+                range.clone(),
+            )],
+        },
+        range,
+    )
+}
+pub(super) fn match_source_value(
+    source: &report::Operand,
+) -> &zirql::ValueExpression<report::Operand> {
+    let X::Sequence { steps, .. } = &source.value else {
+        unreachable!("match sources retain a native value stage")
+    };
+    let [
+        Located {
+            value: zirql::ExpressionStep::Stage(model::Stage::Native { value, .. }),
+            ..
+        },
+    ] = steps.as_slice()
+    else {
+        unreachable!("match sources retain a native value stage")
+    };
+    &value.value.expression
+}
+
+pub(super) fn guard_values(
+    guard: &model::Predicate,
+) -> impl Iterator<Item = &zirql::ValueExpression<report::Operand>> {
+    let values = match guard {
+        model::Predicate::Expression { value, .. } => [Some(&*value.expression), None],
+        model::Predicate::SameValue { left, right, .. } => [
+            Some(&*left.value.expression),
+            Some(&*right.value.expression),
+        ],
+        _ => [None, None],
+    };
+    values.into_iter().flatten()
+}
 pub(super) fn evaluate_operand(
     value: &ParsedOperand,
     context: &mut EvaluationContext<'_, '_, '_>,
@@ -481,15 +555,20 @@ pub(super) fn evaluate_operand(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<QueryOutput, EvaluationError> {
-    zirql::evaluate_expression(
-        &value.expression,
-        &report::ReportHost,
-        input,
-        context,
-        bindings,
-        budget,
-    )
-    .map_err(program::evaluation_error)
+    if let Some(session) = context.functions {
+        return session.run(&value.value.expression, context, &input, bindings, budget);
+    }
+    let zirql::ValueExpressionKind::NativeValue(query) = &value.value.expression.value else {
+        return Err(
+            EvaluationError::new("scoped native operand requires a prepared session").at(value
+                .value
+                .expression
+                .range
+                .clone()),
+        );
+    };
+    zirql::evaluate_expression(query, &report::ReportHost, input, context, bindings, budget)
+        .map_err(program::evaluation_error)
 }
 pub(super) fn operand(
     operation: &ParsedOperand,
@@ -501,10 +580,24 @@ pub(super) fn operand(
     range: &Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
     let value = evaluate_operand(operation, context, input, bindings, budget)?;
-    let QueryOutput::Operations(operations) = value else {
+    operand_value(&value, index, context, budget, range)
+}
+pub(super) fn operand_value(
+    value: &QueryOutput,
+    index: usize,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, EvaluationError> {
+    let operations = match functions::unretained(value) {
+        QueryOutput::Operations(operations)
+        | QueryOutput::Native(NativeValue::OperationSequence(operations)) => operations,
+        _ => return Err(EvaluationError::new("operand requires one operation").at(range.clone())),
+    };
+    let [operation] = operations.as_slice() else {
         return Err(EvaluationError::new("operand requires one operation").at(range.clone()));
     };
-    let operation = zirql::take_one(operations, range.clone()).map_err(core_error)?;
+    let operation = *operation;
     context
         .document
         .check_operation(operation)
@@ -562,14 +655,30 @@ impl<'q> MatchHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
         range: &Range<usize>,
     ) -> Result<(), zirql::QueryError> {
         match guard {
+            model::Predicate::Expression { value, .. } => {
+                let kind =
+                    functions::value_kind(self, &value.expression, input.clone(), scope, budget)?;
+                let types = self.scalar_types(&kind, budget, &value.expression.range)?;
+                if types.is_none_or(|types| {
+                    types
+                        .iter()
+                        .any(|ty| !report::scalar_type_is(ty, &zirql::ValueType::Boolean))
+                }) {
+                    return Err(zirql::QueryError::query(
+                        value.expression.range.clone(),
+                        "match predicate needs a known Boolean",
+                    ));
+                }
+                Ok(())
+            }
             model::Predicate::Bool { .. } => Ok(()),
             model::Predicate::SameValue { left, right, .. } => {
                 for value in [left, right] {
-                    let kind =
-                        operand_kind(value, input, scope, budget).map_err(report::query_error)?;
+                    let kind = operand_kind(value, input, scope, budget, self)
+                        .map_err(report::query_error)?;
                     if kind != program::Kind::Ssa {
                         return Err(zirql::QueryError::query(
-                            value.expression.range.clone(),
+                            value.value.expression.range.clone(),
                             "same_value requires native SSA values",
                         ));
                     }
@@ -591,17 +700,23 @@ impl<'q> MatchHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::Truth, zirql::EvaluationError<EvaluationError>> {
+        if let model::Predicate::Expression { .. } = guard {
+            let input =
+                program::copy_value(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+            return report::evaluate_predicate_leaf(guard, input, context, bindings, budget)
+                .map_err(zirql::EvaluationError::Host);
+        }
         let equal = match guard {
             model::Predicate::Bool { value, .. } => *value,
             model::Predicate::SameValue { left, right, .. } => {
                 let mut resolve = |query: &ParsedOperand| -> Result<ValueId, zirql::EvaluationError<EvaluationError>> {
                     let input = program::copy_value(input, budget, range).map_err(zirql::EvaluationError::Host)?;
                     let output = evaluate_operand(query, context, input, bindings, budget).map_err(zirql::EvaluationError::Host)?;
-                    let QueryOutput::Native(NativeValue::Ssa(value)) = output else {
+                    let QueryOutput::Native(NativeValue::Ssa(value)) = functions::unretained(&output) else {
                         return Err(zirql::QueryError::query(range.clone(), "same_value requires native SSA values").into());
                     };
-                    check_value(context.document, value, range).map_err(zirql::EvaluationError::Host)?;
-                    Ok(value)
+                    check_value(context.document, *value, range).map_err(zirql::EvaluationError::Host)?;
+                    Ok(*value)
                 };
                 resolve(left)? == resolve(right)?
             }
@@ -618,5 +733,51 @@ impl<'q> MatchHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
         } else {
             zirql::Truth::False
         })
+    }
+    fn evaluate_match_source_with_arguments(
+        &self,
+        source: &report::Operand,
+        input: QueryOutput,
+        bindings: &Bindings<QueryOutput>,
+        arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, Self>,
+        budget: &mut Budget,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        let value =
+            arguments.evaluate_match_value(match_source_value(source), input, bindings, budget)?;
+        Ok(QueryOutput::Native(NativeValue::Retained(
+            value.into_shared(),
+        )))
+    }
+    fn evaluate_guard_leaf_with_arguments(
+        &self,
+        guard: &model::Predicate,
+        input: &QueryOutput,
+        bindings: &Bindings<QueryOutput>,
+        arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, Self>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::Truth, zirql::EvaluationError<EvaluationError>> {
+        if let model::Predicate::Expression { .. } = guard {
+            let input =
+                program::copy_value(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+            return report::evaluate_prepared_leaf(guard, input, Some(bindings), arguments, budget);
+        }
+        if let model::Predicate::SameValue { left, right, .. } = guard {
+            let mut resolve = |operand: &ParsedOperand| -> Result<ValueId, zirql::EvaluationError<EvaluationError>> {
+                let input = program::copy_value(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+                let output = arguments.evaluate_match_value(&operand.value.expression, input, bindings, budget)?;
+                let QueryOutput::Native(NativeValue::Ssa(value)) = functions::unretained(output.value()) else {
+                    return Err(zirql::QueryError::query(range.clone(), "same_value requires native SSA values").into());
+                };
+                check_value(arguments.parts().0.document, *value, range).map_err(zirql::EvaluationError::Host)?;
+                Ok(*value)
+            };
+            return Ok(if resolve(left)? == resolve(right)? {
+                zirql::Truth::True
+            } else {
+                zirql::Truth::False
+            });
+        }
+        self.evaluate_guard_leaf(guard, input, arguments.parts().0, bindings, budget, range)
     }
 }

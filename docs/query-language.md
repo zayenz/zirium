@@ -365,8 +365,14 @@ The output is:
 
 ```json
 [
-  {"label": "data:alpha", "name": "alpha"},
-  {"label": "data:beta", "name": "beta"}
+  {
+    "name": "alpha",
+    "label": "data:alpha"
+  },
+  {
+    "name": "beta",
+    "label": "data:beta"
+  }
 ]
 ```
 
@@ -379,6 +385,11 @@ let labels = names;
  for n in labels
  for s in [n, n ++ "!"] if s != "beta!"] | json
 ```
+
+The MiniZinc spelling uses the same generators and evaluator. For example,
+`[(a, b) for (a, b) in [(1, 2), (3, 4)] if a < b]` and
+`[(a, b) | (a, b) in [(1, 2), (3, 4)] where a < b]` produce the same tuples.
+Both forms accept shared patterns and dependent generators.
 
 The rows have labels `data:alpha`, `data:alpha!`, and `data:beta`, in that order.
 A generator sees earlier names in its source, then installs its binder for its
@@ -563,7 +574,8 @@ zirium 'let numbers=[3,1,3]; numbers | sort | unique | count' examples/cli/funct
 
 Saved constructed collections and constructed function results use the shared
 `sort`, `unique`, `count` and terminal string `tally` stages. A string array also
-accepts `filter(starts_with("prefix"))`. These stages retain their shared value
+accepts `filter(predicate)` with named or implicit `_` arguments, including
+the compact `filter(starts_with("prefix"))` spelling. These stages retain their shared value
 type rules. Native sources keep native stages and selectors such as
 `sort_by(names)`.
 
@@ -807,7 +819,43 @@ including inside `fixpoint`, remains strict about unknown reference semantics.
 
 ## Predicates and filtering
 
-Predicates test one operation. They appear inside `filter(...)`.
+A predicate can name its subject or use `_`. Shared expressions, Boolean
+operators and permitted pure function calls compose with the native leaves:
+
+```zirql
+filter(p => one(p | names) == "arith.addi" and not has_attr("skip"))
+filter(one(_ | names) == "arith.addi" and not has_attr("skip"))
+```
+
+A constructed filter tests each element and preserves its input order:
+
+```zirql
+let pairs = [(1, 2), (3, 4)];
+pairs | filter((a, b) => a + b > 4) | json
+```
+
+This selects the same tuples as `[pair for pair in pairs if pair.1 + pair.2 > 4]`.
+A predicate pattern may destructure tuples, records and positional lists. `_`
+always denotes the whole subject, even when the pattern binds its parts.
+Nested predicates give `_` a new subject; an explicit outer name stays visible:
+
+```zirql
+[1, 2, 4] | filter(outer => length([2, 3] | filter(_ > outer)) > 0) | json
+```
+
+The result is `[1, 2]`. `_` is available only inside predicate arguments. It
+still discards a component when written in a pattern.
+
+Native `filter` tests one operation, `root` tests each operation and then its
+ancestors, and `paths(..., to=...)` tests each candidate target. A native match
+`where` tests the original incoming input; its named clause captures remain
+separate bindings. All these positions accept the same named and implicit
+predicate bodies. Native handles retain their owners and remain opaque; use
+projections such as `one(p | names)` rather than invented operation fields.
+Invalid bodies and effects are checked before selecting subjects, including
+on typed empty streams. Mismatched argument patterns fail at their location.
+
+The native predicate leaves are:
 
 | Predicate | Matches |
 | --- | --- |
@@ -1206,11 +1254,16 @@ The same buffering rule applies: any later failure leaves stdout empty.
 
 ## Grammar and diagnostics
 
+This sketch covers native pipeline composition. `shared-expression` uses the
+value syntax described above; `pattern` uses the shared destructuring syntax.
+Function and parameter declarations are described in their own sections.
+
 ```text
 program    = empty | { statement } final
 statement  = binding | do-statement | query ";"
 final      = query [ ";" ] | do-statement
-binding    = identifier "=" query ";"
+binding    = [ "let" ] identifier "=" query ";"
+           | "let" pattern "=" shared-expression ";"
 do-statement = "do" query ";"
 query      = pipeline { ("union" | "intersect" | "except") pipeline }
 pipeline   = stage { "|" stage }
@@ -1233,20 +1286,27 @@ stage      = object | array | identifier | "markdown" | "print" "(" string ")"
            | "remove_attr" "(" string ")" | "emit" | "count"
 format-option = "assembly" "=" ("source" | "generic")
               | ("width" | "indent") "=" integer
-predicate  = and-expr { "or" and-expr }
+predicate  = [ pattern "=>" ] predicate-body
+predicate-body = and-expr { "or" and-expr }
 and-expr   = not-expr { "and" not-expr }
 not-expr   = { "not" } primary
-primary    = "true" | "false" | "op" "(" string ")"
-           | "dialect" "(" string ")" | "result_type" "(" string ")"
-           | "has_attr" "(" string ")"
-           | "string_attr_eq" "(" string "," string ")"
-           | "(" predicate ")"
+primary    = shared-boolean-expression | native-leaf | "(" predicate-body ")"
+native-leaf = "op" "(" shared-expression ")"
+            | "dialect" "(" shared-expression ")"
+            | "result_type" "(" shared-expression ")"
+            | "has_attr" "(" shared-expression ")"
+            | "string_attr_eq" "(" shared-expression "," shared-expression ")"
+            | "same_value" "(" query "," query ")"
 object     = "{" [ string ":" value { "," string ":" value } ] "}"
 array      = "[" [ value { "," value } ] "]"
 value      = object | array | string | number | "true" | "false" | "null" | identifier
 integer    = digit { digit }
 number     = a JSON number
 ```
+
+A predicate body must produce a Boolean. `true` and `false` are ordinary shared
+Boolean expressions. Native leaves keep their argument types; `same_value`
+is available only in native match guards.
 
 Whitespace is insignificant between tokens. `#` begins a comment extending to
 the end of the line; inside a string it is a literal character. Strings use
@@ -1643,10 +1703,13 @@ Rust's emission callback can observe an earlier event before a later failure.
 
 ## Destructuring and guarded value matches
 
-Patterns bind parts of a value in `let` declarations, function parameters and
-value-match arms. A tuple uses exact arity, such as `(label, cost)`. A record
+Patterns bind parts of a value in `let` declarations, function parameters,
+predicate arguments, comprehension generators and value-match arms. A tuple uses exact arity, such as `(label, cost)`. A record
 uses exact labels, such as `{label: label, cost: cost}`; add `..` to ignore
-other fields. `_` discards a part. `absent`, `present(pattern)` and scalar
+other fields. A list pattern `[first, second]` requires exactly two positional
+elements; `[first, second, ..]` requires at least two and discards the rest.
+`[]` matches an empty list and `[..]` accepts any positional list. Lists remain
+distinct from tuples, sets and indexed arrays. `_` discards a part. `absent`, `present(pattern)` and scalar
 literals test presence or a value without introducing a name.
 
 ```zirql

@@ -513,6 +513,19 @@ pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
     if let Some(first) = tokens[cursor..]
         .iter()
         .find(|token| !matches!(token.kind(), T::Trivia | T::LParen))
+        && first.kind() == T::Identifier
+        && super::parser::is_native_stage(&source[first.range().as_range()])
+        && !ordering_call(source, first.range().start() as usize)
+    {
+        return false;
+    }
+    let array_head = tokens[cursor..]
+        .iter()
+        .find(|token| token.kind() != T::Trivia)
+        .is_some_and(|token| token.kind() == T::LBracket);
+    if let Some(first) = tokens[cursor..]
+        .iter()
+        .find(|token| !matches!(token.kind(), T::Trivia | T::LParen))
         && (matches!(first.kind(), T::Integer | T::Number | T::String)
             || first.kind() == T::Operator
                 && matches!(&source[first.range().as_range()], "+" | "-")
@@ -580,6 +593,27 @@ pub(super) fn starts(source: &str, tokens: &[Token], cursor: usize) -> bool {
                 }
             }
             T::Eof => return false,
+            T::Pipe
+                if array_head
+                    && depth == 1
+                    && tokens[i + 1..]
+                        .iter()
+                        .take_while(|token| !matches!(token.kind(), T::Semicolon | T::Eof))
+                        .any(|token| {
+                            token.kind() == T::Identifier
+                                && &source[token.range().as_range()] == "in"
+                        }) =>
+            {
+                return true;
+            }
+            T::Identifier
+                if array_head
+                    && depth == 1
+                    && !matches!(previous, T::LBracket | T::Comma)
+                    && &source[token.range().as_range()] == "for" =>
+            {
+                return true;
+            }
             T::Pipe | T::Semicolon if depth == 0 => return false,
             T::Operator
                 if depth > 0 && depth <= groups && &source[token.range().as_range()] == "." => {}

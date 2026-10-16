@@ -1065,18 +1065,8 @@ fn evaluate_host_stage(
         }
         model::Stage::Root { predicate, .. } => {
             let selected = take_operations(current, "root")?;
-            let resolved = if report::has_dynamic_predicate(predicate) {
-                Some(report::resolve_predicate(
-                    predicate, context, bindings, budget,
-                )?)
-            } else {
-                None
-            };
-            current = QueryOutput::Operations(evaluate_root(
-                context.document,
-                &selected,
-                resolved.as_ref().unwrap_or(predicate),
-                budget,
+            current = QueryOutput::Operations(pipeline::evaluate_roots(
+                predicate, selected, context, bindings, budget,
             )?);
         }
         model::Stage::Subtree { .. } => {
@@ -2042,29 +2032,6 @@ fn evaluate_children(
             .flat_map(|&block| document.block_operations(block).unwrap_or(&[]))
             .copied(),
     )
-}
-
-fn evaluate_root(
-    document: &Document,
-    selected: &[OperationId],
-    predicate: &model::Predicate,
-    budget: &mut zirql::Budget,
-) -> Result<Vec<OperationId>, EvaluationError> {
-    let filter = pipeline::root_filter(predicate)?;
-    let mut roots = Vec::new();
-    for &operation in selected {
-        let mut candidate = Some(operation);
-        while let Some(operation) = candidate {
-            charge(budget, 1)?;
-            if pipeline::matches_root(&filter, document, operation, budget)? {
-                program::charge_results(budget, 1, &program::range(predicate.range()))?;
-                roots.push(operation);
-                break;
-            }
-            candidate = operation_parent(document, operation);
-        }
-    }
-    Ok(roots)
 }
 
 fn operation_parent(document: &Document, operation: OperationId) -> Option<OperationId> {

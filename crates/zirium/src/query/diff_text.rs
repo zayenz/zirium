@@ -1,30 +1,34 @@
 //! The existing diff surface frontend, lowered once into shared expressions.
 use super::diff_program::{
     DiffProgram, DiffStage, Expression, Leaf, Order, OwnedExpression, SetOperator,
-    dispose_statements, sequence, stream,
+    dispose_statements, stream,
 };
 use super::{EvaluationError, OperationTraversal};
 use std::ops::Range;
-use zirql::{ExpressionKind, Located, PredicateKind, Stage};
-
-type DiffSetOperator = SetOperator;
+use zirql::{ExpressionKind, Located, Stage};
 
 pub(super) fn parse(source: &str) -> Result<DiffProgram, EvaluationError> {
     DiffProgram::check_read_only(source)?;
+    let limits = super::comprehension::default_limits();
+    let mut budget = zirql::Budget::for_program(limits);
     let mut statements = Vec::new();
-    if let Err(error) = parse_statements(source, &mut statements) {
+    if let Err(error) = parse_statements(source, &mut statements, &mut budget) {
         dispose_statements(statements);
         return Err(error);
     }
     Ok(DiffProgram {
         program: zirql::Program::new(statements, 0..source.len()),
+        parse_work: limits.work - budget.remaining_work(),
+        parse_results: limits.results - budget.remaining_results().unwrap_or(limits.results),
     })
 }
 
 fn parse_statements(
     source: &str,
     statements: &mut Vec<Located<zirql::Statement<DiffStage, SetOperator, ()>>>,
+    budget: &mut zirql::Budget,
 ) -> Result<(), EvaluationError> {
+    let mut bindings = vec!["before_document", "after_document", "input"];
     for statement in split_diff_statements(source).map_err(EvaluationError::new)? {
         let statement = statement.trim();
         if statement.is_empty() {
@@ -33,20 +37,23 @@ fn parse_statements(
         let range = location(source, statement);
         let value = if let Some(expression) = statement.strip_prefix("do ") {
             zirql::Statement::Evaluate {
-                expression: parse_expression(source, expression, 0)?,
+                expression: parse_expression(source, expression, &bindings, budget)?,
                 implicit_output: None,
             }
         } else if let Some((name, expression)) = split_diff_binding(statement) {
             zirql::Statement::Bind {
                 name: Located::new(name.to_owned(), location(source, name)),
-                expression: parse_expression(source, expression, 0)?,
+                expression: parse_expression(source, expression, &bindings, budget)?,
             }
         } else {
             zirql::Statement::Evaluate {
-                expression: parse_expression(source, statement, 0)?,
+                expression: parse_expression(source, statement, &bindings, budget)?,
                 implicit_output: Some(()),
             }
         };
+        if let Some((name, _)) = split_diff_binding(statement) {
+            bindings.push(name);
+        }
         statements.push(Located::new(value, range));
     }
     Ok(())
@@ -56,53 +63,49 @@ fn location(source: &str, part: &str) -> Range<usize> {
     let start = part.as_ptr() as usize - source.as_ptr() as usize;
     start..start + part.len()
 }
-fn parse_expression(source: &str, part: &str, depth: usize) -> Result<Expression, EvaluationError> {
-    let range = location(source, part);
-    if depth > super::parser::DEFAULT_NESTING_LIMIT {
-        return Err(EvaluationError::new("query nesting limit exceeded").at(range));
-    }
-    let mut sets = split_diff_sets(part)
-        .map_err(|error| EvaluationError::new(error).at(range.clone()))?
-        .into_iter();
-    let (_, first) = sets
-        .next()
-        .ok_or_else(|| EvaluationError::new("empty diff expression").at(range.clone()))?;
-    let mut expression = OwnedExpression::new(parse_pipeline(source, first, depth)?);
-    for (operator, pipeline) in sets {
-        let right = parse_pipeline(source, pipeline, depth)?;
-        expression = OwnedExpression::new(Located::new(
-            ExpressionKind::Set {
-                operator: operator.expect("later set part"),
-                left: Box::new(expression.into_inner()),
-                right: Box::new(right),
-            },
-            range.clone(),
+fn parse_expression<'a>(
+    source: &'a str,
+    part: &str,
+    bindings: &[&'a str],
+    budget: &mut zirql::Budget,
+) -> Result<Expression, EvaluationError> {
+    let mut reader = zirql::ArgumentReader::new(
+        &source[..location(source, part).end],
+        location(source, part).start,
+    )
+    .map_err(super::core_error)?;
+    budget
+        .charge(
+            bindings.iter().map(|name| name.len() + 1).sum(),
+            zirql::Location::Query(location(source, part)),
+        )
+        .map_err(super::core_error)?;
+    budget
+        .charge_results(
+            bindings.len(),
+            zirql::Location::Query(location(source, part)),
+        )
+        .map_err(super::core_error)?;
+    let mut host = DiffReader::new(
+        source,
+        bindings.to_vec(),
+        super::parser::DEFAULT_NESTING_LIMIT,
+    );
+    let nesting = host.nesting;
+    let expression = OwnedExpression::new(
+        zirql::read_native_expression(&mut reader, &mut host, budget, nesting)
+            .map_err(super::core_error)?,
+    );
+    reader.skip_whitespace();
+    if !reader.remaining().is_empty() {
+        return Err(super::core_error(
+            reader.error("unexpected token in diff expression"),
         ));
     }
     Ok(expression.into_inner())
 }
 
-fn parse_pipeline(source: &str, part: &str, depth: usize) -> Result<Expression, EvaluationError> {
-    let mut stages = Vec::new();
-    for stage in split_diff_pipeline(part).map_err(EvaluationError::new)? {
-        let stage = stage.trim();
-        let range = location(source, stage);
-        let compiled = parse_stage(source, stage, depth, &range).map_err(|mut error| {
-            if error.range.is_none() {
-                error.range = Some(range.clone());
-            }
-            error
-        })?;
-        stages.push(Located::new(compiled, range));
-    }
-    Ok(sequence(stages, location(source, part)))
-}
-fn parse_stage(
-    source: &str,
-    stage: &str,
-    depth: usize,
-    range: &Range<usize>,
-) -> Result<DiffStage, EvaluationError> {
+fn parse_stage(stage: &str, range: &Range<usize>) -> Result<DiffStage, EvaluationError> {
     let error = |message: &str| EvaluationError::new(message).at(range.clone());
     let arguments =
         |name: &str| split_diff_call_arguments(stage, name).map_err(EvaluationError::new);
@@ -118,21 +121,6 @@ fn parse_stage(
             .parse::<usize>()
             .map_err(|_| error(&format!("{name} requires a non-negative item count")))
     };
-    if let Some(group) = stage
-        .strip_prefix('(')
-        .and_then(|stage| stage.strip_suffix(')'))
-    {
-        return Ok(DiffStage::Nested(Box::new(OwnedExpression::new(
-            Located::new(
-                ExpressionKind::Group(Box::new(parse_expression(source, group, depth + 1)?)),
-                range.clone(),
-            ),
-        ))));
-    }
-    if stage.starts_with("filter(") {
-        let predicate = DiffPredicateParser::parse(one("filter")?, range.clone())?;
-        return stream(Stage::Filter(predicate), range.clone());
-    }
     Ok(match stage {
         "input" => DiffStage::Input,
         "before" => DiffStage::Project(crate::diff::DiffSide::Before),
@@ -179,91 +167,11 @@ fn parse_stage(
             }
             DiffStage::Attr(names.into_iter().next().unwrap())
         }
-        _ if stage.starts_with("root(") => {
-            let names = extract_string_calls(stage, "op");
-            if names.len() != 1 {
-                return Err(error("root in diff mode requires op(\"name\")"));
-            }
-            let predicate = Located::new(
-                PredicateKind::Leaf(Leaf::Op(names.into_iter().next().unwrap())),
-                range.clone(),
-            );
-            let DiffStage::Stream(filter) = stream(Stage::Filter(predicate), range.clone())? else {
-                unreachable!("stream builds a native pipeline")
-            };
-            DiffStage::Root(filter)
-        }
-        _ if stage.starts_with("where_exists(") => DiffStage::WhereExists(
-            super::diff_program::nested(parse_expression(source, one("where_exists")?, depth + 1)?),
-        ),
-        _ if stage.starts_with("fixpoint(") => DiffStage::Fixpoint(super::diff_program::nested(
-            parse_expression(source, one("fixpoint")?, depth + 1)?,
-        )),
-        _ if [
-            "sort_by(",
-            "min_by(",
-            "max_by(",
-            "min_all_by(",
-            "max_all_by(",
-        ]
-        .iter()
-        .any(|prefix| stage.starts_with(prefix)) =>
-        {
-            let name = stage.split_once('(').unwrap().0;
-            let kind = match name {
-                "sort_by" => Order::Sort,
-                "min_by" => Order::Min,
-                "max_by" => Order::Max,
-                "min_all_by" => Order::MinAll,
-                "max_all_by" => Order::MaxAll,
-                _ => unreachable!("matched ordering stage"),
-            };
-            if name == "sort_by" && one(name)?.trim() == "value" {
-                DiffStage::SortMapValue
-            } else {
-                DiffStage::Order {
-                    kind,
-                    selector: super::diff_program::nested(parse_expression(
-                        source,
-                        one(name)?,
-                        depth + 1,
-                    )?),
-                }
-            }
-        }
-        _ if stage.starts_with("map_by(") => {
-            let arguments = arguments("map_by")?;
-            if arguments.len() != 2 {
-                return Err(error("map_by requires a key and value expression"));
-            }
-            DiffStage::MapBy {
-                key: super::diff_program::nested(parse_expression(
-                    source,
-                    arguments[0],
-                    depth + 1,
-                )?),
-                value: super::diff_program::nested(parse_expression(
-                    source,
-                    arguments[1],
-                    depth + 1,
-                )?),
-            }
-        }
         _ if stage.starts_with("paths(") => {
             return Err(error("native paths are unavailable on diff queries"));
         }
         _ if stage.starts_with("print(") => {
             DiffStage::Print(parse_diff_string(one("print")?).map_err(EvaluationError::new)?)
-        }
-        _ if !stage.is_empty()
-            && stage.bytes().enumerate().all(|(i, b)| {
-                b == b'_' || b.is_ascii_alphabetic() || i > 0 && b.is_ascii_digit()
-            }) =>
-        {
-            DiffStage::Nested(Box::new(OwnedExpression::new(Located::new(
-                ExpressionKind::Binding(stage.to_owned()),
-                range.clone(),
-            ))))
         }
         _ => {
             return Err(error(&format!(
@@ -271,215 +179,6 @@ fn parse_stage(
             )));
         }
     })
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum DiffPredicateToken {
-    Identifier(String),
-    String(String),
-    Left,
-    Right,
-    Comma,
-}
-
-struct DiffPredicateParser {
-    tokens: Vec<DiffPredicateToken>,
-    cursor: usize,
-    range: Range<usize>,
-}
-impl DiffPredicateParser {
-    fn parse(source: &str, range: Range<usize>) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
-        let mut parser = Self {
-            tokens: lex_diff_predicate(source).map_err(EvaluationError::new)?,
-            cursor: 0,
-            range,
-        };
-        let predicate = parser.or(0)?;
-        if parser.cursor != parser.tokens.len() {
-            return Err(parser.error("unexpected token in diff predicate"));
-        }
-        Ok(predicate)
-    }
-    fn error(&self, message: &str) -> EvaluationError {
-        EvaluationError::new(message).at(self.range.clone())
-    }
-    fn predicate(&self, kind: PredicateKind<Leaf>) -> zirql::Predicate<Leaf> {
-        Located::new(kind, self.range.clone())
-    }
-    fn or(&mut self, depth: usize) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
-        let mut predicates = vec![self.and(depth)?];
-        while self.take_identifier("or") {
-            predicates.push(self.and(depth)?);
-        }
-        Ok(if predicates.len() == 1 {
-            predicates.pop().unwrap()
-        } else {
-            self.predicate(PredicateKind::Or(predicates))
-        })
-    }
-    fn and(&mut self, depth: usize) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
-        let mut predicates = vec![self.unary(depth)?];
-        while self.take_identifier("and") {
-            predicates.push(self.unary(depth)?);
-        }
-        Ok(if predicates.len() == 1 {
-            predicates.pop().unwrap()
-        } else {
-            self.predicate(PredicateKind::And(predicates))
-        })
-    }
-    fn unary(&mut self, depth: usize) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
-        if depth >= super::parser::DEFAULT_NESTING_LIMIT {
-            return Err(self.error("predicate nesting limit exceeded"));
-        }
-        if self.take_identifier("not") {
-            let inner = self.unary(depth + 1)?;
-            return Ok(self.predicate(PredicateKind::Not(Box::new(inner))));
-        }
-        if self.take(&DiffPredicateToken::Left) {
-            let inner = self.or(depth + 1)?;
-            self.expect(DiffPredicateToken::Right)?;
-            return Ok(self.predicate(PredicateKind::Group(Box::new(inner))));
-        }
-        let name = match self.tokens.get(self.cursor).cloned() {
-            Some(DiffPredicateToken::Identifier(name)) => name,
-            _ => return Err(self.error("expected a diff predicate")),
-        };
-        self.cursor += 1;
-        if name == "true" || name == "false" {
-            return Ok(self.predicate(PredicateKind::Leaf(Leaf::Bool(name == "true"))));
-        }
-        self.expect(DiffPredicateToken::Left)?;
-        let first = self.string()?;
-        let second = if self.take(&DiffPredicateToken::Comma) {
-            Some(self.string()?)
-        } else {
-            None
-        };
-        self.expect(DiffPredicateToken::Right)?;
-        let leaf = match (name.as_str(), second) {
-            ("change", None) => Leaf::Change(
-                first
-                    .parse()
-                    .map_err(|error: crate::diff::DiffError| self.error(&error.to_string()))?,
-            ),
-            ("changed", None) => Leaf::Changed(
-                first
-                    .parse()
-                    .map_err(|error: crate::diff::DiffError| self.error(&error.to_string()))?,
-            ),
-            ("op", None) => Leaf::Op(first),
-            ("dialect", None) => Leaf::Dialect(first),
-            ("result_type", None) => Leaf::ResultType(first),
-            ("has_attr", None) => Leaf::HasAttr(first),
-            ("attr", Some(second)) => Leaf::Attr(first, second),
-            _ => return Err(self.error(&format!("unsupported diff predicate `{name}`"))),
-        };
-        Ok(self.predicate(PredicateKind::Leaf(leaf)))
-    }
-    fn string(&mut self) -> Result<String, EvaluationError> {
-        match self.tokens.get(self.cursor).cloned() {
-            Some(DiffPredicateToken::String(value)) => {
-                self.cursor += 1;
-                Ok(value)
-            }
-            _ => Err(self.error("expected a string argument in diff predicate")),
-        }
-    }
-    fn take_identifier(&mut self, expected: &str) -> bool {
-        if matches!(self.tokens.get(self.cursor),Some(DiffPredicateToken::Identifier(value)) if value==expected)
-        {
-            self.cursor += 1;
-            true
-        } else {
-            false
-        }
-    }
-    fn take(&mut self, expected: &DiffPredicateToken) -> bool {
-        if self.tokens.get(self.cursor) == Some(expected) {
-            self.cursor += 1;
-            true
-        } else {
-            false
-        }
-    }
-    fn expect(&mut self, expected: DiffPredicateToken) -> Result<(), EvaluationError> {
-        if self.take(&expected) {
-            Ok(())
-        } else {
-            Err(self.error("malformed diff predicate"))
-        }
-    }
-}
-
-fn split_diff_sets(source: &str) -> Result<Vec<(Option<DiffSetOperator>, &str)>, String> {
-    let bytes = source.as_bytes();
-    let mut depth = 0usize;
-    let mut quoted = false;
-    let mut escaped = false;
-    let mut start = 0usize;
-    let mut operator = None;
-    let mut result = Vec::new();
-    let mut cursor = 0usize;
-    while cursor < bytes.len() {
-        let byte = bytes[cursor];
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                quoted = false;
-            }
-            cursor += 1;
-            continue;
-        }
-        match byte {
-            b'"' => quoted = true,
-            b'(' | b'{' | b'[' => {
-                depth += 1;
-                if depth > super::parser::DEFAULT_NESTING_LIMIT {
-                    return Err("query nesting limit exceeded".into());
-                }
-            }
-            b')' | b'}' | b']' => {
-                depth = depth
-                    .checked_sub(1)
-                    .ok_or("unmatched delimiter in diff query")?;
-            }
-            byte if depth == 0 && (byte.is_ascii_alphabetic() || byte == b'_') => {
-                let word_start = cursor;
-                cursor += 1;
-                while cursor < bytes.len()
-                    && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
-                {
-                    cursor += 1;
-                }
-                let next = DiffSetOperator::from_keyword(&source[word_start..cursor]);
-                if let Some(next) = next {
-                    let pipeline = source[start..word_start].trim();
-                    if pipeline.is_empty() {
-                        return Err("set operator requires a left selection".into());
-                    }
-                    result.push((operator, pipeline));
-                    operator = Some(next);
-                    start = cursor;
-                }
-                continue;
-            }
-            _ => {}
-        }
-        cursor += 1;
-    }
-    if quoted || depth != 0 {
-        return Err("unterminated string or group in diff query".into());
-    }
-    let pipeline = source[start..].trim();
-    if pipeline.is_empty() {
-        return Err("set operator requires a right selection".into());
-    }
-    result.push((operator, pipeline));
-    Ok(result)
 }
 
 fn split_diff_call_arguments<'a>(stage: &'a str, name: &str) -> Result<Vec<&'a str>, String> {
@@ -641,69 +340,6 @@ fn split_diff_top_level(source: &str, delimiter: u8) -> Result<Vec<&str>, String
     Ok(result)
 }
 
-fn split_diff_pipeline(source: &str) -> Result<Vec<&str>, String> {
-    split_diff_top_level(source, b'|')
-}
-
-fn lex_diff_predicate(source: &str) -> Result<Vec<DiffPredicateToken>, String> {
-    let bytes = source.as_bytes();
-    let mut cursor = 0;
-    let mut tokens = Vec::new();
-    while cursor < bytes.len() {
-        match bytes[cursor] {
-            byte if byte.is_ascii_whitespace() => cursor += 1,
-            b'(' => {
-                tokens.push(DiffPredicateToken::Left);
-                cursor += 1;
-            }
-            b')' => {
-                tokens.push(DiffPredicateToken::Right);
-                cursor += 1;
-            }
-            b',' => {
-                tokens.push(DiffPredicateToken::Comma);
-                cursor += 1;
-            }
-            b'"' => {
-                let start = cursor;
-                cursor += 1;
-                let mut escaped = false;
-                while cursor < bytes.len() {
-                    let byte = bytes[cursor];
-                    cursor += 1;
-                    if escaped {
-                        escaped = false;
-                    } else if byte == b'\\' {
-                        escaped = true;
-                    } else if byte == b'"' {
-                        break;
-                    }
-                }
-                if cursor > bytes.len() || bytes.get(cursor.saturating_sub(1)) != Some(&b'"') {
-                    return Err("unterminated string in diff predicate".into());
-                }
-                let value: String = serde_json::from_str(&source[start..cursor])
-                    .map_err(|_| "invalid string in diff predicate")?;
-                tokens.push(DiffPredicateToken::String(value));
-            }
-            byte if byte.is_ascii_alphabetic() || byte == b'_' => {
-                let start = cursor;
-                cursor += 1;
-                while cursor < bytes.len()
-                    && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
-                {
-                    cursor += 1;
-                }
-                tokens.push(DiffPredicateToken::Identifier(
-                    source[start..cursor].to_owned(),
-                ));
-            }
-            _ => return Err("invalid token in diff predicate".into()),
-        }
-    }
-    Ok(tokens)
-}
-
 fn extract_string_calls(source: &str, name: &str) -> Vec<String> {
     let prefix = format!("{name}(\"");
     let mut rest = source;
@@ -717,4 +353,344 @@ fn extract_string_calls(source: &str, name: &str) -> Vec<String> {
         rest = &rest[end + 2..];
     }
     values
+}
+
+struct DiffReader<'a> {
+    source: &'a str,
+    bindings: Vec<&'a str>,
+    nesting: usize,
+}
+impl<'a> DiffReader<'a> {
+    fn new(source: &'a str, bindings: Vec<&'a str>, nesting: usize) -> Self {
+        Self {
+            source,
+            bindings,
+            nesting,
+        }
+    }
+    fn leaf(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        argument: Option<&zirql::Pattern>,
+        locals: &[&str],
+        budget: &mut zirql::Budget,
+        nesting: usize,
+    ) -> Result<Leaf, zirql::QueryError> {
+        let name = reader.word()?;
+        let name = name.value.to_owned();
+        if name == "true" || name == "false" {
+            return Ok(Leaf::Bool(name == "true"));
+        }
+        reader.expect('(')?;
+        let mut arguments = Vec::new();
+        let count = if name == "attr" { 2 } else { 1 };
+        for index in 0..count {
+            if index != 0 {
+                reader.expect(',')?;
+            }
+            let value =
+                zirql::read_value_expression_in_scope(reader, self, locals, budget, nesting)?;
+            let pattern = argument
+                .map(|pattern| zirql::copy_pattern(pattern, budget))
+                .transpose()?;
+            let range = value.range.clone();
+            let subject = Located::new(
+                zirql::ValueExpressionKind::NativeQuery(Box::new(Located::new(
+                    ExpressionKind::Input,
+                    range.clone(),
+                ))),
+                range,
+            );
+            let bound = zirql::PredicateArgument {
+                argument: pattern,
+                body: Box::new(value),
+            }
+            .bind_value(subject);
+            budget.charge_results(1, zirql::Location::Query(bound.range.clone()))?;
+            arguments.push(super::diff_program::SharedValue(std::sync::Arc::new(bound)));
+        }
+        reader.expect(')')?;
+        Ok(Leaf::Dynamic { name, arguments })
+    }
+}
+impl zirql::ValueReaderHost for DiffReader<'_> {
+    type Stage = DiffStage;
+    type SetOperator = SetOperator;
+    type Emitter = ();
+    type Predicate = Leaf;
+    fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
+        zirql::FieldPipelineSource::Constructed
+    }
+    fn is_binding(&self, name: &str) -> bool {
+        name == "input" || self.bindings.contains(&name)
+    }
+    fn is_stage(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "filter"
+                | "unique"
+                | "where_exists"
+                | "fixpoint"
+                | "sort_by"
+                | "min_by"
+                | "max_by"
+                | "min_all_by"
+                | "max_all_by"
+                | "map_by"
+                | "project"
+                | "before"
+                | "after"
+                | "users"
+                | "defs"
+                | "parent"
+                | "children"
+                | "subtree"
+                | "root"
+                | "reachable"
+                | "closure"
+                | "slice"
+                | "backward_slice"
+                | "forward_slice"
+                | "reverse"
+                | "head"
+                | "tail"
+                | "count"
+                | "tally"
+                | "names"
+                | "attr"
+                | "result_types"
+                | "operand_types"
+                | "sort"
+                | "min"
+                | "max"
+                | "min_all"
+                | "max_all"
+                | "check"
+                | "emit"
+                | "json"
+                | "markdown"
+                | "print"
+        )
+    }
+    fn parse_stage(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        budget: &mut zirql::Budget,
+    ) -> Result<zirql::ExpressionStep<DiffStage, ()>, zirql::QueryError> {
+        self.parse_stage_in_scope(reader, &[], budget, self.nesting)
+    }
+    fn parse_stage_in_scope(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        locals: &[&str],
+        budget: &mut zirql::Budget,
+        nesting: usize,
+    ) -> Result<zirql::ExpressionStep<DiffStage, ()>, zirql::QueryError> {
+        let start = reader.position();
+        if reader.consume('(') {
+            let value =
+                zirql::read_value_expression_in_scope(reader, self, locals, budget, nesting)?;
+            reader.expect(')')?;
+            let stage = match value.value {
+                zirql::ValueExpressionKind::NativeQuery(expression)
+                | zirql::ValueExpressionKind::NativeValue(expression) => {
+                    DiffStage::Nested(super::diff_program::nested(*expression))
+                }
+                kind => DiffStage::Value(super::diff_program::SharedValue(std::sync::Arc::new(
+                    Located::new(kind, value.range),
+                ))),
+            };
+            return Ok(zirql::ExpressionStep::Stage(stage));
+        }
+        let name = reader.word()?;
+        if name.value == "root" {
+            reader.expect('(')?;
+            let predicate =
+                zirql::read_native_predicate_argument(reader, self, locals, budget, nesting)?;
+            reader.expect(')')?;
+            let DiffStage::Stream(pipeline) =
+                stream(Stage::Filter(predicate), start..reader.position()).map_err(|error| {
+                    zirql::QueryError::query(
+                        error.range.unwrap_or(start..reader.position()),
+                        error.message,
+                    )
+                })?
+            else {
+                unreachable!("stream filter")
+            };
+            return Ok(zirql::ExpressionStep::Stage(DiffStage::Root(pipeline)));
+        }
+        reader.skip_whitespace();
+        if reader.consume('(') {
+            let mut depth = 1usize;
+            let lexed = super::lexer::lex(reader.remaining());
+            for token in lexed.tokens() {
+                match token.kind() {
+                    super::lexer::TokenKind::LParen => depth += 1,
+                    super::lexer::TokenKind::RParen => {
+                        depth -= 1;
+                        if depth == 0 {
+                            reader.advance(token.range().end() as usize)?;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if depth != 0 {
+                return Err(reader.error("expected `)` after diff stage"));
+            }
+        }
+        budget.charge(
+            reader.position() - start,
+            zirql::Location::Query(start..reader.position()),
+        )?;
+        let part = self.source[start..reader.position()].trim_end();
+        let stage = parse_stage(part, &(start..reader.position())).map_err(|error| {
+            zirql::QueryError::query(
+                error.range.unwrap_or(start..reader.position()),
+                error.message,
+            )
+        })?;
+        Ok(zirql::ExpressionStep::Stage(stage))
+    }
+    fn parse_predicate_leaf(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        budget: &mut zirql::Budget,
+    ) -> Result<Leaf, zirql::QueryError> {
+        self.leaf(reader, None, &[], budget, self.nesting)
+    }
+    fn parse_predicate_leaf_in_scope(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        locals: &[&str],
+        budget: &mut zirql::Budget,
+        nesting: usize,
+    ) -> Result<Leaf, zirql::QueryError> {
+        self.leaf(reader, None, locals, budget, nesting)
+    }
+    fn parse_predicate_leaf_in_argument(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        argument: Option<&zirql::Pattern>,
+        locals: &[&str],
+        budget: &mut zirql::Budget,
+        nesting: usize,
+    ) -> Result<Leaf, zirql::QueryError> {
+        self.leaf(reader, argument, locals, budget, nesting)
+    }
+    fn is_predicate_leaf(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "true"
+                | "false"
+                | "change"
+                | "changed"
+                | "op"
+                | "dialect"
+                | "result_type"
+                | "has_attr"
+                | "attr"
+        )
+    }
+    fn predicate_expression(
+        &mut self,
+        predicate: zirql::PredicateArgument<Expression>,
+        range: Range<usize>,
+    ) -> Result<Leaf, zirql::QueryError> {
+        let subject = Located::new(
+            zirql::ValueExpressionKind::NativeQuery(Box::new(Located::new(
+                ExpressionKind::Input,
+                range.clone(),
+            ))),
+            range,
+        );
+        Ok(Leaf::Expression(super::diff_program::SharedValue(
+            std::sync::Arc::new(predicate.bind(subject)),
+        )))
+    }
+    fn filter(&mut self, predicate: zirql::Predicate<Leaf>, range: Range<usize>) -> DiffStage {
+        stream(Stage::Filter(predicate), range).expect("shared reader bounded the filter")
+    }
+    fn projection(
+        &mut self,
+        projection: zirql::Projection<Expression>,
+        _: Range<usize>,
+    ) -> DiffStage {
+        for (_, value) in projection.fields {
+            zirql::dispose_native_value(value);
+        }
+        DiffStage::UnsupportedProjection
+    }
+    fn value_source(
+        &mut self,
+        value: zirql::ValueExpression<Expression>,
+        _: Range<usize>,
+    ) -> Result<DiffStage, zirql::QueryError> {
+        Ok(DiffStage::Value(super::diff_program::SharedValue(
+            std::sync::Arc::new(value),
+        )))
+    }
+    fn ordering(
+        &mut self,
+        ordering: zirql::NativeOrdering<Expression>,
+        _range: Range<usize>,
+    ) -> Result<DiffStage, zirql::QueryError> {
+        use zirql::NativeOrder as O;
+        Ok(match ordering.selector {
+            Some(selector) => DiffStage::Order {
+                kind: match ordering.order {
+                    O::Sort => Order::Sort,
+                    O::Min => Order::Min,
+                    O::Max => Order::Max,
+                    O::MinAll => Order::MinAll,
+                    O::MaxAll => Order::MaxAll,
+                },
+                selector: super::diff_program::nested(selector),
+            },
+            None => match ordering.order {
+                O::Sort => DiffStage::Sort,
+                O::Min | O::Max | O::MinAll | O::MaxAll => DiffStage::Extreme {
+                    maximum: matches!(ordering.order, O::Max | O::MaxAll),
+                    all: matches!(ordering.order, O::MinAll | O::MaxAll),
+                },
+            },
+        })
+    }
+    fn map_sorting(&mut self, _: Range<usize>) -> Result<DiffStage, zirql::QueryError> {
+        Ok(DiffStage::SortMapValue)
+    }
+    fn mapping(
+        &mut self,
+        mapping: zirql::NativeMap<Expression>,
+        _: Range<usize>,
+    ) -> Result<DiffStage, zirql::QueryError> {
+        Ok(DiffStage::MapBy {
+            key: super::diff_program::nested(mapping.key),
+            value: super::diff_program::nested(mapping.value),
+        })
+    }
+    fn fixed_point(
+        &mut self,
+        query: Expression,
+        _: Range<usize>,
+    ) -> Result<DiffStage, zirql::QueryError> {
+        Ok(DiffStage::Fixpoint(super::diff_program::nested(query)))
+    }
+    fn where_exists(
+        &mut self,
+        query: Expression,
+        _: Range<usize>,
+    ) -> Result<DiffStage, zirql::QueryError> {
+        Ok(DiffStage::WhereExists(super::diff_program::nested(query)))
+    }
+    fn set_operator(&self, word: &str) -> Option<SetOperator> {
+        match word {
+            "union" => Some(SetOperator::Union),
+            "intersect" => Some(SetOperator::Intersect),
+            "except" => Some(SetOperator::Except),
+            _ => None,
+        }
+    }
 }

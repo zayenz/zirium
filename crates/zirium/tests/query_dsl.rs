@@ -2707,9 +2707,7 @@ fn report_ordering_agrees_with_typed_helpers_and_keeps_native_selector_stages() 
             Ok(())
         })
         .unwrap();
-    assert!(
-        matches!(&output[0],QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data()==&V::Integer(1))
-    );
+    assert_eq!(output, [QueryOutput::Count(1)]);
     let projected = r#"let ordered = sort_by([{"score":lookup({"id":1},"score") default 0},{"score":2}],"score"); report min_by(ordered,"score");"#;
     let mut output = Vec::new();
     Query::parse(projected)
@@ -4200,4 +4198,105 @@ fn shared_value_calls_and_saved_suffixes_keep_constructed_and_native_sources() {
         )
         .unwrap();
     assert_eq!(operations, &expected);
+}
+
+#[test]
+fn shared_predicates_keep_constructed_elements_and_native_candidates() {
+    use zirium::query::{ConstructedValue as V, NativeValue};
+    let mut document = document();
+    let mut run = |source: &str| {
+        let mut values = Vec::new();
+        Query::parse(source)
+            .unwrap_or_else(|error| panic!("{source}: {error}"))
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                values.push(value);
+                Ok(())
+            })
+            .unwrap_or_else(|error| panic!("{source}: {error}"));
+        values
+    };
+    for source in [
+        "let rows=[(1,2),(3,4)]; rows | filter((a,b) => a+b > 4)",
+        "let rows=[(1,2),(3,4)]; [row for row in rows if row.1+row.2 > 4]",
+        "let rows=[(1,2),(3,4)]; [row | row in rows where row.1+row.2 > 4]",
+    ] {
+        let values = run(source);
+        assert!(
+            matches!(&values[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Array(vec![V::Tuple(vec![V::Integer(3), V::Integer(4)])])),
+            "{source}: {values:?}"
+        );
+    }
+    let values = run(
+        "fn positive(n:int)->bool { n>0 } let [first,second,..]=[1,2,3]; [[a,b] for (a,b) in [(first,second)] if positive(a)] | filter([a,b] => positive(a) and _[2]==b)",
+    );
+    assert!(
+        matches!(&values[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Array(vec![V::Array(vec![V::Integer(1), V::Integer(2)])]))
+    );
+    let values = run(
+        "let rows=[(items:[1,2],limit:1),(items:[1],limit:3)]; rows | filter(outer => length(outer.items | filter(_ > outer.limit)) > 0)",
+    );
+    assert!(
+        matches!(&values[0], QueryOutput::Native(NativeValue::Constructed(value)) if matches!(value.value().data(), V::Array(rows) if rows.len()==1))
+    );
+    let values =
+        run(r#"filter(op("test.seed")) | root(p => one(p | names)=="test.scope") | names"#);
+    assert_eq!(values, [QueryOutput::Values(vec!["test.scope".into()])]);
+    let values = run(
+        r#"fn wanted(p:Operation)->bool { one(p | names)=="test.scope" } filter(op("test.seed")) | root(candidate => op(one(candidate | names)) and wanted(_) and wanted(candidate)) | names"#,
+    );
+    assert_eq!(values, [QueryOutput::Values(vec!["test.scope".into()])]);
+    let values = run(
+        r#"fn wanted(p:Operation)->bool { one(p | names)=="test.scope" } fn owner(p:Operation)->Operation { p | root(candidate => wanted(_) and op(one(candidate | names))) } let selected=filter(op("test.seed")); owner(selected) | names"#,
+    );
+    assert!(
+        matches!(&values[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Array(vec![V::String("test.scope".into())]))
+    );
+    let values = run(
+        "fn positive(n:int)->bool {n>0} fn keep(rows:sequence<int>)->sequence<int> {rows | filter(x => positive(_) and x>1)} keep([1,2,3])",
+    );
+    assert!(
+        matches!(&values[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Array(vec![V::Integer(2), V::Integer(3)]))
+    );
+    let values = run(
+        r#"filter(op("test.seed")) | paths(users,to=target => one(target | names)=="test.end",max_depth=2) | count"#,
+    );
+    assert_eq!(values, [QueryOutput::Count(1)]);
+    let values = run(
+        r#"fn nonempty(n:int)->bool {n>0} match { from seed in filter(op("test.seed")); where original => nonempty(original | count) and one(seed | names)=="test.seed"; } | count"#,
+    );
+    assert_eq!(values, [QueryOutput::Count(1)]);
+    let values = run(
+        r#"fn label()->string {"test.seed"} match { from seed in filter(op(label())); where original => one(seed | names)==label() and original | count > 0; } | count"#,
+    );
+    assert_eq!(values, [QueryOutput::Count(1)]);
+    for source in [
+        r#"match { from add in filter(op("test.add")); where original => same_value(operand(original | filter(op("test.add")),0),operand(add,1)); } | count"#,
+        r#"match { from add in filter(op("test.add")); where same_value(operand(_ | filter(op("test.add")),0),operand(add,1)); } | count"#,
+    ] {
+        assert_eq!(run(source), [QueryOutput::Count(1)], "{source}");
+    }
+    let values = run(
+        r#"fn same(p:Operation,label:string)->int { p | match { from add in filter(op(label)); where original => same_value(operand(original | filter(op(label)),0),operand(add,1)); } | count } same(filter(op("test.add")),"test.add")"#,
+    );
+    assert!(
+        matches!(&values[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Integer(1))
+    );
+    for source in [
+        "let [a,b]=[1]; a",
+        "let rows=[[1]]; rows | filter([a,b] => true)",
+        "fn select(rows:sequence<int>)->sequence<int> { rows | filter(_+1) } select([])",
+        r#"filter((a,b) => true)"#,
+    ] {
+        let mut emitted = false;
+        let error = Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| {
+                emitted = true;
+                Ok(())
+            })
+            .err()
+            .unwrap_or_else(|| panic!("expected refusal: {source}"));
+        assert!(error.range().is_some(), "{source}: {error}");
+        assert!(!emitted);
+    }
 }

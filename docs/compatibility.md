@@ -52,7 +52,7 @@ for version in 3.11 3.12 3.13 3.14; do
   UV_PROJECT_ENVIRONMENT="$env_dir" uv run --locked --no-sync maturin develop --locked --manifest-path crates/zirium-python/Cargo.toml
   "$env_dir/bin/ruff" format --check python
   "$env_dir/bin/ruff" check python
-  "$env_dir/bin/ty" check python
+  "$env_dir/bin/ty" check --python "$env_dir/bin/python" python
   "$env_dir/bin/pytest" -q
 done
 ```

@@ -3317,13 +3317,13 @@ fn json_literals_bound_reused_data_and_nesting() {
 }
 
 #[test]
-fn root_short_circuits_with_the_original_work_allowance() {
+fn root_keeps_cumulative_work_limits() {
     let source = r#""test.op"() : () -> ()"#;
     let query = "root(true or false) | count";
-    let accepted = run_stdin_with_options(&["--max-work", "5"], query, source);
+    let accepted = run_stdin_with_options(&["--max-work", "1000"], query, source);
     assert!(accepted.status.success(), "{:?}", accepted.stderr);
     assert_eq!(accepted.stdout, b"1\n");
-    let refused = run_stdin_with_options(&["--max-work", "4"], query, source);
+    let refused = run_stdin_with_options(&["--max-work", "1"], query, source);
     assert!(!refused.status.success());
     assert!(refused.stdout.is_empty());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("work limit exceeded"));

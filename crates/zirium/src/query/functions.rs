@@ -907,11 +907,32 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                         }
                     }
                     _ => {
-                        for (value, relative) in host
-                            .value_arguments(stage, budget, &program::range(stage.range()))
+                        for argument in host
+                            .scoped_value_arguments(
+                                stage,
+                                &kind,
+                                names,
+                                budget,
+                                &program::range(stage.range()),
+                            )
                             .map_err(core_error)?
                         {
-                            self.prepare_value(stage, value, relative, names, budget)?;
+                            let mut scope =
+                                copy_scope(names, budget, &program::range(stage.range()))
+                                    .map_err(core_error)?;
+                            scope.extend(
+                                argument
+                                    .locals
+                                    .into_iter()
+                                    .map(|(name, kind)| (name.value, kind)),
+                            );
+                            self.prepare_value(
+                                stage,
+                                argument.expression,
+                                argument.relative.unwrap_or_else(|| kind.clone()),
+                                &scope,
+                                budget,
+                            )?;
                         }
                     }
                 }
@@ -1343,10 +1364,23 @@ fn normalize_with(
         match &mut value.value {
             K::Literal(_)
             | K::CurrentInput
+            | K::PredicateSubject
             | K::Name(_)
             | K::NativeQuery(_)
             | K::NativeValue(_)
             | K::IdentitySet { .. } => {}
+            K::Filter {
+                array: subject,
+                predicate,
+            }
+            | K::PredicateScope { subject, predicate }
+            | K::SubjectScope {
+                subject,
+                argument: predicate,
+            } => {
+                pending.push(subject);
+                pending.push(&mut predicate.body);
+            }
             K::Block { bindings, value } => {
                 pending.extend(bindings.iter_mut().map(|(_, v)| v));
                 pending.push(value);
@@ -1386,7 +1420,6 @@ fn normalize_with(
             | K::TupleAccess { value: v, .. }
             | K::GroupBy { rows: v, .. }
             | K::Reduce { array: v, .. }
-            | K::FilterStartsWith { array: v, .. }
             | K::Sort { array: v, .. }
             | K::Extremum { array: v, .. } => pending.push(v),
             K::Record(fields) => pending.extend(fields.iter_mut().map(|(_, v)| v)),

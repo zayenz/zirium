@@ -1011,15 +1011,16 @@ impl Validator<'_> {
                     kind = Kind::Captures(std::sync::Arc::new(schema));
                 }
                 S::Match { value, .. } => {
-                    let schema = capture::types(value, &kind, names, budget)?;
+                    let schema = capture::types(value, &kind, names, budget, &self.host)?;
                     kind = Kind::Captures(std::sync::Arc::new(schema));
                 }
                 S::Native { value, .. } => {
-                    kind = capture::operand_kind(value, &kind, names, budget)?;
+                    kind = capture::operand_kind(value, &kind, names, budget, &self.host)?;
                 }
                 S::Operand { operation, .. } => {
                     require(
-                        capture::operand_kind(operation, &kind, names, budget)? == Kind::Operations,
+                        capture::operand_kind(operation, &kind, names, budget, &self.host)?
+                            == Kind::Operations,
                         "operand requires native operations",
                     )?;
                     kind = Kind::Ssa;

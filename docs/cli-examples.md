@@ -31,6 +31,24 @@ as a leaf and continues elsewhere. Add `--strict` to reject either case in
 scripts. Options can appear before or after the query argument. Use `--` before
 input paths beginning with a dash.
 
+## Shared patterns and predicates
+
+Run the shared-language report against the existing small MLIR fixture:
+
+```sh
+zirium -f examples/cli/shared-predicates.zirql examples/cli/subtree-cost.mlir
+```
+
+The program destructures a list binding and tuple generators, compares common
+`for/in/if` and alternate `pipe/where` comprehensions, then filters the tuples
+with a named predicate. For a native ancestor query, use:
+
+```sh
+zirium 'filter(op("example.left")) | root(p => one(p | names) == "example.root") | names' examples/cli/subtree-cost.mlir
+```
+
+This prints `example.root`. The root predicate receives each candidate ancestor.
+
 ## Troubleshoot source errors
 
 Syntax and lowering failures are written to stderr with the input or query

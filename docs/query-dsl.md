@@ -117,6 +117,14 @@ input set. For parsed Rust requests, `Query::parameters()` exposes declarations,
 retain their existing behavior; callers buffer emissions when a later failure
 must discard earlier output. The CLI already buffers complete requests.
 
+Text queries also accept shared predicate arguments, for example
+`filter(p => one(p | names) == "example.make")` and
+`filter(one(_ | names) == "example.make")`. The
+[predicate reference](query-language.md#predicates-and-filtering) covers
+constructed filters, destructuring and native candidate scopes. Rust and
+Python builders keep their typed native predicates; textual arguments require
+no host-language callable or closure.
+
 ## Compose predicates and streams
 
 Available predicates are `op(name)`, `dialect(name)`, `has_attr(name)`,

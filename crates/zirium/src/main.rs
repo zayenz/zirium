@@ -89,6 +89,7 @@ Combine selections with union, intersect, except. Group them before counting.
 Navigation preserves duplicates; use unique to count distinct operations.
 Predicates: true, false, op("name"), dialect("name"), result_type("type"),
 has_attr("name"), string_attr_eq("name", "value"); combine with not, and, or.
+Shared predicate bodies accept a named argument (p => expression) or implicit _.
 Reference: https://github.com/zayenz/zirium/blob/main/docs/query-language.md
 "#;
 
@@ -1126,6 +1127,18 @@ fn write_diff_value(
 ) -> Result<(), String> {
     let (before_name, after_name) = document_names;
     match value {
+        DiffRuntime::Constructed(value) => {
+            let json = value
+                .to_json_with_budget(budget)
+                .map_err(|error| error.to_string())?;
+            if ndjson {
+                write_diff_envelope(output, diff, before_name, after_name, None, json)?;
+            } else {
+                serde_json::to_writer_pretty(&mut *output, &json)
+                    .map_err(|error| error.to_string())?;
+                output.write_all(b"\n").map_err(|error| error.to_string())?;
+            }
+        }
         DiffRuntime::Changes(items) => {
             if ndjson {
                 let json = diff.selection_to_json(&items).map_err(|e| e.to_string())?;

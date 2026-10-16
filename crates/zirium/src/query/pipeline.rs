@@ -161,7 +161,8 @@ fn lower_predicate(predicate: &model::Predicate) -> zirql::Predicate<&model::Pre
         P::Or { predicates, .. } => {
             PredicateKind::Or(predicates.iter().map(lower_predicate).collect())
         }
-        P::SameValue { .. }
+        P::Expression { .. }
+        | P::SameValue { .. }
         | P::Bool { .. }
         | P::Op { .. }
         | P::OpValue { .. }
@@ -351,56 +352,16 @@ impl<'stage>
         let Row::Operation(operation) = item else {
             unreachable!("filter preparation requires operations")
         };
-        if let model::Predicate::OpValue { name, .. } = leaf {
-            let matches = match &mut context.access {
-                Access::Prepared(arguments) => {
-                    let value = arguments.evaluate(
-                        &name.expression,
-                        QueryOutput::Operations(vec![]),
-                        budget,
-                    )?;
-                    let zirql::ConstructedValue::String(text) = value.value().data() else {
-                        return Err(zirql::EvaluationError::Host(
-                            EvaluationError::new("op argument needs a string")
-                                .at(name.expression.range.clone()),
-                        ));
-                    };
-                    if text.is_empty() {
-                        return Err(zirql::EvaluationError::Host(
-                            EvaluationError::new("operation name must not be empty")
-                                .at(name.expression.range.clone()),
-                        ));
-                    }
-                    arguments.parts().0.document.operation_name(*operation) == Some(text)
-                }
-                Access::Direct(evaluation, bindings) => {
-                    let name = super::report::op_name(name, evaluation, bindings, budget)
-                        .map_err(zirql::EvaluationError::Host)?;
-                    evaluation.document.operation_name(*operation) == Some(&name)
-                }
-            };
-            return Ok(if matches { Truth::True } else { Truth::False });
-        }
-        let resolved;
-        let leaf = if matches!(leaf, model::Predicate::Computed { .. }) {
-            resolved = match &mut context.access {
-                Access::Prepared(arguments) => {
-                    super::report::resolve_prepared_predicate(leaf, *arguments, budget)
-                }
-                Access::Direct(evaluation, bindings) => {
-                    super::report::resolve_predicate(leaf, evaluation, bindings, budget)
-                }
+        let input = QueryOutput::Operations(vec![*operation]);
+        match &mut context.access {
+            Access::Prepared(arguments) => {
+                super::report::evaluate_prepared_leaf(leaf, input, None, *arguments, budget)
             }
-            .map_err(zirql::EvaluationError::Host)?;
-            &resolved
-        } else {
-            leaf
-        };
-        Ok(evaluate_leaf(
-            leaf,
-            context.access.parts().0.document,
-            *operation,
-        ))
+            Access::Direct(evaluation, bindings) => {
+                super::report::evaluate_predicate_leaf(leaf, input, evaluation, bindings, budget)
+                    .map_err(zirql::EvaluationError::Host)
+            }
+        }
     }
 
     fn evaluate_stage(
@@ -460,7 +421,7 @@ pub(super) fn evaluate_leaf(
         model::Predicate::SameValue { .. } => unreachable!("preflight refuses same_value outside native matches"),
         model::Predicate::Bool { value, .. } => *value,
         model::Predicate::Op { name, .. } => document.operation_name(operation) == Some(name),
-        model::Predicate::OpValue {..} | model::Predicate::Computed {..}=>unreachable!("value arguments resolve with their active scope"),
+        model::Predicate::Expression {..} | model::Predicate::OpValue {..} | model::Predicate::Computed {..}=>unreachable!("value arguments resolve with their active scope"),
         model::Predicate::Dialect { name, .. } => document.operation_name(operation).and_then(|op| op.split_once('.')).is_some_and(|(dialect, _)| dialect == name),
         model::Predicate::ResultType { spelling, .. } => document.result_types(operation).unwrap_or(&[]).iter().any(|&ty| document.type_spelling(ty) == Some(spelling)),
         model::Predicate::HasAttr { name, .. } => document.attribute_entries(operation).is_some_and(|mut entries| entries.any(|(attribute, _)| attribute == name)),
@@ -472,7 +433,7 @@ pub(super) fn evaluate_leaf(
 
 pub(super) fn root_filter(
     predicate: &model::Predicate,
-) -> Result<Pipeline<&model::Predicate>, EvaluationError> {
+) -> Result<NativePipeline<'_>, EvaluationError> {
     let range = range(predicate.range());
     Pipeline::with_group_not_nesting(
         vec![Located::new(
@@ -485,52 +446,89 @@ pub(super) fn root_filter(
     .map_err(core_error)
 }
 
-pub(super) fn matches_root(
-    filter: &Pipeline<&model::Predicate>,
-    document: &Document,
-    operation: OperationId,
+pub(super) fn evaluate_roots(
+    predicate: &model::Predicate,
+    selected: Vec<OperationId>,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    bindings: &zirql::Bindings<QueryOutput>,
     budget: &mut Budget,
-) -> Result<bool, EvaluationError> {
-    let input = NativeInput::from_admitted(
-        document,
-        vec![operation],
-        budget,
-        zirql::Location::Query(filter.range()),
-    )
-    .map_err(core_error)?;
-    let result = zirql::evaluate(filter, &RootHost, input, budget).map_err(evaluation_error)?;
-    let zirql::NativeValue::Stream(rows) = result.value else {
-        unreachable!("the synthetic root pipeline contains only a filter")
-    };
-    Ok(!rows.is_empty())
+) -> Result<Vec<OperationId>, EvaluationError> {
+    let filter = root_filter(predicate)?;
+    roots_by(predicate, selected, budget, |operation, budget| {
+        let input = NativeInput::from_admitted(
+            StreamContext {
+                access: Access::Direct(context, bindings),
+                kind: StreamKind::Operations,
+            },
+            vec![Row::Operation(operation)],
+            budget,
+            zirql::Location::Query(filter.range()),
+        )
+        .map_err(core_error)?;
+        let mut result =
+            zirql::evaluate(&filter, &StreamHost, input, budget).map_err(evaluation_error)?;
+        let zirql::NativeValue::Stream(rows) = result.value else {
+            unreachable!("root filter returns a stream")
+        };
+        Ok((
+            !rows.is_empty(),
+            super::operation_parent(result.context.access.parts().0.document, operation),
+        ))
+    })
 }
-
-struct RootHost;
-
-impl Host<OperationId, &Document, &model::Predicate> for RootHost {
-    type Error = EvaluationError;
-    type Key = OperationId;
-
-    fn stage_work(&self, _: &[OperationId], _: &&Document) -> usize {
-        0
+pub(super) fn evaluate_roots_with_arguments(
+    predicate: &model::Predicate,
+    selected: Vec<OperationId>,
+    arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, '_>, super::report::ReportHost<'_>>,
+    budget: &mut Budget,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    let filter = root_filter(predicate)?;
+    roots_by(predicate, selected, budget, |operation, budget| {
+        let input = NativeInput::from_admitted(
+            StreamContext {
+                access: Access::Prepared(arguments),
+                kind: StreamKind::Operations,
+            },
+            vec![Row::Operation(operation)],
+            budget,
+            zirql::Location::Query(filter.range()),
+        )
+        .map_err(core_error)?;
+        let mut result =
+            zirql::evaluate(&filter, &StreamHost, input, budget).map_err(evaluation_error)?;
+        let zirql::NativeValue::Stream(rows) = result.value else {
+            unreachable!("root filter returns a stream")
+        };
+        Ok((
+            !rows.is_empty(),
+            super::operation_parent(result.context.access.parts().0.document, operation),
+        ))
+    })
+}
+fn roots_by(
+    predicate: &model::Predicate,
+    selected: Vec<OperationId>,
+    budget: &mut Budget,
+    mut test: impl FnMut(
+        OperationId,
+        &mut Budget,
+    ) -> Result<(bool, Option<OperationId>), EvaluationError>,
+) -> Result<Vec<OperationId>, EvaluationError> {
+    let mut roots = Vec::new();
+    for operation in selected {
+        let mut candidate = Some(operation);
+        while let Some(operation) = candidate {
+            budget
+                .charge(1, zirql::Location::Query(range(predicate.range())))
+                .map_err(core_error)?;
+            let (matched, parent) = test(operation, budget)?;
+            if matched {
+                super::program::charge_results(budget, 1, &range(predicate.range()))?;
+                roots.push(operation);
+                break;
+            }
+            candidate = parent;
+        }
     }
-    fn prepare_filter_item(
-        &self,
-        _: &OperationId,
-        _: &mut &Document,
-        _: &mut Budget,
-        _: &Range<usize>,
-    ) -> Result<(), zirql::EvaluationError<Self::Error>> {
-        Ok(())
-    }
-    fn evaluate_leaf(
-        &self,
-        leaf: &&model::Predicate,
-        item: &OperationId,
-        document: &mut &Document,
-        _: &mut Budget,
-        _: &Range<usize>,
-    ) -> Result<Truth, zirql::EvaluationError<Self::Error>> {
-        Ok(evaluate_leaf(leaf, document, *item))
-    }
+    Ok(roots)
 }

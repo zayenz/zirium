@@ -45,6 +45,21 @@ when present, otherwise the before endpoint.
 endpoints are dropped. Projected selections use the normal MLIR printer. Diff
 programs are read-only.
 
+Diff `filter` and `root` use the shared predicate reader. A named argument and
+`_` denote the existing change or side-owned operation subject:
+
+```zirql
+filter(c => changed("attributes") and length(c | names) > 0) |
+after | root(p => op("builtin.module") and one(_ | names) == "builtin.module") | names
+```
+
+`root` tests each ancestor candidate in its projected document. Captured saved
+bindings remain available, native leaves keep their change/before/after meanings,
+and pure shared expressions use the same cumulative budget. Change predicates
+refuse operation streams, including empty ones. Operations and changes do not
+expose record or list fields; select native projections explicitly. This diff
+surface has no function-declaration syntax or native capture clauses.
+
 After projection, `users`, `defs`, `parent`, `children`, `root`, `subtree`,
 `slice`, `closure`, and `reachable` inspect the selected complete document.
 `fixpoint(...)` is supported on projected operations and must remain on the

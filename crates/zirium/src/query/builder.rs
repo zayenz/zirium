@@ -450,6 +450,7 @@ impl OpQuery {
         let parameters = predicate.parameters.clone();
         self.append(
             Stage::Filter {
+                constructed: None,
                 predicate: predicate.inner,
                 range: range(),
             },
@@ -1679,7 +1680,10 @@ impl ReportGenerator {
             parameters,
             clause: zirql::Located::new(
                 zirql::ValueGenerator::In {
-                    binders: vec![zirql::Located::new(Some(name.into()), 0..0)],
+                    binders: vec![zirql::Located::new(
+                        zirql::PatternKind::Name(zirql::Located::new(name.into(), 0..0)),
+                        0..0,
+                    )],
                     source: source.into_expression(),
                     filter: filter.map(ReportExpr::into_expression),
                 },
@@ -1693,7 +1697,10 @@ impl ReportGenerator {
             parameters: value.parameters.clone(),
             clause: zirql::Located::new(
                 zirql::ValueGenerator::Bind {
-                    binder: zirql::Located::new(Some(name.into()), 0..0),
+                    binder: zirql::Located::new(
+                        zirql::PatternKind::Name(zirql::Located::new(name.into(), 0..0)),
+                        0..0,
+                    ),
                     value: value.into_expression(),
                     filter: None,
                 },
@@ -2062,21 +2069,7 @@ impl MatchBuilder {
         self
     }
     pub fn build(self) -> CaptureQuery {
-        let native = |value: capture::ParsedOperand| {
-            zirql::Located::new(
-                zirql::ExpressionKind::Sequence {
-                    input: Box::new(zirql::Located::new(zirql::ExpressionKind::Input, 0..0)),
-                    steps: vec![zirql::Located::new(
-                        zirql::ExpressionStep::Stage(Stage::Native {
-                            value,
-                            range: range(),
-                        }),
-                        0..0,
-                    )],
-                },
-                0..0,
-            )
-        };
+        let native = |value: capture::ParsedOperand| capture::native_source(value, 0..0);
         let count = self.clauses.len();
         let clauses = self
             .clauses
