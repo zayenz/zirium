@@ -471,13 +471,19 @@ output is no longer available.
 ## Report tensor sizes
 
 The [tensor report example](../python/examples/tensor_report.py) ranks tensor
-results by their logical byte estimate. After [building the local Python
-package](#build-the-python-package), run it from the checkout:
+results by their logical byte estimate. From the `v0.5.1` checkout, run it with
+the published Python package in your Python environment:
 
 ```sh
-uv run --locked --no-sync python python/examples/tensor_report.py \
+python -m pip install zirium==0.5.1
+python python/examples/tensor_report.py \
   examples/cli/stablelm-decode.mlir --top 10
 ```
+
+This uses the wheel and needs no Rust or LLVM installation on the supported
+platforms. For source development, [build the local Python
+package](#build-the-python-package) and prefix the report command with
+`uv run --locked --no-sync`.
 
 The JSON report includes the nearest `func.func` name, operation name, operation
 and result indices, dimensions, element type, element count, logical bytes, input
