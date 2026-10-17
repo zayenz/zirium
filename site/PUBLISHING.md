@@ -1,7 +1,7 @@
 # Publish Zirium at zayenz.se/zirium/
 
-Build the accepted Zirium 0.5.0 release source, using Node 22.12 or newer.
-The homepage and guides select 0.5.0 installation commands, Rust API pages and
+Build the accepted Zirium 0.5.1 release source, using Node 22.12 or newer.
+The homepage and guides select 0.5.1 installation commands, Rust API pages and
 repository source links. Check that the release tag and API destinations exist
 after package publication before importing the final site:
 

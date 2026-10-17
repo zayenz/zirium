@@ -1,6 +1,6 @@
 # Getting started with Zirium
 
-This guide covers Zirium 0.5.0 source setup and the Rust and Python APIs.
+This guide covers Zirium 0.5.1 source setup and the Rust and Python APIs.
 For the published Python package, see [installation](../README.md#installation). Both APIs follow
 the same sequence:
 
@@ -26,7 +26,7 @@ builds version-specific extensions and does not use `abi3`.
 Clone the repository, then run the workspace tests:
 
 ```sh
-git clone --branch v0.5.0 --depth 1 https://github.com/zayenz/zirium.git
+git clone --branch v0.5.1 --depth 1 https://github.com/zayenz/zirium.git
 cd zirium
 cargo test --workspace
 ```
@@ -44,12 +44,12 @@ Add the released library to your application:
 
 ```toml
 [dependencies]
-zirium = "=0.5.0"
+zirium = "=0.5.1"
 ```
 
 For local development next to a matching checkout, use
 `zirium = { path = "../zirium/crates/zirium" }` instead. The
-[versioned Rust API](https://docs.rs/zirium/0.5.0/zirium/) describes the public modules.
+[versioned Rust API](https://docs.rs/zirium/0.5.1/zirium/) describes the public modules.
 
 This program reports diagnostics, lowers generic MLIR strictly, validates the
 document, and prints canonical output:
@@ -126,7 +126,7 @@ uv run --locked --no-sync maturin develop --locked --manifest-path crates/zirium
 CPython version if needed. Check the import:
 
 ```sh
-.venv/bin/python -c 'import zirium, zirium._zirium; assert zirium.__version__ == "0.5.0"; print(zirium._zirium.__file__)'
+.venv/bin/python -c 'import zirium, zirium._zirium; assert zirium.__version__ == "0.5.1"; print(zirium._zirium.__file__)'
 ```
 
 To check parsing as well as importing:

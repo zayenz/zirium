@@ -31,7 +31,7 @@ for (const name of guides) {
       return `](${posix.relative(`guides/${name}`, `guides/${slug}`) || '.'}/${suffix})`;
     }
     const view = statSync(resolve(root, resolved)).isDirectory() ? 'tree' : 'blob';
-    return `](https://github.com/zayenz/zirium/${view}/v0.5.0/${resolved}${suffix})`;
+    return `](https://github.com/zayenz/zirium/${view}/v0.5.1/${resolved}${suffix})`;
   });
   const target = resolve(output, `guides/${name}.md`);
   await mkdir(dirname(target), { recursive: true });

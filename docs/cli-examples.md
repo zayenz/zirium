@@ -2,8 +2,8 @@
 
 Pass a query followed by input paths. Each file is an independent MLIR document;
 omitting paths reads stdin. The examples use fixtures from the
-[`v0.5.0` checkout](https://github.com/zayenz/zirium/tree/v0.5.0); run them from
-its root with Zirium 0.5.0 installed. See [getting started](getting-started.md)
+[`v0.5.1` checkout](https://github.com/zayenz/zirium/tree/v0.5.1); run them from
+its root with Zirium 0.5.1 installed. See [getting started](getting-started.md)
 for installation, or build the CLI in the checkout:
 
 ```sh

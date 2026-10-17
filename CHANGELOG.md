@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1
+
+- Expose retained MLIR location spelling on Python semantic operations, including
+  the distinction between absent and explicit unknown locations.
+- Add a Python tensor-result report with shapes, source locations and static
+  logical byte estimates, retaining unknown sizes for unsupported cases.
+- Clarify the query guides and keep shared-language explanations self-contained.
+
 ## 0.5.0
 
 Zirium 0.5.0 uses Zirql 0.1.0 for shared query execution and constructed

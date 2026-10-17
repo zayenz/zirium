@@ -2,14 +2,14 @@
 
 Zirium publishes one Rust crate, one Python package and standalone CLI
 archives. The internal `zirium-python` crate is a build component and remains
-`publish = false`. The selected release is 0.5.0, with Zirql 0.1.0 as its
+`publish = false`. The selected release is 0.5.1, with Zirql 0.1.0 as its
 shared-language dependency.
 
 ## Prepare a candidate
 
 Keep the versions in `crates/zirium/Cargo.toml`,
 `crates/zirium-python/Cargo.toml`, `pyproject.toml`, `Cargo.lock` and `uv.lock`
-at 0.5.0. Update the changelog, installation commands and versioned API/source
+at 0.5.1. Update the changelog, installation commands and versioned API/source
 links together. Refresh the lockfiles without upgrading unrelated dependencies:
 
 ```sh
@@ -79,14 +79,14 @@ short-lived credentials; no registry token needs to be stored in GitHub.
 CLI publication uses the workflow's GitHub token and runs independently of
 these registry approvals.
 
-## Publish 0.5.0
+## Publish 0.5.1
 
 Once publication is authorized, the final commit is on `main` and Zirql is
 available on crates.io, tag that commit and push only that tag:
 
 ```sh
-git tag -a v0.5.0 -m "Zirium 0.5.0"
-git push origin v0.5.0
+git tag -a v0.5.1 -m "Zirium 0.5.1"
+git push origin v0.5.1
 ```
 
 Do not use `git push --tags`; local tags may not belong to the public release
@@ -101,10 +101,10 @@ deployments**, select the registry environments and approve their uploads.
 The internal extension crate is never published to crates.io.
 
 After successful publication, report the version and links to the
-[Rust API](https://docs.rs/zirium/0.5.0/zirium/),
+[Rust API](https://docs.rs/zirium/0.5.1/zirium/),
 [crates.io package](https://crates.io/crates/zirium),
 [PyPI package](https://pypi.org/project/zirium/) and
-[GitHub release](https://github.com/zayenz/zirium/releases/tag/v0.5.0).
+[GitHub release](https://github.com/zayenz/zirium/releases/tag/v0.5.1).
 Publish the docs through [`site/PUBLISHING.md`](../site/PUBLISHING.md).
 A successful deployment completes the docs release; further validation needs
 a concrete failure, known defect or explicit request.
@@ -119,7 +119,7 @@ kernel 3.2 and macOS 11; CI runs on the listed runners, not the minimum OS
 versions.
 
 Each archive contains `zirium`, `LICENSE-MIT` and `LICENSE-APACHE` under
-`zirium-0.5.0-TARGET/`, with a `.tar.gz.sha256` sidecar. The build job extracts
+`zirium-0.5.1-TARGET/`, with a `.tar.gz.sha256` sidecar. The build job extracts
 the archive outside the checkout, checks its version and runs a strict StableHLO
 query against the embedded registry. Candidate runs upload these archives as
 workflow artifacts only.
@@ -136,7 +136,7 @@ If the workflow needs a fix, commit it to `main` and run it against the existing
 tag:
 
 ```sh
-gh workflow run release.yml --ref main -f mode=publish -f tag=v0.5.0 -f registry=pypi
+gh workflow run release.yml --ref main -f mode=publish -f tag=v0.5.1 -f registry=pypi
 ```
 
 Use `registry=crates-io`, `registry=pypi` or `registry=binaries` for one channel.
