@@ -468,6 +468,44 @@ blocks, as in the attribute replacement above. Inserting or erasing an operation
 invalidates source mappings and makes the document semantic-only, so preserving
 output is no longer available.
 
+## Report tensor sizes
+
+The [tensor report example](../python/examples/tensor_report.py) ranks tensor
+results by their logical byte estimate. After [building the local Python
+package](#build-the-python-package), run it from the checkout:
+
+```sh
+uv run --locked --no-sync python python/examples/tensor_report.py \
+  examples/cli/stablelm-decode.mlir --top 10
+```
+
+The JSON report includes the nearest `func.func` name, operation name, operation
+and result indices, dimensions, element type, element count, logical bytes, input
+byte range and MLIR location. Operation indices follow structural preorder;
+operation and result indices start at zero. Byte ranges are half-open offsets
+into the input. `--top` must be positive and defaults to 20. Known byte sizes
+sort largest first, ties retain input traversal order, and unknown sizes follow.
+The total result count and unknown-size count cover the complete document.
+
+The example loads the StableHLO preset and requires complete lowering. It visits
+results of tensor type, including those nested in regions, but excludes function
+arguments and non-tensor results. Static shapes have a known element count;
+rank-zero tensors have one element and zero-sized tensors have none. Dynamic
+and unranked shapes have unknown counts. An unranked shape is `null`; a dynamic
+dimension is `null` within its dimension list.
+
+Byte estimates use 8-, 16-, 32- and 64-bit integer elements, plus `bf16`, `f16`,
+`f32` and `f64`. Other element types and widths produce `null` bytes, including
+opaque and sub-byte types. Logical bytes describe the tensor's elements; they
+are not peak allocation or runtime estimates. The report does not account for
+buffer reuse, layouts, padding or execution frequency.
+
+`SemanticOperation.location` exposes the retained MLIR location spelling.
+It returns `None` when no location is attached and `"loc(unknown)"` for an
+explicit unknown location. Aliases may remain in this spelling. This is distinct
+from `source_range`, which points into the MLIR input. An erased operation raises
+`StaleHandleError` when either property is read.
+
 ## Resource limits
 
 The Python parse functions accept keyword-only limits:

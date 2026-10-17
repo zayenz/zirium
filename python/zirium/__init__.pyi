@@ -472,6 +472,14 @@ class SemanticOperation:
     @property
     def callee_spelling(self) -> str | None: ...
     @property
+    def location(self) -> str | None:
+        """Retained MLIR location spelling, or None if absent.
+
+        An explicit unknown location returns ``"loc(unknown)"``. Aliases may
+        remain in the spelling; this property does not resolve source paths.
+        Reading an erased operation raises ``StaleHandleError``.
+        """
+    @property
     def source_range(self) -> _TextRange | None: ...
     @property
     def is_unparsed(self) -> bool: ...

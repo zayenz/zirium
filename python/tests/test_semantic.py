@@ -136,6 +136,24 @@ def test_locations_typed_integers_and_nested_attribute_elements():
     assert first_entry.string_value == "first"
 
 
+def test_semantic_operation_locations_distinguish_absent_unknown_and_stale():
+    lowered = zirium.parse_text(
+        '"located"() : () -> () loc("model.py":7:3)\n'
+        '"unknown"() : () -> () loc(unknown)\n'
+        '"absent"() : () -> ()'
+    ).lower_strict()
+    document = lowered.document
+    assert document is not None
+    located, unknown, absent = operations(document)
+    assert located.location == 'loc("model.py":7:3)'
+    assert unknown.location == "loc(unknown)"
+    assert absent.location is None
+    with document.edit() as edit:
+        edit.erase(located)
+    with pytest.raises(zirium.StaleHandleError, match="stale"):
+        _ = located.location
+
+
 def test_operation_table_dictionary_filter_columns_and_indices():
     document = (
         zirium.parse_text(

@@ -719,6 +719,14 @@ impl SemanticOperation {
             .operation_callee_spelling(self.id)
             .map(str::to_owned))
     }
+    /// Retained MLIR location spelling, or None when no location is attached.
+    #[getter]
+    fn location(&self) -> PyResult<Option<String>> {
+        read_document(&self.state)?
+            .operation_location(self.id)
+            .map(|location| location.map(str::to_owned))
+            .ok_or_else(|| stale("operation"))
+    }
     #[getter]
     fn source_range(&self) -> PyResult<Option<(u32, u32)>> {
         let document = read_document(&self.state)?;

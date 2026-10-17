@@ -227,6 +227,10 @@ Use `result_type("tensor<32xf32>")` to select that exact result type, or `json`
 to inspect operand types, result types, and complete dimension clauses together.
 Paired custom dimensions such as `[0] x [1]` remain intact in attribute projection.
 
+For a ranked JSON report of tensor shapes, logical sizes and input locations,
+run the [Python tensor report](getting-started.md#report-tensor-sizes) against
+the same decoder fixture.
+
 ## Inspect a single output computation
 
 The decoder returns logits, a key cache, and a value cache. Select the first
