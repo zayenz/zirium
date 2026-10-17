@@ -1,13 +1,16 @@
 # Querying and editing MLIR from the command line
 
 Pass a query followed by input paths. Each file is an independent MLIR document;
-omitting paths reads stdin. From a source checkout, build the CLI with:
+omitting paths reads stdin. The examples use fixtures from the
+[`v0.5.0` checkout](https://github.com/zayenz/zirium/tree/v0.5.0); run them from
+its root with Zirium 0.5.0 installed. See [getting started](getting-started.md)
+for installation, or build the CLI in the checkout:
 
 ```sh
 cargo build --bin zirium
 ```
 
-The commands below assume `target/debug` is on `PATH`:
+To use that local build, add `target/debug` to `PATH`:
 
 ```sh
 export PATH="$PWD/target/debug:$PATH"
@@ -16,7 +19,7 @@ export PATH="$PWD/target/debug:$PATH"
 The [query language reference](query-language.md) lists every predicate,
 pipeline stage, and output rule.
 
-Inputs and reusable `.zirium` programs are in
+Inputs and reusable `.zirium` and `.zirql` programs are in
 [`examples/cli`](../examples/cli/). Short queries are shown inline.
 
 The default baseline registry accepts ordinary, named, and nested `module`
@@ -44,7 +47,9 @@ The program destructures a list binding and tuple generators, compares common
 with a named predicate. For a native ancestor query, use:
 
 ```sh
-zirium 'filter(op("example.left")) | root(p => one(p | names) == "example.root") | names' examples/cli/subtree-cost.mlir
+zirium 'filter(op("example.left"))
+  | root(p => one(p | names) == "example.root")
+  | names' examples/cli/subtree-cost.mlir
 ```
 
 This prints `example.root`. The root predicate receives each candidate ancestor.
@@ -130,7 +135,7 @@ The same query is available as
 ## Combine arithmetic operation kinds
 
 `union` combines the results of two queries. The result contains the add and
-multiply in source order:
+multiply, following the left operand and then the right:
 
 ```sh
 zirium \
@@ -174,7 +179,8 @@ The first query below counts every operation. The second counts reductions:
 ```console
 $ zirium --preset stablehlo --strict 'count' examples/cli/stablelm-decode.mlir
 237
-$ zirium --preset stablehlo --strict 'filter(op("stablehlo.reduce")) | count' examples/cli/stablelm-decode.mlir
+$ zirium --preset stablehlo --strict \
+    'filter(op("stablehlo.reduce")) | count' examples/cli/stablelm-decode.mlir
 14
 ```
 
@@ -189,7 +195,9 @@ matrix multiplications:
 ```console
 $ cat examples/cli/stablehlo-matmul-count.zirium
 filter(op("stablehlo.dot_general")) | count
-$ zirium --preset stablehlo --strict --program-file examples/cli/stablehlo-matmul-count.zirium examples/cli/stablelm-decode.mlir
+$ zirium --preset stablehlo --strict \
+    --program-file examples/cli/stablehlo-matmul-count.zirium \
+    examples/cli/stablelm-decode.mlir
 19
 ```
 
@@ -367,7 +375,12 @@ The [function fixture](../examples/cli/function-report.mlir) contains `double`,
 argument:
 
 ```sh
-zirium 'filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "n": f | children | count}) | json' examples/cli/function-report.mlir
+zirium 'filter(op("func.func"))
+  | project(f, {
+      "name": f | attr("sym_name") | one,
+      "n": f | children | count
+    })
+  | json' examples/cli/function-report.mlir
 ```
 
 The rows are `double: 2`, `mix: 3`, `plain: 1`, in input order. The
@@ -390,7 +403,11 @@ Group the same three functions by the number of represented `arith.addi`
 operations. This complete short program uses literal arguments:
 
 ```sh
-zirium 'let rows = filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "matches": f | children | subtree | filter(op("arith.addi")) | count}); group_by(rows, "matches") | json;' examples/cli/function-report.mlir
+zirium 'let rows = filter(op("func.func")) | project(f, {
+  "name": f | attr("sym_name") | one,
+  "matches": f | children | subtree | filter(op("arith.addi")) | count
+});
+group_by(rows, "matches") | json;' examples/cli/function-report.mlir
 zirium -f examples/cli/function-groups.zirql examples/cli/function-report.mlir
 ```
 
@@ -415,9 +432,20 @@ existing rendering, diagnostic and budget boundaries.
 The [tree fixture](../examples/cli/subtree-cost.mlir) contains an unannotated
 root and exactly two leaves with integer costs `3` and `4`.
 
+This inline function returns `8`:
+
+```sh
+zirium 'fn subtree_cost(op: Operation) -> int {
+  (cost_annotation(op) default 1)
+    + sum([subtree_cost(child) for child in direct_children(op)])
+}
+let selected = filter(op("example.root"));
+report subtree_cost(selected) | json' examples/cli/subtree-cost.mlir
+```
+
+The saved program and Rust builder example run as follows:
+
 ```console
-$ zirium 'fn subtree_cost(op: Operation) -> int { (cost_annotation(op) default 1) + sum([subtree_cost(child) for child in direct_children(op)]) } let selected = filter(op("example.root")); report subtree_cost(selected) | json' examples/cli/subtree-cost.mlir
-8
 $ zirium --program-file examples/cli/subtree-cost.zirql examples/cli/subtree-cost.mlir
 8
 $ zirium --program-file examples/cli/tail-accumulator.zirql examples/cli/subtree-cost.mlir
@@ -427,7 +455,7 @@ $ cargo run -p zirium --locked --example typed_functions
 500500
 ```
 
-The first two commands run the same
+The inline command and first saved command run the same
 [function program](../examples/cli/subtree-cost.zirql). `direct_children`
 follows containment in source order; it does not traverse SSA users.
 Missing `cost` selects `default 1`. A stored string cost is an error:
@@ -481,11 +509,14 @@ and [Rust and Python report builders](query-dsl.md#destructuring-reports).
 ## Filter projected names with exact string matching
 
 ```sh
-zirium 'let labels = filter(op("func.func")) | attr("sym_name"); [n for n in labels if contains(n, "i") and starts_with(n, "m") and ends_with(n, "x")] | json;' examples/cli/function-report.mlir
+zirium 'let labels = filter(op("func.func")) | attr("sym_name");
+  [n for n in labels
+   if contains(n, "i") and starts_with(n, "m") and ends_with(n, "x")]
+  | json;' examples/cli/function-report.mlir
 zirium --program-file examples/cli/string-matching.zirql examples/cli/function-report.mlir
 ```
 
-The short query returns `["mix"]`. The saved program adds Unicode and empty
+The inline query returns `["mix"]`. The saved program adds Unicode and empty
 search controls. Matching is case-sensitive and does not normalize Unicode or
 interpret regex. All three helpers require strings; empty searches match.
 Inline and file programs share located errors, the query budget and output

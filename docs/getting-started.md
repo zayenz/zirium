@@ -400,7 +400,7 @@ assert document.structurally_equal(reparsed.document)
 All values and types must belong to the edited document; stale handles and
 handles from another document are rejected. Edit commands remain buffered until
 the context exits normally. These APIs do not parse fresh type or attribute
-strings, so deriving a genuinely new signature still requires the Rust API's
+strings, so deriving a new signature still requires the Rust API's
 `TypeSpec`. Insertion supports regionless operations and returns no provisional
 handle; look up the inserted operation after the context commits.
 
@@ -499,6 +499,8 @@ The [structural editing capability matrix](structural-editing.md) summarizes
 what Rust, Python, and the CLI can insert, erase, inspect, or deliberately
 leave unsupported.
 
+- [Structured queries](query-dsl.md) shows Rust and Python builders with native results.
+- [CLI examples](cli-examples.md) applies the textual language to the bundled MLIR fixtures.
 - [Compatibility and local wheel checks](compatibility.md) contains the full Rust checks and CPython test matrix.
 - [Syntax representation](architecture/syntax-representation.md) explains the flat immutable CST.
 - [Processing benchmarks](architecture/processing-benchmarks.md) describes how to measure parsing, semantic processing, and Python access.

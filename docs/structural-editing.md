@@ -1,7 +1,6 @@
 # Structural editing capability matrix
 
-This page is a deliberately narrow map of the structural transformations
-currently exposed by each interface. Zirium is not a general IR-construction
+This page lists the structural transformations exposed by each interface. Zirium is not a general IR-construction
 library: edits operate on a complete semantic document. Identity-bearing
 handles (operations, blocks, and values) belong to that document, while Rust
 `TypeSpec` and `AttributeSpec` are arena-independent descriptions.

@@ -6,6 +6,11 @@ Astro and Starlight build the site; `docs/` remains the source of the guides.
 published guides explicitly. Relative guide links become website links;
 repository-file links point to GitHub. The Rust API stays on docs.rs.
 
+The query guides explain Zirium's MLIR operations, output and edit rules. Links
+to the Zirql language reference explain the shared expression rules. Keep
+Zirium commands and host restrictions here so readers can use the tool without
+reading another site's tutorial first.
+
 Use Node 22.12 or newer:
 
 ```sh

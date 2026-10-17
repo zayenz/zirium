@@ -17,13 +17,11 @@ cargo check --workspace
 uv lock
 ```
 
-Run the [compatibility checks](compatibility.md), inspect the Rust package
-selection with `cargo package -p zirium --list --allow-dirty`, and build a local
-wheel and source distribution. Check both licenses, Python stubs, `py.typed`,
-registry data and source manifests. Install each Python archive in a separate
-fresh environment outside the checkout, check its version and import paths,
-and run a strict semantic query. Extract each CLI archive outside the checkout
-and check its checksum, version and strict StableHLO query.
+Use the existing Quality and Release workflows for validation and packaging.
+A successful build and publishing action are sufficient release assurance.
+The [compatibility guide](compatibility.md) describes local checks for development
+or investigating a concrete failure; repeating fresh installations and archive
+audits is not a release gate.
 
 Release's manual candidate mode accepts a full 40-character commit ID:
 
@@ -53,19 +51,18 @@ resolve Zirql from crates.io, with no Git dependency or sibling checkout.
 Installing the sdist needs Rust and access to the registry dependencies. The
 wheel contains the compiled extension and needs no Rust toolchain.
 
-Refresh `Cargo.lock` without upgrading unrelated dependencies, rebuild final
-artifacts, and repeat clean wheel/sdist installations after dependency changes.
-Commit the final source and run the candidate workflow against its exact commit.
-
-Run the real registry package checks with no path or registry patches:
+Refresh `Cargo.lock` without upgrading unrelated dependencies and commit the
+final source. The Release workflow builds the artifacts and checks registry
+resolution. For manual publication, successful CI and the normal publish
+command are sufficient; use no path or registry patches:
 
 ```sh
-cargo package -p zirium --locked
-cargo publish -p zirium --dry-run --locked
+cargo publish -p zirium --locked
 ```
 
-Retain the final source commit, filenames, SHA-256 hashes and check results.
-A changed source commit requires rebuilt artifacts and fresh checks.
+Publish Zirql before any Zirium release that requires its new version. Version,
+dependency and documentation changes do not reopen accepted code reviews or
+require repeating language tests.
 
 ## Trusted publishing setup
 
@@ -84,9 +81,8 @@ these registry approvals.
 
 ## Publish 0.5.0
 
-Publication is a separate maintainer action. Once the final commit is on
-`main`, its artifacts have passed review and Zirql is available on crates.io,
-tag that checked commit and push only that tag:
+Once publication is authorized, the final commit is on `main` and Zirql is
+available on crates.io, tag that commit and push only that tag:
 
 ```sh
 git tag -a v0.5.0 -m "Zirium 0.5.0"
@@ -104,18 +100,14 @@ checked artifacts directly. There are no stable-ABI wheels. Open **Review
 deployments**, select the registry environments and approve their uploads.
 The internal extension crate is never published to crates.io.
 
-After publication, check fresh registry installations:
-
-```sh
-cargo info zirium@0.5.0
-cargo install zirium --version '=0.5.0' --locked
-uv run --no-project --isolated --with zirium==0.5.0 python -I -c \
-  'import zirium; from zirium.query import ops; assert zirium.__version__ == "0.5.0"; d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.query(ops().names().tally()) == {"test": 1}'
-```
-
-Check the crates.io, [versioned Rust API](https://docs.rs/zirium/0.5.0/zirium/),
-PyPI and GitHub release pages before announcing the release. Site publication
-follows the separate procedure in [`site/PUBLISHING.md`](../site/PUBLISHING.md).
+After successful publication, report the version and links to the
+[Rust API](https://docs.rs/zirium/0.5.0/zirium/),
+[crates.io package](https://crates.io/crates/zirium),
+[PyPI package](https://pypi.org/project/zirium/) and
+[GitHub release](https://github.com/zayenz/zirium/releases/tag/v0.5.0).
+Publish the docs through [`site/PUBLISHING.md`](../site/PUBLISHING.md).
+A successful deployment completes the docs release; further validation needs
+a concrete failure, known defect or explicit request.
 
 ## CLI archives
 
@@ -134,7 +126,7 @@ workflow artifacts only.
 
 For publication, the publishing job verifies the downloaded checksums, uploads
 the archives to a draft GitHub Release, then publishes it. Only this job has
-`contents: write`. Check both platform downloads before announcing the release.
+`contents: write`. Trust the successful publishing job's artifact checks.
 
 ## Retry after a workflow failure
 

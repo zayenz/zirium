@@ -73,7 +73,7 @@ names = registry.operation_names()
 assert "vendor.function" in names
 assert registry.operation_shape("vendor.function") == "func_like"
 assert registry.operation_shape("missing.operation") is None
-assert registry.operation_format("vendor.widen") == "$operands attr-dict `:` type($operands) `to` type($results)"
+assert registry.operation_format("vendor.function") is None  # registered as a shape
 assert registry.call_target_attribute("func.call") == "callee"
 ```
 

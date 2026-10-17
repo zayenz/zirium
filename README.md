@@ -16,7 +16,7 @@ Compare structural and SSA changes between two MLIR documents:
 zirium --diff before.mlir after.mlir 'filter(dialect("arith")) | json'
 ```
 
-See [semantic diff](docs/semantic-diff.md) for the comparison and query contract.
+See [semantic diff](https://zayenz.se/zirium/guides/semantic-diff/) for the comparison and query contract.
 
 Version 0.5.0 is experimental. It targets MLIR 22.1 textual syntax and supports
 selected custom dialect forms. The API may change without a migration path;
@@ -84,7 +84,7 @@ cargo install --path crates/zirium --locked
 ```
 
 The Python wheel does not include the CLI. The
-[getting-started guide](https://github.com/zayenz/zirium/blob/v0.5.0/docs/getting-started.md)
+[getting-started guide](https://zayenz.se/zirium/guides/getting-started/)
 covers Rust usage and building the Python extension locally.
 
 For a Rust application, add the library dependency:
@@ -122,9 +122,13 @@ functions | map_by(attr("sym_name"), children | subtree | names | tally) | json
 Add `reachable |` before `names` to include supported referenced bodies,
 counting each reachable operation once.
 
-The [query language reference](https://github.com/zayenz/zirium/blob/v0.5.0/docs/query-language.md)
+Scalar expressions, collections and pure functions use
+[Zirql](https://zayenz.se/zirql/guides/language-reference/). Zirium supplies
+MLIR operations, SSA traversal, dialect rules and edit safety.
+
+The [query language reference](https://zayenz.se/zirium/guides/query-language/)
 lists every predicate and pipeline stage. The
-[CLI examples](https://github.com/zayenz/zirium/blob/v0.5.0/docs/cli-examples.md)
+[CLI examples](https://zayenz.se/zirium/guides/cli-examples/)
 show complete queries, dependency slices, and edits.
 
 You can also run the binary from a source checkout with Cargo:
@@ -179,7 +183,7 @@ counts = document.query(consumers.names().tally())
 ```
 
 Rust uses the same builders: `document.query(&consumers)?`. Queries return native
-operation handles, strings, counts, and maps. The [structured query guide](https://github.com/zayenz/zirium/blob/v0.5.0/docs/query-dsl.md)
+operation handles, strings, counts, and maps. The [structured query guide](https://zayenz.se/zirium/guides/query-dsl/)
 covers predicates, nested queries, semantic projections, and evaluation limits.
 
 ## Output modes
@@ -200,7 +204,7 @@ not preserve comments or aliases. Use original output to reproduce the input,
 or hybrid retention when edits should preserve unrelated source text.
 
 For the exact structural-editing limits of Rust, Python, and the CLI, see the
-[structural editing capability matrix](https://github.com/zayenz/zirium/blob/v0.5.0/docs/structural-editing.md).
+[structural editing capability matrix](https://zayenz.se/zirium/guides/structural-editing/).
 
 ## Dialect support
 
@@ -212,15 +216,15 @@ Bundled presets add custom forms from other dialects. Unsupported forms use
 best-effort recovery. Presets support structural queries, without full dialect
 verification or execution.
 
-The [custom-format guide](https://github.com/zayenz/zirium/blob/v0.5.0/docs/custom-formats.md) explains registry configuration,
+The [custom-format guide](https://zayenz.se/zirium/guides/custom-formats/) explains registry configuration,
 operation shapes, and use from Rust, Python, and the CLI. The
-[preset reference](https://github.com/zayenz/zirium/blob/v0.5.0/docs/registry-presets.md) groups the available dialects and
+[preset reference](https://zayenz.se/zirium/guides/registry-presets/) groups the available dialects and
 links to their exact registry definitions.
 
 The [corpus notes](https://github.com/zayenz/zirium/blob/v0.5.0/tests/corpus/mlir-22.1/README.md)
 describe how syntax compatibility is checked against `llvmorg-22.1.0`.
 
-The [cross-interface capability reference](https://github.com/zayenz/zirium/blob/v0.5.0/docs/capabilities.md) compares
+The [cross-interface capability reference](https://zayenz.se/zirium/guides/capabilities/) compares
 parsing, verification, queries, construction, mutation, output, callbacks,
 registries, and resource limits across Rust, Python, and the CLI.
 
@@ -249,8 +253,8 @@ skills/                 Agent guidance for CLI, libraries, and custom formats
 fuzz/                   Lexer and parser fuzz targets
 ```
 
-The architecture notes describe the [syntax representation](https://github.com/zayenz/zirium/blob/v0.5.0/docs/architecture/syntax-representation.md)
-and [processing benchmarks](https://github.com/zayenz/zirium/blob/v0.5.0/docs/architecture/processing-benchmarks.md).
+The architecture notes describe the [syntax representation](https://zayenz.se/zirium/guides/architecture/syntax-representation/)
+and [processing benchmarks](https://zayenz.se/zirium/guides/architecture/processing-benchmarks/).
 
 ## Development
 
@@ -260,11 +264,11 @@ Run the Rust workspace tests from the repository root:
 cargo test --workspace
 ```
 
-The [compatibility guide](https://github.com/zayenz/zirium/blob/v0.5.0/docs/compatibility.md)
+The [compatibility guide](https://zayenz.se/zirium/guides/compatibility/)
 lists the full CI checks, supported toolchains, and wheel checks. The
-[getting-started guide](https://github.com/zayenz/zirium/blob/v0.5.0/docs/getting-started.md)
+[getting-started guide](https://zayenz.se/zirium/guides/getting-started/)
 covers Python development, and the
-[release guide](https://github.com/zayenz/zirium/blob/v0.5.0/docs/releasing.md)
+[release guide](https://zayenz.se/zirium/guides/releasing/)
 describes packaging and publication.
 
 ## License

@@ -580,8 +580,8 @@ MLIR semantics or edit format.
 
 ## Native capture builders
 
-The development Git API adds `SsaQuery` and `CaptureQuery`. `OpQuery::operand`
-returns one exact `ValueId`; `CaptureQuery` returns `CaptureMatches`, whose
+`SsaQuery` and `CaptureQuery` retain native SSA values and capture rows.
+`OpQuery::operand` returns one exact `ValueId`; `CaptureQuery` returns `CaptureMatches`, whose
 `rows()` expose ordered native records and whose `range()` retains the query
 location. Neither result is a constructed scalar value.
 
@@ -697,7 +697,7 @@ query = report(E.value_match(E({"cost": 4}).lookup("cost"), [
     )),
     Arm(P.wildcard(), {"kind": "fallback", "cost": 0}),
 ]))
-assert doc.query(query) == {"kind": "small", "cost": 5}
+assert document.query(query) == {"kind": "small", "cost": 5}
 ```
 
 `P.tuple([...])`, `P.record({...}, ignore_rest=True)`, `P.literal(value)` and
@@ -714,6 +714,10 @@ checks, while runtime evaluation visits only demanded values. Native capture
 enumeration and operation/SSA ownership keep their existing boundaries.
 
 ## Building typed functions in Rust
+
+The [Zirql embedding guide](https://zayenz.se/zirql/guides/embedding-programs/)
+explains the shared value, pattern and function nodes. Use Zirium's builders
+below to connect them to MLIR documents and retain checked operation handles.
 
 `FunctionDefinition` uses shared `FunctionParameter`, `FunctionType` and value
 nodes. It constructs declarations directly; no generated source is parsed.

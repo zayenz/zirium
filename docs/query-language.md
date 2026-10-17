@@ -19,8 +19,12 @@ for `backward_slice`. Use `unique` to remove duplicates from other streams.
 Set union keeps first appearance from the left operand, then the right.
 Intersection and difference deduplicate in left-operand order.
 
-For Rust and Python builders with native results, see the
-[structured query guide](query-dsl.md).
+Zirium supplies operation selection, SSA navigation, dialect semantics and edits.
+Its scalar expressions, constructed collections, patterns and pure functions use
+[Zirql](https://zayenz.se/zirql/guides/language-reference/). This guide explains
+how those values work with MLIR; the shared reference gives the full expression
+syntax and collection rules. For Rust and Python builders with native results,
+see the [structured query guide](query-dsl.md).
 
 `input` and a final `emit` are implicit. These programs print the same document:
 
@@ -94,8 +98,15 @@ Pass each required value with a repeated `--param name=value` option. Inline
 programs and program files use the same admission rules:
 
 ```sh
-zirium --param operation_name=arith.addi --param minimum_ops=2 'param operation_name: string; param minimum_ops: int; filter(op(operation_name)) | head(minimum_ops) | names | json' examples/cli/function-report.mlir
-zirium --param operation_name=arith.addi --param minimum_ops=2 -f examples/cli/function-report-parameters.zirql examples/cli/function-report.mlir
+zirium --param operation_name=arith.addi --param minimum_ops=2 \
+  'param operation_name: string;
+   param minimum_ops: int;
+   filter(op(operation_name)) | head(minimum_ops) | names | json' \
+  examples/cli/function-report.mlir
+
+zirium --param operation_name=arith.addi --param minimum_ops=2 \
+  -f examples/cli/function-report-parameters.zirql \
+  examples/cli/function-report.mlir
 ```
 
 Types are exactly `int`, `string` and `bool`. Integers are signed 64-bit decimal
@@ -189,11 +200,11 @@ stays pear, then ash. Sorting retains the dictionary kind. Zirium prints this
 JSON with indentation.
 
 This program calculates only from `samples`; it does not inspect the document.
-The [Zirql language guide](https://zayenz.se/zirql/guides/language-reference/)
-uses the same report in its [CSV application](https://zayenz.se/zirql/guides/csv/).
-[Zincite](https://zayenz.se/zincite/guides/queries/) uses its MiniZinc array
-comprehension spelling and retains integer type tags in JSON. Bindings,
-filtering, dictionary keys, sorting and tie order follow the same rules.
+The [shared collection rules](https://zayenz.se/zirql/guides/values/#dictionaries-and-collection-order)
+explain dictionary order and stable sorting. The same expressions can consume
+other hosts' data; the [CSV guide](https://zayenz.se/zirql/guides/csv/) demonstrates
+filtering and reporting over rows. MLIR operation projections remain specific
+to Zirium.
 
 Use native selections to supply values from MLIR. For example,
 `filter(op("func.func")) | attr("sym_name")` projects names, while a saved
@@ -288,6 +299,29 @@ bounds share the request's work and result limits.
 
 ## Building JSON structures
 
+Zirium has two ways to build report data. A plain object or array used as a
+pipeline stage is a JSON template: its strings and keys interpolate saved
+bindings. A shared value expression, selected explicitly with `report`, treats
+strings literally and supports arithmetic, computed keys and comprehensions.
+For example:
+
+```zirql
+let n = count;
+{"label": "count={n}"} | json;
+report {"label": "count={n}"} | json;
+```
+
+On a document containing one operation, the first result has label `count=1`;
+the second has label `count={n}`. To store the count as a number with shared
+value rules, write `report {"count": n} | json`.
+
+Use a JSON template to assemble saved query results with interpolated labels.
+Use `report expression`, a value initializer such as `let x = 1 + 2;`, or a
+comprehension when calculating new values. Projection fields and function
+bodies also use shared expressions. In particular, `let x = {"label": "{n}"};`
+stores the literal string `{n}`. The JSON-template rules below apply to plain
+object and array stages; the following sections cover shared values.
+
 Object and array literals combine saved results into a larger report:
 
 ```zirql
@@ -324,8 +358,8 @@ references are errors. Values cannot contain query pipelines; bind the result
 of a query first. All bindings retain their saved meaning inside literals.
 
 A literal is a pipeline stage that replaces the current result. It must start
-with `{` or `[`; scalars occur inside objects and arrays. Literals may be saved
-in bindings or embedded within one another:
+with `{` or `[`; scalars occur inside objects and arrays. Objects and arrays
+may be nested, and saved results can supply their values:
 
 ```zirql
 let totals = names | tally;
@@ -401,9 +435,10 @@ Inside a shared value expression, dictionary keys are expressions.
 `{"n": n}` uses the literal key `n` and the bound value of `n`; `{n: 1}`
 uses the bound string `n` as its key.
 Strings are decoded literals: `"{n}"` contains braces and the letter `n`.
-Outside comprehensions, plain JSON-shaped literals keep their existing binding
-and interpolation rules. `for` and `if` remain ordinary binding names elsewhere,
-including a literal such as `[for]` when `for` is bound.
+Plain object and array stages use the [JSON-template rules](#building-json-structures);
+`report`, shared value initializers and function bodies use literal strings.
+`for` and `if` remain ordinary binding names elsewhere, including a literal
+such as `[for]` when `for` is bound.
 
 A scalar expression can be a query result directly. An immutable binding lets
 later expressions reuse the value:
@@ -573,10 +608,11 @@ zirium 'let numbers=[3,1,3]; numbers | sort | unique | count' examples/cli/funct
 ```
 
 Saved constructed collections and constructed function results use the shared
-`sort`, `unique`, `count` and terminal string `tally` stages. A string array also
-accepts `filter(predicate)` with named or implicit `_` arguments, including
-the compact `filter(starts_with("prefix"))` spelling. These stages retain their shared value
-type rules. Native sources keep native stages and selectors such as
+`sort`, `unique`, `count` and terminal string `tally` stages. Constructed arrays
+also accept `filter(predicate)` with named or implicit `_` arguments. String
+arrays additionally support the compact `filter(starts_with("prefix"))`
+spelling. These stages retain their shared value type rules. Native sources
+keep native stages and selectors such as
 `sort_by(names)`.
 
 ## Sort constructed rows and select extrema
@@ -1256,7 +1292,8 @@ The same buffering rule applies: any later failure leaves stdout empty.
 
 This sketch covers native pipeline composition. `shared-expression` uses the
 value syntax described above; `pattern` uses the shared destructuring syntax.
-Function and parameter declarations are described in their own sections.
+The `object`, `array` and `value` rules describe JSON templates, not the full
+shared value grammar. Function and parameter declarations have their own sections.
 
 ```text
 program    = empty | { statement } final
@@ -1358,10 +1395,15 @@ input order, and duplicate subjects or equal projected names remain separate
 rows. Native handles require explicit scalar projections such as `names`,
 `attr` or `count`.
 
-A small projection fits in the existing inline query argument:
+Pass a projection as the inline query argument:
 
 ```sh
-zirium 'filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "n": f | children | count}) | json' examples/cli/function-report.mlir
+zirium 'filter(op("func.func"))
+  | project(f, {
+      "name": f | attr("sym_name") | one,
+      "n": f | children | count
+    })
+  | json' examples/cli/function-report.mlir
 ```
 
 `one` extracts exactly one projected string; zero or multiple values fail at
@@ -1436,7 +1478,13 @@ ordered stored cells:
 
 ```sh
 zirium --program-file examples/cli/indexed-arrays.zirql examples/cli/function-report.mlir
-zirium 'let counts = [2:20, 5:50] axes([5,2,9]); report {"keys":index_set(counts), "cells":entries(counts), "second":counts[2], "has_nine":has_key(counts,9)} | json;' examples/cli/function-report.mlir
+zirium 'let counts = [2:20, 5:50] axes([5,2,9]);
+  report {
+    "keys": index_set(counts),
+    "cells": entries(counts),
+    "second": counts[2],
+    "has_nine": has_key(counts,9)
+  } | json;' examples/cli/function-report.mlir
 ```
 
 Both commands return keys `[5,2,9]`, cells for `5` and `2`, the value `20`
@@ -1504,7 +1552,9 @@ Find one shortest native witness from each selected operation to each matching
 sink within an explicit edge bound:
 
 ```sh
-zirium 'filter(op("arith.muli")) | paths(users, to=op("func.return"), max_depth=2) | json' examples/cli/function-report.mlir
+zirium 'filter(op("arith.muli"))
+  | paths(users, to=op("func.return"), max_depth=2)
+  | json' examples/cli/function-report.mlir
 zirium -f examples/cli/bounded-paths.zirql examples/cli/function-report.mlir
 ```
 
@@ -1543,7 +1593,7 @@ See [Rust and Python builders](query-dsl.md#bounded-native-path-builders).
 
 ## Native SSA captures
 
-The development Git API supports ordered native captures with `match`. This
+Zirium supports ordered native captures with `match`. This
 program selects additions whose two operands are the same SSA value, then
 projects a scalar report:
 
@@ -1570,7 +1620,12 @@ or pass the same text inline.
 For native descriptions alone, the short form needs no declarations:
 
 ```sh
-zirium 'match { from add in (input | filter(op("arith.addi"))); bind lhs = operand(add, 0); bind rhs = operand(add, 1); where same_value(lhs, rhs); } | json' examples/cli/function-report.mlir
+zirium 'match {
+  from add in (input | filter(op("arith.addi")));
+  bind lhs = operand(add, 0);
+  bind rhs = operand(add, 1);
+  where same_value(lhs, rhs);
+} | json' examples/cli/function-report.mlir
 ```
 
 `from` enumerates a finite native selection in order. Later clauses see earlier
@@ -1602,6 +1657,10 @@ existing operation description. See [native capture builders](query-dsl.md#nativ
 This matching surface is read-only and does not support diff queries or rewrites.
 
 ## Typed recursive functions
+
+The [Zirql function guide](https://zayenz.se/zirql/guides/functions-and-control-flow/)
+introduces pure functions, conditions and patterns with scalar examples. Here,
+functions also accept checked MLIR handles and call Zirium's native primitives.
 
 A pure function receives every input explicitly. Declarations share one request:
 all signatures register before any body is prepared, so forward and mutual calls
