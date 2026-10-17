@@ -71,7 +71,8 @@ Explicit `input` still resets to the original changes; a relation that then
 projects the other side refuses. Nested errors propagate.
 
 ```sh
-zirium --diff examples/cli/diff-before.mlir examples/cli/diff-after.mlir 'after | where_exists(users) | names'
+zirium --diff examples/cli/diff-before.mlir examples/cli/diff-after.mlir \
+  'after | where_exists(users) | names'
 ```
 
 Rust callers use `changed_ops.where_exists(&diff_op_input().users())`.
