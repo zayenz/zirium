@@ -715,9 +715,10 @@ enumeration and operation/SSA ownership keep their existing boundaries.
 
 ## Building typed functions in Rust
 
-The [Zirql embedding guide](https://zayenz.se/zirql/guides/embedding-programs/)
-explains the shared value, pattern and function nodes. Use Zirium's builders
-below to connect them to MLIR documents and retain checked operation handles.
+Use Zirium's builders below to define and call typed functions while retaining
+checked MLIR operation handles. The
+[Zirql embedding guide](https://zayenz.se/zirql/guides/embedding-programs/)
+provides more detail on the shared value, pattern and function nodes.
 
 `FunctionDefinition` uses shared `FunctionParameter`, `FunctionType` and value
 nodes. It constructs declarations directly; no generated source is parsed.

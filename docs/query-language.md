@@ -21,10 +21,15 @@ Intersection and difference deduplicate in left-operand order.
 
 Zirium supplies operation selection, SSA navigation, dialect semantics and edits.
 Its scalar expressions, constructed collections, patterns and pure functions use
-[Zirql](https://zayenz.se/zirql/guides/language-reference/). This guide explains
-how those values work with MLIR; the shared reference gives the full expression
-syntax and collection rules. For Rust and Python builders with native results,
-see the [structured query guide](query-dsl.md).
+[Zirql](https://zayenz.se/zirql/guides/language-reference/). This guide covers
+their syntax and behavior alongside MLIR queries. Start with
+[calculated values](#calculate-with-shared-values), then use the local sections on
+[comprehensions](#positional-comprehensions),
+[optional fields](#optional-fields-and-lazy-defaults) and
+[functions](#typed-recursive-functions) as needed. The Zirql reference provides
+further explanation of the shared evaluator and its use in other hosts.
+For Rust and Python builders with native results, see the
+[structured query guide](query-dsl.md).
 
 `input` and a final `emit` are implicit. These programs print the same document:
 
@@ -199,9 +204,26 @@ the largest count first. Pear and ash both have count 2, so their incoming order
 stays pear, then ash. Sorting retains the dictionary kind. Zirium prints this
 JSON with indentation.
 
+Lists such as `samples` retain order and duplicates. A comprehension
+`[expression for row in samples if condition]` visits those rows in order,
+keeps the rows whose condition is true, and evaluates its expression for each.
+`row.count` reads a named field; `samples[1]` reads the first list element.
+Strict field and index access fail when the field or position is missing.
+Use `lookup(row, "count") default 0` when a missing or `null` count should
+become zero. False, zero and empty containers are present values.
+
+Value expressions accept signed integers, finite floats, Booleans, strings and
+`null` (absence). Use `+`, `-`, `*`, `/`, integer `div` and `mod` for arithmetic;
+`==`, `!=`, `<`, `<=`, `>` and `>=` for comparisons; and `and`, `or` and `not`
+for Boolean conditions. `++` concatenates strings or positional lists. Strings
+in these expressions are literal: `"{row}"` keeps its braces. The separate
+[JSON-template stages](#building-json-structures) support interpolation.
+The [comprehension section](#positional-comprehensions) gives the detailed
+expression rules, including numeric limits and validation of skipped branches.
+
 This program calculates only from `samples`; it does not inspect the document.
 The [shared collection rules](https://zayenz.se/zirql/guides/values/#dictionaries-and-collection-order)
-explain dictionary order and stable sorting. The same expressions can consume
+provide more detail on dictionary order and stable sorting. The same expressions can consume
 other hosts' data; the [CSV guide](https://zayenz.se/zirql/guides/csv/) demonstrates
 filtering and reporting over rows. MLIR operation projections remain specific
 to Zirium.
@@ -1658,9 +1680,14 @@ This matching surface is read-only and does not support diff queries or rewrites
 
 ## Typed recursive functions
 
-The [Zirql function guide](https://zayenz.se/zirql/guides/functions-and-control-flow/)
-introduces pure functions, conditions and patterns with scalar examples. Here,
-functions also accept checked MLIR handles and call Zirium's native primitives.
+Declare a function with `fn name(parameter: type) -> result_type { value }`
+and call it as `name(argument)`. Its body ends with the result expression;
+earlier local `let` bindings end with semicolons. A conditional value uses
+`if condition { value } else { value }`. Functions can calculate scalar values,
+construct reports, or accept checked MLIR handles and call Zirium's native
+primitives. The examples below cover these uses. The
+[Zirql function guide](https://zayenz.se/zirql/guides/functions-and-control-flow/)
+adds further scalar examples and explains the shared execution rules.
 
 A pure function receives every input explicitly. Declarations share one request:
 all signatures register before any body is prepared, so forward and mutual calls

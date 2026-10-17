@@ -124,7 +124,10 @@ counting each reachable operation once.
 
 Scalar expressions, collections and pure functions use
 [Zirql](https://zayenz.se/zirql/guides/language-reference/). Zirium supplies
-MLIR operations, SSA traversal, dialect rules and edit safety.
+MLIR operations, SSA traversal, dialect rules and edit safety. The local
+[calculated-value guide](https://zayenz.se/zirium/guides/query-language/#calculate-with-shared-values)
+explains the value syntax with runnable Zirium examples; the Zirql reference
+provides further detail on the shared language.
 
 The [query language reference](https://zayenz.se/zirium/guides/query-language/)
 lists every predicate and pipeline stage. The

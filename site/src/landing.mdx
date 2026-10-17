@@ -79,12 +79,13 @@ lowering to reject incomplete semantic information:
 zirium --preset stablehlo --strict 'names | tally | json' model.mlir
 ```
 
-The [query language reference](./guides/query-language/) lists predicates and
-pipeline stages. The [preset reference](./guides/registry-presets/) records
-which custom forms each registry supports. For calculated reports, the shared
-[Zirql value guide](https://zayenz.se/zirql/guides/values/) explains expressions,
-comprehensions and collection order. MLIR navigation and edits are defined by
-Zirium's query reference.
+The [query language reference](./guides/query-language/) covers predicates,
+pipeline stages and calculated reports, including
+[expressions and comprehensions](./guides/query-language/#calculate-with-shared-values).
+The [preset reference](./guides/registry-presets/) records which custom forms
+each registry supports. The shared
+[Zirql value guide](https://zayenz.se/zirql/guides/values/) gives further
+explanation of the value and collection rules used by Zirium.
 
 ## Know the boundaries
 
