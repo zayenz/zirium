@@ -32,7 +32,7 @@ export default defineConfig({
     components: { Footer: './src/components/Footer.astro' },
     social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/zayenz/zirium' }],
     sidebar: [
-      { label: 'Start here', items: ['guides/getting-started', 'guides/capabilities', 'guides/compatibility'] },
+      { label: 'Start here', items: [{ label: 'Overview', slug: '' }, 'guides/getting-started', 'guides/capabilities', 'guides/compatibility'] },
       { label: 'Queries and edits', items: ['guides/cli-examples', 'guides/query-language', 'guides/query-dsl', 'guides/structural-editing', 'guides/semantic-diff'] },
       { label: 'Dialects', items: ['guides/custom-formats', 'guides/registry-presets'] },
       { label: 'Development', collapsed: true, items: ['guides/architecture/syntax-representation', 'guides/architecture/query-profiling', 'guides/architecture/processing-benchmarks', 'guides/architecture/stress-instance-benchmark', 'guides/releasing'] },
