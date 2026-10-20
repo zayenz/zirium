@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0
+## 0.6.1
 
 - Adopt Zirql 0.2 for general constructed collection keys, set elements and
   dictionary-valued tally results, with structural comparison and hashing.

@@ -18,18 +18,18 @@ zirium --diff before.mlir after.mlir 'filter(dialect("arith")) | json'
 
 See [semantic diff](https://zayenz.se/zirium/guides/semantic-diff/) for the comparison and query contract.
 
-Version 0.6.0 is experimental. It targets MLIR 22.1 textual syntax and supports
+Version 0.6.1 is experimental. It targets MLIR 22.1 textual syntax and supports
 selected custom dialect forms. The API may change without a migration path;
 bytecode and ODS/TableGen loading are unsupported.
 
-[Homepage and guides](https://zayenz.se/zirium/) · [Rust API](https://docs.rs/zirium/0.6.0/zirium/)
+[Homepage and guides](https://zayenz.se/zirium/) · [Rust API](https://docs.rs/zirium/0.6.1/zirium/)
 
 ## Installation
 
 Install the Python package with:
 
 ```sh
-python -m pip install zirium==0.6.0
+python -m pip install zirium==0.6.1
 ```
 
 Published wheels cover CPython 3.11 through 3.14 on Linux x86_64 and macOS
@@ -41,8 +41,8 @@ local source build and are unsupported.
 CLI archives are produced by the release workflow for Linux x86_64 (static
 musl) and macOS arm64 (macOS 11 or newer). They require neither Rust nor Python.
 
-Download the matching `zirium-0.6.0-TARGET.tar.gz` archive and its `.sha256`
-file from [the 0.6.0 release](https://github.com/zayenz/zirium/releases/tag/v0.6.0):
+Download the matching `zirium-0.6.1-TARGET.tar.gz` archive and its `.sha256`
+file from [the 0.6.1 release](https://github.com/zayenz/zirium/releases/tag/v0.6.1):
 
 | Platform | Target |
 | --- | --- |
@@ -53,7 +53,7 @@ In the download directory, select your target from the table:
 
 ```sh
 target=aarch64-apple-darwin
-archive=zirium-0.6.0-$target.tar.gz
+archive=zirium-0.6.1-$target.tar.gz
 shasum -a 256 -c "$archive.sha256"
 tar -xzf "$archive"
 mkdir -p "$HOME/.local/bin"
@@ -65,20 +65,20 @@ Add `$HOME/.local/bin` to your `PATH` if it is not already there. On Linux,
 `sha256sum -c "$archive.sha256"` can also verify the checksum.
 The archive naming follows `cargo-binstall` conventions, so users with
 [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) can install a
-release that provides binaries with `cargo binstall zirium --version '=0.6.0'`.
+release that provides binaries with `cargo binstall zirium --version '=0.6.1'`.
 
 ### CLI from source
 
 Rust builds require Rust 1.88 or newer. Install the published CLI with:
 
 ```sh
-cargo install zirium --version '=0.6.0' --locked
+cargo install zirium --version '=0.6.1' --locked
 ```
 
 From a checkout of the matching release, use:
 
 ```sh
-git clone --branch v0.6.0 --depth 1 https://github.com/zayenz/zirium.git
+git clone --branch v0.6.1 --depth 1 https://github.com/zayenz/zirium.git
 cd zirium
 cargo install --path crates/zirium --locked
 ```
@@ -91,7 +91,7 @@ For a Rust application, add the library dependency:
 
 ```toml
 [dependencies]
-zirium = "=0.6.0"
+zirium = "=0.6.1"
 ```
 
 ## Command-line utility
@@ -224,7 +224,7 @@ operation shapes, and use from Rust, Python, and the CLI. The
 [preset reference](https://zayenz.se/zirium/guides/registry-presets/) groups the available dialects and
 links to their exact registry definitions.
 
-The [corpus notes](https://github.com/zayenz/zirium/blob/v0.6.0/tests/corpus/mlir-22.1/README.md)
+The [corpus notes](https://github.com/zayenz/zirium/blob/v0.6.1/tests/corpus/mlir-22.1/README.md)
 describe how syntax compatibility is checked against `llvmorg-22.1.0`.
 
 The [cross-interface capability reference](https://zayenz.se/zirium/guides/capabilities/) compares
@@ -235,10 +235,10 @@ registries, and resource limits across Rust, Python, and the CLI.
 
 The repository includes optional skills for agents working with Zirium:
 
-- [CLI](https://github.com/zayenz/zirium/blob/v0.6.0/skills/zirium-cli/SKILL.md): queries, reports, dependency slices, and complete-document edits.
-- [Python](https://github.com/zayenz/zirium/blob/v0.6.0/skills/zirium-python/SKILL.md): typed API usage, diagnostics, retention, and transactions.
-- [Rust](https://github.com/zayenz/zirium/blob/v0.6.0/skills/zirium-rust/SKILL.md): library integration and document ownership.
-- [Custom formats](https://github.com/zayenz/zirium/blob/v0.6.0/skills/zirium-custom-format/SKILL.md): research a project's dialect and build a registry; explicitly invoked as `$zirium-custom-format`.
+- [CLI](https://github.com/zayenz/zirium/blob/v0.6.1/skills/zirium-cli/SKILL.md): queries, reports, dependency slices, and complete-document edits.
+- [Python](https://github.com/zayenz/zirium/blob/v0.6.1/skills/zirium-python/SKILL.md): typed API usage, diagnostics, retention, and transactions.
+- [Rust](https://github.com/zayenz/zirium/blob/v0.6.1/skills/zirium-rust/SKILL.md): library integration and document ownership.
+- [Custom formats](https://github.com/zayenz/zirium/blob/v0.6.1/skills/zirium-custom-format/SKILL.md): research a project's dialect and build a registry; explicitly invoked as `$zirium-custom-format`.
 
 Install each skill folder independently through your agent's skill mechanism.
 Skills are distributed in the repository, outside the Python wheel and Rust crate.
@@ -277,9 +277,9 @@ describes packaging and publication.
 ## License
 
 Zirium's original code is available under the
-[MIT](https://github.com/zayenz/zirium/blob/v0.6.0/LICENSE-MIT) or [Apache 2.0](https://github.com/zayenz/zirium/blob/v0.6.0/LICENSE-APACHE) license. Some
+[MIT](https://github.com/zayenz/zirium/blob/v0.6.1/LICENSE-MIT) or [Apache 2.0](https://github.com/zayenz/zirium/blob/v0.6.1/LICENSE-APACHE) license. Some
 MLIR-derived or adapted test material carries the source attribution and license
-notices recorded in the [corpus manifest](https://github.com/zayenz/zirium/blob/v0.6.0/tests/corpus/mlir-22.1/manifest.toml).
+notices recorded in the [corpus manifest](https://github.com/zayenz/zirium/blob/v0.6.1/tests/corpus/mlir-22.1/manifest.toml).
 
 Release history is recorded in the
-[changelog](https://github.com/zayenz/zirium/blob/v0.6.0/CHANGELOG.md).
+[changelog](https://github.com/zayenz/zirium/blob/v0.6.1/CHANGELOG.md).

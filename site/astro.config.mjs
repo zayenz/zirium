@@ -36,7 +36,7 @@ export default defineConfig({
       { label: 'Queries and edits', items: ['guides/cli-examples', 'guides/query-language', 'guides/query-dsl', 'guides/structural-editing', 'guides/semantic-diff'] },
       { label: 'Dialects', items: ['guides/custom-formats', 'guides/registry-presets'] },
       { label: 'Development', collapsed: true, items: ['guides/architecture/syntax-representation', 'guides/architecture/query-profiling', 'guides/architecture/processing-benchmarks', 'guides/architecture/stress-instance-benchmark', 'guides/releasing'] },
-      { label: 'Rust API', link: 'https://docs.rs/zirium/0.6.0/zirium/' },
+      { label: 'Rust API', link: 'https://docs.rs/zirium/0.6.1/zirium/' },
       { label: 'Zirql language', link: 'https://zayenz.se/zirql/guides/language-reference/' },
       { label: 'All projects', link: 'https://zayenz.se/projects/' },
     ],
