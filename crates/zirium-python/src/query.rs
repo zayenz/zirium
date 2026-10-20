@@ -1756,17 +1756,29 @@ fn constructed(
                 .map_err(py_error)?;
             value.into_pyobject(py)?.into_any().unbind()
         }
-        V::Array(values) => {
+        V::Array(values) | V::Tuple(values) => constructed_sequence(py, values, budget, range)?,
+        V::Set { elements, .. } => constructed_sequence(py, elements, budget, range)?,
+        V::Dictionary(entries) => {
             budget
-                .charge(values.len(), zirql_location(range))
+                .charge(21 + entries.len(), zirql_location(range))
                 .map_err(py_error)?;
             budget
-                .charge_results(values.len(), zirql_location(range))
+                .charge_results(4 + entries.len(), zirql_location(range))
                 .map_err(py_error)?;
-            let result = PyList::empty(py);
-            for value in values {
-                result.append(constructed(py, value, budget, range)?)?;
+            let result = PyDict::new(py);
+            let items = PyList::empty(py);
+            for (key, value) in entries {
+                budget.charge(8, zirql_location(range)).map_err(py_error)?;
+                budget
+                    .charge_results(3, zirql_location(range))
+                    .map_err(py_error)?;
+                let entry = PyDict::new(py);
+                entry.set_item("key", constructed(py, key, budget, range)?)?;
+                entry.set_item("value", constructed(py, value, budget, range)?)?;
+                items.append(entry)?;
             }
+            result.set_item("kind", "dictionary")?;
+            result.set_item("entries", items)?;
             result.into_any().unbind()
         }
         V::Record(fields) => {
@@ -1785,10 +1797,28 @@ fn constructed(
             }
             result.into_any().unbind()
         }
-        V::Member(_) | V::KeyedArray { .. } | V::Tuple(_) | V::Set { .. } => {
+        V::Member(_) | V::KeyedArray { .. } => {
             return Err(PyTypeError::new_err("unsupported constructed report kind"));
         }
     })
+}
+fn constructed_sequence(
+    py: Python<'_>,
+    values: &[core::ConstructedValue],
+    budget: &mut core::Budget,
+    range: &std::ops::Range<usize>,
+) -> PyResult<Py<PyAny>> {
+    budget
+        .charge(values.len(), zirql_location(range))
+        .map_err(py_error)?;
+    budget
+        .charge_results(values.len(), zirql_location(range))
+        .map_err(py_error)?;
+    let result = PyList::empty(py);
+    for value in values {
+        result.append(constructed(py, value, budget, range)?)?;
+    }
+    Ok(result.into_any().unbind())
 }
 fn zirql_location(range: &std::ops::Range<usize>) -> core::ValueLocation {
     core::ValueLocation::Query(range.clone())

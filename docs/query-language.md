@@ -1,7 +1,7 @@
 # Zirium query language
 
-These examples use Zirium 0.5.1. Repository-relative inputs are in the
-[`v0.5.1` checkout](https://github.com/zayenz/zirium/tree/v0.5.1);
+These examples use Zirium 0.6.0. Repository-relative inputs are in the
+[`v0.6.0` checkout](https://github.com/zayenz/zirium/tree/v0.6.0);
 see [getting started](getting-started.md) for installation.
 
 A query transforms an ordered stream. It starts with every operation
@@ -203,6 +203,14 @@ their labels as string keys and their counts as values. `descending=true` puts
 the largest count first. Pear and ash both have count 2, so their incoming order
 stays pear, then ash. Sorting retains the dictionary kind. Zirium prints this
 JSON with indentation.
+
+Constructed lists, tuples, sets and dictionaries can also be dictionary keys
+or set members. For example, `[{"ash", "apple"}, {"apple", "ash"}] | tally`
+produces one set key with count 2. Set identity ignores member order.
+Zirium renders a dictionary with non-string keys as
+`{"kind":"dictionary","entries":[{"key":["ash","apple"],"value":2}]}`.
+Keys and values are converted recursively; sets and tuples render as arrays.
+The language keeps the original set key for lookup and equality.
 
 Lists such as `samples` retain order and duplicates. A comprehension
 `[expression for row in samples if condition]` visits those rows in order,
@@ -526,7 +534,7 @@ values; JSON `null` projects to absence, while integers outside `i64` fail.
 
 ### Sets and computed dictionary keys
 
-A colon at a brace body's own level selects a string dictionary; otherwise a
+A colon at a brace body's own level selects a dictionary; otherwise a
 nonempty body is a set. `{3, 1, 3}` keeps `3, 1`, and
 `{n mod 3 for n in 1..5}` keeps `1, 2, 0`. Repeated `for` clauses and filters
 can supply dictionary keys as well as values:
@@ -537,17 +545,21 @@ can supply dictionary keys as well as values:
  for k in [w, w ++ "!"] if ends_with(k, "!")}
 ```
 
-The dictionary keeps `pear!`, then `apple!`. Each key must be a present string;
-a duplicate fails before evaluating its value. `.field` uses a static label
-and `[key]` accepts a computed string. Strict access fails on a missing stored
-field, while `lookup` is optional.
+The dictionary keeps `pear!`, then `apple!`. Constructed values, including
+lists, tuples, sets and dictionaries, can be keys or values. A structurally
+duplicate key fails before evaluating its value. `.field` uses a static string
+label and `[key]` accepts a computed key. Strict access fails on a missing key,
+while `lookup` is optional.
 
-Sets remove duplicates without moving the first occurrence. Elements must be
-homogeneous Booleans, integers, finite floats or host-supplied nominal members;
-strings are not set elements. `sort({3, 1, 3})` returns a set in order `1, 3`.
-Empty `{}` is a dictionary. `set<int>()`, `set<bool>()` and `set<float>()`
-construct typed empty scalar sets. An empty nominal set needs a host-supplied
-value; the common reader does not resolve nominal names.
+Sets remove duplicates without moving the first occurrence. They accept
+constructed values, including strings, mixed kinds and nested collections.
+Lists and tuples compare by position; sets compare by membership and dictionaries
+by associations. `sort({3, 1, 3})` returns a set in order `1, 3`.
+Empty `{}` is a dictionary. `set<int>()`, `set<bool>()`, `set<float>()` and
+`set<string>()` construct typed empty scalar sets; `set<value>()` creates a
+general empty set. An empty nominal set needs a host-supplied value; the common
+reader does not resolve nominal names. Ordinary native sets and general native
+dictionaries are not available in Zirium's current host representation.
 
 The [saved collection report](../examples/cli/brace-collections.zirql) combines
 these forms with strict access, nesting and sorting:
@@ -1736,11 +1748,12 @@ Every written field is checked before subjects are selected. Empty projections
 retain their record schema, and native handles still need a scalar projection
 such as `names` or `count` before they can become report fields.
 
-Signatures accept `int`, `float`, `bool`, `string`, `opt T`, `sequence<T>`,
-`tuple<T, ...>`, `record {field: T, ...}`, `set<T>` and `keyed<T>`.
-Nested declarations use the same grammar. Sets retain their existing supported
-Boolean, integer, float and nominal element identities; `set<string>` is
-unsupported. Keyed shape and present cells remain runtime facts. Zirium's native
+Signatures accept `value`, `int`, `float`, `bool`, `string`, `opt T`,
+`sequence<T>`, `tuple<T, ...>`, `record {field: T, ...}`, `dict<K,V>`, `set<T>`
+and `keyed<T>`. `value` admits ordinary constructed values; `set<value>` admits
+general set elements. Scalar set declarations, including `set<string>`, retain
+their element contract. Nested declarations use the same grammar.
+Keyed shape and present cells remain runtime facts. Zirium's native
 names are `Operation` and `SSAValue`. `SSAValue` means one exact checked
 `ValueId`, including its result or block-argument position. Operation admission
 requires exactly one valid current-document operation. An explicit native

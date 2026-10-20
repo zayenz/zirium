@@ -93,6 +93,11 @@ pub(super) fn scalar_facts(
         budget.charge(1, ValueLocation::Query(range.clone()))?;
         budget.charge_results(1, ValueLocation::Query(range.clone()))?;
         Ok(match ty {
+            D::Value => vec![ValueType::Unestablished],
+            D::Dictionary(key, value) => vec![ValueType::Dictionary {
+                keys: scalar_facts(key, budget, range)?,
+                values: scalar_facts(value, budget, range)?,
+            }],
             D::Boolean => vec![ValueType::Boolean],
             D::Integer => vec![ValueType::Integer],
             D::Float => vec![ValueType::Float],
@@ -1281,6 +1286,11 @@ fn native_type(ty: FunctionType, depth: usize) -> Result<D<program::Kind>, Evalu
                 .map(|(n, v)| Ok((n, native_type(v, depth + 1)?)))
                 .collect::<Result<_, EvaluationError>>()?,
         ),
+        D::Value => D::Value,
+        D::Dictionary(key, value) => D::Dictionary(
+            Box::new(native_type(*key, depth + 1)?),
+            Box::new(native_type(*value, depth + 1)?),
+        ),
         D::Boolean => D::Boolean,
         D::Integer => D::Integer,
         D::Float => D::Float,
@@ -1582,6 +1592,9 @@ fn contains_native(
         D::Native(_) | D::Queue(_) | D::IdentitySet(_) => true,
         D::Optional(value) | D::Sequence(value) | D::Array(value) | D::Keyed(value) => {
             contains_native(value, budget, range)?
+        }
+        D::Dictionary(key, value) => {
+            contains_native(key, budget, range)? || contains_native(value, budget, range)?
         }
         D::Record(fields) => {
             let mut found = false;

@@ -192,12 +192,12 @@ fn value_size(value: &V) -> usize {
     match value {
         V::Declared { value, .. } => 1usize.saturating_add(value_size(value)),
         V::Absent => 1,
-        V::Array(values)
-        | V::Tuple(values)
-        | V::Set {
-            elements: values, ..
-        } => values.iter().fold(1usize, |n, v| {
-            n.saturating_add(1).saturating_add(value_size(v))
+        V::Array(values) | V::Tuple(values) => sequence_size(values),
+        V::Set { elements, .. } => sequence_size(elements),
+        V::Dictionary(entries) => entries.iter().fold(1usize, |size, (key, value)| {
+            size.saturating_add(1)
+                .saturating_add(value_size(key))
+                .saturating_add(value_size(value))
         }),
         V::Record(fields) => fields.iter().fold(1usize, |n, (_, v)| {
             n.saturating_add(1).saturating_add(value_size(v))
@@ -219,6 +219,12 @@ fn value_size(value: &V) -> usize {
 // Keep legacy JSON objects on their interpolation/native-insertion path. Only
 // a set, an expression key, indexed array, typed empty set or computed access
 // needs this reader.
+fn sequence_size(values: &[V]) -> usize {
+    values.iter().fold(1usize, |size, value| {
+        size.saturating_add(1).saturating_add(value_size(value))
+    })
+}
+
 fn collection_syntax(source: &str) -> bool {
     let mut reader = zirql::ArgumentReader::new(source, 0).expect("source boundary");
     let mut containers = [b' '; super::parser::DEFAULT_NESTING_LIMIT];
@@ -848,17 +854,25 @@ fn to_json(
             admit(budget, 0, v.len(), range)?;
             serde_json::Value::String(v.clone())
         }
-        V::Array(values)
-        | V::Tuple(values)
-        | V::Set {
-            elements: values, ..
-        } => {
-            admit(budget, values.len(), 0, range)?;
-            let mut result = Vec::with_capacity(values.len());
-            for value in values {
-                result.push(to_json(value, budget, range, depth + 1)?);
+        V::Array(values) | V::Tuple(values) => sequence_json(values, budget, range, depth)?,
+        V::Set { elements, .. } => sequence_json(elements, budget, range, depth)?,
+        V::Dictionary(entries) => {
+            admit(budget, 4 + entries.len(), 21, range)?;
+            let mut result = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                admit(budget, 3, 8, range)?;
+                let mut entry = serde_json::Map::new();
+                entry.insert("key".into(), to_json(key, budget, range, depth + 1)?);
+                entry.insert("value".into(), to_json(value, budget, range, depth + 1)?);
+                result.push(serde_json::Value::Object(entry));
             }
-            serde_json::Value::Array(result)
+            let mut dictionary = serde_json::Map::new();
+            dictionary.insert(
+                "kind".into(),
+                serde_json::Value::String("dictionary".into()),
+            );
+            dictionary.insert("entries".into(), serde_json::Value::Array(result));
+            serde_json::Value::Object(dictionary)
         }
         V::Record(fields) => {
             admit(budget, fields.len(), 0, range)?;
@@ -870,4 +884,18 @@ fn to_json(
             serde_json::Value::Object(result)
         }
     })
+}
+
+fn sequence_json(
+    values: &[V],
+    budget: &mut Budget,
+    range: &Range<usize>,
+    depth: usize,
+) -> Result<serde_json::Value, EvaluationError> {
+    admit(budget, values.len(), 0, range)?;
+    let mut result = Vec::with_capacity(values.len());
+    for value in values {
+        result.push(to_json(value, budget, range, depth + 1)?);
+    }
+    Ok(serde_json::Value::Array(result))
 }

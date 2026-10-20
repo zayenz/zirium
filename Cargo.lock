@@ -255,7 +255,7 @@ checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
 
 [[package]]
 name = "zirium"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "zirium-python"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "pyo3",
  "serde_json",
@@ -273,9 +273,9 @@ dependencies = [
 
 [[package]]
 name = "zirql"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b37ea71fdef74cdf87fedbde2dc68cfb310396c1424c45073d873ed9a2c2e66"
+checksum = "ee4d5bd02fd029cf3d770b074537af2143287d2faf6f60aa0466b309d169ca8f"
 dependencies = [
  "serde_json",
 ]

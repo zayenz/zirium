@@ -1,7 +1,7 @@
 # Structured queries in Rust and Python
 
-These examples use Zirium 0.5.1. Repository-relative inputs are in the
-[`v0.5.1` checkout](https://github.com/zayenz/zirium/tree/v0.5.1);
+These examples use Zirium 0.6.0. Repository-relative inputs are in the
+[`v0.6.0` checkout](https://github.com/zayenz/zirium/tree/v0.6.0);
 see [getting started](getting-started.md) for installation.
 
 Build queries with methods and predicates, then evaluate them against a semantic
@@ -391,6 +391,13 @@ constructs `in` or immutable binding clauses. `ReportExpr::scope` binds values
 in order and returns one head through these same clauses. `op_expr` accepts a
 checked string expression while the ordinary `op("name")` builder remains
 available.
+Python converts constructed lists, tuples and sets to ordered lists. Ordinary
+string-key dictionaries become Python dictionaries; general dictionaries use
+`{"kind": "dictionary", "entries": [{"key": key, "value": value}]}` so nested
+collection keys do not require Python hashability. The Rust value retains its
+collection kind until conversion. The Python builders retain their existing
+constructors; general set and dictionary literals are available through the
+textual language and the shared Rust value API.
 `attr(name)` follows the textual attribute-spelling projection; `string_attr(name)`
 continues to require and decode a string attribute.
 

@@ -265,6 +265,7 @@ def test_correlated_report_builders_return_ordered_python_data():
     ).lower_strict()
     assert lowered.document is not None
     doc = lowered.document
+    assert doc.query(report(E.tuple(["first", [1, 2]]))) == ["first", [1, 2]]
     f = bound_ops("f")
     rows = (
         ops()

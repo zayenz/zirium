@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+- Adopt Zirql 0.2 for general constructed collection keys, set elements and
+  dictionary-valued tally results, with structural comparison and hashing.
+- Render general dictionaries as tagged key/value entries in JSON and Python
+  results; preserve ordinary string-key dictionaries as objects.
+- Update public collection/declaration adapters. Ordinary native sets and general
+  native dictionaries remain unsupported by Zirium's current host representation.
+
 ## 0.5.1
 
 - Expose retained MLIR location spelling on Python semantic operations, including

@@ -285,6 +285,10 @@ pub(super) fn declaration(
                 budget.charge_results(1, location.clone())?;
                 pending.push(value);
             }
+            D::Dictionary(key, value) => {
+                budget.charge_results(2, location.clone())?;
+                pending.extend([key.as_ref(), value.as_ref()]);
+            }
             D::Tuple(values) => {
                 budget.charge_results(values.len(), location.clone())?;
                 pending.extend(values);
@@ -296,7 +300,8 @@ pub(super) fn declaration(
                     pending.push(value);
                 }
             }
-            D::Boolean
+            D::Value
+            | D::Boolean
             | D::Integer
             | D::Float
             | D::String

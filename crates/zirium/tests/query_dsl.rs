@@ -3900,10 +3900,10 @@ fn brace_collections_keep_native_data_order_and_function_locals() {
         ["pear!", "apple!"]
     );
     assert!(
-        matches!(fields[0].1.data(), V::Set { elements, .. } if elements == &[V::Integer(3),V::Integer(1)])
+        matches!(fields[0].1.data(), V::Set { elements, .. } if **elements == [V::Integer(3),V::Integer(1)])
     );
     assert!(
-        matches!(fields[2].1.data(), V::Set { elements, .. } if elements == &[V::Integer(1),V::Integer(2),V::Integer(0)])
+        matches!(fields[2].1.data(), V::Set { elements, .. } if **elements == [V::Integer(1),V::Integer(2),V::Integer(0)])
     );
     outputs.clear();
     Query::parse(r#"[{"pear":1 for _ in [1]}]"#)
@@ -3926,7 +3926,7 @@ fn brace_collections_keep_native_data_order_and_function_locals() {
         panic!("function result")
     };
     assert!(
-        matches!(value.value().data(), V::Set { elements, .. } if elements == &[V::Integer(3),V::Integer(1)])
+        matches!(value.value().data(), V::Set { elements, .. } if **elements == [V::Integer(3),V::Integer(1)])
     );
 }
 
@@ -4299,4 +4299,57 @@ fn shared_predicates_keep_constructed_elements_and_native_candidates() {
         assert!(error.range().is_some(), "{source}: {error}");
         assert!(!emitted);
     }
+}
+
+#[test]
+fn general_collection_keys_and_tally_render_at_the_json_boundary() {
+    let mut document = document();
+    let query = r#"fn histogram(xs:sequence<set<string>>) -> dict<set<string>,int> { xs | tally }
+        report histogram([{"ash","apple"}, {"apple","birch"}, {"birch","apple"}]);"#;
+    let mut outputs = Vec::new();
+    Query::parse(query)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(zirium::query::NativeValue::Constructed(report)) = &outputs[0] else {
+        panic!("constructed histogram")
+    };
+    let mut budget = zirium::query::Budget::for_program(zirium::query::ProgramLimits {
+        work: 10_000,
+        results: 10_000,
+        nesting: 64,
+        stream_items: 1_000,
+    });
+    assert_eq!(
+        report.to_json_with_budget(&mut budget).unwrap(),
+        serde_json::json!({
+            "kind": "dictionary", "entries": [
+                {"key": ["ash", "apple"], "value": 1},
+                {"key": ["apple", "birch"], "value": 2}
+            ]
+        })
+    );
+    outputs.clear();
+    Query::parse(r#"report {[1,2]: {{"a"}, {"b"}}, ("x",1): {"a":2}};"#)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(zirium::query::NativeValue::Constructed(report)) = &outputs[0] else {
+        panic!("nested collection dictionary")
+    };
+    assert_eq!(
+        report.to_json_with_budget(&mut budget).unwrap(),
+        serde_json::json!({
+            "kind": "dictionary", "entries": [
+                {"key": [1, 2], "value": [["a"], ["b"]]},
+                {"key": ["x", 1], "value": {"a": 2}}
+            ]
+        })
+    );
 }
