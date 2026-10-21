@@ -298,7 +298,8 @@ projections. Function-capable bodies retain native value queries so their calls
 can pass checked handles. These are admission policies on shared value nodes;
 both use the same prepared runner.
 
-Zirium keeps statement sequencing, bindings, native stage dispatch and emission.
+Zirql reads common declarations and statement scopes. Zirium retains its
+frontend metadata, request preparation, native stage dispatch and emission.
 Native selections and counts retain their existing work and stream bounds.
 Overloaded collection stages retain a lowered constructed body in their stage
 payload. Preparation checks that body only for constructed input, so borrowed

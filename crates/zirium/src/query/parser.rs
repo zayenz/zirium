@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
 use crate::formatter::{AssemblyStyle, FormatOptions, MAX_INDENT_WIDTH};
 use crate::source::TextRange;
@@ -77,16 +77,18 @@ pub(crate) fn parse_with_budget(
     let mut parser = Parser {
         source: lexed.source(),
         tokens: lexed.tokens(),
-        function_mode: has_function_header(lexed) || has_control_values(lexed),
+        function_mode: has_control_values(lexed),
         cursor: 0,
         diagnostics: Vec::new(),
         nesting_limit,
         budget: &mut budget,
-        locals: Vec::new(),
-        bindings: initial_bindings
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect(),
+        locals: &[],
+        bindings: Cow::Owned(
+            initial_bindings
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        ),
     };
     let program = parser.program();
     Parsed {
@@ -95,32 +97,6 @@ pub(crate) fn parse_with_budget(
         parse_work: limits.work - parser.budget.remaining_work(),
         parse_results: limits.results - parser.budget.remaining_results().unwrap(),
     }
-}
-
-fn has_function_header(lexed: &Lexed<'_>) -> bool {
-    let mut tokens = lexed
-        .tokens()
-        .iter()
-        .filter(|token| token.kind() != TokenKind::Trivia)
-        .peekable();
-    while let Some(token) = tokens.next() {
-        if token.kind() == TokenKind::Identifier
-            && &lexed.source()[token.range().as_range()] == "fn"
-            && tokens
-                .peek()
-                .is_some_and(|next| next.kind() == TokenKind::Identifier)
-        {
-            let mut probe = tokens.clone();
-            probe.next();
-            if probe
-                .next()
-                .is_some_and(|next| next.kind() == TokenKind::LParen)
-            {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn has_control_values(lexed: &Lexed<'_>) -> bool {
@@ -169,305 +145,57 @@ struct Parser<'a, 'b> {
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
     nesting_limit: usize,
-    bindings: HashSet<String>,
+    bindings: Cow<'a, HashSet<String>>,
     budget: &'b mut zirql::Budget,
-    locals: Vec<String>,
+    locals: &'a [&'a str],
 }
 
 impl Parser<'_, '_> {
     fn program(&mut self) -> Option<Program> {
-        self.skip_trivia();
-        let mut parameters = Vec::new();
-        let mut functions = Vec::new();
-        let mut parameter_positions = Vec::new();
-        if self.at(TokenKind::Eof) {
-            return Some(Program {
-                functions,
-                parameters,
-                parameter_positions,
-                statements: Vec::new(),
-                expression: Expression {
-                    first: Vec::new(),
-                    rest: Vec::new(),
-                    range: self.current().range(),
-                },
-                emit_final_result: true,
-            });
+        let location = zirql::Location::Query(0..0);
+        if let Err(error) = self
+            .budget
+            .charge(self.bindings.len(), location.clone())
+            .and_then(|()| self.budget.charge_results(self.bindings.len(), location))
+        {
+            self.shared_error(error);
+            return None;
         }
-        let mut statements = Vec::new();
-        loop {
-            self.skip_trivia();
-            if self.at_identifier("fn") {
-                let mut reader = zirql::ArgumentReader::new(
-                    self.source,
-                    self.current().range().start() as usize,
-                )
-                .ok()?;
-                let mut host = NativeReader {
-                    source: self.source,
-                    tokens: self.tokens,
-                    bindings: &self.bindings,
-                    nesting: self.nesting_limit,
-                    function_mode: true,
-                };
-                match zirql::read_pattern_function_declaration(
-                    &mut reader,
-                    &mut host,
-                    self.budget,
-                    self.nesting_limit,
-                    super::functions::resolve_type,
-                ) {
-                    Ok(Some(mut declaration)) => {
-                        declaration.value = match super::functions::normalize_outer(
-                            declaration.value,
-                            &self.bindings,
-                            true,
-                            self.budget,
-                        ) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                self.shared_error(error);
-                                return None;
-                            }
-                        };
-                        self.sync(reader.position());
-                        self.function_mode = true;
-                        functions.push(super::FunctionDefinition::parsed(declaration));
-                        continue;
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        self.shared_error(error);
-                        return None;
-                    }
+        let initial_names = self.bindings.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut host = NativeReader {
+            source: self.source,
+            tokens: self.tokens,
+            bindings: &self.bindings,
+            nesting: self.nesting_limit,
+            function_mode: self.function_mode,
+            program: ProgramSyntax::default(),
+        };
+        let parsed = zirql::read_program(
+            self.source,
+            &initial_names,
+            &mut host,
+            self.budget,
+            self.nesting_limit,
+        );
+        let parsed = match parsed {
+            Ok(parsed) => parsed,
+            Err(mut error) => {
+                if error.message == "expected ';'" {
+                    error.message = match host.program.purpose {
+                        Some(zirql::ProgramExpression::Suppressed) => {
+                            "expected `;` after do statement".to_owned()
+                        }
+                        Some(zirql::ProgramExpression::Binding) => {
+                            "expected `;` after binding".to_owned()
+                        }
+                        _ => error.message,
+                    };
                 }
+                self.shared_error(error);
+                return None;
             }
-            if self.at_identifier("do") {
-                self.bump();
-                let expression = self.expression(0)?;
-                self.expect(TokenKind::Semicolon, "expected `;` after do statement")?;
-                self.skip_trivia();
-                if self.at(TokenKind::Eof) {
-                    return Some(Program {
-                        functions,
-                        parameters,
-                        parameter_positions,
-                        statements,
-                        expression,
-                        emit_final_result: false,
-                    });
-                }
-                statements.push(Statement::Do(expression));
-                continue;
-            }
-            if self.at_identifier("let")
-                || self.at_identifier("report")
-                || self.at_identifier("param")
-            {
-                let mut reader = zirql::ArgumentReader::new(
-                    self.source,
-                    self.current().range().start() as usize,
-                )
-                .ok()?;
-                match zirql::read_statement_prefix(&mut reader, self.budget) {
-                    Ok(Some(zirql::CommonStatement::Param(declaration))) => {
-                        if is_reserved(&declaration.name.value)
-                            || self.bindings.contains(&declaration.name.value)
-                        {
-                            self.sync(declaration.name.range.start);
-                            self.error("parameter name is reserved or already defined");
-                            return None;
-                        }
-                        self.sync(reader.position());
-                        self.expect(
-                            TokenKind::Semicolon,
-                            "expected `;` after parameter declaration",
-                        )?;
-                        let admission = self
-                            .budget
-                            .charge(
-                                declaration.name.value.len() + 2,
-                                zirql::Location::Query(declaration.name.range.clone()),
-                            )
-                            .and_then(|_| {
-                                self.budget.charge_results(
-                                    2,
-                                    zirql::Location::Query(declaration.name.range.clone()),
-                                )
-                            });
-                        if let Err(error) = admission {
-                            self.shared_error(error);
-                            return None;
-                        }
-                        self.bindings.insert(declaration.name.value.clone());
-                        parameter_positions.push(statements.len());
-                        parameters.push(declaration);
-                        continue;
-                    }
-                    Ok(Some(zirql::CommonStatement::Let(name)))
-                        if !matches!(name.value.as_str(), "_" | "true" | "false") =>
-                    {
-                        if is_reserved(&name.value) || self.bindings.contains(&name.value) {
-                            self.error("binding name is reserved or already defined");
-                            return None;
-                        }
-                        self.sync(reader.position());
-                        let expression = if self.starts_native() {
-                            self.expression(0)?
-                        } else {
-                            self.value_expression(0)?
-                        };
-                        if !expression.is_read_only() {
-                            self.error(
-                                "bindings cannot edit or emit; use a separate query statement",
-                            );
-                            return None;
-                        }
-                        self.expect(TokenKind::Semicolon, "expected `;` after binding")?;
-                        self.bindings.insert(name.value.clone());
-                        statements.push(Statement::Binding {
-                            name: name.value,
-                            expression,
-                        });
-                        continue;
-                    }
-                    Ok(Some(zirql::CommonStatement::Report)) => {
-                        self.sync(reader.position());
-                        let mut expression = self.value_expression(0)?;
-                        self.shared_suffix(&mut expression, 0)?;
-                        self.skip_trivia();
-                        if self.at(TokenKind::Semicolon) {
-                            self.bump();
-                            self.skip_trivia();
-                        }
-                        if self.at(TokenKind::Eof) {
-                            return Some(Program {
-                                functions,
-                                parameters,
-                                parameter_positions,
-                                statements,
-                                expression,
-                                emit_final_result: true,
-                            });
-                        }
-                        statements.push(Statement::Query(expression));
-                        continue;
-                    }
-                    Ok(None) | Ok(Some(zirql::CommonStatement::Let(_))) => {}
-                    Err(error) => {
-                        self.shared_error(error);
-                        return None;
-                    }
-                }
-            }
-            if self.at_identifier("let") && self.next_kind() != Some(TokenKind::Equals) {
-                let mut reader = zirql::ArgumentReader::new(
-                    self.source,
-                    self.current().range().start() as usize,
-                )
-                .ok()?;
-                match zirql::read_pattern_let(&mut reader, self.budget, self.nesting_limit) {
-                    Ok(Some(pattern)) => {
-                        let names = match zirql::pattern_names(&pattern, self.budget) {
-                            Ok(names) => names.into_iter().cloned().collect::<Vec<_>>(),
-                            Err(error) => {
-                                zirql::dispose_pattern(pattern);
-                                self.shared_error(error);
-                                return None;
-                            }
-                        };
-                        let mut seen = HashSet::new();
-                        for name in &names {
-                            if is_reserved(&name.value)
-                                || self.bindings.contains(&name.value)
-                                || !seen.insert(&name.value)
-                            {
-                                self.sync(name.range.start);
-                                self.error("binding name is reserved or already defined");
-                                zirql::dispose_pattern(pattern);
-                                return None;
-                            }
-                        }
-                        self.sync(reader.position());
-                        self.function_mode = true;
-                        let Some(value) = self.shared_value(0) else {
-                            zirql::dispose_pattern(pattern);
-                            return None;
-                        };
-                        let range = TextRange::new(
-                            pattern.range.start as u32,
-                            value.expression.range.end as u32,
-                        )
-                        .expect("ordered binding range");
-                        let value = super::functions::ParsedBinding::new(pattern, value);
-                        self.expect(TokenKind::Semicolon, "expected `;` after binding")?;
-                        for name in &names {
-                            self.bindings.insert(name.value.clone());
-                        }
-                        statements.push(Statement::PatternBinding {
-                            names,
-                            expression: Expression {
-                                first: vec![super::model::native(Stage::PatternBinding {
-                                    value,
-                                    range,
-                                })],
-                                rest: Vec::new(),
-                                range,
-                            },
-                        });
-                        continue;
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        self.shared_error(error);
-                        return None;
-                    }
-                }
-            }
-            let next = self.tokens[self.cursor + 1..]
-                .iter()
-                .find(|token| token.kind() != TokenKind::Trivia);
-            if self.at(TokenKind::Identifier)
-                && next.is_some_and(|token| token.kind() == TokenKind::Equals)
-            {
-                let name = self.identifier_text()?;
-                if is_reserved(&name) || self.bindings.contains(&name) {
-                    self.error_at_previous("binding name is reserved or already defined");
-                    return None;
-                }
-                self.expect(TokenKind::Equals, "expected `=` after binding name")?;
-                let expression = self.expression(0)?;
-                if !expression.is_read_only() {
-                    self.error("bindings cannot edit or emit; use a separate query statement");
-                    return None;
-                }
-                self.expect(TokenKind::Semicolon, "expected `;` after binding")?;
-                self.bindings.insert(name.clone());
-                statements.push(Statement::Binding { name, expression });
-                continue;
-            }
-            let expression = self.expression(0)?;
-            self.skip_trivia();
-            if self.at(TokenKind::Semicolon) {
-                self.bump();
-                self.skip_trivia();
-                if !self.at(TokenKind::Eof) {
-                    statements.push(Statement::Query(expression));
-                    continue;
-                }
-            }
-            if !self.at(TokenKind::Eof) {
-                self.error("expected `|`, a set operator, `;`, or end of query");
-            }
-            return Some(Program {
-                functions,
-                parameters,
-                parameter_positions,
-                statements,
-                expression,
-                emit_final_result: true,
-            });
-        }
+        };
+        Some(frontend_program(parsed, host.program.signatures))
     }
 
     fn next_kind(&self) -> Option<TokenKind> {
@@ -559,13 +287,14 @@ impl Parser<'_, '_> {
             function_mode: self.function_mode,
             bindings: &self.bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
+            program: ProgramSyntax::default(),
         };
         let nesting = host.nesting;
-        let locals: Vec<_> = self.locals.iter().map(String::as_str).collect();
+        let locals = self.locals;
         match zirql::read_value_expression_in_scope(
             &mut reader,
             &mut host,
-            &locals,
+            locals,
             self.budget,
             nesting,
         ) {
@@ -648,6 +377,7 @@ impl Parser<'_, '_> {
             function_mode: self.function_mode,
             bindings: &self.bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
+            program: ProgramSyntax::default(),
         };
         let nesting = host.nesting;
         match zirql::read_projection(&mut reader, &mut host, self.budget, nesting) {
@@ -716,7 +446,7 @@ impl Parser<'_, '_> {
             self.shared_error(error);
             return None;
         }
-        let mut bindings = self.bindings.clone();
+        let mut bindings = self.bindings.as_ref().clone();
         if !field_only
             && self.at(TokenKind::Identifier)
             && matches!(
@@ -740,6 +470,7 @@ impl Parser<'_, '_> {
             function_mode: self.function_mode,
             bindings: &bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
+            program: ProgramSyntax::default(),
         };
         let nesting = host.nesting;
         match zirql::read_native_expression(&mut reader, &mut host, self.budget, nesting) {
@@ -763,6 +494,7 @@ impl Parser<'_, '_> {
             function_mode: self.function_mode,
             bindings: &self.bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
+            program: ProgramSyntax::default(),
         };
         let nesting = host.nesting;
         match zirql::read_paths(&mut reader, &mut host, self.budget, nesting) {
@@ -786,6 +518,7 @@ impl Parser<'_, '_> {
             function_mode: self.function_mode,
             bindings: &self.bindings,
             nesting: self.nesting_limit.saturating_sub(depth),
+            program: ProgramSyntax::default(),
         };
         let nesting = host.nesting;
         match zirql::read_match(&mut reader, &mut host, self.budget, nesting) {
@@ -1006,13 +739,14 @@ impl Parser<'_, '_> {
                 bindings: &self.bindings,
                 nesting: self.nesting_limit.saturating_sub(depth),
                 function_mode: self.function_mode,
+                program: ProgramSyntax::default(),
             };
             let nesting = host.nesting;
-            let locals: Vec<_> = self.locals.iter().map(String::as_str).collect();
+            let locals = self.locals;
             let value = match zirql::read_constructed_filter(
                 &mut reader,
                 &mut host,
-                &locals,
+                locals,
                 self.budget,
                 nesting,
             ) {
@@ -1343,6 +1077,7 @@ impl Parser<'_, '_> {
                     function_mode: self.function_mode,
                     bindings: &self.bindings,
                     nesting: self.nesting_limit.saturating_sub(depth + 1),
+                    program: ProgramSyntax::default(),
                 };
                 let nesting = host.nesting;
                 let query = match zirql::read_native_expression(
@@ -1501,13 +1236,14 @@ impl Parser<'_, '_> {
             bindings: &self.bindings,
             nesting: self.nesting_limit.saturating_sub(depth).saturating_add(1),
             function_mode: self.function_mode,
+            program: ProgramSyntax::default(),
         };
-        let locals: Vec<_> = self.locals.iter().map(String::as_str).collect();
+        let locals = self.locals;
         let nesting = host.nesting;
         match zirql::read_native_predicate_argument(
             &mut reader,
             &mut host,
-            &locals,
+            locals,
             self.budget,
             nesting,
         ) {
@@ -2174,37 +1910,211 @@ pub(super) fn is_reserved(name: &str) -> bool {
         )
 }
 
+// These owned conversions preserve Zirium's public first/rest frontend shape.
+// They do not lower native stages or change emission policy.
+fn reader_expression(mut expression: Expression) -> super::report::Operand {
+    let range = super::program::range(expression.range);
+    let pipeline = |steps, range: std::ops::Range<usize>| {
+        zirql::Located::new(
+            zirql::ExpressionKind::Sequence {
+                input: Box::new(zirql::Located::new(
+                    zirql::ExpressionKind::Input,
+                    range.clone(),
+                )),
+                steps,
+            },
+            range,
+        )
+    };
+    let mut value = pipeline(std::mem::take(&mut expression.first), range.clone());
+    for (operator, steps) in std::mem::take(&mut expression.rest) {
+        value = zirql::Located::new(
+            zirql::ExpressionKind::Set {
+                operator,
+                left: Box::new(value),
+                right: Box::new(pipeline(steps, range.clone())),
+            },
+            range.clone(),
+        );
+    }
+    value
+}
+
+fn frontend_expression(mut expression: super::report::Operand) -> Expression {
+    let range = TextRange::new(expression.range.start as u32, expression.range.end as u32)
+        .expect("ordered frontend range");
+    let mut rest = Vec::new();
+    loop {
+        match expression.value {
+            zirql::ExpressionKind::Set {
+                operator,
+                left,
+                right,
+            } => {
+                rest.push((operator, frontend_pipeline(*right)));
+                expression = *left;
+            }
+            _ => {
+                rest.reverse();
+                return Expression {
+                    first: frontend_pipeline(expression),
+                    rest,
+                    range,
+                };
+            }
+        }
+    }
+}
+
+fn frontend_pipeline(expression: super::report::Operand) -> Vec<super::model::Step> {
+    let zirql::ExpressionKind::Sequence { input, steps } = expression.value else {
+        unreachable!("the program adapter produces a sequence for every frontend pipeline")
+    };
+    debug_assert!(matches!(input.value, zirql::ExpressionKind::Input));
+    steps
+}
+
+fn frontend_program(
+    parsed: zirql::ReadProgram<super::model::NativeStage, SetOperator, super::program::Emitter>,
+    signatures: Vec<FunctionTypes>,
+) -> Program {
+    let functions = parsed
+        .functions
+        .into_iter()
+        .zip(signatures)
+        .map(|(function, signature)| {
+            super::FunctionDefinition::parsed(zirql::PatternFunctionDeclaration {
+                name: function.name,
+                parameters: function
+                    .parameters
+                    .into_iter()
+                    .zip(signature.parameters)
+                    .map(|(parameter, declaration)| {
+                        zirql::Located::new(
+                            zirql::PatternParameter {
+                                pattern: parameter.value.pattern,
+                                declaration,
+                            },
+                            parameter.range,
+                        )
+                    })
+                    .collect(),
+                result: signature.result,
+                value: function.value,
+            })
+        })
+        .collect();
+    let (parameters, parameter_positions) = parsed
+        .parameters
+        .into_iter()
+        .map(|parameter| (parameter.declaration, parameter.position))
+        .unzip();
+    let mut statements = parsed
+        .statements
+        .into_iter()
+        .map(|statement| match statement.value {
+            zirql::Statement::Bind { name, expression } => Statement::Binding {
+                name: name.value,
+                expression: frontend_expression(expression),
+            },
+            zirql::Statement::BindFields { names, expression } => Statement::PatternBinding {
+                names,
+                expression: frontend_expression(expression),
+            },
+            zirql::Statement::Evaluate {
+                expression,
+                implicit_output,
+            } => {
+                let expression = frontend_expression(expression);
+                if implicit_output.is_some() {
+                    Statement::Query(expression)
+                } else {
+                    Statement::Do(expression)
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    let (expression, emit_final_result) = match statements.pop() {
+        Some(Statement::Query(expression)) => (expression, true),
+        Some(Statement::Do(expression)) => (expression, false),
+        Some(_) => unreachable!("completed programs end in an evaluation"),
+        None => (
+            Expression {
+                first: Vec::new(),
+                rest: Vec::new(),
+                range: TextRange::at(parsed.range.end as u32),
+            },
+            true,
+        ),
+    };
+    Program {
+        functions,
+        parameters,
+        parameter_positions,
+        statements,
+        expression,
+        emit_final_result,
+    }
+}
+
+struct FunctionTypes {
+    parameters: Vec<zirql::DeclaredType<super::program::Kind>>,
+    result: zirql::Located<zirql::DeclaredType<super::program::Kind>>,
+}
+
+#[derive(Default)]
+enum BindingSyntax {
+    Legacy,
+    #[default]
+    Name,
+    Pattern,
+}
+
+#[derive(Default)]
+struct ProgramSyntax {
+    signatures: Vec<FunctionTypes>,
+    binding: BindingSyntax,
+    purpose: Option<zirql::ProgramExpression>,
+    needs_final_expression: bool,
+    function_scope: bool,
+}
+
 struct NativeReader<'a> {
     source: &'a str,
     tokens: &'a [Token],
     bindings: &'a HashSet<String>,
     nesting: usize,
     function_mode: bool,
+    program: ProgramSyntax,
 }
 impl NativeReader<'_> {
-    fn parser<'b>(
-        &self,
+    fn parser<'a, 'b>(
+        &'a self,
         position: usize,
-        locals: &[&str],
+        locals: &'a [&'a str],
         budget: &'b mut zirql::Budget,
-    ) -> Result<Parser<'_, 'b>, zirql::QueryError> {
+    ) -> Result<Parser<'a, 'b>, zirql::QueryError> {
         let location = zirql::Location::Query(position..position);
-        budget.charge(
-            self.bindings.iter().map(|name| name.len() + 1).sum(),
-            location.clone(),
-        )?;
-        let mut bindings = self.bindings.clone();
+        let mut bindings = if self.program.function_scope {
+            Cow::Owned(HashSet::new())
+        } else {
+            Cow::Borrowed(self.bindings)
+        };
         for &name in locals {
-            if !bindings.contains(name) {
-                budget.charge(name.len() + 1, location.clone())?;
-                bindings.insert(name.to_owned());
+            if bindings.contains(name) {
+                continue;
             }
+            if let Cow::Borrowed(existing) = &bindings {
+                budget.charge(
+                    existing.iter().map(|name| name.len() + 1).sum(),
+                    location.clone(),
+                )?;
+                budget.charge_results(existing.len(), location.clone())?;
+            }
+            budget.charge(name.len() + 1, location.clone())?;
+            budget.charge_results(1, location.clone())?;
+            bindings.to_mut().insert(name.to_owned());
         }
-        budget.charge(
-            locals.iter().map(|name| name.len() + 1).sum(),
-            location.clone(),
-        )?;
-        budget.charge_results(locals.len(), location)?;
         Ok(Parser {
             source: self.source,
             tokens: self.tokens,
@@ -2215,7 +2125,7 @@ impl NativeReader<'_> {
             diagnostics: vec![],
             nesting_limit: self.nesting,
             bindings,
-            locals: locals.iter().map(|name| (*name).to_owned()).collect(),
+            locals,
             budget,
         })
     }
@@ -2223,6 +2133,215 @@ impl NativeReader<'_> {
         zirql::QueryError::query(diagnostic.range().as_range(), diagnostic.message())
     }
 }
+impl zirql::ProgramReaderHost for NativeReader<'_> {
+    fn function_name(
+        &mut self,
+        _: zirql::Located<&str>,
+        _: &mut zirql::Budget,
+    ) -> Result<(), zirql::QueryError> {
+        self.function_mode = true;
+        self.program.needs_final_expression = true;
+        Ok(())
+    }
+    fn function_scope(&mut self, active: bool) {
+        self.program.function_scope = active;
+    }
+    fn admit_functions(
+        &mut self,
+        functions: &mut [zirql::UnresolvedPatternFunctionDeclaration<super::report::Operand>],
+        budget: &mut zirql::Budget,
+    ) -> Result<(), zirql::QueryError> {
+        let ambient = HashSet::new();
+        for function in functions {
+            let signature = function.resolve_signature(budget, super::functions::resolve_type)?;
+            budget.charge_results(
+                signature.parameters.len(),
+                zirql::Location::Query(signature.name.range.clone()),
+            )?;
+            self.program.signatures.push(FunctionTypes {
+                parameters: signature
+                    .parameters
+                    .into_iter()
+                    .map(|parameter| parameter.value.declaration)
+                    .collect(),
+                result: signature.result,
+            });
+            let value = std::mem::replace(
+                &mut function.value,
+                zirql::Located::new(
+                    zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Absent),
+                    0..0,
+                ),
+            );
+            function.value = super::functions::normalize_outer(value, &ambient, true, budget)?;
+        }
+        Ok(())
+    }
+    fn admit_name(
+        &mut self,
+        name: zirql::Located<&str>,
+        parameter: bool,
+    ) -> Result<(), zirql::QueryError> {
+        if is_reserved(name.value) {
+            return Err(zirql::QueryError::query(
+                name.range.clone(),
+                if parameter {
+                    "parameter name is reserved or already defined"
+                } else {
+                    "binding name is reserved or already defined"
+                },
+            ));
+        }
+        Ok(())
+    }
+    fn read_binding(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        budget: &mut zirql::Budget,
+    ) -> Result<Option<zirql::Pattern>, zirql::QueryError> {
+        self.program.binding = BindingSyntax::Name;
+        let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
+        let Ok(name) = probe.word() else {
+            return Ok(None);
+        };
+        if !probe.consume('=') {
+            return Ok(None);
+        }
+        budget.charge(
+            name.value.len() + 1,
+            zirql::Location::Query(name.range.clone()),
+        )?;
+        budget.charge_results(2, zirql::Location::Query(name.range.clone()))?;
+        let name = zirql::Located::new(name.value.to_owned(), name.range);
+        let range = name.range.clone();
+        reader.advance(probe.position() - reader.position())?;
+        self.program.binding = BindingSyntax::Legacy;
+        Ok(Some(zirql::Located::new(
+            zirql::PatternKind::Name(name),
+            range,
+        )))
+    }
+    fn binding_pattern(&mut self, pattern: &zirql::Pattern) {
+        if !matches!(pattern.value, zirql::PatternKind::Name(_)) {
+            self.program.binding = BindingSyntax::Pattern;
+            self.function_mode = true;
+        }
+    }
+    fn read_output_prefix(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+    ) -> Option<zirql::ProgramExpression> {
+        reader
+            .keyword("do")
+            .then_some(zirql::ProgramExpression::Suppressed)
+    }
+    fn read_program_expression(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        names: &[&str],
+        purpose: zirql::ProgramExpression,
+        budget: &mut zirql::Budget,
+        nesting: usize,
+    ) -> Result<super::report::Operand, zirql::QueryError> {
+        self.program.purpose = Some(purpose);
+        let mut parser = self.parser(reader.position(), names, budget)?;
+        parser.nesting_limit = nesting;
+        let expression = match purpose {
+            zirql::ProgramExpression::Binding
+                if matches!(self.program.binding, BindingSyntax::Pattern) =>
+            {
+                parser.value_expression(0)
+            }
+            zirql::ProgramExpression::Binding
+                if matches!(self.program.binding, BindingSyntax::Name)
+                    && !parser.starts_native() =>
+            {
+                parser.value_expression(0)
+            }
+            zirql::ProgramExpression::Report => {
+                parser.value_expression(0).and_then(|mut expression| {
+                    parser.shared_suffix(&mut expression, 0)?;
+                    Some(expression)
+                })
+            }
+            _ => parser.expression(0),
+        };
+        if let Some(diagnostic) = parser.diagnostics.first() {
+            return Err(Self::error(diagnostic));
+        }
+        let expression = expression.ok_or_else(|| reader.error("expected a query expression"))?;
+        if purpose == zirql::ProgramExpression::Binding && !expression.is_read_only() {
+            return Err(
+                reader.error("bindings cannot edit or emit; use a separate query statement")
+            );
+        }
+        reader.advance(parser.current().range().start() as usize - reader.position())?;
+        self.program.needs_final_expression = purpose == zirql::ProgramExpression::Binding;
+        Ok(reader_expression(expression))
+    }
+    fn parameter_statement(
+        &mut self,
+        _: &zirql::ParameterDeclaration,
+        _: usize,
+        _: &mut zirql::Budget,
+    ) -> Result<Option<zirql::Located<zirql::ReadStatement<Self>>>, zirql::QueryError> {
+        self.program.needs_final_expression = true;
+        Ok(None)
+    }
+    fn binding_statement(
+        &mut self,
+        pattern: zirql::Pattern,
+        names: Vec<zirql::Located<String>>,
+        expression: super::report::Operand,
+        _: &mut zirql::Budget,
+    ) -> Result<
+        zirql::Statement<super::model::NativeStage, SetOperator, super::program::Emitter>,
+        zirql::QueryError,
+    > {
+        if !matches!(self.program.binding, BindingSyntax::Pattern) {
+            let zirql::PatternKind::Name(name) = pattern.value else {
+                unreachable!("simple binding pattern")
+            };
+            return Ok(zirql::Statement::Bind { name, expression });
+        }
+        let range = pattern.range.start..expression.range.end;
+        let mut steps = frontend_pipeline(expression);
+        let zirql::ExpressionStep::Value(value) =
+            steps.pop().expect("one parsed binding value").value
+        else {
+            unreachable!("pattern binding reads a value expression")
+        };
+        let value = super::functions::ParsedBinding::new(
+            pattern,
+            super::comprehension::ParsedComprehension { expression: value },
+        );
+        let range =
+            TextRange::new(range.start as u32, range.end as u32).expect("ordered binding range");
+        let expression = reader_expression(Expression {
+            first: vec![super::model::native(Stage::PatternBinding { value, range })],
+            rest: Vec::new(),
+            range,
+        });
+        Ok(zirql::Statement::BindFields { names, expression })
+    }
+    fn implicit_output(
+        &mut self,
+        purpose: zirql::ProgramExpression,
+    ) -> Option<super::program::Emitter> {
+        (purpose != zirql::ProgramExpression::Suppressed).then_some(super::program::Emitter::Result)
+    }
+    fn finish_program(
+        &mut self,
+        reader: &zirql::ArgumentReader<'_>,
+        _: &mut zirql::Budget,
+    ) -> Result<(), zirql::QueryError> {
+        if self.program.needs_final_expression {
+            return Err(reader.error("expected a query stage such as input, filter, or defs"));
+        }
+        Ok(())
+    }
+}
+
 impl zirql::ValueReaderHost for NativeReader<'_> {
     type Stage = super::model::NativeStage;
     type SetOperator = SetOperator;
@@ -2235,7 +2354,7 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         zirql::FieldPipelineSource::ValueArgument
     }
     fn is_binding(&self, name: &str) -> bool {
-        self.bindings.contains(name)
+        !self.program.function_scope && self.bindings.contains(name)
     }
     fn is_stage(&self, name: &str) -> bool {
         is_native_stage(name)
@@ -2677,11 +2796,11 @@ mod tests {
             source: lexed.source(),
             tokens: lexed.tokens(),
             function_mode: false,
-            locals: Vec::new(),
+            locals: &[],
             cursor: 0,
             diagnostics: Vec::new(),
             nesting_limit: DEFAULT_NESTING_LIMIT,
-            bindings: HashSet::new(),
+            bindings: Cow::Owned(HashSet::new()),
             budget: &mut budget,
         };
         parser.shared_error(

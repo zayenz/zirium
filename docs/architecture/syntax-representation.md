@@ -42,8 +42,16 @@ Zirql checks projection fields before enumerating subjects and retains declared
 empty row schemas. The [projection contract](https://zayenz.se/zirql/guides/host-integration/#correlated-native-projection)
 describes the subject and scalar-value hooks.
 
-Zirium keeps statement and parameter bookkeeping, native-only stream execution,
-MLIR ownership and stale-handle checks. Emission payloads retain the requested
+The text frontend delegates function collection, parameter and pattern-let
+reading, lexical name progression and separators to Zirql's `read_program`.
+It moves the result into Zirium's public first/rest expression model without
+copying expression trees. Parameter positions and the final-result flag remain
+frontend metadata used by existing builders and preparation. Zirium's callbacks
+admit native signature types and reserved names, select native versus projected
+binding results, and recognize legacy `name =` and `do` syntax.
+
+Zirium keeps request preparation, native-only stream execution, MLIR ownership
+and stale-handle checks. Emission payloads retain the requested
 format and pass-through behavior; CLI buffering remains a request boundary.
 Native capture records retain handles, while projected report records contain
 ordinary Zirql data. See the [typed report builders](../query-dsl.md#constructed-report-builders)

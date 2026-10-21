@@ -336,8 +336,12 @@ pipelines, boolean chains, and set chains do not consume a level per term.
 Excessive nesting is reported when the expression is evaluated.
 
 Ordinary and diff programs share statement order, immutable binding scope, groups and set
-sequencing with Zirql. Native selectors reenter the expression runner with the
-same document or comparison, bindings and budget. Typed diff fixed-point bodies
+sequencing with Zirql. In the development checkout, ordinary text programs also
+use `zirql::read_program` for function collection, parameters, pattern lets and
+separators. The adapter preserves the public parser's statements, final expression
+and parameter positions; typed builders continue to construct that frontend
+model directly. Zirium retains legacy bindings, `do` and native output policy.
+Native selectors reenter the expression runner with the same document or comparison, bindings and budget. Typed diff fixed-point bodies
 and navigation use the same active allowance. The textual `Query` API also accepts
 `evaluate_with_program_limits`; `--max-results` exposes its aggregate allowance
 in the CLI. Typed expression APIs retain their existing limits and native values.
@@ -485,7 +489,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `5d6a466a6ee9bac2a90c2dfbc5579a0b0c12f08d`. They accept shared expressions
+pin `23b4e4e70a9225dfeea51642c130da2431b12d9d`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 

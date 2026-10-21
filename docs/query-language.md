@@ -28,6 +28,14 @@ their syntax and behavior alongside MLIR queries. Start with
 [optional fields](#optional-fields-and-lazy-defaults) and
 [functions](#typed-recursive-functions) as needed. The Zirql reference provides
 further explanation of the shared evaluator and its use in other hosts.
+
+The development checkout also uses Zirql's common program reader. It collects
+function declarations before reading their bodies and introduces parameters and
+`let` names at their written positions. Zirium supplies native expressions and
+types, legacy `name = query` bindings, `do`, and emission policy. Parsing only
+builds syntax; edits run during evaluation. The same request budget covers
+reading and execution.
+
 For Rust and Python builders with native results, see the
 [structured query guide](query-dsl.md).
 
@@ -677,7 +685,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`5d6a466a6ee9bac2a90c2dfbc5579a0b0c12f08d`](https://github.com/zayenz/zirql/commit/5d6a466a6ee9bac2a90c2dfbc5579a0b0c12f08d).
+[`23b4e4e70a9225dfeea51642c130da2431b12d9d`](https://github.com/zayenz/zirql/commit/23b4e4e70a9225dfeea51642c130da2431b12d9d).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -1391,11 +1399,15 @@ The same buffering rule applies: any later failure leaves stdout empty.
 This sketch covers native pipeline composition. `shared-expression` uses the
 value syntax described above; `pattern` uses the shared destructuring syntax.
 The `object`, `array` and `value` rules describe JSON templates, not the full
-shared value grammar. Function and parameter declarations have their own sections.
+shared value grammar. Function and parameter signatures have their own sections.
+Declarations do not replace the final query; bindings and parameters require
+their semicolons.
 
 ```text
-program    = empty | { statement } final
+program    = empty | { declaration | statement } final
 statement  = binding | do-statement | query ";"
+declaration = function | "param" identifier ":" ("int" | "string" | "bool") ";"
+function   = "fn" identifier "(" parameters ")" "->" type "{" function-body "}"
 final      = query [ ";" ] | do-statement
 binding    = [ "let" ] identifier "=" query ";"
            | "let" pattern "=" shared-expression ";"
@@ -1771,8 +1783,11 @@ functions. The examples below cover these uses. The
 adds further scalar examples and explains the shared execution rules.
 
 Calls follow Zirql's [shared scope and admission rules](https://zayenz.se/zirql/guides/functions-and-control-flow/).
-All inputs are explicit; a function cannot capture saved query bindings, caller
-parameters, a projection subject or implicit `input`. Every written body is
+Function declarations may appear after a call or refer to later functions.
+Saved bindings and parameters remain sequential: they are available only after
+their declaration. All inputs to functions are explicit; a function cannot
+capture saved query bindings, caller parameters, a projection subject or implicit
+`input`. Every written body is
 prepared before execution, including skipped branches. Native functions use the
 same ordinary call path as declared functions:
 
@@ -2109,7 +2124,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `5d6a466a6ee9bac2a90c2dfbc5579a0b0c12f08d`
+The development dependency pins Zirql `23b4e4e70a9225dfeea51642c130da2431b12d9d`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.

@@ -4595,3 +4595,35 @@ fn scalar_conversion_reports_share_native_projections_and_callable_builders() {
             .is_err()
     );
 }
+
+#[test]
+fn forward_functions_ignore_headers_in_strings_and_comments() {
+    let mut document = document();
+    let source = r#"
+        # fn commented(value: int) -> int { 99 }
+        let note = "fn quoted(value: int) -> int { 99 }";
+        report later(4);
+        fn later(value: int) -> int { value + 1 }
+        report note | json;
+    "#;
+    let mut outputs = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(outputs.len(), 2);
+    let QueryOutput::Native(zirium::query::NativeValue::Constructed(value)) = &outputs[0] else {
+        panic!("constructed function result")
+    };
+    assert_eq!(
+        value.value().data(),
+        &zirium::query::ConstructedValue::Integer(5)
+    );
+    let QueryOutput::Json(text) = &outputs[1] else {
+        panic!("explicit JSON string")
+    };
+    assert_eq!(text, "\"fn quoted(value: int) -> int { 99 }\"\n");
+}
