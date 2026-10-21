@@ -652,7 +652,7 @@ keep native stages and selectors such as
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`967eb05c80fd122fb5a91cd9056cce124f844150`](https://github.com/zayenz/zirql/commit/967eb05c80fd122fb5a91cd9056cce124f844150).
+[`40640084c88e56aa58538efbb254a78b6a021bbe`](https://github.com/zayenz/zirql/commit/40640084c88e56aa58538efbb254a78b6a021bbe).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 

@@ -273,43 +273,5 @@ pub(super) fn declaration(
 ) -> Result<Arc<D<program::Kind>>, zirql::QueryError> {
     let location = ValueLocation::Query(range.clone());
     budget.charge_results(1, location.clone())?;
-    let mut pending = vec![value];
-    while let Some(value) = pending.pop() {
-        budget.charge(1, location.clone())?;
-        match value {
-            D::Optional(value)
-            | D::Sequence(value)
-            | D::Array(value)
-            | D::Keyed(value)
-            | D::Queue(value) => {
-                budget.charge_results(1, location.clone())?;
-                pending.push(value);
-            }
-            D::Dictionary(key, value) => {
-                budget.charge_results(2, location.clone())?;
-                pending.extend([key.as_ref(), value.as_ref()]);
-            }
-            D::Tuple(values) => {
-                budget.charge_results(values.len(), location.clone())?;
-                pending.extend(values);
-            }
-            D::Record(fields) => {
-                budget.charge_results(fields.len(), location.clone())?;
-                for (name, value) in fields {
-                    budget.charge(name.len() + 1, location.clone())?;
-                    pending.push(value);
-                }
-            }
-            D::Value
-            | D::Boolean
-            | D::Integer
-            | D::Float
-            | D::String
-            | D::Native(_)
-            | D::Set(_)
-            | D::Member(_)
-            | D::IdentitySet(_) => {}
-        }
-    }
-    Ok(Arc::new(value.clone()))
+    Ok(Arc::new(zirql::copy_declaration(value, budget, &location)?))
 }

@@ -272,7 +272,13 @@ impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> 
                 D::Queue(_) | D::IdentitySet(_) => {
                     program::Kind::Computational(worklists::declaration(ty, budget, range)?)
                 }
-                D::Tuple(values) if contains_native(ty, budget, range)? => {
+                D::Tuple(values)
+                    if zirql::contains_native(
+                        ty,
+                        budget,
+                        &ValueLocation::Query(range.clone()),
+                    )? =>
+                {
                     capture::slots::<program::Kind>(values.len(), budget, range)
                         .map_err(report::query_error)?;
                     program::Kind::Tuple(Arc::new(
@@ -287,13 +293,31 @@ impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> 
                 {
                     program::Kind::Operations
                 }
-                D::Sequence(value) | D::Array(value) if contains_native(value, budget, range)? => {
+                D::Sequence(value) | D::Array(value)
+                    if zirql::contains_native(
+                        value,
+                        budget,
+                        &ValueLocation::Query(range.clone()),
+                    )? =>
+                {
                     program::Kind::Sequence(worklists::declaration(value, budget, range)?)
                 }
-                D::Optional(value) if contains_native(value, budget, range)? => {
+                D::Optional(value)
+                    if zirql::contains_native(
+                        value,
+                        budget,
+                        &ValueLocation::Query(range.clone()),
+                    )? =>
+                {
                     self.declaration_kind(value, budget, range)?
                 }
-                D::Record(fields) if contains_native(ty, budget, range)? => {
+                D::Record(fields)
+                    if zirql::contains_native(
+                        ty,
+                        budget,
+                        &ValueLocation::Query(range.clone()),
+                    )? =>
+                {
                     capture::slots::<(String, program::Kind)>(fields.len(), budget, range)
                         .map_err(report::query_error)?;
                     budget.charge_results(fields.len() + 1, ValueLocation::Query(range.clone()))?;
@@ -1400,44 +1424,6 @@ fn admit_fields<'v>(
     Ok(())
 }
 
-fn contains_native(
-    ty: &D<program::Kind>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<bool, zirql::QueryError> {
-    budget.charge(1, ValueLocation::Query(range.clone()))?;
-    Ok(match ty {
-        D::Native(_) | D::Queue(_) | D::IdentitySet(_) => true,
-        D::Optional(value) | D::Sequence(value) | D::Array(value) | D::Keyed(value) => {
-            contains_native(value, budget, range)?
-        }
-        D::Dictionary(key, value) => {
-            contains_native(key, budget, range)? || contains_native(value, budget, range)?
-        }
-        D::Record(fields) => {
-            let mut found = false;
-            for (name, value) in fields {
-                budget.charge(name.len() + 1, ValueLocation::Query(range.clone()))?;
-                if contains_native(value, budget, range)? {
-                    found = true;
-                    break;
-                }
-            }
-            found
-        }
-        D::Tuple(values) => {
-            let mut found = false;
-            for value in values {
-                if contains_native(value, budget, range)? {
-                    found = true;
-                    break;
-                }
-            }
-            found
-        }
-        _ => false,
-    })
-}
 /// Only preparation copies lexical kind metadata; runtime shares value bindings.
 pub(super) fn copy_scope(
     names: &BTreeMap<String, program::Kind>,

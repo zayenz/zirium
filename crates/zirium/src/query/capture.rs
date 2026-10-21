@@ -659,15 +659,20 @@ impl<'q> MatchHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
                 let kind =
                     functions::value_kind(self, &value.expression, input.clone(), scope, budget)?;
                 let types = self.scalar_types(&kind, budget, &value.expression.range)?;
-                if types.is_none_or(|types| {
-                    types
-                        .iter()
-                        .any(|ty| !report::scalar_type_is(ty, &zirql::ValueType::Boolean))
-                }) {
+                let Some(types) = types else {
                     return Err(zirql::QueryError::query(
                         value.expression.range.clone(),
                         "match predicate needs a known Boolean",
                     ));
+                };
+                for ty in types {
+                    report::admit_scalar_type(
+                        &ty,
+                        &zirql::ValueType::Boolean,
+                        budget,
+                        &value.expression.range,
+                        "match predicate needs a known Boolean",
+                    )?;
                 }
                 Ok(())
             }

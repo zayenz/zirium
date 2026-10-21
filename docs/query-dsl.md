@@ -453,7 +453,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `967eb05c80fd122fb5a91cd9056cce124f844150`. They accept shared expressions
+pin `40640084c88e56aa58538efbb254a78b6a021bbe`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 
@@ -898,3 +898,19 @@ Select exactly one function before using `one()`. Use `ReportGenerator` to
 filter several projected names; the [string-matching example](../examples/cli/string-matching.zirql)
 shows the equivalent text program and Unicode controls. Domain name extraction
 continues to use native projections such as `attr("sym_name")` and `names`.
+
+## Declaration metadata in the Rust adapter
+
+The development adapter uses Zirql's budgeted declaration copying and structural
+native inspection. Copies retain empty sequence element contracts and field
+order; Zirium stores the copied declaration in `Arc` and retains native owner
+checks. Shared scalar type-fact admission checks primitive arguments and
+predicates. A declared scalar can supply an incomplete actual fact during
+preparation; bare unknown facts remain a refusal. Runtime values still pass
+the existing native or constructed admission checks.
+
+Count and index arguments use Zirql's located nonnegative integer conversion,
+including platform overflow refusal, with Zirium's argument diagnostics.
+MLIR kind conversion, native handles, source coordinates and domain admission
+remain in Zirium. These are Rust adapter APIs in the development dependency,
+not additional Rust/Python query syntax. See [the shared API contract](https://zayenz.se/zirql/guides/host-integration/#declaration-metadata-and-scalar-arguments).

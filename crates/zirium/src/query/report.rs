@@ -1878,11 +1878,12 @@ fn resolve_stage_by(
                 .clone()),
         );
     };
-    let count =
-        usize::try_from(integer).map_err(|_| {
-            EvaluationError::new("primitive argument needs a non-negative int fitting usize")
-                .at(value.operand().expression.range.clone())
-        })?;
+    let count = zirql::nonnegative_integer_to_usize(
+        integer,
+        ValueLocation::Query(value.operand().expression.range.clone()),
+        "primitive argument needs a non-negative int fitting usize",
+    )
+    .map_err(core_error)?;
     Ok(match value {
         C::Head(_) => S::Head { count, range },
         C::Tail(_) => S::Tail { count, range },
@@ -2564,14 +2565,15 @@ pub(super) fn validate_argument_with_host(
     budget: &mut Budget,
     host: &ReportHost<'_>,
 ) -> Result<(), EvaluationError> {
-    if types_with_host(value, program::Kind::Operations, names, budget, host)?
-        .iter()
-        .any(|ty| !scalar_type_is(ty, &expected))
-    {
-        return Err(
-            EvaluationError::new("primitive argument has an incompatible scalar type")
-                .at(value.expression.range.clone()),
-        );
+    for ty in types_with_host(value, program::Kind::Operations, names, budget, host)? {
+        admit_scalar_type(
+            &ty,
+            &expected,
+            budget,
+            &value.expression.range,
+            "primitive argument has an incompatible scalar type",
+        )
+        .map_err(core_error)?;
     }
     Ok(())
 }
@@ -2584,12 +2586,15 @@ pub(super) fn validate_predicate_with_host(
 ) -> Result<(), EvaluationError> {
     match predicate {
         model::Predicate::Expression { value, .. } => {
-            if types_with_host(value, program::Kind::Operations, names, budget, host)?
-                .iter()
-                .any(|ty| !scalar_type_is(ty, &ValueType::Boolean))
-            {
-                return Err(EvaluationError::new("predicate needs a known Boolean")
-                    .at(value.expression.range.clone()));
+            for ty in types_with_host(value, program::Kind::Operations, names, budget, host)? {
+                admit_scalar_type(
+                    &ty,
+                    &ValueType::Boolean,
+                    budget,
+                    &value.expression.range,
+                    "predicate needs a known Boolean",
+                )
+                .map_err(core_error)?;
             }
         }
         model::Predicate::SameValue { range, .. } => {
@@ -2604,12 +2609,15 @@ pub(super) fn validate_predicate_with_host(
             }
         }
         model::Predicate::OpValue { name, .. } => {
-            if types_with_host(name, program::Kind::Operations, names, budget, host)?
-                .iter()
-                .any(|ty| !scalar_type_is(ty, &ValueType::String))
-            {
-                return Err(EvaluationError::new("op argument needs a string")
-                    .at(name.expression.range.clone()));
+            for ty in types_with_host(name, program::Kind::Operations, names, budget, host)? {
+                admit_scalar_type(
+                    &ty,
+                    &ValueType::String,
+                    budget,
+                    &name.expression.range,
+                    "op argument needs a string",
+                )
+                .map_err(core_error)?;
             }
         }
         model::Predicate::Not { predicate, .. } | model::Predicate::Group { predicate, .. } => {
@@ -2690,15 +2698,43 @@ pub(super) fn fixed_point_is_closure(value: &comprehension::ParsedComprehension)
     closure(input)
 }
 
-pub(super) fn scalar_type_is(ty: &ValueType, expected: &ValueType) -> bool {
-    match ty {
-        ValueType::Declared { declaration, .. } => matches!(
-            (declaration, expected),
-            (zirql::DeclaredType::String, ValueType::String)
-                | (zirql::DeclaredType::Integer, ValueType::Integer)
-                | (zirql::DeclaredType::Float, ValueType::Float)
-                | (zirql::DeclaredType::Boolean, ValueType::Boolean)
-        ),
-        ty => ty == expected,
-    }
+pub(super) fn admit_scalar_type(
+    ty: &ValueType,
+    expected: &ValueType,
+    budget: &mut Budget,
+    range: &Range<usize>,
+    context: &str,
+) -> Result<(), zirql::QueryError> {
+    let expected = match expected {
+        ValueType::Boolean => zirql::ScalarType::Boolean,
+        ValueType::Integer => zirql::ScalarType::Integer,
+        ValueType::Float => zirql::ScalarType::Float,
+        ValueType::String => zirql::ScalarType::String,
+        _ => {
+            return Err(zirql::QueryError::query(
+                range.clone(),
+                "expected a scalar contract",
+            ));
+        }
+    };
+    // Declared scalar contracts establish Zirium's preparation type even when
+    // their actual facts are incomplete. Bare unknown facts remain a refusal.
+    let policy = if matches!(ty, ValueType::Declared { .. }) {
+        zirql::TypeFactPolicy::Deferred
+    } else {
+        zirql::TypeFactPolicy::Strict
+    };
+    zirql::admit_scalar_type(
+        ty,
+        expected,
+        policy,
+        budget,
+        &ValueLocation::Query(range.clone()),
+    )
+    .map_err(|mut error| {
+        if error.category == zirql::QueryErrorCategory::Other {
+            error.message = format!("{context}: {}", error.message);
+        }
+        error
+    })
 }
