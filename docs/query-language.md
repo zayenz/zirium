@@ -693,7 +693,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`b2b7a9e37584cf30079fabea98558f0c750f2fce`](https://github.com/zayenz/zirql/commit/b2b7a9e37584cf30079fabea98558f0c750f2fce).
+[`f89cb7a68a6124e0938ea582e03efc040b5ecafe`](https://github.com/zayenz/zirql/commit/f89cb7a68a6124e0938ea582e03efc040b5ecafe).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -2152,7 +2152,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `b2b7a9e37584cf30079fabea98558f0c750f2fce`
+The development dependency pins Zirql `f89cb7a68a6124e0938ea582e03efc040b5ecafe`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.

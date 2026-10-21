@@ -86,13 +86,9 @@ pub struct EvaluationOptions {
 }
 
 // Document access and host policy stay outside the caller-owned core budget.
-struct EvaluationContext<'a, 'document, 'query> {
-    functions: &'a functions::Session<'query, 'a, 'document>,
-    current_stage: usize,
+struct EvaluationContext<'a, 'document> {
     document: &'a mut DocumentAccess<'document>,
     registry: &'a DialectRegistry,
-    expressions: &'a BTreeMap<usize, program::Expression>,
-    parameters: Vec<Option<QueryOutput>>,
     options: EvaluationOptions,
     output: OutputMode,
     emit: &'a mut dyn FnMut(
@@ -647,18 +643,7 @@ impl Query {
             program::range(self.expression.range),
             budget,
         )?;
-        let function_host = report::ReportHost {
-            functions: &self.functions,
-        };
-        let mut functions = functions::Session::new(
-            &self.functions,
-            &function_host,
-            self.function_limits,
-            budget,
-        )?;
-
-        let function_roots = functions::expression_roots(&self.functions, budget)?;
-        let expressions = program::expressions(
+        program::admit_names(
             self.statements
                 .iter()
                 .map(|statement| match statement {
@@ -667,28 +652,39 @@ impl Query {
                     | model::Statement::Do(expression)
                     | model::Statement::Query(expression) => expression,
                 })
-                .chain(std::iter::once(&self.expression))
-                .chain(function_roots),
+                .chain(std::iter::once(&self.expression)),
+            &self.functions,
             budget,
         )?;
+        let function_host = report::ReportHost {
+            functions: &self.functions,
+        };
         program::charge_results(
             budget,
             5 * admitted.len(),
             &program::range(self.expression.range),
         )?;
-        let (parameter_names, parameter_values): (Vec<_>, Vec<_>) = admitted
-            .into_iter()
-            .map(|(name, value)| (name, Some(value)))
-            .unzip();
+        let parameter_names = admitted.iter().map(|(name, _)| name.clone()).collect();
         let program = program::lower(self, parameter_names);
-        functions.prepare_program(
-            self,
-            document_name,
+        let mut names = BTreeMap::new();
+        if document_name.is_some() {
+            names.insert("document".to_owned(), program::Kind::Strings);
+        }
+        let unit = zirql::PreparedFunctions::prepare_patterns(
+            self.functions.iter().map(|f| f.declaration.as_ref()),
             &function_host,
-            &program,
-            &expressions,
             budget,
-        )?;
+        )
+        .map_err(functions::error)?;
+        let functions = zirql::PreparedProgram::prepare(
+            unit,
+            &program,
+            &names,
+            Some(program::Kind::Operations),
+            self.function_limits,
+            budget,
+        )
+        .map_err(functions::error)?;
         let mut access = DocumentAccess::Mutable(document);
         let input = QueryOutput::Operations(collect(budget, access.operations())?);
         if let Some(name) = document_name {
@@ -703,31 +699,15 @@ impl Query {
         });
         let bindings = zirql::Bindings::new(initial).map_err(core_error)?;
         let mut context = EvaluationContext {
-            functions: &functions,
-            current_stage: 0,
             document: &mut access,
             registry,
-            expressions: &expressions,
-            parameters: parameter_values,
             options,
             output: OutputMode::Textual,
             emit: &mut emit,
         };
-        zirql::evaluate_program_with(
-            &program,
-            &program::NativeHost,
-            input,
-            &mut context,
-            bindings,
-            budget,
-            &mut |expression, input, context, bindings, budget| {
-                context
-                    .functions
-                    .run_expression(expression, context, input, bindings, budget)
-                    .map_err(zirql::EvaluationError::Host)
-            },
-        )
-        .map_err(program::evaluation_error)?;
+        functions
+            .evaluate(bindings, admitted, Some(input), &mut context, budget)
+            .map_err(functions::error)?;
         Ok(())
     }
 }
@@ -757,23 +737,10 @@ impl DocumentAccess<'_> {
     }
 }
 
-fn evaluate_expression(
-    expression: &model::Expression,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    input: QueryOutput,
-    bindings: &zirql::Bindings<QueryOutput>,
-    budget: &mut zirql::Budget,
-) -> Result<QueryOutput, EvaluationError> {
-    let lowered = &context.expressions[&(std::ptr::from_ref(expression) as usize)];
-    context
-        .functions
-        .run_expression(lowered, context, input, bindings, budget)
-}
-
 // One dispatcher owns all host stages, including those run inside stream segments.
 fn evaluate_host_stage(
     stage: &model::Stage,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     mut current: QueryOutput,
     bindings: &zirql::Bindings<QueryOutput>,
     budget: &mut zirql::Budget,
@@ -783,11 +750,6 @@ fn evaluate_host_stage(
         current = QueryOutput::Operations(operations);
     }
     match stage {
-        model::Stage::Parameter { index, .. } => {
-            return Ok(context.parameters[*index]
-                .take()
-                .expect("admitted parameter is bound once"));
-        }
         model::Stage::FunctionInput { value, range } => {
             worklists::admit_input(value, context, budget, &program::range(*range))
                 .map_err(program::evaluation_error)?;
@@ -795,31 +757,17 @@ fn evaluate_host_stage(
             current = QueryOutput::Native(NativeValue::Retained(std::sync::Arc::clone(value)));
         }
         model::Stage::PatternBinding { .. } => {
-            current = context
-                .functions
-                .run_binding(context, &current, bindings, budget)?;
+            return Err(EvaluationError::new(
+                "pattern initialization is a program statement",
+            ));
         }
-        model::Stage::Native { value, .. } => {
-            current = capture::evaluate_operand(value, context, current, bindings, budget)?;
-        }
-        model::Stage::Operand {
-            operation,
-            index,
-            range,
-        } => {
-            current = capture::operand(
-                operation,
-                *index,
-                context,
-                current,
-                bindings,
-                budget,
-                &program::range(*range),
-            )?;
-        }
-        model::Stage::Computed { value, range } => {
-            let stage = report::resolve_stage(value, *range, context, bindings, budget)?;
-            return evaluate_host_stage(&stage, context, current, bindings, budget);
+        model::Stage::Native { .. }
+        | model::Stage::Operand { .. }
+        | model::Stage::Computed { .. }
+        | model::Stage::Group { .. } => {
+            return Err(EvaluationError::new(
+                "native argument stages require prepared execution",
+            ));
         }
         model::Stage::Structured { step, .. } => {
             current = evaluate_structured(step, context, current, bindings, budget)?;
@@ -987,9 +935,6 @@ fn evaluate_host_stage(
                     .flat_map(|&op| context.document.operands(op).unwrap_or(&[]))
                     .filter_map(|&value| context.document.value_type(value)),
             )?);
-        }
-        model::Stage::Group { expression, .. } => {
-            current = evaluate_expression(expression, context, current, bindings, budget)?;
         }
         model::Stage::SetAttr { name, value, .. } => {
             let selected = operations(&current, "set_attr")?;

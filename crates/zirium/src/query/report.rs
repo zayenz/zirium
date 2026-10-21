@@ -50,16 +50,7 @@ pub(super) fn operand_is_read_only(query: &Operand) -> bool {
 }
 
 pub(super) fn operand(expression: &model::Expression) -> Operand {
-    lower_operand(expression, false)
-}
-
-/// Shared value operands retain stable selector arguments for the active runner.
-pub(super) fn value_operand(expression: &model::Expression) -> Operand {
-    lower_operand(expression, true)
-}
-
-fn lower_operand(expression: &model::Expression, shared_arguments: bool) -> Operand {
-    fn stages(stages: &[model::Step], range: Range<usize>, shared_arguments: bool) -> Operand {
+    fn stages(stages: &[model::Step], range: Range<usize>) -> Operand {
         let mut input = Located::new(X::Input, range.clone());
         let mut steps = vec![];
         for (index, step) in stages.iter().enumerate() {
@@ -71,19 +62,17 @@ fn lower_operand(expression: &model::Expression, shared_arguments: bool) -> Oper
                     }
                     model::Stage::Group { expression, .. } if index == 0 => {
                         input = Located::new(
-                            X::Group(Box::new(lower_operand(expression, shared_arguments))),
+                            X::Group(Box::new(operand(expression))),
                             step.range.clone(),
                         );
                         continue;
                     }
-                    model::Stage::Group { expression, .. } if shared_arguments => {
+                    model::Stage::Group { expression, .. } => {
                         steps.push(Located::new(
-                            Step::Value(Arc::new(Located::new(
-                                zirql::ValueExpressionKind::NativeValue(Box::new(value_operand(
-                                    expression,
-                                ))),
-                                step.range.clone(),
-                            ))),
+                            Step::Group(
+                                zirql::NativeBody::new(operand(expression), step.range.clone())
+                                    .into(),
+                            ),
                             step.range.clone(),
                         ));
                         continue;
@@ -104,9 +93,7 @@ fn lower_operand(expression: &model::Expression, shared_arguments: bool) -> Oper
                     _ => {}
                 }
                 steps.push(step.clone());
-                if matches!(stage.as_ref(), model::Stage::Print { .. })
-                    || matches!(stage.as_ref(), model::Stage::Group { expression, .. } if expression.ends_with_emission())
-                {
+                if matches!(stage.as_ref(), model::Stage::Print { .. }) {
                     steps.push(Located::new(
                         Step::Emit {
                             emitter: program::Emitter::AlreadyEmitted,
@@ -132,13 +119,13 @@ fn lower_operand(expression: &model::Expression, shared_arguments: bool) -> Oper
         }
     }
     let range = program::range(expression.range);
-    let mut value = stages(&expression.first, range.clone(), shared_arguments);
+    let mut value = stages(&expression.first, range.clone());
     for (operator, right) in &expression.rest {
         value = Located::new(
             X::Set {
                 operator: *operator,
                 left: Box::new(value),
-                right: Box::new(stages(right, range.clone(), shared_arguments)),
+                right: Box::new(stages(right, range.clone())),
             },
             range.clone(),
         );
@@ -169,22 +156,6 @@ pub(super) fn lower_suffix(
     Ok(comprehension::ParsedComprehension::new(value))
 }
 
-pub(super) fn evaluate(
-    value: &comprehension::ParsedComprehension,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    input: QueryOutput,
-    bindings: &Bindings<QueryOutput>,
-    budget: &mut Budget,
-) -> Result<comprehension::ConstructedReport, EvaluationError> {
-    let result = context.functions.run_native_argument(
-        &value.expression,
-        context,
-        &input,
-        bindings,
-        budget,
-    )?;
-    functions::constructed(result, budget, &value.expression.range)
-}
 pub(super) fn output_kind(
     value: &QueryOutput,
     budget: &mut Budget,
@@ -246,7 +217,7 @@ pub(super) struct ReportHost<'f> {
 }
 #[allow(non_upper_case_globals)]
 pub(super) const ReportHost: ReportHost<'static> = ReportHost { functions: &[] };
-impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
+impl ProgramHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
     type Value = QueryOutput;
     type Stage = model::NativeStage;
     type SetOperator = model::SetOperator;
@@ -255,7 +226,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn copy_value(
         &self,
         value: &QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -272,7 +243,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         stage: &model::NativeStage,
         input: QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         bindings: &Bindings<QueryOutput>,
         budget: &mut Budget,
         range: &Range<usize>,
@@ -284,7 +255,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         operator: &model::SetOperator,
         left: QueryOutput,
         right: QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -293,7 +264,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn construct_record(
         &self,
         fields: Vec<(String, QueryOutput)>,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -324,14 +295,14 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         emitter: &program::Emitter,
         value: &QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
         program::NativeHost.emit(emitter, value, context, budget, range)
     }
 }
-impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
+impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
     type Kind = program::Kind;
     fn is_constructed_kind(&self, kind: &program::Kind) -> bool {
         matches!(kind, program::Kind::Constructed(_))
@@ -347,7 +318,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn collection_argument_input(
         &self,
         _: &QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -395,7 +366,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn collection_identity(
         &self,
         item: &QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::NativeCollectionKey, zirql::EvaluationError<EvaluationError>> {
@@ -445,7 +416,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn collection_tally_key(
         &self,
         item: QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         _: &mut Budget,
         range: &Range<usize>,
     ) -> Result<String, zirql::EvaluationError<EvaluationError>> {
@@ -461,7 +432,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         input: QueryOutput,
         result: zirql::NativeValue<QueryOutput>,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -506,7 +477,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         _: &model::NativeStage,
         input: &QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         _: &Bindings<QueryOutput>,
         budget: &mut Budget,
         range: &Range<usize>,
@@ -539,7 +510,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         left: &QueryOutput,
         right: &QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         _: &mut Budget,
         range: &Range<usize>,
     ) -> Result<bool, zirql::EvaluationError<EvaluationError>> {
@@ -551,7 +522,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn path_steps(
         &self,
         steps: Vec<QueryOutput>,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -637,7 +608,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         payload: &model::NativeStage,
         input: &QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         bindings: &Bindings<QueryOutput>,
         budget: &mut Budget,
         range: &Range<usize>,
@@ -655,45 +626,17 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 zirql::Truth::False
             });
         }
-        if let model::Predicate::Expression { .. } = guard {
-            let input =
-                program::copy_value(input, budget, range).map_err(zirql::EvaluationError::Host)?;
-            return report::evaluate_predicate_leaf(guard, input, context, bindings, budget)
-                .map_err(zirql::EvaluationError::Host);
-        }
-        let equal = match guard {
-            model::Predicate::Bool { value, .. } => *value,
-            model::Predicate::SameValue { left, right, .. } => {
-                let mut resolve = |query: &capture::ParsedOperand| -> Result<ValueId, zirql::EvaluationError<EvaluationError>> {
-                    let input = program::copy_value(input, budget, range).map_err(zirql::EvaluationError::Host)?;
-                    let output = capture::evaluate_operand(query, context, input, bindings, budget).map_err(zirql::EvaluationError::Host)?;
-                    let QueryOutput::Native(NativeValue::Ssa(value)) = functions::unretained(&output) else {
-                        return Err(zirql::QueryError::query(range.clone(), "same_value requires native SSA values").into());
-                    };
-                    capture::check_value(context.document, *value, range).map_err(zirql::EvaluationError::Host)?;
-                    Ok(*value)
-                };
-                resolve(left)? == resolve(right)?
-            }
-            _ => {
-                let input = program::copy_value(input, budget, range)
-                    .map_err(zirql::EvaluationError::Host)?;
-                return evaluate_predicate_leaf(guard, input, context, bindings, budget)
-                    .map_err(zirql::EvaluationError::Host);
-            }
-        };
-        Ok(if equal {
-            zirql::Truth::True
-        } else {
-            zirql::Truth::False
-        })
+        let input =
+            program::copy_value(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+        evaluate_predicate_leaf(guard, input, context, bindings, budget)
+            .map_err(zirql::EvaluationError::Host)
     }
     fn evaluate_guard_leaf_with_arguments(
         &self,
         payload: &model::NativeStage,
         input: &QueryOutput,
         bindings: &Bindings<QueryOutput>,
-        arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, Self>,
+        arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_>, Self>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::Truth, zirql::EvaluationError<EvaluationError>> {
@@ -813,7 +756,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn selection_items(
         &self,
         input: &QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Vec<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
@@ -949,7 +892,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         input: QueryOutput,
         items: Vec<QueryOutput>,
         shape: zirql::SelectionShape,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -1058,7 +1001,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn admit_selection(
         &self,
         value: QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -1078,7 +1021,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         left: &QueryOutput,
         right: &QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<bool, zirql::EvaluationError<EvaluationError>> {
@@ -1124,7 +1067,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         input: &QueryOutput,
         order: zirql::NativeOrder,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         _: &mut Budget,
         range: &Range<usize>,
     ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
@@ -1140,7 +1083,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn ordering_key(
         &self,
         value: QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::NativeOrderKey, zirql::EvaluationError<EvaluationError>> {
@@ -1185,7 +1128,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn mapping_keys(
         &self,
         value: QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Option<Vec<String>>, zirql::EvaluationError<EvaluationError>> {
@@ -1212,7 +1155,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn map_entries(
         &self,
         value: QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Vec<(String, QueryOutput)>, zirql::EvaluationError<EvaluationError>> {
@@ -1230,7 +1173,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn construct_map(
         &self,
         entries: Vec<(String, QueryOutput)>,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -1253,7 +1196,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         input: QueryOutput,
         entries: Vec<(String, QueryOutput)>,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -1283,7 +1226,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         rows: Vec<QueryOutput>,
         schema: zirql::NativeCapture<program::Kind>,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         _: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -1332,10 +1275,8 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         stage: &'s model::NativeStage,
         budget: &mut Budget,
         range: &Range<usize>,
-    ) -> Result<
-        zirql::NativeValueArguments<'s, EvaluationContext<'_, '_, 'q>, Self>,
-        zirql::QueryError,
-    > {
+    ) -> Result<zirql::NativeValueArguments<'s, EvaluationContext<'_, '_>, Self>, zirql::QueryError>
+    {
         let stage = stage.as_ref();
         fn nodes(predicate: &model::Predicate) -> usize {
             match predicate {
@@ -1418,7 +1359,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<
-        zirql::ScopedNativeValueArguments<'s, EvaluationContext<'_, '_, 'q>, Self>,
+        zirql::ScopedNativeValueArguments<'s, EvaluationContext<'_, '_>, Self>,
         zirql::QueryError,
     > {
         let shared_stage = stage;
@@ -1450,15 +1391,13 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             .into_iter()
             .map(|(expression, kind)| zirql::ScopedNativeArgument {
                 expression,
-                relative: (!matches!(
-                    stage,
-                    model::Stage::FunctionInput { .. } | model::Stage::Parameter { .. }
-                ))
-                .then_some(if matches!(stage, model::Stage::Guard { .. }) {
-                    input.clone()
-                } else {
-                    kind
-                }),
+                relative: (!matches!(stage, model::Stage::FunctionInput { .. })).then_some(
+                    if matches!(stage, model::Stage::Guard { .. }) {
+                        input.clone()
+                    } else {
+                        kind
+                    },
+                ),
                 locals: Vec::new(),
                 allow_effects: false,
             })
@@ -1468,7 +1407,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         stage: &model::NativeStage,
         input: QueryOutput,
-        arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, Self>,
+        arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_>, Self>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -1535,7 +1474,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn share_constructed(
         &self,
         value: &QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         _: &mut Budget,
         _: &Range<usize>,
     ) -> Result<Option<Arc<V>>, zirql::EvaluationError<EvaluationError>> {
@@ -1548,7 +1487,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         value: Arc<V>,
         types: Vec<ValueType>,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -1622,6 +1561,30 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             budget,
         )
     }
+    fn admit_emitter(
+        &self,
+        emitter: &program::Emitter,
+        input: &program::Kind,
+        scope: &BTreeMap<String, program::Kind>,
+        budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<(), zirql::QueryError> {
+        if let program::Emitter::Written(stage) = emitter {
+            program::Validator {
+                host: Self {
+                    functions: self.functions,
+                },
+            }
+            .stages(
+                std::slice::from_ref(stage.as_ref()),
+                input.clone(),
+                scope,
+                budget,
+            )
+            .map_err(query_error)?;
+        }
+        Ok(())
+    }
     fn stage_kind(
         &self,
         stage: &model::NativeStage,
@@ -1641,10 +1604,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         .map_err(query_error)
     }
     fn is_explicit_source(&self, stage: &model::NativeStage) -> bool {
-        matches!(
-            stage.as_ref(),
-            model::Stage::FunctionInput { .. } | model::Stage::Parameter { .. }
-        )
+        matches!(stage.as_ref(), model::Stage::FunctionInput { .. })
     }
     fn is_pure(&self, stage: &model::NativeStage) -> bool {
         let stage = stage.as_ref();
@@ -1664,7 +1624,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         stage: &model::NativeStage,
         budget: &mut Budget,
         range: &Range<usize>,
-    ) -> Result<zirql::NativeOperands<EvaluationContext<'_, '_, 'q>, Self>, zirql::QueryError> {
+    ) -> Result<zirql::NativeOperands<EvaluationContext<'_, '_>, Self>, zirql::QueryError> {
         let stage = stage.as_ref();
         let mut queries = vec![];
         for expression in nested(stage) {
@@ -1676,7 +1636,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn subjects(
         &self,
         input: QueryOutput,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Vec<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
@@ -1789,7 +1749,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn project_value(
         &self,
         value: QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<V, zirql::EvaluationError<EvaluationError>> {
@@ -1820,7 +1780,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         &self,
         value: V,
         types: Vec<ValueType>,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -1898,21 +1858,6 @@ fn predicate_size(predicate: &model::Predicate) -> usize {
         .saturating_add(children)
 }
 
-fn scalar_argument(
-    value: &comprehension::ParsedComprehension,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    bindings: &Bindings<QueryOutput>,
-    budget: &mut Budget,
-) -> Result<V, EvaluationError> {
-    evaluate(
-        value,
-        context,
-        QueryOutput::Operations(vec![]),
-        bindings,
-        budget,
-    )?
-    .into_value(budget, &value.expression.range)
-}
 type ScalarRead<'a> =
     dyn FnMut(&comprehension::ParsedComprehension, &mut Budget) -> Result<V, EvaluationError> + 'a;
 fn string_argument(
@@ -2029,21 +1974,6 @@ fn op_name_by(
     }
     Ok(name)
 }
-pub(super) fn resolve_stage(
-    value: &model::ComputedStage,
-    range: crate::source::TextRange,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    bindings: &Bindings<QueryOutput>,
-    budget: &mut Budget,
-) -> Result<model::Stage, EvaluationError> {
-    resolve_stage_by(
-        value,
-        range,
-        &mut |value, budget| scalar_argument(value, context, bindings, budget),
-        budget,
-    )
-}
-
 pub(super) fn push_expressions<'a>(
     stage: &'a model::Stage,
     pending: &mut Vec<&'a model::Expression>,
@@ -2146,35 +2076,26 @@ pub(super) fn visit_value<'a>(
 pub(super) fn evaluate_predicate_leaf(
     predicate: &model::Predicate,
     input: QueryOutput,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    bindings: &Bindings<QueryOutput>,
+    context: &mut EvaluationContext<'_, '_>,
+    _bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<zirql::Truth, EvaluationError> {
-    if let model::Predicate::Expression { value, .. } = predicate {
-        let result = context.functions.run_native_argument(
-            &value.expression,
-            context,
-            &input,
-            bindings,
-            budget,
-        )?;
-        let result = functions::constructed(result, budget, &value.expression.range)?;
-        let V::Boolean(matched) = result.value().data() else {
-            return Err(EvaluationError::new("predicate needs a known Boolean")
-                .at(value.expression.range.clone()));
-        };
-        return Ok(if *matched {
-            zirql::Truth::True
-        } else {
-            zirql::Truth::False
-        });
+    if matches!(
+        predicate,
+        model::Predicate::Expression { .. } | model::Predicate::SameValue { .. }
+    ) {
+        return Err(
+            EvaluationError::new("native predicate arguments require prepared execution")
+                .at(program::range(predicate.range())),
+        );
     }
     let resolved = resolve_predicate_by(
         predicate,
-        &mut |value, budget| {
-            let input = program::copy_value(&input, budget, &value.expression.range)?;
-            evaluate(value, context, input, bindings, budget)?
-                .into_value(budget, &value.expression.range)
+        &mut |value, _| {
+            Err(
+                EvaluationError::new("native predicate arguments require prepared execution")
+                    .at(value.expression.range.clone()),
+            )
         },
         budget,
     )?;
@@ -2193,7 +2114,7 @@ pub(super) fn evaluate_prepared_leaf(
     predicate: &model::Predicate,
     input: QueryOutput,
     captures: Option<&Bindings<QueryOutput>>,
-    arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, '_>, ReportHost<'_>>,
+    arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_>, ReportHost<'_>>,
     budget: &mut Budget,
 ) -> Result<zirql::Truth, zirql::EvaluationError<EvaluationError>> {
     if let model::Predicate::Expression { value, .. } = predicate {
@@ -2455,15 +2376,6 @@ pub(super) fn visit_step<'a>(
     });
     result?;
     Ok(())
-}
-
-pub(super) fn native_groups<'a>(
-    expression: &'a Operand,
-    budget: &mut Budget,
-) -> Result<Vec<&'a model::Expression>, EvaluationError> {
-    let mut groups = Vec::new();
-    visit_operand(expression, &mut groups, budget)?;
-    Ok(groups)
 }
 
 fn visit_payloads<'a>(

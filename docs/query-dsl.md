@@ -504,7 +504,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `b2b7a9e37584cf30079fabea98558f0c750f2fce`. They accept shared expressions
+pin `f89cb7a68a6124e0938ea582e03efc040b5ecafe`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 
@@ -883,8 +883,12 @@ starts a typed native query through the existing `QueryResult` conversion;
 `report(E::call(...))` returns `ConstructedReport` for scalar/report values.
 
 Functions never retain the document, caller bindings, result history or active
-budget. One request prepares every body and written entry, then invokes those
-entries against that request's current context. Native callback arguments
+budget. Zirql's `PreparedProgram` prepares the canonical lowered statements and
+all function bodies before execution. It advances parameter and binding scope,
+then runs entries against the request's current context. Relative native groups
+retain their native result shapes and enclosing effect allowance. Zirium retains
+MLIR kind admission, document ownership, reserved native names and emission.
+Native callback arguments
 retain a shared owner after a function frame returns. Passing or inspecting
 unchanged constructed data shares its immutable owner; constructing a new row
 or rendering output still pays for the produced data. External parameters keep

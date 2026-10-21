@@ -1,9 +1,7 @@
 //! Typed pure functions retain shared trees and document-owned native handles.
 use super::*;
 use std::{ops::Range, sync::Arc};
-use zirql::{
-    DeclaredType as D, FunctionHost, ProgramHost, ProjectionHost, RuntimeTypeHost, ValueType,
-};
+use zirql::{DeclaredType as D, FunctionHost, ProjectionHost, RuntimeTypeHost, ValueType};
 
 pub use zirql::{FunctionLimits, FunctionParameter, Pattern, PatternKind, PatternParameter};
 /// Native signature identities; `SSAValue` is Zirium's checked `ValueId`.
@@ -138,13 +136,13 @@ pub(super) fn scalar_facts(
         })
     }
 }
-impl<'c, 'a, 'q> FunctionHost<EvaluationContext<'c, 'a, 'q>> for report::ReportHost<'_> {
+impl<'c, 'a> FunctionHost<EvaluationContext<'c, 'a>> for report::ReportHost<'_> {
     fn native_function(
         &self,
         name: &str,
         budget: &mut Budget,
         range: &Range<usize>,
-    ) -> Result<Option<zirql::NativeFunction<EvaluationContext<'c, 'a, 'q>, Self>>, zirql::QueryError>
+    ) -> Result<Option<zirql::NativeFunction<EvaluationContext<'c, 'a>, Self>>, zirql::QueryError>
     {
         native_function(name, budget, range)
     }
@@ -193,7 +191,7 @@ impl<'c, 'a, 'q> FunctionHost<EvaluationContext<'c, 'a, 'q>> for report::ReportH
     fn lift_computational(
         &self,
         value: zirql::ComputationalValue<QueryOutput, program::Kind>,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -208,7 +206,7 @@ impl<'c, 'a, 'q> FunctionHost<EvaluationContext<'c, 'a, 'q>> for report::ReportH
     fn construct_tuple(
         &self,
         values: Vec<QueryOutput>,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -222,7 +220,7 @@ impl<'c, 'a, 'q> FunctionHost<EvaluationContext<'c, 'a, 'q>> for report::ReportH
         &self,
         value: &QueryOutput,
         element: &D<program::Kind>,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Vec<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
@@ -232,7 +230,7 @@ impl<'c, 'a, 'q> FunctionHost<EvaluationContext<'c, 'a, 'q>> for report::ReportH
         &self,
         values: Vec<QueryOutput>,
         element: &D<program::Kind>,
-        _: &mut EvaluationContext<'_, '_, 'q>,
+        _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -247,7 +245,7 @@ impl<'c, 'a, 'q> FunctionHost<EvaluationContext<'c, 'a, 'q>> for report::ReportH
     }
     fn worklist_context(
         &self,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::NativeContextId, zirql::EvaluationError<EvaluationError>> {
@@ -263,7 +261,7 @@ impl<'c, 'a, 'q> FunctionHost<EvaluationContext<'c, 'a, 'q>> for report::ReportH
         &self,
         value: &QueryOutput,
         expected: &program::Kind,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::NativeIdentity, zirql::EvaluationError<EvaluationError>> {
@@ -349,7 +347,7 @@ impl<'c, 'a, 'q> FunctionHost<EvaluationContext<'c, 'a, 'q>> for report::ReportH
             || matches!(name, "operand" | "project" | "paths" | "match")
     }
 }
-impl<'q> RuntimeTypeHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
+impl RuntimeTypeHost<EvaluationContext<'_, '_>> for report::ReportHost<'_> {
     type Kind = program::Kind;
     fn constructed_value<'v>(&self, value: &'v QueryOutput) -> Option<&'v ConstructedValue> {
         match unretained(value) {
@@ -361,7 +359,7 @@ impl<'q> RuntimeTypeHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
         &self,
         value: &QueryOutput,
         expected: &D<program::Kind>,
-        context: &mut EvaluationContext<'_, '_, 'q>,
+        context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         location: ValueLocation,
     ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
@@ -491,7 +489,7 @@ impl<'q> RuntimeTypeHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
 fn admit_view_kind(
     value: &QueryOutput,
     expected: &program::Kind,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
@@ -606,12 +604,12 @@ const NATIVE_FUNCTION_NAMES: &[&str] = &[
 pub(super) fn is_native_function(name: &str) -> bool {
     NATIVE_FUNCTION_NAMES.contains(&name)
 }
-fn native_function<'c, 'a, 'q, 'h>(
+fn native_function<'c, 'a, 'h>(
     name: &str,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<
-    Option<zirql::NativeFunction<EvaluationContext<'c, 'a, 'q>, report::ReportHost<'h>>>,
+    Option<zirql::NativeFunction<EvaluationContext<'c, 'a>, report::ReportHost<'h>>>,
     zirql::QueryError,
 > {
     let Some(index) = NATIVE_FUNCTION_NAMES
@@ -626,7 +624,7 @@ fn native_function<'c, 'a, 'q, 'h>(
     let (parameters, result, invoke): (
         _,
         _,
-        zirql::NativeFunctionImplementation<EvaluationContext<'c, 'a, 'q>, report::ReportHost<'h>>,
+        zirql::NativeFunctionImplementation<EvaluationContext<'c, 'a>, report::ReportHost<'h>>,
     ) = match index {
         0 => (
             vec![operation()],
@@ -663,7 +661,7 @@ pub(super) fn unretained(mut value: &QueryOutput) -> &QueryOutput {
 }
 fn admitted_operation(
     value: &QueryOutput,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<OperationId, EvaluationError> {
@@ -684,7 +682,7 @@ fn admitted_operation(
 fn same_operation(
     _: &report::ReportHost<'_>,
     values: Vec<Located<QueryOutput>>,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -703,7 +701,7 @@ fn same_operation(
 fn direct_children(
     _: &report::ReportHost<'_>,
     values: Vec<Located<QueryOutput>>,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -719,7 +717,7 @@ fn direct_children(
 fn cost_annotation(
     _: &report::ReportHost<'_>,
     values: Vec<Located<QueryOutput>>,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -780,7 +778,7 @@ fn cost_annotation(
 fn user_info(
     _: &report::ReportHost<'_>,
     values: Vec<Located<QueryOutput>>,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
@@ -903,386 +901,6 @@ impl ParsedBinding {
     }
 }
 
-type Entry<'q> = zirql::PreparedFunctionValue<'q, report::Operand, program::Kind>;
-/// Every submitted request owns this unit, including an empty function list.
-/// It stores no document, bindings, budget or result; execution supplies them.
-pub(super) struct Session<'q, 'a, 'd> {
-    unit: zirql::PreparedFunctions<'q, 'a, EvaluationContext<'a, 'd, 'q>, report::ReportHost<'q>>,
-    native_arguments: BTreeMap<(usize, usize), Entry<'q>>,
-    bindings: BTreeMap<usize, zirql::PreparedPatternBinding<'q, report::Operand, program::Kind>>,
-    expression_aliases: BTreeMap<usize, usize>,
-    expressions:
-        BTreeMap<usize, Option<zirql::PreparedExpression<'q, report::Operand, program::Kind>>>,
-    limits: FunctionLimits,
-}
-impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
-    pub(super) fn new(
-        functions: &'q [FunctionDefinition],
-        host: &'a report::ReportHost<'q>,
-        limits: FunctionLimits,
-        budget: &mut Budget,
-    ) -> Result<Self, EvaluationError> {
-        Ok(Self {
-            unit: zirql::PreparedFunctions::prepare_patterns(
-                functions.iter().map(|f| f.declaration.as_ref()),
-                host,
-                budget,
-            )
-            .map_err(error)?,
-            native_arguments: BTreeMap::new(),
-            bindings: BTreeMap::new(),
-            expressions: BTreeMap::new(),
-            expression_aliases: BTreeMap::new(),
-            limits,
-        })
-    }
-    pub(super) fn prepare_expression(
-        &mut self,
-        expression: &'q model::Expression,
-        input: program::Kind,
-        names: &BTreeMap<String, program::Kind>,
-        host: &report::ReportHost<'q>,
-        expressions: &'q BTreeMap<usize, report::Operand>,
-        budget: &mut Budget,
-    ) -> Result<program::Kind, EvaluationError> {
-        let source = &expressions[&(expression as *const _ as usize)];
-        let native_only = !report::needs_preparation(expression)
-            && names
-                .values()
-                .all(|kind| !matches!(kind, program::Kind::Constructed(_)));
-        let result = if native_only {
-            let kind = program::Validator {
-                host: report::ReportHost {
-                    functions: host.functions,
-                },
-            }
-            .expression(expression, input.clone(), names, budget)?;
-            self.expressions.insert(source as *const _ as usize, None);
-            kind
-        } else {
-            let entry = self
-                .unit
-                .prepare_expression(source, names, Some(input.clone()), budget)
-                .map_err(error)?;
-            let kind = entry.kind().clone();
-            self.expressions
-                .insert(source as *const _ as usize, Some(entry));
-            kind
-        };
-        // Core preparation owns common bodies. Only opaque legacy groups still
-        // need Session entries for their native execution path.
-        if !native_only && report::native_groups(source, budget)?.is_empty() {
-            return Ok(result);
-        }
-        for steps in
-            std::iter::once(&expression.first).chain(expression.rest.iter().map(|(_, steps)| steps))
-        {
-            let mut kind = input.clone();
-            for step in steps {
-                if let zirql::ExpressionStep::Stage(stage) = &step.value {
-                    if native_only {
-                        for argument in host
-                            .scoped_value_arguments(stage, &kind, names, budget, &step.range)
-                            .map_err(core_error)?
-                        {
-                            budget
-                                .charge(
-                                    names.keys().map(|name| name.len() + 1).sum(),
-                                    ValueLocation::Query(step.range.clone()),
-                                )
-                                .map_err(core_error)?;
-                            budget
-                                .charge_results(
-                                    names.len() + 1,
-                                    ValueLocation::Query(step.range.clone()),
-                                )
-                                .map_err(core_error)?;
-                            let mut scope = names.clone();
-                            scope.extend(
-                                argument
-                                    .locals
-                                    .into_iter()
-                                    .map(|(name, kind)| (name.value, kind)),
-                            );
-                            let entry = self
-                                .unit
-                                .prepare_value(
-                                    argument.expression,
-                                    &scope,
-                                    argument.relative,
-                                    budget,
-                                )
-                                .map_err(error)?;
-                            self.native_arguments.insert(
-                                (
-                                    Arc::as_ptr(stage) as usize,
-                                    argument.expression as *const _ as usize,
-                                ),
-                                entry,
-                            );
-                        }
-                    }
-
-                    for nested in report::nested(stage) {
-                        let relative = if matches!(stage.as_ref(), model::Stage::Group { .. }) {
-                            kind.clone()
-                        } else {
-                            program::Kind::Operations
-                        };
-                        self.prepare_expression(
-                            nested,
-                            relative,
-                            names,
-                            host,
-                            expressions,
-                            budget,
-                        )?;
-                    }
-                    if !matches!(
-                        stage.as_ref(),
-                        model::Stage::Emit { .. }
-                            | model::Stage::Format { .. }
-                            | model::Stage::Json { .. }
-                            | model::Stage::Markdown { .. }
-                            | model::Stage::Print { .. }
-                    ) {
-                        kind = host
-                            .stage_kind(stage, &kind, names, budget, &step.range)
-                            .map_err(core_error)?;
-                    }
-                } else {
-                    let source = zirql::Located::new(
-                        zirql::ExpressionKind::Sequence {
-                            input: Box::new(zirql::Located::new(
-                                zirql::ExpressionKind::Input,
-                                step.range.clone(),
-                            )),
-                            steps: vec![step.clone()],
-                        },
-                        step.range.clone(),
-                    );
-                    kind = zirql::pattern_function_expression_kind(
-                        host.functions
-                            .iter()
-                            .map(|function| function.declaration.as_ref()),
-                        host,
-                        &source,
-                        names,
-                        Some(kind),
-                        true,
-                        budget,
-                    )
-                    .map_err(core_error)?;
-                }
-            }
-        }
-        Ok(result)
-    }
-    pub(super) fn prepare_program(
-        &mut self,
-        query: &'q Query,
-        document_name: Option<&str>,
-        host: &report::ReportHost<'q>,
-        program: &'q zirql::Program<model::NativeStage, model::SetOperator, program::Emitter>,
-        expressions: &'q BTreeMap<usize, report::Operand>,
-        budget: &mut Budget,
-    ) -> Result<(), EvaluationError> {
-        let mut names = BTreeMap::new();
-        if document_name.is_some() {
-            names.insert("document".to_owned(), program::Kind::Strings);
-        }
-        let mut parameters = query
-            .parameters
-            .iter()
-            .zip(&query.parameter_positions)
-            .peekable();
-        for (index, statement) in query.statements.iter().enumerate() {
-            while parameters.peek().is_some_and(|(_, p)| **p == index) {
-                let (d, _) = parameters.next().unwrap();
-                names.extend(program::parameter_names(std::slice::from_ref(d), budget)?);
-            }
-            if let model::Statement::PatternBinding { expression, .. } = statement {
-                let [
-                    zirql::Located {
-                        value: zirql::ExpressionStep::Stage(stage),
-                        ..
-                    },
-                ] = expression.first.as_slice()
-                else {
-                    unreachable!("lowered pattern binding stage")
-                };
-                let model::Stage::PatternBinding { value, .. } = stage.as_ref() else {
-                    unreachable!("lowered pattern binding stage")
-                };
-                let entry = self
-                    .unit
-                    .prepare_binding(
-                        &value.pattern,
-                        &value.value.expression,
-                        &names,
-                        Some(program::Kind::Operations),
-                        budget,
-                    )
-                    .map_err(error)?;
-                for (name, kind) in entry.bindings() {
-                    budget
-                        .charge(
-                            name.value.len() + 1,
-                            ValueLocation::Query(name.range.clone()),
-                        )
-                        .map_err(core_error)?;
-                    names.insert(name.value.clone(), kind.clone());
-                }
-                budget
-                    .charge_results(1, ValueLocation::Query(program::range(expression.range)))
-                    .map_err(core_error)?;
-                self.bindings.insert(Arc::as_ptr(stage) as usize, entry);
-                continue;
-            }
-            let expression = match statement {
-                model::Statement::Binding { expression, .. }
-                | model::Statement::PatternBinding { expression, .. }
-                | model::Statement::Do(expression)
-                | model::Statement::Query(expression) => expression,
-            };
-            let kind = self.prepare_expression(
-                expression,
-                program::Kind::Operations,
-                &names,
-                host,
-                expressions,
-                budget,
-            )?;
-            if let model::Statement::Binding { name, .. } = statement {
-                names.insert(name.clone(), kind);
-            }
-        }
-        for (d, _) in parameters {
-            names.extend(program::parameter_names(std::slice::from_ref(d), budget)?);
-        }
-        self.prepare_expression(
-            &query.expression,
-            program::Kind::Operations,
-            &names,
-            host,
-            expressions,
-            budget,
-        )?;
-        // Program assembly keeps parameter introduction and implicit emission local.
-        for statement in program.statements() {
-            let source = match &statement.value {
-                zirql::Statement::Bind { expression, .. }
-                | zirql::Statement::BindFields { expression, .. }
-                | zirql::Statement::Evaluate { expression, .. } => expression,
-            };
-            let Some(model_expression) = query
-                .statements
-                .iter()
-                .map(|statement| match statement {
-                    model::Statement::Binding { expression, .. }
-                    | model::Statement::PatternBinding { expression, .. }
-                    | model::Statement::Do(expression)
-                    | model::Statement::Query(expression) => expression,
-                })
-                .chain(std::iter::once(&query.expression))
-                .find(|expression| program::range(expression.range) == source.range)
-            else {
-                continue;
-            };
-            let original = &expressions[&(model_expression as *const _ as usize)];
-            // These entries borrow the same common bodies; statement bindings still supply their lexical scope at execution.
-            self.expression_aliases
-                .insert(source as *const _ as usize, original as *const _ as usize);
-        }
-        Ok(())
-    }
-    pub(super) fn run_expression(
-        &self,
-        expression: &report::Operand,
-        context: &mut EvaluationContext<'a, 'd, 'q>,
-        input: QueryOutput,
-        bindings: &zirql::Bindings<QueryOutput>,
-        budget: &mut Budget,
-    ) -> Result<QueryOutput, EvaluationError> {
-        if let zirql::ExpressionKind::Sequence { steps, .. } = &expression.value
-            && let [
-                zirql::Located {
-                    value: zirql::ExpressionStep::Stage(stage),
-                    ..
-                },
-            ] = steps.as_slice()
-            && matches!(
-                stage.as_ref(),
-                model::Stage::Parameter { .. } | model::Stage::PatternBinding { .. }
-            )
-        {
-            return program::NativeHost
-                .evaluate_stage(stage, input, context, bindings, budget, &expression.range)
-                .map_err(program::evaluation_error);
-        }
-        let identity = expression as *const _ as usize;
-        let identity = self
-            .expression_aliases
-            .get(&identity)
-            .copied()
-            .unwrap_or(identity);
-        let entry = self.expressions.get(&identity).ok_or_else(|| {
-            EvaluationError::new("expression was not prepared").at(expression.range.clone())
-        })?;
-        let value = match entry {
-            Some(entry) => self
-                .unit
-                .evaluate_expression(entry, bindings, Some(&input), context, budget, self.limits)
-                .map_err(error)?,
-            None => zirql::evaluate_expression(
-                expression,
-                &program::NativeHost,
-                input,
-                context,
-                bindings,
-                budget,
-            )
-            .map_err(program::evaluation_error)?,
-        };
-        owned(value, budget, &expression.range)
-    }
-    pub(super) fn run_binding(
-        &self,
-        context: &mut EvaluationContext<'a, 'd, 'q>,
-        input: &QueryOutput,
-        bindings: &zirql::Bindings<QueryOutput>,
-        budget: &mut Budget,
-    ) -> Result<QueryOutput, EvaluationError> {
-        let entry = self
-            .bindings
-            .get(&context.current_stage)
-            .ok_or_else(|| EvaluationError::new("pattern binding was not prepared"))?;
-        self.unit
-            .evaluate_binding(entry, bindings, Some(input), context, budget, self.limits)
-            .map(|capture| QueryOutput::Native(NativeValue::Capture(capture)))
-            .map_err(error)
-    }
-    pub(super) fn run_native_argument(
-        &self,
-        value: &zirql::ValueExpression<report::Operand>,
-        context: &mut EvaluationContext<'a, 'd, 'q>,
-        input: &QueryOutput,
-        bindings: &zirql::Bindings<QueryOutput>,
-        budget: &mut Budget,
-    ) -> Result<QueryOutput, EvaluationError> {
-        let entry = self
-            .native_arguments
-            .get(&(context.current_stage, value as *const _ as usize))
-            .ok_or_else(|| {
-                EvaluationError::new("native argument was not prepared in this scope")
-                    .at(value.range.clone())
-            })?;
-        self.unit
-            .evaluate(entry, bindings, Some(input), context, budget, self.limits)
-            .map_err(error)
-    }
-}
-
 pub(super) fn owned(
     mut value: QueryOutput,
     budget: &mut Budget,
@@ -1295,20 +913,6 @@ pub(super) fn owned(
         };
     }
     Ok(value)
-}
-pub(super) fn constructed(
-    value: QueryOutput,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<ConstructedReport, EvaluationError> {
-    match owned(value, budget, range)? {
-        QueryOutput::Native(NativeValue::Constructed(value)) => Ok(value),
-        value @ QueryOutput::Native(NativeValue::Map(_)) => {
-            let value = comprehension::project(&value, budget, range)?;
-            ConstructedReport::new(value, range.clone(), budget)
-        }
-        _ => Err(EvaluationError::new("report requires a constructed value").at(range.clone())),
-    }
 }
 
 impl FunctionDefinition {
@@ -1504,22 +1108,12 @@ fn normalize_wrapper(value: &mut zirql::ValueExpression<report::Operand>) {
         value.value = K::NativeValue(query);
     }
 }
-pub(super) fn expression_roots<'a>(
-    functions: &'a [FunctionDefinition],
-    budget: &mut Budget,
-) -> Result<Vec<&'a model::Expression>, EvaluationError> {
-    let mut roots = Vec::new();
-    for function in functions {
-        report::visit_value(&function.declaration.value, &mut roots, budget)?;
-    }
-    Ok(roots)
-}
 
 fn admit_fields<'v>(
     host: &report::ReportHost<'_>,
     values: impl Iterator<Item = (&'v str, &'v QueryOutput)> + Clone,
     fields: &[(String, D<program::Kind>)],
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     location: &ValueLocation,
 ) -> Result<(), zirql::EvaluationError<EvaluationError>> {

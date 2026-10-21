@@ -185,22 +185,6 @@ impl Expression {
                 _ => true,
             })
     }
-    pub(crate) fn ends_with_emission(&self) -> bool {
-        self.rest.is_empty()
-            && self.first.last().is_some_and(|step| match &step.value {
-                zirql::ExpressionStep::Emit { .. } => true,
-                zirql::ExpressionStep::Stage(stage) => match stage.as_ref() {
-                    Stage::Emit { .. }
-                    | Stage::Format { .. }
-                    | Stage::Json { .. }
-                    | Stage::Markdown { .. }
-                    | Stage::Print { .. } => true,
-                    Stage::Group { expression, .. } => expression.ends_with_emission(),
-                    _ => false,
-                },
-                _ => false,
-            })
-    }
     pub(crate) fn is_terminal(&self) -> bool {
         self.first.last().is_some_and(step_is_terminal)
     }
@@ -358,11 +342,6 @@ pub enum Stage {
     ClosureFixedPoint {
         range: TextRange,
     },
-    Parameter {
-        index: usize,
-        ty: zirql::ParameterType,
-        range: TextRange,
-    },
     Native {
         value: super::capture::ParsedOperand,
         range: TextRange,
@@ -500,7 +479,6 @@ impl Stage {
         match self {
             Self::Guard { range, .. }
             | Self::ClosureFixedPoint { range }
-            | Self::Parameter { range, .. }
             | Self::Native { range, .. }
             | Self::Operand { range, .. }
             | Self::FunctionInput { range, .. }

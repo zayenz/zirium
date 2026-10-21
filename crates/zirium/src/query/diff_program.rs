@@ -202,6 +202,16 @@ pub(super) fn dispose_statements(
             zirql::Statement::Bind { expression, .. }
             | zirql::Statement::BindFields { expression, .. }
             | zirql::Statement::Evaluate { expression, .. } => expression,
+            zirql::Statement::Parameter { .. } => continue,
+            zirql::Statement::BindPattern { pattern, value } => {
+                if let Ok(pattern) = std::sync::Arc::try_unwrap(pattern) {
+                    zirql::dispose_pattern(pattern);
+                }
+                if let Ok(value) = std::sync::Arc::try_unwrap(value) {
+                    zirql::dispose_native_value(value);
+                }
+                continue;
+            }
         };
         dispose_expression(expression);
     }
@@ -1488,7 +1498,9 @@ fn validate_program(
     let mut shared_names = value_scope(&names);
     for statement in program.statements() {
         let (expression, name) = match &statement.value {
-            zirql::Statement::BindFields { .. } => {
+            zirql::Statement::Parameter { .. }
+            | zirql::Statement::BindPattern { .. }
+            | zirql::Statement::BindFields { .. } => {
                 return Err(EvaluationError::new(
                     "pattern bindings are unsupported in diff queries",
                 ));

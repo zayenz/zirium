@@ -32,7 +32,7 @@ pub struct Sequence {
 pub(super) fn share(
     value: &QueryOutput,
     host: &report::ReportHost<'_>,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<Option<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
@@ -55,7 +55,7 @@ pub(super) fn share(
 // Check their computational owners once at that boundary, including nested roots.
 pub(super) fn admit_input(
     value: &QueryOutput,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
@@ -114,7 +114,7 @@ pub(super) fn sequence_items(
     host: &report::ReportHost<'_>,
     value: &QueryOutput,
     element: &D<program::Kind>,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<Vec<QueryOutput>, zirql::EvaluationError<EvaluationError>> {
@@ -191,7 +191,7 @@ pub(super) fn sequence_items(
 pub(super) fn identity(
     value: &QueryOutput,
     expected: &program::Kind,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<zirql::NativeIdentity, zirql::EvaluationError<EvaluationError>> {

@@ -1,7 +1,7 @@
 //! Native SSA primitives and retained shared match trees.
 use super::*;
 use std::{ops::Range, sync::Arc};
-use zirql::{Bindings, ExpressionKind as X, Located, NativeCapture};
+use zirql::{ExpressionKind as X, Located, NativeCapture};
 
 pub(super) fn path_operation(
     value: &QueryOutput,
@@ -173,37 +173,10 @@ pub(super) fn native_source(value: ParsedOperand, range: Range<usize>) -> report
         range,
     )
 }
-pub(super) fn evaluate_operand(
-    value: &ParsedOperand,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    input: QueryOutput,
-    bindings: &Bindings<QueryOutput>,
-    budget: &mut Budget,
-) -> Result<QueryOutput, EvaluationError> {
-    context.functions.run_native_argument(
-        &value.value.expression,
-        context,
-        &input,
-        bindings,
-        budget,
-    )
-}
-pub(super) fn operand(
-    operation: &ParsedOperand,
-    index: usize,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    input: QueryOutput,
-    bindings: &Bindings<QueryOutput>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<QueryOutput, EvaluationError> {
-    let value = evaluate_operand(operation, context, input, bindings, budget)?;
-    operand_value(&value, index, context, budget, range)
-}
 pub(super) fn operand_value(
     value: &QueryOutput,
     index: usize,
-    context: &mut EvaluationContext<'_, '_, '_>,
+    context: &mut EvaluationContext<'_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {

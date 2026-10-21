@@ -859,11 +859,11 @@ impl Parser<'_, '_> {
                 return Some(zirql::Located::new(
                     zirql::ExpressionStep::Mapping(std::sync::Arc::new(zirql::NativeMap {
                         key: zirql::NativeBody::new(
-                            super::report::value_operand(&key),
+                            super::report::operand(&key),
                             super::program::range(key.range),
                         ),
                         value: zirql::NativeBody::new(
-                            super::report::value_operand(&value),
+                            super::report::operand(&value),
                             super::program::range(value.range),
                         ),
                     })),
@@ -956,7 +956,7 @@ impl Parser<'_, '_> {
                     zirql::ExpressionStep::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
                         order,
                         selector: Some(zirql::NativeBody::new(
-                            super::report::value_operand(&selector),
+                            super::report::operand(&selector),
                             super::program::range(selector.range),
                         )),
                     }))
@@ -1215,7 +1215,7 @@ impl Parser<'_, '_> {
                     }));
                 } else {
                     zirql::ExpressionStep::FixedPoint(std::sync::Arc::new(zirql::NativeBody::new(
-                        super::report::value_operand(&expression),
+                        super::report::operand(&expression),
                         range.clone(),
                     )))
                 };
@@ -2111,6 +2111,9 @@ fn frontend_program(
         .statements
         .into_iter()
         .map(|statement| match statement.value {
+            zirql::Statement::Parameter { .. } | zirql::Statement::BindPattern { .. } => {
+                unreachable!("frontend retains parameter positions and native pattern syntax")
+            }
             zirql::Statement::Bind { name, expression } => Statement::Binding {
                 name: name.value,
                 expression: frontend_expression(expression),

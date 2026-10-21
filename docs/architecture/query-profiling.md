@@ -285,9 +285,10 @@ no product dependency or installation effect.
 
 ## Prepared report execution
 
-Every textual and typed request owns one prepared function unit, including an
-empty declaration list. Zirium prepares shared report entries, projection fields
-and native argument bodies before statement execution. Those entries run with
+Every textual and typed request owns one Zirql `PreparedProgram`, including
+requests with an empty function list. It prepares the canonical lowered
+statements, shared report entries, projection fields and native argument bodies
+before statement execution. Those entries run with
 the current lexical bindings, relative input and request budget. Type discovery
 uses the same function-aware kind rules and Zirium's scalar projection facts.
 A report-only stage requires constructed data; typed value entries may retain
@@ -298,8 +299,11 @@ projections. Function-capable bodies retain native value queries so their calls
 can pass checked handles. These are admission policies on shared value nodes;
 both use the same prepared runner.
 
-Zirql reads common declarations and statement scopes. Zirium retains its
-frontend metadata, request preparation, native stage dispatch and emission.
+Zirql reads common declarations, retains prepared entries and advances statement
+scope. Zirium retains frontend syntax, native name/kind admission, document
+access, native stage dispatch and emission. Native groups use core `NativeBody`
+arguments, preserving the relative input and raw result shape without a second
+host preparation loop.
 Native selections and counts retain their existing work and stream bounds.
 Overloaded collection stages retain a lowered constructed body in their stage
 payload. Preparation checks that body only for constructed input, so borrowed
