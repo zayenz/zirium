@@ -2152,6 +2152,28 @@ fn function_native_contracts_preserve_ids_sequences_and_current_owners() {
 fn projections_compose_with_prepared_values_and_function_results() {
     use zirium::query::{ConstructedValue as V, NativeValue};
     let mut document = document_from(r#""test.a"() : () -> ()"#);
+    {
+        use zirium::query::{ReportExpr as E, bound_ops, input, report};
+        let row = bound_ops("row");
+        let mapping = row.map_by(&input().names().one(), &report(E::from(row.count())));
+        let nested = ops().project(
+            "row",
+            [
+                ("mapped", E::from(mapping.count())),
+                ("existing", E::from(row.where_exists(&input()).count())),
+                ("fixed", E::from(row.fixpoint(&input()).count())),
+            ],
+        );
+        let actual = document.query(&nested).unwrap();
+        assert_eq!(
+            actual.value().data(),
+            &V::Array(vec![V::Record(vec![
+                ("mapped".into(), V::Integer(1)),
+                ("existing".into(), V::Integer(1)),
+                ("fixed".into(), V::Integer(1)),
+            ])])
+        );
+    }
     for (source, expected) in [
         (
             r#"project(row,{"z":one(row | names)})"#,
@@ -2215,6 +2237,38 @@ fn projections_compose_with_prepared_values_and_function_results() {
             .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
             .is_err()
     );
+    for (source, subject) in [
+        (
+            r#"do set_attr("tag","changed"); input | project(_, {"x":1}) | json"#,
+            "_",
+        ),
+        (
+            r#"fn unused(root:Operation)->sequence<record {"rows":sequence<record {"x":int}>}> {root | project(row,{"rows":row | filter(false) | project(count,{"x":1})})} count"#,
+            "count",
+        ),
+    ] {
+        let mut emitted = false;
+        let error = Query::parse(source)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| {
+                emitted = true;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("reserved name"), "{error}");
+        assert_eq!(&source[error.range().unwrap()], subject);
+        assert!(!emitted);
+    }
+    assert!(document.query(&ops().attributes("tag")).unwrap().is_empty());
+    let error = document
+        .query(
+            &ops()
+                .filter(always(false))
+                .project("count", [("x", zirium::query::ReportExpr::integer(1))]),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("reserved name"), "{error}");
+    assert_eq!(error.range(), Some(0..0));
     let failure = r#"fn make(root:Operation)->sequence<record {"z":int}> {root | project(row,{"z":1 div (count-1)})} make(input | head(1))"#;
     let error = Query::parse(failure)
         .unwrap()

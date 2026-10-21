@@ -25,6 +25,30 @@ Semantic lowering creates separate storage with document-local interning.
 Retention profiles determine whether that document also keeps the source, CST,
 and source mappings. See [retention profiles](../getting-started.md#choose-a-retention-profile).
 
+## Query expressions
+
+Text queries and typed builders retain located Zirql `ExpressionStep` values.
+`Value` holds an ordinary value expression, including record construction;
+`Projection` holds correlated scalar fields. Both share their immutable bodies.
+The remaining `Stage` payloads contain Zirium's native operations and the
+composition stages awaiting migration. Their `Arc` storage also makes typed
+query reuse share nested trees.
+
+A submitted request registers its functions once, then prepares each shared
+expression through `PreparedFunctions::prepare_expression`. The prepared entry
+retains its result kind and written arguments. Execution supplies fresh bindings,
+relative input, document access and the same budget through `evaluate_expression`.
+Zirql checks projection fields before enumerating subjects and retains declared
+empty row schemas. The [projection contract](https://zayenz.se/zirql/guides/host-integration/#correlated-native-projection)
+describes the subject and scalar-value hooks.
+
+Zirium keeps statement and parameter bookkeeping, native-only stream execution,
+MLIR ownership and stale-handle checks. Emission payloads retain the requested
+format and pass-through behavior; CLI buffering remains a request boundary.
+Native capture records retain handles, while projected report records contain
+ordinary Zirql data. See the [typed report builders](../query-dsl.md#constructed-report-builders)
+for the public Rust interface.
+
 ## Measure representation costs
 
 ```sh

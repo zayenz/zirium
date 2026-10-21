@@ -56,63 +56,136 @@ impl Program {
 }
 
 /// Each set operand is a pipeline. Grouping introduces a nested expression.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Expression {
-    pub first: Vec<Stage>,
-    pub rest: Vec<(SetOperator, Vec<Stage>)>,
+    pub first: Vec<Step>,
+    pub rest: Vec<(SetOperator, Vec<Step>)>,
     pub range: TextRange,
 }
 
+impl Drop for Expression {
+    fn drop(&mut self) {
+        for steps in std::iter::once(std::mem::take(&mut self.first)).chain(
+            std::mem::take(&mut self.rest)
+                .into_iter()
+                .map(|(_, steps)| steps),
+        ) {
+            zirql::dispose_expression(zirql::Located::new(
+                zirql::ExpressionKind::Sequence {
+                    input: Box::new(zirql::Located::new(zirql::ExpressionKind::Input, 0..0)),
+                    steps,
+                },
+                0..0,
+            ));
+        }
+    }
+}
+
+impl Eq for Expression {}
+
+pub type NativeStage = std::sync::Arc<Stage>;
+pub type Step =
+    zirql::Located<zirql::ExpressionStep<NativeStage, super::program::Emitter, SetOperator>>;
+
+pub(super) fn native(stage: Stage) -> Step {
+    let range = super::program::range(stage.range());
+    zirql::Located::new(
+        zirql::ExpressionStep::Stage(std::sync::Arc::new(stage)),
+        range,
+    )
+}
+impl From<Stage> for Step {
+    fn from(stage: Stage) -> Self {
+        native(stage)
+    }
+}
+
+pub(super) fn value(value: super::comprehension::ParsedComprehension) -> Step {
+    let range = value.expression.range.clone();
+    zirql::Located::new(
+        zirql::ExpressionStep::Value(std::sync::Arc::clone(&value.expression)),
+        range,
+    )
+}
+pub(super) fn step_range(step: &Step) -> TextRange {
+    TextRange::new(step.range.start as u32, step.range.end as u32).expect("ordered query range")
+}
+pub(super) fn step_is_terminal(step: &Step) -> bool {
+    matches!(&step.value, zirql::ExpressionStep::Stage(stage) if stage.is_terminal())
+}
 impl Expression {
     pub(crate) fn is_single_closure(&self) -> bool {
         self.rest.is_empty()
             && match self.first.as_slice() {
-                [Stage::Closure { .. }] => true,
-                [Stage::Group { expression, .. }] => expression.is_single_closure(),
+                [
+                    zirql::Located {
+                        value: zirql::ExpressionStep::Stage(stage),
+                        ..
+                    },
+                ] => match stage.as_ref() {
+                    Stage::Closure { .. } => true,
+                    Stage::Group { expression, .. } => expression.is_single_closure(),
+                    _ => false,
+                },
                 _ => false,
             }
     }
-
     pub(crate) fn is_map_value(&self) -> bool {
         self.rest.is_empty()
             && match self.first.as_slice() {
-                [Stage::Value { .. }] => true,
-                [Stage::Group { expression, .. }] => expression.is_map_value(),
+                [
+                    zirql::Located {
+                        value: zirql::ExpressionStep::Stage(stage),
+                        ..
+                    },
+                ] => match stage.as_ref() {
+                    Stage::Value { .. } => true,
+                    Stage::Group { expression, .. } => expression.is_map_value(),
+                    _ => false,
+                },
                 _ => false,
             }
     }
-
     pub fn is_selection_only(&self) -> bool {
         self.first_non_selection_stage().is_none()
     }
-
-    pub(crate) fn first_non_selection_stage(&self) -> Option<&Stage> {
+    pub(crate) fn first_non_selection_stage(&self) -> Option<TextRange> {
         self.first
             .iter()
-            .chain(self.rest.iter().flat_map(|(_, stages)| stages))
-            .find_map(Stage::first_non_selection_stage)
+            .chain(self.rest.iter().flat_map(|(_, steps)| steps))
+            .find_map(|step| match &step.value {
+                zirql::ExpressionStep::Stage(stage) => stage.first_non_selection_stage(),
+                _ => Some(step_range(step)),
+            })
     }
     pub(crate) fn is_read_only(&self) -> bool {
         self.first
             .iter()
-            .chain(self.rest.iter().flat_map(|(_, stages)| stages))
-            .all(Stage::is_read_only)
+            .chain(self.rest.iter().flat_map(|(_, steps)| steps))
+            .all(|step| match &step.value {
+                zirql::ExpressionStep::Stage(stage) => stage.is_read_only(),
+                zirql::ExpressionStep::Emit { .. } => false,
+                _ => true,
+            })
     }
-
     pub(crate) fn ends_with_emission(&self) -> bool {
         self.rest.is_empty()
-            && self.first.last().is_some_and(|stage| match stage {
-                Stage::Emit { .. }
-                | Stage::Format { .. }
-                | Stage::Json { .. }
-                | Stage::Markdown { .. }
-                | Stage::Print { .. } => true,
-                Stage::Group { expression, .. } => expression.ends_with_emission(),
+            && self.first.last().is_some_and(|step| match &step.value {
+                zirql::ExpressionStep::Emit { .. } => true,
+                zirql::ExpressionStep::Stage(stage) => match stage.as_ref() {
+                    Stage::Emit { .. }
+                    | Stage::Format { .. }
+                    | Stage::Json { .. }
+                    | Stage::Markdown { .. }
+                    | Stage::Print { .. } => true,
+                    Stage::Group { expression, .. } => expression.ends_with_emission(),
+                    _ => false,
+                },
                 _ => false,
             })
     }
     pub(crate) fn is_terminal(&self) -> bool {
-        self.first.last().is_some_and(Stage::is_terminal)
+        self.first.last().is_some_and(step_is_terminal)
     }
 }
 
@@ -277,6 +350,11 @@ impl ComputedStage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
+    Parameter {
+        index: usize,
+        ty: zirql::ParameterType,
+        range: TextRange,
+    },
     Paths {
         value: super::capture::ParsedPaths,
         range: TextRange,
@@ -302,10 +380,6 @@ pub enum Stage {
         value: super::functions::ParsedBinding,
         range: TextRange,
     },
-    FunctionValue {
-        value: super::comprehension::ParsedComprehension,
-        range: TextRange,
-    },
     Computed {
         value: ComputedStage,
         range: TextRange,
@@ -315,19 +389,11 @@ pub enum Stage {
         step: StructuredStage,
         range: TextRange,
     },
-    Comprehension {
-        value: super::comprehension::ParsedComprehension,
-        range: TextRange,
-    },
     ConstructedSuffix {
         value: super::comprehension::ParsedComprehension,
         range: TextRange,
     },
     TallyContinuation {
-        range: TextRange,
-    },
-    Projection {
-        value: super::report::ParsedProjection,
         range: TextRange,
     },
     Literal {
@@ -566,16 +632,14 @@ impl Stage {
 
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Paths { range, .. }
+            Self::Parameter { range, .. }
+            | Self::Paths { range, .. }
             | Self::Match { range, .. }
             | Self::Native { range, .. }
             | Self::Operand { range, .. }
             | Self::FunctionInput { range, .. }
-            | Self::FunctionValue { range, .. }
             | Self::PatternBinding { range, .. }
             | Self::Computed { range, .. }
-            | Self::Projection { range, .. }
-            | Self::Comprehension { range, .. }
             | Self::ConstructedSuffix { range, .. }
             | Self::TallyContinuation { range }
             | Self::Structured { range, .. }
@@ -645,22 +709,20 @@ impl Stage {
             | Self::NativeMap { .. }
             | Self::MapBy { .. }
             | Self::Literal { .. }
-            | Self::Comprehension { .. }
-            | Self::ConstructedSuffix { .. }
-            | Self::Projection { .. } => false,
+            | Self::ConstructedSuffix { .. } => false,
             Self::Group { expression, .. } => expression.is_selection_only(),
             Self::Fixpoint { expression, .. } => expression.is_selection_only(),
             _ => true,
         }
     }
-    fn first_non_selection_stage(&self) -> Option<&Stage> {
+    fn first_non_selection_stage(&self) -> Option<TextRange> {
         match self {
             Self::Group { expression, .. }
             | Self::Fixpoint {
                 expression: FixedPointBody::Selection(expression),
                 ..
             } => expression.first_non_selection_stage(),
-            _ if !self.is_selection_only() => Some(self),
+            _ if !self.is_selection_only() => Some(self.range()),
             _ => None,
         }
     }

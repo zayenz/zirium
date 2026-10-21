@@ -1,24 +1,13 @@
 //! Native program lowering. Domain operations and emission snapshots stay in Zirium.
 use super::*;
 use std::ops::Range;
-use zirql::{
-    Bindings, EmissionPolicy, ExpressionKind, ExpressionStep, Located, ProgramHost, ProjectionHost,
-};
+use zirql::{Bindings, ExpressionKind, ExpressionStep, Located, ProgramHost, ProjectionHost};
 
-pub(super) type Expression<'q> = zirql::Expression<Stages<'q>, model::SetOperator, Emitter<'q>>;
-
-#[derive(Debug)]
-pub(super) enum Stages<'q> {
-    Native {
-        native: &'q model::Stage,
-        pipeline: Option<pipeline::NativePipeline<'q>>,
-    },
-    Parameter(usize),
-}
-#[derive(Debug)]
-pub(super) enum Emitter<'q> {
+pub(super) type Expression = super::report::Operand;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Emitter {
     Result,
-    Written(&'q model::Stage),
+    Written(model::NativeStage),
     AlreadyEmitted,
 }
 
@@ -29,7 +18,7 @@ pub(super) fn range(range: crate::source::TextRange) -> Range<usize> {
 pub(super) fn lower(
     query: &Query,
     parameter_names: Vec<Located<String>>,
-) -> zirql::Program<Stages<'_>, model::SetOperator, Emitter<'_>> {
+) -> zirql::Program<model::NativeStage, model::SetOperator, Emitter> {
     let mut statements = Vec::new();
     let mut parameters = parameter_names.into_iter().enumerate().peekable();
     for position in 0..=query.statements.len() {
@@ -43,7 +32,11 @@ pub(super) fn lower(
                 ExpressionKind::Sequence {
                     input: Box::new(Located::new(ExpressionKind::Input, location.clone())),
                     steps: vec![Located::new(
-                        ExpressionStep::Stage(Stages::Parameter(index)),
+                        ExpressionStep::Stage(std::sync::Arc::new(model::Stage::Parameter {
+                            index,
+                            ty: query.parameters[index].ty.value,
+                            range: crate::source::TextRange::at(0),
+                        })),
                         location.clone(),
                     )],
                 },
@@ -99,85 +92,8 @@ pub(super) fn lower(
     zirql::Program::new(statements, range(query.expression.range))
 }
 
-fn lower_expression(expression: &model::Expression) -> Expression<'_> {
-    let mut lowered = lower_stages(&expression.first, expression.range);
-    for (operator, stages) in &expression.rest {
-        lowered = Located::new(
-            ExpressionKind::Set {
-                operator: *operator,
-                left: Box::new(lowered),
-                right: Box::new(lower_stages(stages, expression.range)),
-            },
-            range(expression.range),
-        );
-    }
-    lowered
-}
-
-fn lower_stages(stages: &[model::Stage], location: crate::source::TextRange) -> Expression<'_> {
-    let mut input = Located::new(ExpressionKind::Input, range(location));
-    let mut steps = Vec::new();
-    for (index, stage) in stages.iter().enumerate() {
-        let emitter = match stage {
-            model::Stage::Emit { .. }
-            | model::Stage::Format { .. }
-            | model::Stage::Json { .. }
-            | model::Stage::Markdown { .. } => Some(Emitter::Written(stage)),
-            _ => None,
-        };
-        if let Some(emitter) = emitter {
-            steps.push(Located::new(
-                ExpressionStep::Emit {
-                    emitter,
-                    policy: EmissionPolicy::PassThrough,
-                },
-                range(stage.range()),
-            ));
-            continue;
-        }
-        if index == 0
-            && let model::Stage::Group { expression, .. } = stage
-        {
-            input = Located::new(
-                ExpressionKind::Group(Box::new(lower_expression(expression))),
-                range(stage.range()),
-            );
-            continue;
-        }
-        let pipeline = pipeline::is_stream_stage(stage).then(|| {
-            pipeline::lower(std::slice::from_ref(stage))
-                .expect("frontend stage nesting was validated")
-        });
-        steps.push(Located::new(
-            ExpressionStep::Stage(Stages::Native {
-                native: stage,
-                pipeline,
-            }),
-            range(stage.range()),
-        ));
-        if matches!(stage, model::Stage::Print { .. })
-            || matches!(stage, model::Stage::Group { expression, .. } if expression.ends_with_emission())
-        {
-            steps.push(Located::new(
-                ExpressionStep::Emit {
-                    emitter: Emitter::AlreadyEmitted,
-                    policy: EmissionPolicy::PassThrough,
-                },
-                range(stage.range()),
-            ));
-        }
-    }
-    if steps.is_empty() {
-        input
-    } else {
-        Located::new(
-            ExpressionKind::Sequence {
-                input: Box::new(input),
-                steps,
-            },
-            range(location),
-        )
-    }
+pub(super) fn lower_expression(expression: &model::Expression) -> Expression {
+    report::operand(expression)
 }
 
 /// Lower selectors once before native execution. The address keys only connect
@@ -185,7 +101,7 @@ fn lower_stages(stages: &[model::Stage], location: crate::source::TextRange) -> 
 pub(super) fn expressions<'q>(
     roots: impl Iterator<Item = &'q model::Expression>,
     budget: &mut Budget,
-) -> Result<BTreeMap<usize, Expression<'q>>, EvaluationError> {
+) -> Result<BTreeMap<usize, Expression>, EvaluationError> {
     let mut expressions = BTreeMap::new();
     let mut pending: Vec<_> = roots.collect();
     while let Some(expression) = pending.pop() {
@@ -198,8 +114,24 @@ pub(super) fn expressions<'q>(
             .iter()
             .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
         {
+            let ExpressionStep::Stage(stage) = &stage.value else {
+                match &stage.value {
+                    ExpressionStep::Value(value) => {
+                        report::visit_value(value, &mut pending, budget)?
+                    }
+                    ExpressionStep::Projection(projection) => {
+                        report::validate_projection_subject(&projection.subject)
+                            .map_err(core_error)?;
+                        for (_, value) in &projection.fields {
+                            report::visit_value(value, &mut pending, budget)?;
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            };
             report::push_expressions(stage, &mut pending, budget)?;
-            match stage {
+            match stage.as_ref() {
                 model::Stage::Group { expression, .. }
                 | model::Stage::Fixpoint {
                     expression: model::FixedPointBody::Selection(expression),
@@ -553,12 +485,33 @@ fn json_bytes(value: &serde_json::Value) -> usize {
     }
 }
 
+pub(super) fn evaluate_native_stage(
+    stage: &model::Stage,
+    input: QueryOutput,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    bindings: &Bindings<QueryOutput>,
+    budget: &mut Budget,
+    location: &Range<usize>,
+) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+    let result = if let model::Stage::Parameter { index, .. } = stage {
+        Ok(context.parameters[*index]
+            .take()
+            .expect("admitted parameter is bound once"))
+    } else {
+        charge(budget, output_size(&input).max(1))
+            .and_then(|()| evaluate_host_stage(stage, context, input, bindings, budget))
+    };
+    let value = result.map_err(|error| zirql::EvaluationError::Host(error.at(location.clone())))?;
+    check_items(budget, output_size(&value)).map_err(zirql::EvaluationError::Host)?;
+    Ok(value)
+}
+
 pub(super) struct NativeHost;
 impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
     type Value = QueryOutput;
-    type Stage = Stages<'q>;
+    type Stage = model::NativeStage;
     type SetOperator = model::SetOperator;
-    type Emitter = Emitter<'q>;
+    type Emitter = Emitter;
     type Error = EvaluationError;
 
     fn copy_value(
@@ -575,7 +528,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
     }
     fn evaluate_stage(
         &self,
-        stage: &Stages<'q>,
+        stage: &model::NativeStage,
         input: QueryOutput,
         context: &mut EvaluationContext<'_, '_, 'q>,
         bindings: &Bindings<QueryOutput>,
@@ -583,20 +536,17 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
         let previous_stage = context.current_stage;
-        if let Stages::Native { native, .. } = stage {
-            context.current_stage = *native as *const _ as usize;
-        }
-        let result = match stage {
-            Stages::Parameter(index) => Ok(context.parameters[*index]
+        context.current_stage = std::sync::Arc::as_ptr(stage) as usize;
+        let result = match stage.as_ref() {
+            model::Stage::Parameter { index, .. } => Ok(context.parameters[*index]
                 .take()
                 .expect("admitted parameter is bound once")),
-            Stages::Native {
-                pipeline: Some(pipeline),
-                ..
-            } if pipeline::is_stream(&input) => {
-                pipeline::evaluate(pipeline, context, input, bindings, budget)
+            native if pipeline::is_stream_stage(native) && pipeline::is_stream(&input) => {
+                let pipeline = pipeline::lower(std::slice::from_ref(native))
+                    .map_err(zirql::EvaluationError::Host)?;
+                pipeline::evaluate(&pipeline, context, input, bindings, budget)
             }
-            Stages::Native { native, .. } => charge(budget, output_size(&input).max(1))
+            native => charge(budget, output_size(&input).max(1))
                 .and_then(|()| evaluate_host_stage(native, context, input, bindings, budget)),
         };
         context.current_stage = previous_stage;
@@ -640,7 +590,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
     }
     fn emit(
         &self,
-        emitter: &Emitter<'q>,
+        emitter: &Emitter,
         value: &QueryOutput,
         context: &mut EvaluationContext<'_, '_, 'q>,
         budget: &mut zirql::Budget,
@@ -654,7 +604,7 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
             }
             Emitter::Written(stage) => {
                 charge(budget, output_size(value).max(1)).map_err(zirql::EvaluationError::Host)?;
-                let output = match stage {
+                let output = match stage.as_ref() {
                     model::Stage::Emit { .. } => self
                         .copy_value(value, context, budget, range)
                         .map_err(evaluation_error),
@@ -782,9 +732,43 @@ impl Validator<'_> {
         names: &BTreeMap<String, Kind>,
         budget: &mut zirql::Budget,
     ) -> Result<Kind, EvaluationError> {
-        let left = self.stages(&expression.first, input.clone(), names, budget)?;
-        for (_, stages) in &expression.rest {
-            let right = self.stages(stages, input.clone(), names, budget)?;
+        if report::has_constructed(expression) {
+            return zirql::pattern_function_expression_kind(
+                self.host
+                    .functions
+                    .iter()
+                    .map(|function| function.declaration.as_ref()),
+                &self.host,
+                &report::operand(expression),
+                names,
+                Some(input),
+                true,
+                budget,
+            )
+            .map_err(core_error);
+        }
+        fn pipeline(
+            validator: &Validator<'_>,
+            steps: &[model::Step],
+            mut kind: Kind,
+            names: &BTreeMap<String, Kind>,
+            budget: &mut Budget,
+        ) -> Result<Kind, EvaluationError> {
+            for step in steps {
+                let ExpressionStep::Stage(stage) = &step.value else {
+                    return Err(EvaluationError::new(
+                        "constructed expression requires preparation",
+                    )
+                    .at(step.range.clone()));
+                };
+                kind =
+                    validator.stages(std::slice::from_ref(stage.as_ref()), kind, names, budget)?;
+            }
+            Ok(kind)
+        }
+        let left = pipeline(self, &expression.first, input.clone(), names, budget)?;
+        for (_, steps) in &expression.rest {
+            let right = pipeline(self, steps, input.clone(), names, budget)?;
             if left != right || !matches!(left, Kind::Operations | Kind::Strings) {
                 return Err(EvaluationError::new(
                     "set operands require operation or value streams of the same kind",
@@ -846,11 +830,6 @@ impl Validator<'_> {
                 S::FunctionInput { value, .. } => {
                     kind = report::output_kind(value, budget, &range(stage.range()))?;
                 }
-                S::FunctionValue { value, .. } => {
-                    kind =
-                        functions::value_kind(&self.host, &value.expression, kind, names, budget)
-                            .map_err(core_error)?;
-                }
                 S::Paths { value, .. } => {
                     let schema = capture::path_types(value, &kind, names, budget, &self.host)?;
                     kind = Kind::Captures(std::sync::Arc::new(schema));
@@ -885,6 +864,9 @@ impl Validator<'_> {
                         budget,
                     )?;
                 }
+                S::Parameter { ty, .. } => {
+                    kind = Kind::Constructed(std::sync::Arc::new(vec![(*ty).into()]))
+                }
                 S::Input { .. } => kind = Kind::Operations,
                 S::Binding { name, .. } => {
                     kind = names.get(name).cloned().ok_or_else(|| {
@@ -892,21 +874,6 @@ impl Validator<'_> {
                             "binding `{name}` is unavailable in this evaluation context"
                         ))
                     })?
-                }
-                S::Comprehension { value, .. } => {
-                    let types =
-                        report::types_with_host(value, kind.clone(), names, budget, &self.host)?;
-                    kind = Kind::Constructed(std::sync::Arc::new(types));
-                }
-                S::Projection { value, .. } => {
-                    let types = report::projection_types_with_host(
-                        value,
-                        kind.clone(),
-                        names,
-                        budget,
-                        &self.host,
-                    )?;
-                    kind = Kind::Constructed(std::sync::Arc::new(types));
                 }
                 S::Literal { value, .. } => {
                     validate_literal(value, names)

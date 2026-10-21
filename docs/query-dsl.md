@@ -372,12 +372,18 @@ See [semantic diff](semantic-diff.md) for examples.
 subject. `ReportExpr` contains the shared value tree; construction reads no
 document and accepts no query-source strings or evaluator callbacks.
 
-Each textual or typed request prepares its shared expressions with Zirql's
-`PreparedFunctions`, including requests with no function declarations. Reports,
-correlated projection fields and computed native arguments use that prepared
-unit with the current bindings, relative input and cumulative budget. Projection
-fields are checked before enumerating subjects, so an empty selection retains
-its declared row schema and still rejects invalid fields.
+Textual reports and typed builders produce Zirql's located `Value` and
+`Projection` steps directly. Each request registers its functions with one
+`PreparedFunctions` unit, including requests with no function declarations.
+`prepare_expression` checks the written bodies and retains their result kinds;
+`evaluate_expression` supplies the current bindings, relative input and cumulative
+budget. Zirium's native stages retain their MLIR payloads and ownership checks.
+
+Projection fields are checked before enumerating subjects, so an empty selection
+retains its declared row schema and still rejects invalid fields. The shared
+[projection contract](https://zayenz.se/zirql/guides/host-integration/#correlated-native-projection)
+owns field scope and scalar construction; the builder below supplies the native
+operation selection.
 
 The ordinary textual report frontend projects saved scalar streams and counts
 through `NativeQuery`. Function-capable bodies use `NativeValue` to retain
@@ -479,7 +485,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `402eede8a28008b52a36afa1fd301b3bab251e0a`. They accept shared expressions
+pin `5d6a466a6ee9bac2a90c2dfbc5579a0b0c12f08d`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 

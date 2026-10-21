@@ -476,7 +476,8 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
         &mut self,
         reader: &mut zirql::ArgumentReader<'_>,
         budget: &mut zirql::Budget,
-    ) -> Result<zirql::ExpressionStep<DiffStage, ()>, zirql::QueryError> {
+    ) -> Result<zirql::ExpressionStep<DiffStage, (), zirql::NativeSetOperator>, zirql::QueryError>
+    {
         self.parse_stage_in_scope(reader, &[], budget, self.nesting)
     }
     fn parse_stage_in_scope(
@@ -485,7 +486,8 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
         locals: &[&str],
         budget: &mut zirql::Budget,
         nesting: usize,
-    ) -> Result<zirql::ExpressionStep<DiffStage, ()>, zirql::QueryError> {
+    ) -> Result<zirql::ExpressionStep<DiffStage, (), zirql::NativeSetOperator>, zirql::QueryError>
+    {
         let start = reader.position();
         if reader.consume('(') {
             let value =
@@ -612,25 +614,6 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
     }
     fn filter(&mut self, predicate: zirql::Predicate<Leaf>, range: Range<usize>) -> DiffStage {
         stream(Stage::Filter(predicate), range).expect("shared reader bounded the filter")
-    }
-    fn projection(
-        &mut self,
-        projection: zirql::Projection<Expression>,
-        _: Range<usize>,
-    ) -> DiffStage {
-        for (_, value) in projection.fields {
-            zirql::dispose_native_value(value);
-        }
-        DiffStage::UnsupportedProjection
-    }
-    fn value_source(
-        &mut self,
-        value: zirql::ValueExpression<Expression>,
-        _: Range<usize>,
-    ) -> Result<DiffStage, zirql::QueryError> {
-        Ok(DiffStage::Value(super::diff_program::SharedValue(
-            std::sync::Arc::new(value),
-        )))
     }
     fn ordering(
         &mut self,

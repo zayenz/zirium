@@ -91,7 +91,7 @@ struct EvaluationContext<'a, 'document, 'query> {
     current_stage: usize,
     document: &'a mut DocumentAccess<'document>,
     registry: &'a DialectRegistry,
-    expressions: &'a BTreeMap<usize, program::Expression<'query>>,
+    expressions: &'a BTreeMap<usize, program::Expression>,
     parameters: Vec<Option<QueryOutput>>,
     options: EvaluationOptions,
     output: OutputMode,
@@ -654,7 +654,6 @@ impl Query {
             self.function_limits,
             budget,
         )?;
-        functions.prepare_program(self, document_name, &function_host, budget)?;
 
         let function_roots = functions::expression_roots(&self.functions, budget)?;
         let expressions = program::expressions(
@@ -680,6 +679,14 @@ impl Query {
             .map(|(name, value)| (name, Some(value)))
             .unzip();
         let program = program::lower(self, parameter_names);
+        functions.prepare_program(
+            self,
+            document_name,
+            &function_host,
+            &program,
+            &expressions,
+            budget,
+        )?;
         let mut access = DocumentAccess::Mutable(document);
         let input = QueryOutput::Operations(collect(budget, access.operations())?);
         if let Some(name) = document_name {
@@ -704,13 +711,19 @@ impl Query {
             output: OutputMode::Textual,
             emit: &mut emit,
         };
-        zirql::evaluate_program(
+        zirql::evaluate_program_with(
             &program,
             &program::NativeHost,
             input,
             &mut context,
             bindings,
             budget,
+            &mut |expression, input, context, bindings, budget| {
+                context
+                    .functions
+                    .run_expression(expression, context, input, bindings, budget)
+                    .map_err(zirql::EvaluationError::Host)
+            },
         )
         .map_err(program::evaluation_error)?;
         Ok(())
@@ -750,15 +763,9 @@ fn evaluate_expression(
     budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     let lowered = &context.expressions[&(std::ptr::from_ref(expression) as usize)];
-    zirql::evaluate_expression(
-        lowered,
-        &program::NativeHost,
-        input,
-        context,
-        bindings,
-        budget,
-    )
-    .map_err(program::evaluation_error)
+    context
+        .functions
+        .run_expression(lowered, context, input, bindings, budget)
 }
 
 // One dispatcher owns all host stages, including those run inside stream segments.
@@ -779,6 +786,11 @@ fn evaluate_host_stage(
         current = QueryOutput::Operations(operations);
     }
     match stage {
+        model::Stage::Parameter { index, .. } => {
+            return Ok(context.parameters[*index]
+                .take()
+                .expect("admitted parameter is bound once"));
+        }
         model::Stage::TallyContinuation { .. } => {}
         model::Stage::ConstructedSuffix { .. } => {
             return Err(EvaluationError::new(
@@ -795,9 +807,6 @@ fn evaluate_host_stage(
             current = context
                 .functions
                 .run_binding(context, &current, bindings, budget)?;
-        }
-        model::Stage::FunctionValue { value, .. } => {
-            current = functions::evaluate(value, context, current, bindings, budget)?;
         }
         model::Stage::Paths { value, .. } => {
             current = QueryOutput::Native(NativeValue::Captures(capture::evaluate_paths(
@@ -833,21 +842,6 @@ fn evaluate_host_stage(
         }
         model::Stage::Structured { step, .. } => {
             current = evaluate_structured(step, context, current, bindings, budget)?;
-        }
-        model::Stage::Comprehension { value, .. } => {
-            current = QueryOutput::Native(NativeValue::Constructed(report::evaluate(
-                value, context, current, bindings, budget,
-            )?));
-        }
-        model::Stage::Projection { value, range } => {
-            current = QueryOutput::Native(NativeValue::Constructed(report::project(
-                value,
-                context,
-                current,
-                bindings,
-                budget,
-                &program::range(*range),
-            )?));
         }
         model::Stage::Literal { value, range } => {
             let value = literal::evaluate(
@@ -1295,7 +1289,13 @@ fn evaluate_host_stage(
                         model::FixedPointBody::Native(value) => {
                             let output = context
                                 .functions
-                                .run(&value.expression, context, &input, bindings, budget)
+                                .run_native_argument(
+                                    &value.expression,
+                                    context,
+                                    &input,
+                                    bindings,
+                                    budget,
+                                )
                                 .map_err(zirql::EvaluationError::Host)?;
                             fixed_point_result(output, budget, &range)
                                 .map_err(zirql::EvaluationError::Host)?
@@ -1700,7 +1700,7 @@ fn sort_operations_by(
             let input = QueryOutput::Operations(vec![*operation]);
             let output = context
                 .functions
-                .run(&value.expression, context, &input, bindings, budget)
+                .run_native_argument(&value.expression, context, &input, bindings, budget)
                 .map_err(zirql::EvaluationError::Host)?;
             ordering_key(output, budget, &value.expression.range)
                 .map_err(zirql::EvaluationError::Host)

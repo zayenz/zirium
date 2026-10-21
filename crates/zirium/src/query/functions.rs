@@ -1,7 +1,9 @@
 //! Typed pure functions retain shared trees and document-owned native handles.
 use super::*;
 use std::{ops::Range, sync::Arc};
-use zirql::{DeclaredType as D, FunctionHost, ProjectionHost, RuntimeTypeHost, ValueType};
+use zirql::{
+    DeclaredType as D, FunctionHost, ProgramHost, ProjectionHost, RuntimeTypeHost, ValueType,
+};
 
 pub use zirql::{FunctionLimits, FunctionParameter, Pattern, PatternKind, PatternParameter};
 /// Native signature identities; `SSAValue` is Zirium's checked `ValueId`.
@@ -907,8 +909,11 @@ type Entry<'q> = zirql::PreparedFunctionValue<'q, report::Operand, program::Kind
 pub(super) struct Session<'q, 'a, 'd> {
     pub(super) host: &'a report::ReportHost<'q>,
     unit: zirql::PreparedFunctions<'q, 'a, EvaluationContext<'a, 'd, 'q>, report::ReportHost<'q>>,
-    entries: BTreeMap<(usize, usize), Entry<'q>>,
+    native_arguments: BTreeMap<(usize, usize), Entry<'q>>,
     bindings: BTreeMap<usize, zirql::PreparedPatternBinding<'q, report::Operand, program::Kind>>,
+    expression_aliases: BTreeMap<usize, usize>,
+    expressions:
+        BTreeMap<usize, Option<zirql::PreparedExpression<'q, report::Operand, program::Kind>>>,
     limits: FunctionLimits,
 }
 impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
@@ -926,32 +931,12 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                 budget,
             )
             .map_err(error)?,
-            entries: BTreeMap::new(),
+            native_arguments: BTreeMap::new(),
             bindings: BTreeMap::new(),
+            expressions: BTreeMap::new(),
+            expression_aliases: BTreeMap::new(),
             limits,
         })
-    }
-    fn prepare_value(
-        &mut self,
-        stage: &'q model::Stage,
-        value: &'q zirql::ValueExpression<report::Operand>,
-        input: program::Kind,
-        names: &BTreeMap<String, program::Kind>,
-        budget: &mut Budget,
-    ) -> Result<program::Kind, EvaluationError> {
-        let entry = self
-            .unit
-            .prepare_value(value, names, Some(input), budget)
-            .map_err(error)?;
-        budget
-            .charge_results(1, ValueLocation::Query(value.range.clone()))
-            .map_err(core_error)?;
-        let kind = entry.kind().clone();
-        self.entries.insert(
-            (stage as *const _ as usize, value as *const _ as usize),
-            entry,
-        );
-        Ok(kind)
     }
     pub(super) fn prepare_expression(
         &mut self,
@@ -959,137 +944,147 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
         input: program::Kind,
         names: &BTreeMap<String, program::Kind>,
         host: &report::ReportHost<'q>,
+        expressions: &'q BTreeMap<usize, report::Operand>,
         budget: &mut Budget,
     ) -> Result<program::Kind, EvaluationError> {
-        for stages in std::iter::once(&expression.first)
-            .chain(expression.rest.iter().map(|(_, stages)| stages))
+        let source = &expressions[&(expression as *const _ as usize)];
+        let native_only = !report::has_constructed(expression)
+            && names
+                .values()
+                .all(|kind| !matches!(kind, program::Kind::Constructed(_)));
+        let result = if native_only {
+            let kind = program::Validator {
+                host: report::ReportHost {
+                    functions: host.functions,
+                },
+            }
+            .expression(expression, input.clone(), names, budget)?;
+            self.expressions.insert(source as *const _ as usize, None);
+            kind
+        } else {
+            let entry = self
+                .unit
+                .prepare_expression(source, names, Some(input.clone()), budget)
+                .map_err(error)?;
+            let kind = entry.kind().clone();
+            self.expressions
+                .insert(source as *const _ as usize, Some(entry));
+            kind
+        };
+        for steps in
+            std::iter::once(&expression.first).chain(expression.rest.iter().map(|(_, steps)| steps))
         {
             let mut kind = input.clone();
-            for stage in stages {
-                let prepared_kind = match stage {
-                    model::Stage::Comprehension { value, .. } => {
-                        let kind = self.prepare_value(
-                            stage,
-                            &value.expression,
-                            kind.clone(),
-                            names,
-                            budget,
-                        )?;
-                        let types = host
-                            .scalar_types(&kind, budget, &value.expression.range)
-                            .map_err(core_error)?
-                            .ok_or_else(|| {
-                                EvaluationError::new(
-                                    "native handles require an explicit scalar projection",
-                                )
-                                .at(value.expression.range.clone())
-                            })?;
-                        Some(host.constructed_kind(types))
-                    }
-                    model::Stage::FunctionValue { value, .. } => Some(self.prepare_value(
-                        stage,
-                        &value.expression,
-                        kind.clone(),
-                        names,
-                        budget,
-                    )?),
-                    model::Stage::Fixpoint {
-                        expression: model::FixedPointBody::Native(value),
-                        ..
-                    } => {
-                        self.prepare_value(stage, &value.expression, kind.clone(), names, budget)?;
-                        None
-                    }
-                    model::Stage::WhereExists { relation, .. } => {
-                        let subject = host
-                            .subject_kind(&kind, budget, &program::range(stage.range()))
-                            .map_err(core_error)?;
-                        self.prepare_value(stage, &relation.expression, subject, names, budget)?;
-                        None
-                    }
-                    model::Stage::Projection { value, .. } => {
-                        let mut scope = copy_scope(names, budget, &program::range(stage.range()))
-                            .map_err(core_error)?;
-                        let subject = host
-                            .subject_kind(&kind, budget, &value.projection.subject.range)
-                            .map_err(core_error)?;
-                        scope.insert(value.projection.subject.value.clone(), subject.clone());
-                        for (_, value) in &value.projection.fields {
-                            self.prepare_value(stage, value, subject.clone(), &scope, budget)?;
-                        }
-                        None
-                    }
-                    _ => {
+            for step in steps {
+                if let zirql::ExpressionStep::Stage(stage) = &step.value {
+                    if native_only {
                         for argument in host
-                            .scoped_value_arguments(
-                                stage,
-                                &kind,
-                                names,
-                                budget,
-                                &program::range(stage.range()),
-                            )
+                            .scoped_value_arguments(stage, &kind, names, budget, &step.range)
                             .map_err(core_error)?
                         {
-                            let mut scope =
-                                copy_scope(names, budget, &program::range(stage.range()))
-                                    .map_err(core_error)?;
+                            budget
+                                .charge(
+                                    names.keys().map(|name| name.len() + 1).sum(),
+                                    ValueLocation::Query(step.range.clone()),
+                                )
+                                .map_err(core_error)?;
+                            budget
+                                .charge_results(
+                                    names.len() + 1,
+                                    ValueLocation::Query(step.range.clone()),
+                                )
+                                .map_err(core_error)?;
+                            let mut scope = names.clone();
                             scope.extend(
                                 argument
                                     .locals
                                     .into_iter()
                                     .map(|(name, kind)| (name.value, kind)),
                             );
-                            self.prepare_value(
-                                stage,
-                                argument.expression,
-                                argument.relative.unwrap_or_else(|| kind.clone()),
-                                &scope,
-                                budget,
-                            )?;
+                            let entry = self
+                                .unit
+                                .prepare_value(
+                                    argument.expression,
+                                    &scope,
+                                    argument.relative,
+                                    budget,
+                                )
+                                .map_err(error)?;
+                            self.native_arguments.insert(
+                                (
+                                    Arc::as_ptr(stage) as usize,
+                                    argument.expression as *const _ as usize,
+                                ),
+                                entry,
+                            );
                         }
-                        None
                     }
-                };
-                for nested in report::nested(stage) {
-                    self.prepare_expression(
-                        nested,
-                        if matches!(
-                            stage,
+
+                    for nested in report::nested(stage) {
+                        let relative = if matches!(
+                            stage.as_ref(),
                             model::Stage::Fixpoint { .. } | model::Stage::Group { .. }
                         ) {
                             kind.clone()
                         } else {
                             program::Kind::Operations
+                        };
+                        self.prepare_expression(
+                            nested,
+                            relative,
+                            names,
+                            host,
+                            expressions,
+                            budget,
+                        )?;
+                    }
+                    if !matches!(
+                        stage.as_ref(),
+                        model::Stage::Emit { .. }
+                            | model::Stage::Format { .. }
+                            | model::Stage::Json { .. }
+                            | model::Stage::Markdown { .. }
+                            | model::Stage::Print { .. }
+                    ) {
+                        kind = host
+                            .stage_kind(stage, &kind, names, budget, &step.range)
+                            .map_err(core_error)?;
+                    }
+                } else {
+                    let source = zirql::Located::new(
+                        zirql::ExpressionKind::Sequence {
+                            input: Box::new(zirql::Located::new(
+                                zirql::ExpressionKind::Input,
+                                step.range.clone(),
+                            )),
+                            steps: vec![step.clone()],
                         },
-                        names,
+                        step.range.clone(),
+                    );
+                    kind = zirql::pattern_function_expression_kind(
+                        host.functions
+                            .iter()
+                            .map(|function| function.declaration.as_ref()),
                         host,
+                        &source,
+                        names,
+                        Some(kind),
+                        true,
                         budget,
-                    )?;
+                    )
+                    .map_err(core_error)?;
                 }
-                if let Some(prepared_kind) = prepared_kind {
-                    kind = prepared_kind;
-                    continue;
-                }
-                kind = program::Validator {
-                    host: report::ReportHost {
-                        functions: host.functions,
-                    },
-                }
-                .stages(std::slice::from_ref(stage), kind, names, budget)?;
             }
         }
-        program::Validator {
-            host: report::ReportHost {
-                functions: host.functions,
-            },
-        }
-        .expression(expression, input, names, budget)
+        Ok(result)
     }
     pub(super) fn prepare_program(
         &mut self,
         query: &'q Query,
         document_name: Option<&str>,
         host: &report::ReportHost<'q>,
+        program: &'q zirql::Program<model::NativeStage, model::SetOperator, program::Emitter>,
+        expressions: &'q BTreeMap<usize, report::Operand>,
         budget: &mut Budget,
     ) -> Result<(), EvaluationError> {
         let mut names = BTreeMap::new();
@@ -1107,9 +1102,17 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                 names.extend(program::parameter_names(std::slice::from_ref(d), budget)?);
             }
             if let model::Statement::PatternBinding { expression, .. } = statement {
-                let [model::Stage::PatternBinding { value, .. }] = expression.first.as_slice()
+                let [
+                    zirql::Located {
+                        value: zirql::ExpressionStep::Stage(stage),
+                        ..
+                    },
+                ] = expression.first.as_slice()
                 else {
-                    unreachable!("lowered pattern binding stage");
+                    unreachable!("lowered pattern binding stage")
+                };
+                let model::Stage::PatternBinding { value, .. } = stage.as_ref() else {
+                    unreachable!("lowered pattern binding stage")
                 };
                 let entry = self
                     .unit
@@ -1133,8 +1136,7 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                 budget
                     .charge_results(1, ValueLocation::Query(program::range(expression.range)))
                     .map_err(core_error)?;
-                self.bindings
-                    .insert(&expression.first[0] as *const _ as usize, entry);
+                self.bindings.insert(Arc::as_ptr(stage) as usize, entry);
                 continue;
             }
             let expression = match statement {
@@ -1148,6 +1150,7 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                 program::Kind::Operations,
                 &names,
                 host,
+                expressions,
                 budget,
             )?;
             if let model::Statement::Binding { name, .. } = statement {
@@ -1162,9 +1165,86 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
             program::Kind::Operations,
             &names,
             host,
+            expressions,
             budget,
         )?;
+        // Program assembly keeps parameter introduction and implicit emission local.
+        for statement in program.statements() {
+            let source = match &statement.value {
+                zirql::Statement::Bind { expression, .. }
+                | zirql::Statement::BindFields { expression, .. }
+                | zirql::Statement::Evaluate { expression, .. } => expression,
+            };
+            let Some(model_expression) = query
+                .statements
+                .iter()
+                .map(|statement| match statement {
+                    model::Statement::Binding { expression, .. }
+                    | model::Statement::PatternBinding { expression, .. }
+                    | model::Statement::Do(expression)
+                    | model::Statement::Query(expression) => expression,
+                })
+                .chain(std::iter::once(&query.expression))
+                .find(|expression| program::range(expression.range) == source.range)
+            else {
+                continue;
+            };
+            let original = &expressions[&(model_expression as *const _ as usize)];
+            // These entries borrow the same common bodies; statement bindings still supply their lexical scope at execution.
+            self.expression_aliases
+                .insert(source as *const _ as usize, original as *const _ as usize);
+        }
         Ok(())
+    }
+    pub(super) fn run_expression(
+        &self,
+        expression: &report::Operand,
+        context: &mut EvaluationContext<'a, 'd, 'q>,
+        input: QueryOutput,
+        bindings: &zirql::Bindings<QueryOutput>,
+        budget: &mut Budget,
+    ) -> Result<QueryOutput, EvaluationError> {
+        if let zirql::ExpressionKind::Sequence { steps, .. } = &expression.value
+            && let [
+                zirql::Located {
+                    value: zirql::ExpressionStep::Stage(stage),
+                    ..
+                },
+            ] = steps.as_slice()
+            && matches!(
+                stage.as_ref(),
+                model::Stage::Parameter { .. } | model::Stage::PatternBinding { .. }
+            )
+        {
+            return program::NativeHost
+                .evaluate_stage(stage, input, context, bindings, budget, &expression.range)
+                .map_err(program::evaluation_error);
+        }
+        let identity = expression as *const _ as usize;
+        let identity = self
+            .expression_aliases
+            .get(&identity)
+            .copied()
+            .unwrap_or(identity);
+        let entry = self.expressions.get(&identity).ok_or_else(|| {
+            EvaluationError::new("expression was not prepared").at(expression.range.clone())
+        })?;
+        let value = match entry {
+            Some(entry) => self
+                .unit
+                .evaluate_expression(entry, bindings, Some(&input), context, budget, self.limits)
+                .map_err(error)?,
+            None => zirql::evaluate_expression(
+                expression,
+                &program::NativeHost,
+                input,
+                context,
+                bindings,
+                budget,
+            )
+            .map_err(program::evaluation_error)?,
+        };
+        owned(value, budget, &expression.range)
     }
     pub(super) fn run_binding(
         &self,
@@ -1182,42 +1262,7 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
             .map(|capture| QueryOutput::Native(NativeValue::Capture(capture)))
             .map_err(error)
     }
-    pub(super) fn run_projection(
-        &self,
-        projection: &zirql::Projection<report::Operand>,
-        context: &mut EvaluationContext<'a, 'd, 'q>,
-        input: QueryOutput,
-        bindings: &zirql::Bindings<QueryOutput>,
-        budget: &mut Budget,
-    ) -> Result<zirql::ConstructedResult, EvaluationError> {
-        capture::slots::<&Entry<'_>>(projection.fields.len(), budget, &projection.subject.range)?;
-        let mut fields = Vec::with_capacity(projection.fields.len());
-        for (_, value) in &projection.fields {
-            fields.push(
-                self.entries
-                    .get(&(context.current_stage, value as *const _ as usize))
-                    .ok_or_else(|| {
-                        EvaluationError::new(
-                            "written function entry was not prepared in this scope",
-                        )
-                        .at(value.range.clone())
-                    })?,
-            );
-        }
-        self.unit
-            .evaluate_projection(
-                projection,
-                &fields,
-                input,
-                bindings,
-                context,
-                budget,
-                self.limits,
-            )
-            .map_err(error)
-    }
-
-    pub(super) fn run(
+    pub(super) fn run_native_argument(
         &self,
         value: &zirql::ValueExpression<report::Operand>,
         context: &mut EvaluationContext<'a, 'd, 'q>,
@@ -1226,10 +1271,10 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
         budget: &mut Budget,
     ) -> Result<QueryOutput, EvaluationError> {
         let entry = self
-            .entries
+            .native_arguments
             .get(&(context.current_stage, value as *const _ as usize))
             .ok_or_else(|| {
-                EvaluationError::new("written function entry was not prepared in this scope")
+                EvaluationError::new("native argument was not prepared in this scope")
                     .at(value.range.clone())
             })?;
         self.unit
@@ -1247,7 +1292,7 @@ pub(super) fn evaluate(
 ) -> Result<QueryOutput, EvaluationError> {
     context
         .functions
-        .run(&value.expression, context, &input, bindings, budget)
+        .run_native_argument(&value.expression, context, &input, bindings, budget)
 }
 pub(super) fn owned(
     mut value: QueryOutput,
@@ -1465,7 +1510,7 @@ pub(super) fn normalize_outer(
 }
 fn normalize_wrapper(value: &mut zirql::ValueExpression<report::Operand>) {
     use zirql::ValueExpressionKind as K;
-    if matches!(&value.value,K::NativeQuery(q) if matches!(&q.value,zirql::ExpressionKind::Sequence{steps,..} if steps.len()==1 && matches!(&steps[0].value,zirql::ExpressionStep::Stage(model::Stage::FunctionValue{..}))))
+    if matches!(&value.value,K::NativeQuery(q) if matches!(&q.value,zirql::ExpressionKind::Sequence{steps,..} if steps.len()==1 && matches!(&steps[0].value,zirql::ExpressionStep::Value(_))))
     {
         let K::NativeQuery(query) =
             std::mem::replace(&mut value.value, K::Literal(ConstructedValue::Absent))
@@ -1526,18 +1571,4 @@ fn admit_fields<'v>(
         }
     }
     Ok(())
-}
-
-/// Only preparation copies lexical kind metadata; runtime shares value bindings.
-pub(super) fn copy_scope(
-    names: &BTreeMap<String, program::Kind>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<BTreeMap<String, program::Kind>, zirql::QueryError> {
-    budget.charge(
-        names.keys().map(|name| name.len() + 1).sum(),
-        ValueLocation::Query(range.clone()),
-    )?;
-    budget.charge_results(names.len(), ValueLocation::Query(range.clone()))?;
-    Ok(names.clone())
 }

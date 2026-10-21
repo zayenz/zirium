@@ -15,7 +15,7 @@ fn range() -> TextRange {
 }
 fn expression(stages: Vec<Stage>) -> Expression {
     Expression {
-        first: stages,
+        first: stages.into_iter().map(model::native).collect(),
         rest: Vec::new(),
         range: range(),
     }
@@ -149,7 +149,7 @@ impl<T> QueryExpr<T> {
     }
     fn append<U>(
         &self,
-        stage: Stage,
+        stage: impl Into<model::Step>,
         depth: usize,
         nodes: usize,
         invalid: Option<&'static str>,
@@ -166,7 +166,7 @@ impl<T> QueryExpr<T> {
             self.expression.clone()
         };
         if invalid.is_none() {
-            expression.first.push(stage);
+            expression.first.push(stage.into());
         }
         QueryExpr {
             functions: self.functions.clone(),
@@ -179,7 +179,13 @@ impl<T> QueryExpr<T> {
             result: PhantomData,
         }
     }
-    fn stage<U>(&self, stage: Stage) -> QueryExpr<U> {
+    fn start_step(step: model::Step) -> Self {
+        let mut query = Self::start(Vec::new());
+        query.expression.first.push(step);
+        query.nodes = 1;
+        query
+    }
+    fn stage<U>(&self, stage: impl Into<model::Step>) -> QueryExpr<U> {
         self.append(stage, 1, 1, None)
     }
     fn structured<U>(&self, step: StructuredStage) -> QueryExpr<U> {
@@ -319,13 +325,6 @@ impl<T> QueryExpr<T> {
             self.function_limits,
             budget,
         )?;
-        functions.prepare_expression(
-            &self.expression,
-            program::Kind::Operations,
-            &names,
-            &function_host,
-            budget,
-        )?;
 
         let selected = QueryOutput::Operations(collect(budget, document.operations())?);
         let mut access = DocumentAccess::Shared(document);
@@ -335,6 +334,14 @@ impl<T> QueryExpr<T> {
         let function_roots = functions::expression_roots(&self.functions, budget)?;
         let expressions = program::expressions(
             std::iter::once(&self.expression).chain(function_roots),
+            budget,
+        )?;
+        functions.prepare_expression(
+            &self.expression,
+            program::Kind::Operations,
+            &names,
+            &function_host,
+            &expressions,
             budget,
         )?;
         let mut context = EvaluationContext {
@@ -489,7 +496,7 @@ impl OpQuery {
         self.append(
             Stage::Paths {
                 value: capture::ParsedPaths::new(zirql::NativePaths {
-                    edge: zirql::Located::new(edge, 0..0),
+                    edge: zirql::Located::new(std::sync::Arc::new(edge), 0..0),
                     target: path_target(to.inner),
                     max_depth: zirql::Located::new(max_depth, 0..0),
                     range: 0..0,
@@ -764,7 +771,8 @@ macro_rules! sets {
             fn set(&self, right: &Self, operator: model::SetOperator) -> Self {
                 // A chain of set operators stays flat, just like the textual language.
                 let (mut left, left_depth) = match self.expression.first.as_slice() {
-                    [Stage::Group { expression, .. }] if !expression.rest.is_empty() => {
+                    [zirql::Located { value: zirql::ExpressionStep::Stage(stage), .. }] if matches!(stage.as_ref(), Stage::Group { expression, .. } if !expression.rest.is_empty()) => {
+                        let Stage::Group { expression, .. } = stage.as_ref() else { unreachable!() };
                         ((**expression).clone(), self.depth)
                     }
                     _ => (
@@ -777,10 +785,10 @@ macro_rules! sets {
                 };
                 left.rest.push((
                     operator,
-                    vec![Stage::Group {
+                    vec![model::native(Stage::Group {
                         expression: Box::new(right.expression.clone()),
                         range: range(),
-                    }],
+                    })],
                 ));
                 QueryExpr::<()>::start(Vec::new())
                     .append(
@@ -1245,7 +1253,7 @@ impl QueryResult for QueryOutput {
 /// Constructed report data, before JSON or Python rendering.
 pub type ReportQuery = QueryExpr<ConstructedReport>;
 /// The shared native operand representation used by report expressions.
-pub type ReportOperand = zirql::Expression<parser::Stage, parser::SetOperator, ()>;
+pub type ReportOperand = report::Operand;
 
 /// Immutable shared value expression. Native leaves retain typed query trees.
 #[derive(Clone, Debug)]
@@ -1291,12 +1299,11 @@ impl ReportExpr {
             );
         }
         zirql::Located::new(
-            zirql::ValueExpressionKind::NativeValue(Box::new(report::operand(
-                &super::builder::expression(vec![Stage::FunctionValue {
-                    value: self.value,
-                    range: range(),
-                }]),
-            ))),
+            zirql::ValueExpressionKind::NativeValue(Box::new(report::value_operand(&Expression {
+                first: vec![model::value(self.value)],
+                rest: Vec::new(),
+                range: range(),
+            }))),
             0..0,
         )
     }
@@ -1855,13 +1862,13 @@ fn project_rows<T, S: Into<String>>(
         })
         .collect();
     query
-        .stage(Stage::Projection {
-            value: report::ParsedProjection::new(zirql::Projection {
+        .stage(zirql::Located::new(
+            zirql::ExpressionStep::Projection(std::sync::Arc::new(zirql::Projection {
                 subject: zirql::Located::new(subject.into(), 0..0),
                 fields,
-            }),
-            range: range(),
-        })
+            })),
+            0..0,
+        ))
         .with_parameters(parameters)
         .with_functions(functions)
 }
@@ -1876,11 +1883,7 @@ impl OpQuery {
 }
 /// Construct a typed read-only report without requesting an emitter.
 pub fn report(value: ReportExpr) -> ReportQuery {
-    let stage = Stage::FunctionValue {
-        value: value.value,
-        range: range(),
-    };
-    QueryExpr::start(vec![stage])
+    QueryExpr::start_step(model::value(value.value))
         .with_parameters(value.parameters)
         .with_functions(value.functions)
 }
@@ -1889,7 +1892,7 @@ macro_rules! report_query_conversion {
         impl From<QueryExpr<$result>> for ReportExpr {
             fn from(query: QueryExpr<$result>) -> Self {
                 Self::node(zirql::ValueExpressionKind::NativeQuery(Box::new(
-                    report::operand(&query.expression),
+                    report::value_operand(&query.expression),
                 )))
                 .with_metadata(query.parameters, query.functions)
             }
@@ -1945,7 +1948,7 @@ impl OpQuery {
     /// Read a required zero-based operand from exactly one selected operation.
     pub fn operand(&self, index: usize) -> SsaQuery {
         let mut query = QueryExpr::start(vec![Stage::Operand {
-            operation: capture::ParsedOperand::new(report::operand(&self.expression)),
+            operation: capture::ParsedOperand::new(report::value_operand(&self.expression)),
             index,
             range: range(),
         }])
@@ -2006,8 +2009,8 @@ pub fn same_value(left: &SsaQuery, right: &SsaQuery) -> MatchPredicate {
         functions: functions::merge(&left.functions, &right.functions),
         inner: zirql::Located::new(
             zirql::PredicateKind::Leaf(model::Predicate::SameValue {
-                left: capture::ParsedOperand::new(report::operand(&left.expression)),
-                right: capture::ParsedOperand::new(report::operand(&right.expression)),
+                left: capture::ParsedOperand::new(report::value_operand(&left.expression)),
+                right: capture::ParsedOperand::new(report::value_operand(&right.expression)),
                 range: range(),
             }),
             0..0,
@@ -2148,7 +2151,7 @@ impl MatchBuilder {
         self.depth = self.depth.max(query.depth.saturating_add(1));
         self.nodes = self.nodes.saturating_add(query.nodes).saturating_add(1);
         self.invalid = self.invalid.or(query.invalid);
-        let source = capture::ParsedOperand::new(report::operand(&query.expression));
+        let source = capture::ParsedOperand::new(report::value_operand(&query.expression));
         let name = zirql::Located::new(name, 0..0);
         let clause = if binding {
             zirql::MatchClause::Bind {
@@ -2257,7 +2260,7 @@ impl ReportExpr {
     /// Retain a native query result as an explicit function operand.
     pub fn native<T>(query: &QueryExpr<T>) -> Self {
         Self::node(zirql::ValueExpressionKind::NativeValue(Box::new(
-            report::operand(&query.expression),
+            report::value_operand(&query.expression),
         )))
         .with_metadata(query.parameters.clone(), query.functions.clone())
     }
@@ -2296,12 +2299,9 @@ pub fn function_call<T: QueryResult>(
     arguments: impl IntoIterator<Item = ReportExpr>,
 ) -> QueryExpr<T> {
     let call = ReportExpr::call(name, arguments);
-    QueryExpr::start(vec![Stage::FunctionValue {
-        value: call.value,
-        range: range(),
-    }])
-    .with_parameters(call.parameters)
-    .with_functions(call.functions)
+    QueryExpr::start_step(model::value(call.value))
+        .with_parameters(call.parameters)
+        .with_functions(call.functions)
 }
 
 impl ReportExpr {
@@ -2328,7 +2328,7 @@ impl ReportExpr {
     }
     pub fn native_input(value: QueryOutput) -> Self {
         Self::node(zirql::ValueExpressionKind::NativeValue(Box::new(
-            report::operand(&expression(vec![Stage::FunctionInput {
+            report::value_operand(&expression(vec![Stage::FunctionInput {
                 value: std::sync::Arc::new(value),
                 range: range(),
             }])),

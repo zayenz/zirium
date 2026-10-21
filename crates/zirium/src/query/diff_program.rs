@@ -263,7 +263,6 @@ pub(super) enum Leaf {
 
 #[derive(Debug)]
 pub(super) enum DiffStage {
-    UnsupportedProjection,
     Value(SharedValue),
     Nested(Box<OwnedExpression>),
     Stream(zirql::Pipeline<Leaf>),
@@ -909,10 +908,6 @@ fn evaluate_stage(
 ) -> Result<DiffProgramOutput, EvaluationError> {
     let diff = context.diff;
     match stage {
-        DiffStage::UnsupportedProjection => Err(failure(
-            "projection records are unsupported in diff mode",
-            range,
-        )),
         DiffStage::Value(value_expression) => {
             let result = zirql::evaluate_native_value_with_types(
                 &value_expression.0,
@@ -2098,12 +2093,6 @@ fn validate_stage(
             }
             kind
         }
-        DiffStage::UnsupportedProjection => {
-            return Err(failure(
-                "projection records are unsupported in diff mode",
-                range,
-            ));
-        }
         DiffStage::Value(_) => Kind::Constructed,
         DiffStage::Nested(expression) => validate_expression(expression, input, names)?,
         DiffStage::Input => Kind::Changes,
@@ -2421,11 +2410,7 @@ impl ProjectionHost<Context<'_, '_>> for DiffProjectionHost {
         }
         !matches!(
             stage,
-            DiffStage::UnsupportedProjection
-                | DiffStage::Json
-                | DiffStage::Markdown
-                | DiffStage::Print(_)
-                | DiffStage::Noop
+            DiffStage::Json | DiffStage::Markdown | DiffStage::Print(_) | DiffStage::Noop
         )
     }
     fn nested_queries(

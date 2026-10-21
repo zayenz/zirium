@@ -6,8 +6,18 @@ use zirium::query::{
     parser::{Predicate, Program, Stage, parse, parse_with_nesting_limit},
 };
 
+fn native_stages(steps: &[zirium::query::parser::Step]) -> Vec<&Stage> {
+    steps
+        .iter()
+        .map(|step| match &step.value {
+            zirql::ExpressionStep::Stage(stage) => stage.as_ref(),
+            _ => panic!("expected native stage"),
+        })
+        .collect()
+}
+
 fn initial_predicate(program: &Program) -> &Predicate {
-    let Stage::Filter { predicate, .. } = &program.expression().first[0] else {
+    let Stage::Filter { predicate, .. } = native_stages(&program.expression().first)[0] else {
         panic!("expected filter")
     };
     predicate
@@ -111,7 +121,7 @@ fn parser_distinguishes_do_statements_from_emitting_queries() {
         [zirium::query::parser::Statement::Do(_)]
     ));
     assert!(matches!(
-        program.expression().first.as_slice(),
+        native_stages(&program.expression().first).as_slice(),
         [Stage::Filter { .. }]
     ));
 
@@ -177,7 +187,7 @@ fn parser_builds_ranged_syntax_with_insignificant_whitespace() {
         matches!(initial_predicate(program), Predicate::Op { name, .. } if name == "arith.addi")
     );
     assert!(
-        matches!(&program.expression().first[1..], [Stage::SetAttr { name, value, .. }, Stage::Count { .. }] if name == "tag" && value == "hot")
+        matches!(native_stages(&program.expression().first[1..]).as_slice(), [Stage::SetAttr { name, value, .. }, Stage::Count { .. }] if name == "tag" && value == "hot")
     );
 }
 
@@ -187,7 +197,7 @@ fn parser_builds_ranged_remove_attr_stage() {
     let parsed = parse(&lex(source));
     assert!(parsed.diagnostics().is_empty());
     assert!(matches!(
-        &parsed.program().unwrap().expression().first[1..],
+        native_stages(&parsed.program().unwrap().expression().first[1..]).as_slice(),
         [Stage::RemoveAttr { name, range }] if name == "analysis.tag" && range.as_range() == (18..source.len())
     ));
 }
@@ -198,7 +208,7 @@ fn parser_builds_ranged_relationship_stages() {
     let parsed = parse(&lex(source));
     assert!(parsed.diagnostics().is_empty());
     assert!(matches!(
-        &parsed.program().unwrap().expression().first[1..],
+        native_stages(&parsed.program().unwrap().expression().first[1..]).as_slice(),
         [
             Stage::Defs { .. },
             Stage::Users { .. },
@@ -210,8 +220,8 @@ fn parser_builds_ranged_relationship_stages() {
     ));
     assert_eq!(
         parsed.program().unwrap().expression().first[1]
-            .range()
-            .as_range(),
+            .range
+            .clone(),
         18..22
     );
 }
@@ -222,7 +232,7 @@ fn parser_builds_ordering_reduction_and_bound_stages() {
     let parsed = parse(&lex(source));
     assert!(parsed.diagnostics().is_empty());
     assert!(matches!(
-        parsed.program().unwrap().expression().first.as_slice(),
+        native_stages(&parsed.program().unwrap().expression().first).as_slice(),
         [
             Stage::SortBy { .. },
             Stage::Reverse { .. },
@@ -242,7 +252,7 @@ fn parser_builds_root_projection_and_json_stages() {
     let parsed = parse(&lex(source));
     assert!(parsed.diagnostics().is_empty());
     assert!(matches!(
-        parsed.program().unwrap().expression().first.as_slice(),
+        native_stages(&parsed.program().unwrap().expression().first).as_slice(),
         [
             Stage::Root {
                 predicate: Predicate::Op { name: operation, .. },
@@ -264,7 +274,7 @@ fn parser_builds_format_stage_with_options() {
     ));
     assert!(parsed.diagnostics().is_empty());
     assert!(matches!(
-        parsed.program().unwrap().expression().first.as_slice(),
+        native_stages(&parsed.program().unwrap().expression().first).as_slice(),
         [Stage::Format { options, .. }]
             if *options == FormatOptions {
                 assembly: AssemblyStyle::Generic,
@@ -292,11 +302,11 @@ fn pipes_bind_more_tightly_than_set_operators() {
     assert_eq!(expression.first.len(), 2);
     assert!(matches!(expression.rest.as_slice(), [
         (SetOperator::Union, right), (SetOperator::Except, last)
-    ] if matches!(right.as_slice(), [Stage::Users { .. }, Stage::Parent { .. }])
-        && matches!(last.as_slice(), [Stage::Children { .. }])));
+    ] if matches!(native_stages(right).as_slice(), [Stage::Users { .. }, Stage::Parent { .. }])
+        && matches!(native_stages(last).as_slice(), [Stage::Children { .. }])));
     let grouped = parse(&lex("(defs union users) | parent"));
     assert!(matches!(
-        grouped.program().unwrap().expression().first.as_slice(),
+        native_stages(&grouped.program().unwrap().expression().first).as_slice(),
         [Stage::Group { .. }, Stage::Parent { .. }]
     ));
 }

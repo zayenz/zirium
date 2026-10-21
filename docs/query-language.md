@@ -677,7 +677,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`402eede8a28008b52a36afa1fd301b3bab251e0a`](https://github.com/zayenz/zirql/commit/402eede8a28008b52a36afa1fd301b3bab251e0a).
+[`5d6a466a6ee9bac2a90c2dfbc5579a0b0c12f08d`](https://github.com/zayenz/zirql/commit/5d6a466a6ee9bac2a90c2dfbc5579a0b0c12f08d).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -1623,12 +1623,15 @@ checks overflow; empty identities are 0, 0, true and false.
 its value only when the condition is true. On false it fails with the message.
 An unchosen value still receives scope, known-type and purity validation.
 
-Each report invocation prepares field bodies and embedded scalar/native arguments
-once. Rows and generator values use the current local scope; selected native
-operations still run against the current document. Preparation checks every
-written branch, while Boolean branches and default fallbacks keep their existing
-runtime demand. Reusing a parsed query prepares a fresh invocation for its new
-input.
+Value sources, constructed records and `project` fields lower to Zirql's common
+`Value` and `Projection` steps. Each request prepares those expressions once
+through its shared function unit before executing statements. Rows and generator
+values use the current local scope; selected native operations run against the
+current document. Preparation checks every written branch, while Boolean
+branches and default fallbacks keep their existing runtime demand. Reusing a
+parsed query prepares a fresh invocation for its new input. See the
+[shared projection contract](https://zayenz.se/zirql/guides/host-integration/#correlated-native-projection)
+for field scope and empty-schema rules.
 
 Immutable constructed binding reads can share their retained value inside that
 invocation. Inspection and slot sharing charge their actual work without copying
@@ -2106,7 +2109,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `402eede8a28008b52a36afa1fd301b3bab251e0a`
+The development dependency pins Zirql `5d6a466a6ee9bac2a90c2dfbc5579a0b0c12f08d`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.

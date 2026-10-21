@@ -7,37 +7,8 @@ use zirql::{
     Location, ProgramHost, ProjectionHost, ValueType,
 };
 
-pub(super) type Operand = zirql::Expression<model::Stage, model::SetOperator, ()>;
-#[derive(Debug, PartialEq)]
-pub struct ParsedProjection {
-    pub(super) projection: Arc<zirql::Projection<Operand>>,
-}
-impl Clone for ParsedProjection {
-    fn clone(&self) -> Self {
-        Self {
-            projection: Arc::clone(&self.projection),
-        }
-    }
-}
-impl Drop for ParsedProjection {
-    fn drop(&mut self) {
-        if let Some(projection) = Arc::get_mut(&mut self.projection) {
-            for (_, value) in std::mem::take(&mut projection.fields) {
-                dispose_value(value.value);
-            }
-        }
-    }
-}
-// The frontend admits finite scalar literals before retaining these trees.
-impl Eq for ParsedProjection {}
-impl ParsedProjection {
-    pub(super) fn new(projection: zirql::Projection<Operand>) -> Self {
-        Self {
-            projection: Arc::new(projection),
-        }
-    }
-}
-
+pub(super) type Operand =
+    zirql::Expression<model::NativeStage, model::SetOperator, program::Emitter>;
 /// A stage-owned selector keeps its prepared lexical body stable across rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OrderingSelector {
@@ -49,7 +20,7 @@ impl OrderingSelector {
         if expression.is_map_value() {
             Self::MapValue(expression.range)
         } else {
-            Self::from_operand(operand(expression))
+            Self::from_operand(value_operand(expression))
         }
     }
     pub(super) fn from_operand(expression: Operand) -> Self {
@@ -89,7 +60,9 @@ pub(super) fn native_selector(expression: Operand) -> comprehension::ParsedCompr
         X::Sequence {
             input: Box::new(expression),
             steps: vec![Located::new(
-                Step::Stage(model::Stage::RetainSelector { range: query_range }),
+                Step::Stage(Arc::new(model::Stage::RetainSelector {
+                    range: query_range,
+                })),
                 range.clone(),
             )],
         },
@@ -145,9 +118,13 @@ fn evaluate_selector(
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
-    let value = context
-        .functions
-        .run(&selector.expression, context, &input, bindings, budget)?;
+    let value = context.functions.run_native_argument(
+        &selector.expression,
+        context,
+        &input,
+        bindings,
+        budget,
+    )?;
     map_result(value, budget, range)
 }
 pub(super) fn native_body_is_read_only(value: &comprehension::ParsedComprehension) -> bool {
@@ -252,6 +229,7 @@ fn operand_is_read_only(query: &Operand) -> bool {
                 if !steps.iter().all(|step| match &step.value {
                     Step::Stage(stage) => stage.is_read_only(),
                     Step::Emit { .. } => false,
+                    Step::Value(_) | Step::Projection(_) => true,
                 }) {
                     return false;
                 }
@@ -268,42 +246,140 @@ fn operand_is_read_only(query: &Operand) -> bool {
 }
 
 pub(super) fn operand(expression: &model::Expression) -> Operand {
-    fn stages(stages: &[model::Stage], range: Range<usize>) -> Operand {
+    lower_operand(expression, false)
+}
+
+/// Shared value operands retain stable selector arguments for the active runner.
+pub(super) fn value_operand(expression: &model::Expression) -> Operand {
+    lower_operand(expression, true)
+}
+
+fn lower_operand(expression: &model::Expression, shared_arguments: bool) -> Operand {
+    fn stages(stages: &[model::Step], range: Range<usize>, shared_arguments: bool) -> Operand {
         let mut input = Located::new(X::Input, range.clone());
         let mut steps = vec![];
-        for (index, stage) in stages.iter().enumerate() {
-            match stage {
-                model::Stage::Binding { name, .. } if index == 0 => {
-                    input = Located::new(X::Binding(name.clone()), program::range(stage.range()))
+        for (index, step) in stages.iter().enumerate() {
+            if let Step::Stage(stage) = &step.value {
+                match stage.as_ref() {
+                    model::Stage::Binding { name, .. } if index == 0 => {
+                        input = Located::new(X::Binding(name.clone()), step.range.clone());
+                        continue;
+                    }
+                    model::Stage::Group { expression, .. } if index == 0 => {
+                        input = Located::new(
+                            X::Group(Box::new(lower_operand(expression, shared_arguments))),
+                            step.range.clone(),
+                        );
+                        continue;
+                    }
+                    model::Stage::MapBy { key, value, .. }
+                    | model::Stage::Structured {
+                        step: model::StructuredStage::MapBy { key, value },
+                        ..
+                    } if shared_arguments => {
+                        steps.push(Located::new(
+                            Step::Stage(Arc::new(model::Stage::NativeMap {
+                                mapping: zirql::NativeMap {
+                                    key: native_selector(value_operand(key)),
+                                    value: native_selector(value_operand(value)),
+                                },
+                                range: model::step_range(step),
+                            })),
+                            step.range.clone(),
+                        ));
+                        continue;
+                    }
+                    model::Stage::Structured {
+                        step: model::StructuredStage::WhereExists(expression),
+                        ..
+                    } if shared_arguments => {
+                        steps.push(Located::new(
+                            Step::Stage(Arc::new(model::Stage::WhereExists {
+                                relation: native_selector(value_operand(expression)),
+                                range: model::step_range(step),
+                            })),
+                            step.range.clone(),
+                        ));
+                        continue;
+                    }
+                    model::Stage::Fixpoint {
+                        expression: model::FixedPointBody::Selection(expression),
+                        ..
+                    } if shared_arguments => {
+                        steps.push(Located::new(
+                            Step::Stage(Arc::new(model::Stage::Fixpoint {
+                                expression: model::FixedPointBody::Native(native_selector(
+                                    value_operand(expression),
+                                )),
+                                range: model::step_range(step),
+                            })),
+                            step.range.clone(),
+                        ));
+                        continue;
+                    }
+                    model::Stage::Group { expression, .. } if shared_arguments => {
+                        steps.push(Located::new(
+                            Step::Value(Arc::new(Located::new(
+                                zirql::ValueExpressionKind::NativeValue(Box::new(value_operand(
+                                    expression,
+                                ))),
+                                step.range.clone(),
+                            ))),
+                            step.range.clone(),
+                        ));
+                        continue;
+                    }
+                    model::Stage::Emit { .. }
+                    | model::Stage::Format { .. }
+                    | model::Stage::Json { .. }
+                    | model::Stage::Markdown { .. } => {
+                        steps.push(Located::new(
+                            Step::Emit {
+                                emitter: program::Emitter::Written(Arc::clone(stage)),
+                                policy: zirql::EmissionPolicy::PassThrough,
+                            },
+                            step.range.clone(),
+                        ));
+                        continue;
+                    }
+                    _ => {}
                 }
-                model::Stage::Group { expression, .. } if index == 0 => {
-                    input = Located::new(
-                        X::Group(Box::new(operand(expression))),
-                        program::range(stage.range()),
-                    )
+                steps.push(step.clone());
+                if matches!(stage.as_ref(), model::Stage::Print { .. })
+                    || matches!(stage.as_ref(), model::Stage::Group { expression, .. } if expression.ends_with_emission())
+                {
+                    steps.push(Located::new(
+                        Step::Emit {
+                            emitter: program::Emitter::AlreadyEmitted,
+                            policy: zirql::EmissionPolicy::PassThrough,
+                        },
+                        step.range.clone(),
+                    ));
                 }
-                _ => steps.push(Located::new(
-                    Step::Stage(stage.clone()),
-                    program::range(stage.range()),
-                )),
+            } else {
+                steps.push(step.clone());
             }
         }
-        Located::new(
-            X::Sequence {
-                input: Box::new(input),
-                steps,
-            },
-            range,
-        )
+        if steps.is_empty() {
+            input
+        } else {
+            Located::new(
+                X::Sequence {
+                    input: Box::new(input),
+                    steps,
+                },
+                range,
+            )
+        }
     }
     let range = program::range(expression.range);
-    let mut value = stages(&expression.first, range.clone());
+    let mut value = stages(&expression.first, range.clone(), shared_arguments);
     for (operator, right) in &expression.rest {
         value = Located::new(
             X::Set {
                 operator: *operator,
                 left: Box::new(value),
-                right: Box::new(stages(right, range.clone())),
+                right: Box::new(stages(right, range.clone(), shared_arguments)),
             },
             range.clone(),
         );
@@ -326,11 +402,9 @@ pub(super) fn retain_tally_continuations(
                 while index < steps.len() {
                     if matches!(
                         steps[index - 1].value,
-                        Step::Stage(model::Stage::Tally { .. })
-                    ) && !matches!(
-                        steps[index].value,
-                        Step::Stage(model::Stage::TallyContinuation { .. }) | Step::Emit { .. }
-                    ) {
+                        Step::Stage(ref stage) if matches!(stage.as_ref(), model::Stage::Tally { .. })
+                    ) && !matches!(steps[index].value, Step::Emit { .. })
+                    {
                         let range = steps[index].range.clone();
                         budget.charge(
                             std::mem::size_of::<model::Stage>(),
@@ -343,9 +417,9 @@ pub(super) fn retain_tally_continuations(
                         steps.insert(
                             index,
                             Located::new(
-                                Step::Stage(model::Stage::TallyContinuation {
+                                Step::Stage(Arc::new(model::Stage::TallyContinuation {
                                     range: native_range,
-                                }),
+                                })),
                                 range,
                             ),
                         );
@@ -441,34 +515,14 @@ pub(super) fn evaluate(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<comprehension::ConstructedReport, EvaluationError> {
-    let result = context
-        .functions
-        .run(&value.expression, context, &input, bindings, budget)?;
+    let result = context.functions.run_native_argument(
+        &value.expression,
+        context,
+        &input,
+        bindings,
+        budget,
+    )?;
     functions::constructed(result, budget, &value.expression.range)
-}
-pub(super) fn project(
-    value: &ParsedProjection,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    input: QueryOutput,
-    bindings: &Bindings<QueryOutput>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<comprehension::ConstructedReport, EvaluationError> {
-    if parser::is_reserved(&value.projection.subject.value) || value.projection.subject.value == "_"
-    {
-        return Err(
-            EvaluationError::new("projection subject name is reserved").at(value
-                .projection
-                .subject
-                .range
-                .clone()),
-        );
-    }
-    let result =
-        context
-            .functions
-            .run_projection(&value.projection, context, input, bindings, budget)?;
-    comprehension::ConstructedReport::with_types(result.value, result.types, range.clone(), budget)
 }
 pub(super) fn runtime_kinds(
     bindings: &Bindings<QueryOutput>,
@@ -544,9 +598,9 @@ pub(super) struct ReportHost<'f> {
 pub(super) const ReportHost: ReportHost<'static> = ReportHost { functions: &[] };
 impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     type Value = QueryOutput;
-    type Stage = model::Stage;
+    type Stage = model::NativeStage;
     type SetOperator = model::SetOperator;
-    type Emitter = ();
+    type Emitter = program::Emitter;
     type Error = EvaluationError;
     fn copy_value(
         &self,
@@ -566,22 +620,14 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     }
     fn evaluate_stage(
         &self,
-        stage: &model::Stage,
+        stage: &model::NativeStage,
         input: QueryOutput,
         context: &mut EvaluationContext<'_, '_, 'q>,
         bindings: &Bindings<QueryOutput>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
-        let value = if pipeline::is_stream_stage(stage) && pipeline::is_stream(&input) {
-            let pipeline = pipeline::lower(std::slice::from_ref(stage))
-                .map_err(zirql::EvaluationError::Host)?;
-            pipeline::evaluate(&pipeline, context, input, bindings, budget)
-        } else {
-            charge(budget, output_size(&input).max(1))
-                .and_then(|()| evaluate_host_stage(stage, context, input, bindings, budget))
-        };
-        value.map_err(|error| zirql::EvaluationError::Host(error.at(range.clone())))
+        program::NativeHost.evaluate_stage(stage, input, context, bindings, budget, range)
     }
     fn combine(
         &self,
@@ -626,13 +672,13 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     }
     fn emit(
         &self,
-        _: &(),
-        _: &QueryOutput,
-        _: &mut EvaluationContext<'_, '_, 'q>,
-        _: &mut Budget,
+        emitter: &program::Emitter,
+        value: &QueryOutput,
+        context: &mut EvaluationContext<'_, '_, 'q>,
+        budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
-        Err(zirql::QueryError::query(range.clone(), "constructed expressions cannot emit").into())
+        program::NativeHost.emit(emitter, value, context, budget, range)
     }
 }
 impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
@@ -665,13 +711,14 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
 
     fn value_arguments<'s>(
         &self,
-        stage: &'s model::Stage,
+        stage: &'s model::NativeStage,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<
         zirql::NativeValueArguments<'s, EvaluationContext<'_, '_, 'q>, Self>,
         zirql::QueryError,
     > {
+        let stage = stage.as_ref();
         fn nodes(predicate: &model::Predicate) -> usize {
             match predicate {
                 model::Predicate::Not { predicate, .. }
@@ -710,20 +757,6 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 }
             }
         }
-        if let model::Stage::Projection { value, .. } = stage {
-            capture::slots::<(&zirql::ValueExpression<Operand>, program::Kind)>(
-                value.projection.fields.len(),
-                budget,
-                range,
-            )
-            .map_err(query_error)?;
-            return Ok(value
-                .projection
-                .fields
-                .iter()
-                .map(|(_, field)| (field, program::Kind::Operations))
-                .collect());
-        }
         if let model::Stage::NativeMap { mapping, .. } = stage {
             let mut values = Vec::new();
             budget.charge_results(2, Location::Query(range.clone()))?;
@@ -760,9 +793,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             budget.charge_results(1, Location::Query(range.clone()))?;
             return Ok(vec![(&value.expression, program::Kind::Operations)]);
         }
-        if let model::Stage::FunctionValue { value, .. }
-        | model::Stage::Comprehension { value, .. }
-        | model::Stage::ConstructedSuffix { value, .. }
+        if let model::Stage::ConstructedSuffix { value, .. }
         | model::Stage::Count {
             constructed: value, ..
         }
@@ -888,7 +919,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     }
     fn scoped_value_arguments<'s>(
         &self,
-        stage: &'s model::Stage,
+        stage: &'s model::NativeStage,
         input: &program::Kind,
         names: &BTreeMap<String, program::Kind>,
         budget: &mut Budget,
@@ -897,14 +928,8 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         zirql::ScopedNativeValueArguments<'s, EvaluationContext<'_, '_, 'q>, Self>,
         zirql::QueryError,
     > {
-        if let model::Stage::FunctionValue { value, .. } = stage {
-            budget.charge_results(1, Location::Query(range.clone()))?;
-            return Ok(vec![zirql::ScopedNativeArgument {
-                expression: &value.expression,
-                relative: Some(input.clone()),
-                locals: Vec::new(),
-            }]);
-        }
+        let shared_stage = stage;
+        let stage = stage.as_ref();
         if let model::Stage::Native { value, .. }
         | model::Stage::Operand {
             operation: value, ..
@@ -991,31 +1016,6 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         ) {
             return Ok(Vec::new());
         }
-        if let model::Stage::Projection { value, .. } = stage {
-            let projection = &value.projection;
-            let subject = self.subject_kind(input, budget, &projection.subject.range)?;
-            capture::slots::<zirql::ScopedNativeArgument<'_, Operand, program::Kind>>(
-                projection.fields.len(),
-                budget,
-                range,
-            )
-            .map_err(query_error)?;
-            let mut arguments = Vec::with_capacity(projection.fields.len());
-            for (_, expression) in &projection.fields {
-                capture::slots::<(zirql::Located<String>, program::Kind)>(1, budget, range)
-                    .map_err(query_error)?;
-                budget.charge(
-                    projection.subject.value.len(),
-                    Location::Query(projection.subject.range.clone()),
-                )?;
-                arguments.push(zirql::ScopedNativeArgument {
-                    expression,
-                    relative: Some(subject.clone()),
-                    locals: vec![(projection.subject.clone(), subject.clone())],
-                });
-            }
-            return Ok(arguments);
-        }
         let arguments = if let model::Stage::WhereExists { relation, .. } = stage {
             budget.charge(1, Location::Query(range.clone()))?;
             budget.charge_results(1, Location::Query(range.clone()))?;
@@ -1032,7 +1032,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             budget.charge_results(1, Location::Query(range.clone()))?;
             vec![(&*value.expression, input.clone())]
         } else {
-            let mut values = self.value_arguments(stage, budget, range)?;
+            let mut values = self.value_arguments(shared_stage, budget, range)?;
             if let model::Stage::Filter {
                 constructed: Some(value),
                 ..
@@ -1055,19 +1055,24 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             .into_iter()
             .map(|(expression, kind)| zirql::ScopedNativeArgument {
                 expression,
-                relative: (!self.is_explicit_source(stage)).then_some(kind),
+                relative: (!matches!(
+                    stage,
+                    model::Stage::FunctionInput { .. } | model::Stage::Parameter { .. }
+                ))
+                .then_some(kind),
                 locals: Vec::new(),
             })
             .collect())
     }
     fn evaluate_stage_with_arguments(
         &self,
-        stage: &model::Stage,
+        stage: &model::NativeStage,
         input: QueryOutput,
         mut arguments: &mut dyn zirql::NativeArguments<EvaluationContext<'_, '_, 'q>, Self>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        let stage = stage.as_ref();
         let input = functions::owned(input, budget, range).map_err(zirql::EvaluationError::Host)?;
         if matches!(
             functions::unretained(&input),
@@ -1079,17 +1084,6 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                     .evaluate_native(&value.expression, input, budget)
                     .map(|value| QueryOutput::Native(NativeValue::Retained(value.into_shared())));
             }
-        }
-        if let model::Stage::Projection { value, .. } = stage {
-            let result = arguments.evaluate_projection(&value.projection, input, budget)?;
-            return comprehension::ConstructedReport::with_types(
-                result.value,
-                result.types,
-                range.clone(),
-                budget,
-            )
-            .map(|value| QueryOutput::Native(NativeValue::Constructed(value)))
-            .map_err(zirql::EvaluationError::Host);
         }
         if let model::Stage::WhereExists { relation, .. } = stage {
             let native_sequence = matches!(
@@ -1306,13 +1300,6 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 .map(|value| QueryOutput::Native(NativeValue::Captures(value)))
                 .map_err(zirql::EvaluationError::Host);
             }
-            model::Stage::FunctionValue { value, .. }
-            | model::Stage::Comprehension { value, .. } => {
-                let value = arguments.evaluate_native(&value.expression, input, budget)?;
-                return Ok(QueryOutput::Native(NativeValue::Retained(
-                    value.into_shared(),
-                )));
-            }
             _ => {}
         }
         if pipeline::is_stream_stage(stage) && pipeline::is_stream(&input) {
@@ -1348,7 +1335,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             _ => stage,
         };
         let (context, bindings) = arguments.parts();
-        self.evaluate_stage(stage, input, context, bindings, budget, range)
+        program::evaluate_native_stage(stage, input, context, bindings, budget, range)
     }
     fn share_constructed(
         &self,
@@ -1420,14 +1407,34 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     fn constructed_kind(&self, types: Vec<ValueType>) -> program::Kind {
         program::Kind::Constructed(Arc::new(types))
     }
+    fn expression_kind(
+        &self,
+        expression: &Operand,
+        input: &program::Kind,
+        scope: &BTreeMap<String, program::Kind>,
+        budget: &mut Budget,
+    ) -> Result<program::Kind, zirql::QueryError> {
+        zirql::pattern_function_expression_kind(
+            self.functions
+                .iter()
+                .map(|function| function.declaration.as_ref()),
+            self,
+            expression,
+            scope,
+            Some(input.clone()),
+            false,
+            budget,
+        )
+    }
     fn stage_kind(
         &self,
-        stage: &model::Stage,
+        stage: &model::NativeStage,
         input: &program::Kind,
         scope: &BTreeMap<String, program::Kind>,
         budget: &mut Budget,
         _: &Range<usize>,
     ) -> Result<program::Kind, zirql::QueryError> {
+        let stage = stage.as_ref();
         program::Validator {
             host: Self {
                 functions: self.functions,
@@ -1436,22 +1443,14 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         .stages(std::slice::from_ref(stage), input.clone(), scope, budget)
         .map_err(query_error)
     }
-    fn is_explicit_source(&self, stage: &model::Stage) -> bool {
-        if let model::Stage::FunctionValue { value, .. } = stage
-            && matches!(
-                value.expression.value,
-                zirql::ValueExpressionKind::PredicateScope { .. }
-                    | zirql::ValueExpressionKind::SubjectScope { .. }
-            )
-        {
-            return false;
-        }
+    fn is_explicit_source(&self, stage: &model::NativeStage) -> bool {
         matches!(
-            stage,
-            model::Stage::FunctionInput { .. } | model::Stage::FunctionValue { .. }
+            stage.as_ref(),
+            model::Stage::FunctionInput { .. } | model::Stage::Parameter { .. }
         )
     }
-    fn is_pure(&self, stage: &model::Stage) -> bool {
+    fn is_pure(&self, stage: &model::NativeStage) -> bool {
+        let stage = stage.as_ref();
         !matches!(
             stage,
             model::Stage::SetAttr { .. }
@@ -1465,10 +1464,11 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
     }
     fn nested_queries(
         &self,
-        stage: &model::Stage,
+        stage: &model::NativeStage,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::NativeOperands<EvaluationContext<'_, '_, 'q>, Self>, zirql::QueryError> {
+        let stage = stage.as_ref();
         let mut queries = vec![];
         for expression in nested(stage) {
             budget.charge(expression_size(expression), Location::Query(range.clone()))?;
@@ -1546,6 +1546,16 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 "native enumeration requires operations, SSA or captures",
             )),
         }
+    }
+    fn record_kind(
+        &self,
+        fields: Vec<(String, program::Kind)>,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<program::Kind, zirql::QueryError> {
+        Ok(program::Kind::Capture(Arc::new(zirql::NativeCapture {
+            fields,
+        })))
     }
     fn capture_record_kind<'k>(
         &self,
@@ -1627,7 +1637,10 @@ fn expression_size(expression: &model::Expression) -> usize {
         .first
         .iter()
         .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
-        .map(stage_size)
+        .map(|step| match &step.value {
+            Step::Stage(stage) => stage_size(stage),
+            _ => 1,
+        })
         .fold(0usize, usize::saturating_add)
 }
 fn operand_size(query: &Operand) -> usize {
@@ -1644,7 +1657,7 @@ fn operand_size(query: &Operand) -> usize {
                     .iter()
                     .map(|step| match &step.value {
                         Step::Stage(stage) => stage_size(stage),
-                        Step::Emit { .. } => 1,
+                        Step::Emit { .. } | Step::Value(_) | Step::Projection(_) => 1,
                     })
                     .fold(size, usize::saturating_add);
                 pending.push(input);
@@ -1923,14 +1936,6 @@ pub(super) fn push_expressions<'a>(
         model::Stage::Computed { value, .. } => {
             visit_value(&value.operand().expression, pending, budget)?
         }
-        model::Stage::FunctionValue { value, .. } | model::Stage::Comprehension { value, .. } => {
-            visit_value(&value.expression, pending, budget)?
-        }
-        model::Stage::Projection { value, .. } => {
-            for (_, expression) in &value.projection.fields {
-                visit_value(expression, pending, budget)?
-            }
-        }
         model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } => {
             visit_predicate(predicate, pending, budget)?
         }
@@ -1985,6 +1990,18 @@ fn visit_match_predicate<'a>(
     }
     Ok(())
 }
+pub(super) fn validate_projection_subject(
+    subject: &Located<String>,
+) -> Result<(), zirql::QueryError> {
+    if subject.value == "_" || parser::is_reserved(&subject.value) {
+        return Err(zirql::QueryError::query(
+            subject.range.clone(),
+            "projection subject shadows an existing or reserved name",
+        ));
+    }
+    Ok(())
+}
+
 fn visit_operand<'a>(
     query: &'a Operand,
     pending: &mut Vec<&'a model::Expression>,
@@ -1994,11 +2011,20 @@ fn visit_operand<'a>(
         zirql::walk_expression(query, budget, 64, |query, budget| {
             if let X::Sequence { steps, .. } = &query.value {
                 for step in steps {
-                    if let Step::Stage(stage) = &step.value {
-                        let nested = nested(stage);
-                        budget.charge_results(nested.len(), Location::Query(step.range.clone()))?;
-                        pending.extend(nested);
-                        push_expressions(stage, pending, budget).map_err(query_error)?;
+                    match &step.value {
+                        Step::Projection(projection) => {
+                            validate_projection_subject(&projection.subject)?
+                        }
+                        Step::Stage(stage) => {
+                            let nested = nested(stage);
+                            budget.charge_results(
+                                nested.len(),
+                                Location::Query(step.range.clone()),
+                            )?;
+                            pending.extend(nested);
+                            push_expressions(stage, pending, budget).map_err(query_error)?;
+                        }
+                        Step::Value(_) | Step::Emit { .. } => {}
                     }
                 }
             }
@@ -2033,9 +2059,13 @@ pub(super) fn evaluate_predicate_leaf(
     budget: &mut Budget,
 ) -> Result<zirql::Truth, EvaluationError> {
     if let model::Predicate::Expression { value, .. } = predicate {
-        let result = context
-            .functions
-            .run(&value.expression, context, &input, bindings, budget)?;
+        let result = context.functions.run_native_argument(
+            &value.expression,
+            context,
+            &input,
+            bindings,
+            budget,
+        )?;
         let result = functions::constructed(result, budget, &value.expression.range)?;
         let V::Boolean(matched) = result.value().data() else {
             return Err(EvaluationError::new("predicate needs a known Boolean")
@@ -2171,10 +2201,13 @@ pub(super) fn has_constructed(expression: &model::Expression) -> bool {
         .first
         .iter()
         .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
-        .any(|stage| {
+        .any(|step| {
+            let Step::Stage(stage) = &step.value else { return true };
+            let stage = stage.as_ref();
+            if matches!(stage, model::Stage::NativeMap { .. }) || ordering_selector(stage).is_some_and(|(selector, _)| selector.body().is_some()) { return true; }
             matches!(
                 stage,
-                model::Stage::WhereExists { .. } | model::Stage::Fixpoint { expression: model::FixedPointBody::Native(_), .. } | model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::ConstructedSuffix { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
+                model::Stage::WhereExists { .. } | model::Stage::Fixpoint { expression: model::FixedPointBody::Native(_), .. } | model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::ConstructedSuffix { .. } | model::Stage::Computed {..}
             ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
             || nested(stage).into_iter().any(has_constructed)
         })
@@ -2199,52 +2232,6 @@ pub(super) fn types_with_host(
             EvaluationError::new("native handles require an explicit scalar projection")
                 .at(value.expression.range.clone())
         })
-}
-pub(super) fn projection_types_with_host(
-    value: &ParsedProjection,
-    input: program::Kind,
-    names: &BTreeMap<String, program::Kind>,
-    budget: &mut Budget,
-    host: &ReportHost<'_>,
-) -> Result<Vec<ValueType>, EvaluationError> {
-    let projection = &value.projection;
-    if names.contains_key(&projection.subject.value)
-        || parser::is_reserved(&projection.subject.value)
-        || projection.subject.value == "_"
-    {
-        return Err(EvaluationError::new(
-            "projection subject shadows an existing or reserved name",
-        )
-        .at(projection.subject.range.clone()));
-    }
-    let mut scope =
-        functions::copy_scope(names, budget, &projection.subject.range).map_err(core_error)?;
-    let subject = host
-        .subject_kind(&input, budget, &projection.subject.range)
-        .map_err(core_error)?;
-    scope.insert(projection.subject.value.clone(), subject.clone());
-    let mut fields = Vec::new();
-    for (name, value) in &projection.fields {
-        if fields.iter().any(|(other, _)| other == &name.value) {
-            return Err(EvaluationError::new("duplicate projection field").at(name.range.clone()));
-        }
-        let kind = functions::value_kind(host, value, subject.clone(), &scope, budget)
-            .map_err(core_error)?;
-        let types = host
-            .scalar_types(&kind, budget, &value.range)
-            .map_err(core_error)?
-            .ok_or_else(|| {
-                EvaluationError::new("projection field needs a constructed value")
-                    .at(value.range.clone())
-            })?;
-        fields.push((
-            name.value.clone(),
-            types.into_iter().next().unwrap_or(ValueType::Unestablished),
-        ));
-    }
-    Ok(vec![ValueType::Array(zirql::ArrayType::Elements(vec![
-        ValueType::Record(fields),
-    ]))])
 }
 pub(super) fn validate_argument_with_host(
     value: &comprehension::ParsedComprehension,
@@ -2355,8 +2342,18 @@ pub(super) fn native_body_kind(
     let zirql::ValueExpressionKind::NativeValue(query) = &value.expression.value else {
         unreachable!("fixed points retain a native body")
     };
-    let kind =
-        zirql::native_expression_kind(query, host, input, names, budget).map_err(core_error)?;
+    let kind = zirql::pattern_function_expression_kind(
+        host.functions
+            .iter()
+            .map(|function| function.declaration.as_ref()),
+        host,
+        query,
+        names,
+        Some(input.clone()),
+        false,
+        budget,
+    )
+    .map_err(core_error)?;
     let program::Kind::Capture(fields) = kind else {
         unreachable!("fixed points retain one native selection field")
     };
@@ -2370,7 +2367,7 @@ pub(super) fn fixed_point_is_closure(value: &comprehension::ParsedComprehension)
             X::Sequence { input, steps } => match steps.as_slice() {
                 [] => closure(input),
                 [step] if matches!(input.value, X::Input) => {
-                    matches!(step.value, Step::Stage(model::Stage::Closure { .. }))
+                    matches!(&step.value, Step::Stage(stage) if matches!(stage.as_ref(), model::Stage::Closure { .. }))
                 }
                 _ => false,
             },

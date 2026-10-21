@@ -7,10 +7,10 @@ use zirql::{Bindings, ExpressionKind as X, Located, MatchHost, NativeCapture};
 /// A retained shared path query; cloning shares its immutable native tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedPaths {
-    pub(super) paths: Arc<zirql::NativePaths<model::Stage, model::Predicate>>,
+    pub(super) paths: Arc<zirql::NativePaths<model::NativeStage, model::Predicate>>,
 }
 impl ParsedPaths {
-    pub(super) fn new(paths: zirql::NativePaths<model::Stage, model::Predicate>) -> Self {
+    pub(super) fn new(paths: zirql::NativePaths<model::NativeStage, model::Predicate>) -> Self {
         Self {
             paths: Arc::new(paths),
         }
@@ -23,10 +23,10 @@ impl Drop for ParsedPaths {
                 paths,
                 zirql::NativePaths {
                     edge: Located::new(
-                        model::Stage::Users {
+                        Arc::new(model::Stage::Users {
                             index: None,
                             range: crate::source::TextRange::new(0, 0).expect("empty range"),
-                        },
+                        }),
                         0..0,
                     ),
                     target: Located::new(
@@ -133,14 +133,14 @@ impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
     type Target = model::Predicate;
     fn validate_path_edge(
         &self,
-        edge: &model::Stage,
+        edge: &model::NativeStage,
         input: &program::Kind,
         _: &BTreeMap<String, program::Kind>,
         _: &mut Budget,
         range: &Range<usize>,
     ) -> Result<(), zirql::QueryError> {
         if *input == program::Kind::Operations
-            && matches!(edge, model::Stage::Users { index: None, .. })
+            && matches!(edge.as_ref(), model::Stage::Users { index: None, .. })
         {
             return Ok(());
         }
@@ -191,7 +191,7 @@ impl<'q> zirql::PathHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'
     }
     fn path_neighbors(
         &self,
-        _: &model::Stage,
+        _: &model::NativeStage,
         input: &QueryOutput,
         context: &mut EvaluationContext<'_, '_, 'q>,
         _: &Bindings<QueryOutput>,
@@ -294,10 +294,11 @@ impl ParsedOperand {
 }
 
 /// A parsed or typed shared native match. Hosts retain the common clause tree.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParsedMatch {
     pub(super) matching: Arc<zirql::NativeMatch<report::Operand, model::Predicate>>,
 }
+impl Eq for ParsedMatch {}
 impl ParsedMatch {
     pub(super) fn new(mut matching: zirql::NativeMatch<report::Operand, model::Predicate>) -> Self {
         for clause in &mut matching.clauses {
@@ -306,7 +307,7 @@ impl ParsedMatch {
                 | zirql::MatchClause::Bind { value: source, .. } => source,
                 zirql::MatchClause::Where { .. } => continue,
             };
-            if matches!(&source.value, X::Sequence { steps, .. } if matches!(steps.as_slice(), [Located { value: zirql::ExpressionStep::Stage(model::Stage::Native { .. }), .. }]))
+            if matches!(&source.value, X::Sequence { steps, .. } if matches!(steps.as_slice(), [Located { value: zirql::ExpressionStep::Stage(stage), .. }] if matches!(stage.as_ref(), model::Stage::Native { .. })))
             {
                 continue;
             }
@@ -502,11 +503,11 @@ pub(super) fn native_source(value: ParsedOperand, range: Range<usize>) -> report
         X::Sequence {
             input: Box::new(Located::new(X::Input, range.clone())),
             steps: vec![Located::new(
-                zirql::ExpressionStep::Stage(model::Stage::Native {
+                zirql::ExpressionStep::Stage(Arc::new(model::Stage::Native {
                     value,
                     range: crate::source::TextRange::new(range.start as u32, range.end as u32)
                         .expect("ordered native source range"),
-                }),
+                })),
                 range.clone(),
             )],
         },
@@ -521,12 +522,15 @@ pub(super) fn match_source_value(
     };
     let [
         Located {
-            value: zirql::ExpressionStep::Stage(model::Stage::Native { value, .. }),
+            value: zirql::ExpressionStep::Stage(stage),
             ..
         },
     ] = steps.as_slice()
     else {
         unreachable!("match sources retain a native value stage")
+    };
+    let model::Stage::Native { value, .. } = stage.as_ref() else {
+        unreachable!("match source retains a native operand")
     };
     &value.value.expression
 }
@@ -551,9 +555,13 @@ pub(super) fn evaluate_operand(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<QueryOutput, EvaluationError> {
-    context
-        .functions
-        .run(&value.value.expression, context, &input, bindings, budget)
+    context.functions.run_native_argument(
+        &value.value.expression,
+        context,
+        &input,
+        bindings,
+        budget,
+    )
 }
 pub(super) fn operand(
     operation: &ParsedOperand,
