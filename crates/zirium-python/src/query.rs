@@ -293,22 +293,30 @@ pub(super) struct ReportQuery {
 #[pyclass(frozen, module = "zirium.query")]
 #[derive(Clone)]
 pub(super) struct ReportGenerator {
-    name: String,
+    pattern: ReportPattern,
+    case: bool,
     source: core::ReportExpr,
     filter: Option<core::ReportExpr>,
     bind: bool,
 }
 impl ReportGenerator {
-    fn clause(&self) -> core::ReportGenerator {
-        if self.bind {
-            core::ReportGenerator::bind(self.name.clone(), self.source.clone())
+    fn clause(&self) -> PyResult<core::ReportGenerator> {
+        Ok(if self.bind {
+            core::ReportGenerator::bind(
+                match &self.pattern.inner.value {
+                    core::PatternKind::Name(name) => name.value.clone(),
+                    _ => unreachable!("bind stores a name pattern"),
+                },
+                self.source.clone(),
+            )
         } else {
-            core::ReportGenerator::in_values(
-                self.name.clone(),
+            core::ReportGenerator::in_pattern(
+                self.pattern.pattern(&mut pattern_budget())?,
                 self.source.clone(),
                 self.filter.clone(),
+                self.case,
             )
-        }
+        })
     }
 }
 fn report_expression(value: &Bound<'_, PyAny>) -> PyResult<core::ReportExpr> {
@@ -376,6 +384,28 @@ impl ReportExpr {
             inner: core::ReportExpr::name(name),
         }
     }
+    /// Retain a native selection or handle without projecting it to a scalar.
+    #[staticmethod]
+    fn native(query: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(query) = query.extract::<PyRef<'_, OpQuery>>() {
+            return Ok(Self {
+                inner: core::ReportExpr::native(&query.inner),
+            });
+        }
+        if let Ok(query) = query.extract::<PyRef<'_, SsaQuery>>() {
+            return Ok(Self {
+                inner: core::ReportExpr::native(&query.inner),
+            });
+        }
+        if let Ok(query) = query.extract::<PyRef<'_, CaptureQuery>>() {
+            return Ok(Self {
+                inner: core::ReportExpr::native(&query.inner),
+            });
+        }
+        Err(PyTypeError::new_err(
+            "expected an operation, SSA value or capture query",
+        ))
+    }
     #[staticmethod]
     fn comprehension(
         head: &Bound<'_, PyAny>,
@@ -384,7 +414,10 @@ impl ReportExpr {
         Ok(Self {
             inner: core::ReportExpr::comprehension(
                 report_expression(head)?,
-                clauses.iter().map(|clause| clause.clause()),
+                clauses
+                    .iter()
+                    .map(|clause| clause.clause())
+                    .collect::<PyResult<Vec<_>>>()?,
             ),
         })
     }
@@ -574,6 +607,46 @@ impl ReportExpr {
             inner: self.inner.clone().group_by(field),
         }
     }
+    fn map(&self, pattern: &ReportPattern, body: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().map(
+                pattern.pattern(&mut pattern_budget())?,
+                report_expression(body)?,
+            ),
+        })
+    }
+    fn flat_map(&self, pattern: &ReportPattern, body: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().flat_map(
+                pattern.pattern(&mut pattern_budget())?,
+                report_expression(body)?,
+            ),
+        })
+    }
+    fn windows(&self, size: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().windows(report_expression(size)?),
+        })
+    }
+    fn runs_by(&self, field: String) -> Self {
+        Self {
+            inner: self.inner.clone().runs_by(field),
+        }
+    }
+    fn with_fields(&self, fields: &Bound<'_, PyDict>) -> PyResult<Self> {
+        let fields = fields
+            .iter()
+            .map(|(name, value)| Ok((name.extract::<String>()?, report_expression(&value)?)))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(Self {
+            inner: self.inner.clone().with_fields(fields),
+        })
+    }
+    fn align(&self, after: &Bound<'_, PyAny>, field: String) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().align(report_expression(after)?, field),
+        })
+    }
     fn __bool__(&self) -> PyResult<bool> {
         Err(PyTypeError::new_err(
             "report expressions have no truth value; evaluate with document.query(report(expression))",
@@ -692,7 +765,24 @@ impl ReportGenerator {
         filter: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         Ok(Self {
-            name,
+            pattern: ReportPattern::name(name),
+            case: false,
+            source: report_expression(source)?,
+            filter: filter.map(report_expression).transpose()?,
+            bind: false,
+        })
+    }
+    #[staticmethod]
+    #[pyo3(signature=(pattern, source, filter=None, *, case=false))]
+    fn in_pattern(
+        pattern: &ReportPattern,
+        source: &Bound<'_, PyAny>,
+        filter: Option<&Bound<'_, PyAny>>,
+        case: bool,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            pattern: pattern.clone(),
+            case,
             source: report_expression(source)?,
             filter: filter.map(report_expression).transpose()?,
             bind: false,
@@ -701,7 +791,8 @@ impl ReportGenerator {
     #[staticmethod]
     fn bind(name: String, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         Ok(Self {
-            name,
+            pattern: ReportPattern::name(name),
+            case: false,
             source: report_expression(value)?,
             filter: None,
             bind: true,
@@ -1502,13 +1593,22 @@ fn native(
     output: core::QueryOutput,
     budget: &mut core::Budget,
 ) -> PyResult<Py<PyAny>> {
+    native_ref(py, state, &output, budget)
+}
+
+fn native_ref(
+    py: Python<'_>,
+    state: &SharedDocument,
+    output: &core::QueryOutput,
+    budget: &mut core::Budget,
+) -> PyResult<Py<PyAny>> {
     use core::{NativeValue, QueryOutput};
     Ok(match output {
         QueryOutput::Native(NativeValue::Retained(value)) => {
-            let value = QueryOutput::Native(NativeValue::Retained(value))
-                .into_owned_with_budget(budget)
+            budget
+                .charge(1, zirql_location(&(0..0)))
                 .map_err(py_error)?;
-            return native(py, state, value, budget);
+            return native_ref(py, state, value, budget);
         }
         QueryOutput::Native(NativeValue::Computational(value)) => {
             return Err(py_error(format!(
@@ -1516,10 +1616,11 @@ fn native(
                 value.range()
             )));
         }
-        QueryOutput::Native(NativeValue::Tuple(_) | NativeValue::Sequence(_)) => {
-            return Err(PyTypeError::new_err(
-                "unsupported native positional report kind",
-            ));
+        QueryOutput::Native(NativeValue::Tuple(value)) => {
+            positional_ref(py, state, value.values(), budget, &value.range())?
+        }
+        QueryOutput::Native(NativeValue::Sequence(value)) => {
+            positional_ref(py, state, value.values(), budget, &value.range())?
         }
         QueryOutput::Native(NativeValue::Ssa(value)) => {
             budget
@@ -1529,19 +1630,19 @@ fn native(
                 .charge_results(1, zirql_location(&(0..0)))
                 .map_err(py_error)?;
             read_document(state)?
-                .check_value(value)
+                .check_value(*value)
                 .map_err(edit_error)?;
             Py::new(
                 py,
                 SemanticValue {
                     state: state.clone(),
-                    value: ValueReference::Resolved(value),
+                    value: ValueReference::Resolved(*value),
                 },
             )?
             .into_any()
         }
         QueryOutput::Native(NativeValue::Capture(record)) => {
-            capture_record_ref(py, state, &record, budget, &(0..0))?
+            capture_record_ref(py, state, record, budget, &(0..0))?
         }
         QueryOutput::Native(NativeValue::Captures(value)) => {
             let range = value.range();
@@ -1561,7 +1662,7 @@ fn native(
         }
         QueryOutput::Operations(ids) | QueryOutput::Native(NativeValue::OperationSequence(ids)) => {
             let list = PyList::empty(py);
-            for id in ids {
+            for &id in ids {
                 list.append(Py::new(
                     py,
                     SemanticOperation {
@@ -1588,7 +1689,7 @@ fn native(
         }
         QueryOutput::Native(NativeValue::Types(ids)) => {
             let list = PyList::empty(py);
-            for id in ids {
+            for &id in ids {
                 list.append(Py::new(
                     py,
                     SemanticType {
@@ -1607,8 +1708,8 @@ fn native(
                     py,
                     SemanticAttribute {
                         state: state.clone(),
-                        id: Some(id),
-                        name,
+                        id: Some(*id),
+                        name: name.clone(),
                         owned: None,
                         owned_spelling: None,
                         element_spellings: Arc::new(OnceLock::new()),
@@ -1620,7 +1721,7 @@ fn native(
         QueryOutput::Native(NativeValue::Map(entries)) => {
             let dict = PyDict::new(py);
             for (key, value) in entries {
-                dict.set_item(key, native(py, state, value, budget)?)?;
+                dict.set_item(key, native_ref(py, state, value, budget)?)?;
             }
             dict.into_any().unbind()
         }
@@ -1638,6 +1739,26 @@ fn native(
         }
         _ => return Err(py_error("unexpected structured query output")),
     })
+}
+
+fn positional_ref(
+    py: Python<'_>,
+    state: &SharedDocument,
+    values: &[core::QueryOutput],
+    budget: &mut core::Budget,
+    range: &std::ops::Range<usize>,
+) -> PyResult<Py<PyAny>> {
+    budget
+        .charge(values.len() + 1, zirql_location(range))
+        .map_err(py_error)?;
+    budget
+        .charge_results(values.len() + 1, zirql_location(range))
+        .map_err(py_error)?;
+    let list = PyList::empty(py);
+    for value in values {
+        list.append(native_ref(py, state, value, budget)?)?;
+    }
+    Ok(list.into_any().unbind())
 }
 
 fn capture_record_ref(
@@ -1726,7 +1847,7 @@ fn capture_record_ref(
             core::QueryOutput::Native(core::NativeValue::Capture(record)) => {
                 capture_record_ref(py, state, record, budget, range)?
             }
-            _ => return Err(py_error("unexpected native capture field")),
+            _ => native_ref(py, state, value, budget)?,
         };
         dict.set_item(name, value)?;
     }

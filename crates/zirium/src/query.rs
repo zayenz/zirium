@@ -668,7 +668,7 @@ impl Query {
             program::validate(self, document_name, budget)?;
         }
 
-        let function_roots = functions::expression_roots(&self.functions);
+        let function_roots = functions::expression_roots(&self.functions, budget)?;
         let expressions = program::expressions(
             self.statements
                 .iter()
@@ -680,7 +680,8 @@ impl Query {
                 })
                 .chain(std::iter::once(&self.expression))
                 .chain(function_roots),
-        );
+            budget,
+        )?;
         program::charge_results(
             budget,
             5 * admitted.len(),

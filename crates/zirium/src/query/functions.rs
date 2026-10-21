@@ -287,17 +287,6 @@ impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> 
                 {
                     program::Kind::Operations
                 }
-                D::Sequence(value) | D::Array(value)
-                    if matches!(value.as_ref(), D::Record(_))
-                        && contains_native(value, budget, range)? =>
-                {
-                    let program::Kind::Capture(schema) =
-                        self.declaration_kind(value, budget, range)?
-                    else {
-                        unreachable!("native record kind")
-                    };
-                    program::Kind::Captures(schema)
-                }
                 D::Sequence(value) | D::Array(value) if contains_native(value, budget, range)? => {
                     program::Kind::Sequence(worklists::declaration(value, budget, range)?)
                 }
@@ -1305,19 +1294,23 @@ fn native_type(ty: FunctionType, depth: usize) -> Result<D<program::Kind>, Evalu
 // Shared typed values use an explicit source wrapper when another owner keeps
 // the tree alive. In a function that wrapper must retain native values too.
 pub(super) fn normalize(
-    value: zirql::ValueExpression<report::Operand>,
+    mut value: zirql::ValueExpression<report::Operand>,
 ) -> zirql::ValueExpression<report::Operand> {
-    normalize_with(value, |_| Ok(())).expect("retained wrapper normalization cannot fail")
+    let mut pending = vec![&mut value];
+    while let Some(value) = pending.pop() {
+        normalize_wrapper(value);
+        zirql::for_each_value_child_mut(value, |child| pending.push(child));
+    }
+    value
 }
-/// Outer native scalar bindings use the existing explicit projection boundary.
-/// Lexical pattern names remain ordinary shared slots; shadowing an outer name
-/// is rejected by common preflight before this lowered value can execute.
+/// Outer native scalar bindings retain their explicit projection boundary.
+/// Common admission still rejects lexical shadowing before execution.
 pub(super) fn normalize_outer(
-    value: zirql::ValueExpression<report::Operand>,
+    mut value: zirql::ValueExpression<report::Operand>,
     names: &std::collections::HashSet<String>,
     budget: &mut Budget,
 ) -> Result<zirql::ValueExpression<report::Operand>, zirql::QueryError> {
-    normalize_with(value, |value| {
+    let result = zirql::walk_value_mut(&mut value, budget, 64, |value, _, budget| {
         if let zirql::ValueExpressionKind::NativeQuery(query)
         | zirql::ValueExpressionKind::NativeValue(query) = &mut value.value
         {
@@ -1333,211 +1326,36 @@ pub(super) fn normalize_outer(
                 value.range.clone(),
             )));
         }
+        normalize_wrapper(value);
         Ok(())
-    })
-}
-fn normalize_with(
-    mut value: zirql::ValueExpression<report::Operand>,
-    mut lower: impl FnMut(&mut zirql::ValueExpression<report::Operand>) -> Result<(), zirql::QueryError>,
-) -> Result<zirql::ValueExpression<report::Operand>, zirql::QueryError> {
-    use zirql::ValueExpressionKind as K;
-    fn clauses<'v>(
-        clauses: &'v mut [Located<zirql::ValueGenerator<report::Operand>>],
-        pending: &mut Vec<&'v mut zirql::ValueExpression<report::Operand>>,
-    ) {
-        for clause in clauses {
-            match &mut clause.value {
-                zirql::ValueGenerator::In { source, filter, .. }
-                | zirql::ValueGenerator::Bind {
-                    value: source,
-                    filter,
-                    ..
-                } => {
-                    pending.push(source);
-                    pending.extend(filter);
-                }
-            }
-        }
-    }
-    let mut pending = vec![&mut value];
-    while let Some(value) = pending.pop() {
-        lower(value)?;
-        if matches!(&value.value,K::NativeQuery(q) if matches!(&q.value,zirql::ExpressionKind::Sequence{steps,..} if steps.len()==1 && matches!(&steps[0].value,zirql::ExpressionStep::Stage(model::Stage::FunctionValue{..}))))
-        {
-            let K::NativeQuery(query) =
-                std::mem::replace(&mut value.value, K::Literal(ConstructedValue::Absent))
-            else {
-                unreachable!()
-            };
-            value.value = K::NativeValue(query);
-        }
-        match &mut value.value {
-            K::Literal(_)
-            | K::CurrentInput
-            | K::PredicateSubject
-            | K::Name(_)
-            | K::NativeQuery(_)
-            | K::NativeValue(_)
-            | K::IdentitySet { .. } => {}
-            K::Filter {
-                array: subject,
-                predicate,
-            }
-            | K::PredicateScope { subject, predicate }
-            | K::SubjectScope {
-                subject,
-                argument: predicate,
-            } => {
-                pending.push(subject);
-                pending.push(&mut predicate.body);
-            }
-            K::Block { bindings, value } => {
-                pending.extend(bindings.iter_mut().map(|(_, v)| v));
-                pending.push(value);
-            }
-            K::ValueMatch { subject, arms } => {
-                pending.push(subject);
-                for arm in arms {
-                    pending.extend(&mut arm.guard);
-                    pending.push(&mut arm.value);
-                }
-            }
-            K::Loop { states, body } => {
-                pending.extend(states.iter_mut().map(|(_, v)| v));
-                pending.push(body);
-            }
-            K::Fold { items, initial, .. } | K::Scan { items, initial, .. } => {
-                pending.push(items);
-                pending.push(initial);
-            }
-            K::Call { arguments, .. }
-            | K::Continue(arguments)
-            | K::Array(arguments)
-            | K::Tuple(arguments)
-            | K::Set(arguments) => pending.extend(arguments),
-            K::Queue { items: v, .. }
-            | K::PopFront(v)
-            | K::Break(v)
-            | K::Occurs(v)
-            | K::Absent(v)
-            | K::One(v)
-            | K::IndexSet(v)
-            | K::Entries(v)
-            | K::Unique(v)
-            | K::Tally(v)
-            | K::Unary { operand: v, .. }
-            | K::Field { value: v, .. }
-            | K::TupleAccess { value: v, .. }
-            | K::GroupBy { rows: v, .. }
-            | K::Reduce { array: v, .. }
-            | K::Sort { array: v, .. }
-            | K::Extremum { array: v, .. } => pending.push(v),
-            K::Record(fields) => pending.extend(fields.iter_mut().map(|(_, v)| v)),
-            K::KeyedArray {
-                entries,
-                declared_axis_sources,
-                ..
-            } => {
-                pending.extend(declared_axis_sources.iter_mut().flatten());
-                for (k, v) in entries {
-                    pending.push(k);
-                    pending.push(v)
-                }
-            }
-            K::Dictionary(entries) => {
-                for (k, v) in entries {
-                    pending.push(k);
-                    pending.push(v)
-                }
-            }
-            K::Lookup { value, key } | K::HasKey { value, key } => {
-                pending.push(value);
-                pending.push(key)
-            }
-            K::Default { value, fallback } => {
-                pending.push(value);
-                pending.push(fallback)
-            }
-            K::Binary { left, right, .. }
-            | K::ZipExact { left, right }
-            | K::PushBackAll {
-                queue: left,
-                items: right,
-            }
-            | K::Insert {
-                set: left,
-                item: right,
-            } => {
-                pending.push(left);
-                pending.push(right)
-            }
-            K::ArrayAccess { array, index } => {
-                pending.push(array);
-                pending.push(index)
-            }
-            K::Range { lower, upper } => {
-                pending.push(lower);
-                pending.push(upper)
-            }
-            K::Require {
-                condition, value, ..
-            } => {
-                pending.push(condition);
-                pending.push(value)
-            }
-            K::Conditional {
-                branches,
-                otherwise,
-            } => {
-                for (c, v) in branches {
-                    pending.push(c);
-                    pending.push(v)
-                }
-                pending.push(otherwise)
-            }
-            K::Comprehension {
-                clauses: generators,
-                head,
-                ..
-            } => {
-                clauses(generators, &mut pending);
-                pending.push(head)
-            }
-            K::DictionaryComprehension {
-                clauses: generators,
-                key,
-                head,
-            } => {
-                clauses(generators, &mut pending);
-                pending.push(key);
-                pending.push(head);
-            }
-            K::KeyedComprehension {
-                clauses: generators,
-                key,
-                head,
-                declared_axis_sources,
-                empty_axis_sources,
-            } => {
-                pending.extend(declared_axis_sources.iter_mut().flatten());
-                clauses(generators, &mut pending);
-                pending.push(key);
-                pending.push(head);
-                if let Some(sources) = empty_axis_sources {
-                    pending.extend(sources)
-                }
-            }
-        }
+    });
+    if let Err(error) = result {
+        zirql::dispose_native_value(value);
+        return Err(error);
     }
     Ok(value)
 }
-
-pub(super) fn expression_roots(functions: &[FunctionDefinition]) -> Vec<&model::Expression> {
+fn normalize_wrapper(value: &mut zirql::ValueExpression<report::Operand>) {
+    use zirql::ValueExpressionKind as K;
+    if matches!(&value.value,K::NativeQuery(q) if matches!(&q.value,zirql::ExpressionKind::Sequence{steps,..} if steps.len()==1 && matches!(&steps[0].value,zirql::ExpressionStep::Stage(model::Stage::FunctionValue{..}))))
+    {
+        let K::NativeQuery(query) =
+            std::mem::replace(&mut value.value, K::Literal(ConstructedValue::Absent))
+        else {
+            unreachable!()
+        };
+        value.value = K::NativeValue(query);
+    }
+}
+pub(super) fn expression_roots<'a>(
+    functions: &'a [FunctionDefinition],
+    budget: &mut Budget,
+) -> Result<Vec<&'a model::Expression>, EvaluationError> {
     let mut roots = Vec::new();
     for function in functions {
-        report::visit_value(&function.declaration.value, &mut roots);
+        report::visit_value(&function.declaration.value, &mut roots, budget)?;
     }
-    roots
+    Ok(roots)
 }
 
 fn admit_fields<'v>(

@@ -899,3 +899,50 @@ def test_pattern_report_refusals_preflight_all_arms_and_keep_no_truth_value():
                 )
             )
         )
+
+
+def test_adopted_report_builders_keep_order_and_native_owners() -> None:
+    from zirium.query import ReportExpr as E
+    from zirium.query import ReportGenerator as G
+    from zirium.query import ReportPattern as P
+    from zirium.query import report
+
+    doc = document()
+    n = E.name("n")
+    rows = E([{"id": 1}, {"id": 1}, {"id": 2}])
+    value = {
+        "mapped": E([1, 2]).map(P.name("n"), n * 2),
+        "flat": E([1, 2]).flat_map(P.name("n"), [n, n + 10]),
+        "selected": E.comprehension(
+            n, [G.in_pattern(P.present(P.name("n")), [None, 2], case=True)]
+        ),
+        "windows": E([1, 2, 3]).windows(2),
+        "runs": rows.runs_by("id").map(
+            P.name("run"), E.name("run").field("items").length()
+        ),
+        "updated": E({"id": 1, "n": 2}).with_fields({"n": 3}),
+        "aligned": E([{"id": 1}])
+        .align([{"id": 2}], "id")
+        .map(P.name("entry"), E.name("entry").field("key")),
+    }
+    assert doc.query(report(value)) == {
+        "mapped": [2, 4],
+        "flat": [1, 11, 2, 12],
+        "selected": [2],
+        "windows": [[1, 2], [2, 3]],
+        "runs": [2, 1],
+        "updated": {"id": 1, "n": 3},
+        "aligned": [1, 2],
+    }
+    native_rows = E(
+        [{"operation": E.native(ops().filter(op("test.seed"))), "n": 1}]
+    ).map(P.name("row"), E.name("row").with_fields({"n": 2}))
+    result = doc.query(report(native_rows))
+    assert isinstance(result, list)
+    row = result[0]
+    assert isinstance(row, dict)
+    operation = row["operation"]
+    assert isinstance(operation, zirium.SemanticOperation)
+    assert row["n"] == 2
+    del doc, result, row
+    assert operation.name == "test.seed"

@@ -184,7 +184,8 @@ fn lower_stages(stages: &[model::Stage], location: crate::source::TextRange) -> 
 /// the retained frontend expressions to their compiled expressions for this call.
 pub(super) fn expressions<'q>(
     roots: impl Iterator<Item = &'q model::Expression>,
-) -> BTreeMap<usize, Expression<'q>> {
+    budget: &mut Budget,
+) -> Result<BTreeMap<usize, Expression<'q>>, EvaluationError> {
     let mut expressions = BTreeMap::new();
     let mut pending: Vec<_> = roots.collect();
     while let Some(expression) = pending.pop() {
@@ -197,7 +198,7 @@ pub(super) fn expressions<'q>(
             .iter()
             .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
         {
-            report::push_expressions(stage, &mut pending);
+            report::push_expressions(stage, &mut pending, budget)?;
             match stage {
                 model::Stage::Group { expression, .. }
                 | model::Stage::Fixpoint {
@@ -223,7 +224,7 @@ pub(super) fn expressions<'q>(
             }
         }
     }
-    expressions
+    Ok(expressions)
 }
 
 pub(super) fn evaluation_error(error: zirql::EvaluationError<EvaluationError>) -> EvaluationError {

@@ -967,13 +967,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         zirql::ScopedNativeValueArguments<'s, EvaluationContext<'_, '_, 'q>, Self>,
         zirql::QueryError,
     > {
-        if let model::Stage::FunctionValue { value, .. } = stage
-            && matches!(
-                value.expression.value,
-                zirql::ValueExpressionKind::PredicateScope { .. }
-                    | zirql::ValueExpressionKind::SubjectScope { .. }
-            )
-        {
+        if let model::Stage::FunctionValue { value, .. } = stage {
             budget.charge_results(1, Location::Query(range.clone()))?;
             return Ok(vec![zirql::ScopedNativeArgument {
                 expression: &value.expression,
@@ -1975,11 +1969,12 @@ pub(super) fn resolve_stage(
 pub(super) fn push_expressions<'a>(
     stage: &'a model::Stage,
     pending: &mut Vec<&'a model::Expression>,
-) {
+    budget: &mut Budget,
+) -> Result<(), EvaluationError> {
     match stage {
         model::Stage::NativeMap { mapping, .. } => {
-            visit_value(&mapping.key.expression, pending);
-            visit_value(&mapping.value.expression, pending);
+            visit_value(&mapping.key.expression, pending, budget)?;
+            visit_value(&mapping.value.expression, pending, budget)?;
         }
 
         model::Stage::Fixpoint {
@@ -1988,326 +1983,148 @@ pub(super) fn push_expressions<'a>(
         }
         | model::Stage::WhereExists {
             relation: value, ..
-        } => visit_value(&value.expression, pending),
+        } => visit_value(&value.expression, pending, budget)?,
         model::Stage::SortBy { selector, .. }
         | model::Stage::MinBy { selector, .. }
         | model::Stage::MaxBy { selector, .. }
         | model::Stage::MinAllBy { selector, .. }
         | model::Stage::MaxAllBy { selector, .. } => {
             if let Some(value) = selector.body() {
-                visit_value(&value.expression, pending);
+                visit_value(&value.expression, pending, budget)?;
             }
         }
         model::Stage::Native { value, .. }
         | model::Stage::Operand {
             operation: value, ..
-        } => visit_value(&value.value.expression, pending),
+        } => visit_value(&value.value.expression, pending, budget)?,
         model::Stage::Paths { value, .. } => {
-            visit_match_predicate(&value.paths.target, pending);
+            visit_match_predicate(&value.paths.target, pending, budget)?;
         }
         model::Stage::Match { value, .. } => {
             for clause in &value.matching.clauses {
                 match &clause.value {
                     zirql::MatchClause::From { source, .. }
                     | zirql::MatchClause::Bind { value: source, .. } => {
-                        visit_operand(source, pending)
+                        visit_operand(source, pending, budget)?
                     }
                     zirql::MatchClause::Where { predicate } => {
-                        visit_match_predicate(predicate, pending)
+                        visit_match_predicate(predicate, pending, budget)?
                     }
                 }
             }
         }
-        model::Stage::PatternBinding { value, .. } => visit_value(&value.value.expression, pending),
-        model::Stage::Computed { value, .. } => visit_value(&value.operand().expression, pending),
+        model::Stage::PatternBinding { value, .. } => {
+            visit_value(&value.value.expression, pending, budget)?
+        }
+        model::Stage::Computed { value, .. } => {
+            visit_value(&value.operand().expression, pending, budget)?
+        }
         model::Stage::FunctionValue { value, .. }
         | model::Stage::FunctionPrimitive {
             argument: value, ..
         }
-        | model::Stage::Comprehension { value, .. } => visit_value(&value.expression, pending),
+        | model::Stage::Comprehension { value, .. } => {
+            visit_value(&value.expression, pending, budget)?
+        }
         model::Stage::Projection { value, .. } => {
             for (_, expression) in &value.projection.fields {
-                visit_value(expression, pending)
+                visit_value(expression, pending, budget)?
             }
         }
         model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } => {
-            visit_predicate(predicate, pending)
+            visit_predicate(predicate, pending, budget)?
         }
         _ => {}
     }
+    Ok(())
 }
-fn visit_predicate<'a>(predicate: &'a model::Predicate, pending: &mut Vec<&'a model::Expression>) {
+fn visit_predicate<'a>(
+    predicate: &'a model::Predicate,
+    pending: &mut Vec<&'a model::Expression>,
+    budget: &mut Budget,
+) -> Result<(), EvaluationError> {
     match predicate {
         model::Predicate::SameValue { left, right, .. } => {
-            visit_value(&left.value.expression, pending);
-            visit_value(&right.value.expression, pending);
+            visit_value(&left.value.expression, pending, budget)?;
+            visit_value(&right.value.expression, pending, budget)?;
         }
         model::Predicate::Computed { value, .. } => {
             for operand in value.operands() {
-                visit_value(&operand.expression, pending);
+                visit_value(&operand.expression, pending, budget)?;
             }
         }
         model::Predicate::Expression { value: name, .. }
-        | model::Predicate::OpValue { name, .. } => visit_value(&name.expression, pending),
+        | model::Predicate::OpValue { name, .. } => visit_value(&name.expression, pending, budget)?,
         model::Predicate::Not { predicate, .. } | model::Predicate::Group { predicate, .. } => {
-            visit_predicate(predicate, pending)
+            visit_predicate(predicate, pending, budget)?
         }
         model::Predicate::And { predicates, .. } | model::Predicate::Or { predicates, .. } => {
             for predicate in predicates {
-                visit_predicate(predicate, pending)
+                visit_predicate(predicate, pending, budget)?
             }
         }
         _ => {}
     }
+    Ok(())
 }
 fn visit_match_predicate<'a>(
     predicate: &'a zirql::Predicate<model::Predicate>,
     pending: &mut Vec<&'a model::Expression>,
-) {
+    budget: &mut Budget,
+) -> Result<(), EvaluationError> {
     match &predicate.value {
-        zirql::PredicateKind::Leaf(guard) => visit_predicate(guard, pending),
+        zirql::PredicateKind::Leaf(guard) => visit_predicate(guard, pending, budget)?,
         zirql::PredicateKind::Not(child) | zirql::PredicateKind::Group(child) => {
-            visit_match_predicate(child, pending)
+            visit_match_predicate(child, pending, budget)?
         }
         zirql::PredicateKind::And(children) | zirql::PredicateKind::Or(children) => {
             for child in children {
-                visit_match_predicate(child, pending);
+                visit_match_predicate(child, pending, budget)?;
             }
         }
     }
+    Ok(())
 }
-fn visit_operand<'a>(query: &'a Operand, pending: &mut Vec<&'a model::Expression>) {
-    let mut queries = vec![query];
-    while let Some(query) = queries.pop() {
-        match &query.value {
-            X::Input | X::Binding(_) => {}
-            X::Field { value, .. } => queries.push(value),
-            X::Group(query) => queries.push(query),
-            X::Sequence { input, steps } => {
-                queries.push(input);
+fn visit_operand<'a>(
+    query: &'a Operand,
+    pending: &mut Vec<&'a model::Expression>,
+    budget: &mut Budget,
+) -> Result<(), EvaluationError> {
+    budget.within_evaluation(0, Location::Query(query.range.clone()), |budget| {
+        zirql::walk_expression(query, budget, 64, |query, budget| {
+            if let X::Sequence { steps, .. } = &query.value {
                 for step in steps {
                     if let Step::Stage(stage) = &step.value {
-                        pending.extend(nested(stage));
-                        push_expressions(stage, pending);
+                        let nested = nested(stage);
+                        budget.charge_results(nested.len(), Location::Query(step.range.clone()))?;
+                        pending.extend(nested);
+                        push_expressions(stage, pending, budget).map_err(query_error)?;
                     }
                 }
             }
-            X::Set { left, right, .. } => {
-                queries.push(right);
-                queries.push(left);
-            }
-            X::Record(fields) => {
-                for (_, query) in fields.iter().rev() {
-                    queries.push(query)
-                }
-            }
-        }
-    }
+            Ok(())
+        })
+        .map_err(core_error)
+    })
 }
 pub(super) fn visit_value<'a>(
     value: &'a zirql::ValueExpression<Operand>,
     pending: &mut Vec<&'a model::Expression>,
-) {
-    use zirql::{ValueExpressionKind as K, ValueGenerator as G};
-    let clauses = |clauses: &'a [zirql::Located<G<Operand>>],
-                   pending: &mut Vec<&'a model::Expression>| {
-        for clause in clauses {
-            match &clause.value {
-                G::In { source, filter, .. }
-                | G::Bind {
-                    value: source,
-                    filter,
-                    ..
-                } => {
-                    visit_value(source, pending);
-                    if let Some(filter) = filter {
-                        visit_value(filter, pending);
-                    }
-                }
+    budget: &mut Budget,
+) -> Result<(), EvaluationError> {
+    budget.within_evaluation(0, Location::Query(value.range.clone()), |budget| {
+        zirql::walk_value(value, budget, 64, |value, _, budget| {
+            if let zirql::ValueExpressionKind::NativeQuery(query)
+            | zirql::ValueExpressionKind::NativeValue(query) = &value.value
+            {
+                visit_operand(query, pending, budget).map_err(query_error)?;
             }
-        }
-    };
-    match &value.value {
-        K::Literal(_)
-        | K::CurrentInput
-        | K::PredicateSubject
-        | K::Name(_)
-        | K::IdentitySet { .. } => {}
-        K::Filter {
-            array: subject,
-            predicate,
-        }
-        | K::PredicateScope { subject, predicate }
-        | K::SubjectScope {
-            subject,
-            argument: predicate,
-        } => {
-            visit_value(subject, pending);
-            visit_value(&predicate.body, pending);
-        }
-        K::NativeQuery(query) | K::NativeValue(query) => visit_operand(query, pending),
-        K::Block { bindings, value } => {
-            for (_, source) in bindings {
-                visit_value(source, pending);
-            }
-            visit_value(value, pending);
-        }
-        K::ValueMatch { subject, arms } => {
-            visit_value(subject, pending);
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    visit_value(guard, pending);
-                }
-                visit_value(&arm.value, pending);
-            }
-        }
-        K::Loop { states, body } => {
-            for (_, value) in states {
-                visit_value(value, pending);
-            }
-            visit_value(body, pending);
-        }
-        K::Fold { items, initial, .. } | K::Scan { items, initial, .. } => {
-            visit_value(items, pending);
-            visit_value(initial, pending);
-        }
-        K::Call { arguments, .. } | K::Continue(arguments) => {
-            for value in arguments {
-                visit_value(value, pending);
-            }
-        }
-        K::Queue { items: value, .. }
-        | K::PopFront(value)
-        | K::Break(value)
-        | K::Occurs(value)
-        | K::Absent(value)
-        | K::One(value)
-        | K::IndexSet(value)
-        | K::Entries(value)
-        | K::Unique(value)
-        | K::Tally(value)
-        | K::Unary { operand: value, .. }
-        | K::Field { value, .. }
-        | K::TupleAccess { value, .. }
-        | K::GroupBy { rows: value, .. }
-        | K::Reduce { array: value, .. }
-        | K::Sort { array: value, .. }
-        | K::Extremum { array: value, .. } => visit_value(value, pending),
-        K::Array(values) | K::Tuple(values) | K::Set(values) => {
-            for value in values {
-                visit_value(value, pending)
-            }
-        }
-        K::Record(fields) => {
-            for (_, value) in fields {
-                visit_value(value, pending)
-            }
-        }
-        K::KeyedArray {
-            entries,
-            declared_axis_sources,
-            ..
-        } => {
-            for source in declared_axis_sources.iter().flatten() {
-                visit_value(source, pending)
-            }
-            for (key, value) in entries {
-                visit_value(key, pending);
-                visit_value(value, pending)
-            }
-        }
-        K::Dictionary(entries) => {
-            for (key, value) in entries {
-                visit_value(key, pending);
-                visit_value(value, pending)
-            }
-        }
-        K::DictionaryComprehension {
-            clauses: generators,
-            key,
-            head,
-        } => {
-            clauses(generators, pending);
-            visit_value(key, pending);
-            visit_value(head, pending);
-        }
-        K::KeyedComprehension {
-            clauses: generators,
-            key,
-            head,
-            declared_axis_sources,
-            empty_axis_sources,
-        } => {
-            for source in declared_axis_sources.iter().flatten() {
-                visit_value(source, pending)
-            }
-            clauses(generators, pending);
-            visit_value(key, pending);
-            visit_value(head, pending);
-            if let Some(sources) = empty_axis_sources {
-                for source in sources {
-                    visit_value(source, pending)
-                }
-            }
-        }
-        K::Binary { left, right, .. }
-        | K::Lookup {
-            value: left,
-            key: right,
-        }
-        | K::HasKey {
-            value: left,
-            key: right,
-        }
-        | K::Default {
-            value: left,
-            fallback: right,
-        }
-        | K::ZipExact { left, right }
-        | K::PushBackAll {
-            queue: left,
-            items: right,
-        }
-        | K::Insert {
-            set: left,
-            item: right,
-        }
-        | K::Range {
-            lower: left,
-            upper: right,
-        }
-        | K::ArrayAccess {
-            array: left,
-            index: right,
-        }
-        | K::Require {
-            condition: left,
-            value: right,
-            ..
-        } => {
-            visit_value(left, pending);
-            visit_value(right, pending)
-        }
-        K::Conditional {
-            branches,
-            otherwise,
-        } => {
-            for (condition, value) in branches {
-                visit_value(condition, pending);
-                visit_value(value, pending)
-            }
-            visit_value(otherwise, pending)
-        }
-        K::Comprehension {
-            clauses: generators,
-            head,
-            ..
-        } => {
-            clauses(generators, pending);
-            visit_value(head, pending)
-        }
-    }
+            Ok(())
+        })
+        .map_err(core_error)
+    })
 }
+
 pub(super) fn evaluate_predicate_leaf(
     predicate: &model::Predicate,
     input: QueryOutput,
@@ -2641,125 +2458,7 @@ fn value_requires_session_with_names(
                     return true;
                 }
             }
-            K::Filter {
-                array: subject,
-                predicate,
-            }
-            | K::PredicateScope { subject, predicate }
-            | K::SubjectScope {
-                subject,
-                argument: predicate,
-            } => {
-                pending.push(subject);
-                pending.push(&predicate.body);
-            }
-            K::Occurs(v)
-            | K::Absent(v)
-            | K::One(v)
-            | K::IndexSet(v)
-            | K::Entries(v)
-            | K::Unique(v)
-            | K::Tally(v)
-            | K::Unary { operand: v, .. }
-            | K::Field { value: v, .. }
-            | K::TupleAccess { value: v, .. }
-            | K::GroupBy { rows: v, .. }
-            | K::Reduce { array: v, .. }
-            | K::Sort { array: v, .. }
-            | K::Extremum { array: v, .. } => pending.push(v),
-            K::Array(values) | K::Tuple(values) | K::Set(values) => pending.extend(values),
-            K::Record(fields) => pending.extend(fields.iter().map(|(_, value)| value)),
-            K::KeyedArray {
-                entries,
-                declared_axis_sources,
-                ..
-            } => {
-                pending.extend(declared_axis_sources.iter().flatten());
-                for (k, v) in entries {
-                    pending.push(k);
-                    pending.push(v);
-                }
-            }
-            K::Dictionary(entries) => {
-                for (k, v) in entries {
-                    pending.push(k);
-                    pending.push(v);
-                }
-            }
-            K::Binary { left, right, .. }
-            | K::ZipExact { left, right }
-            | K::Lookup {
-                value: left,
-                key: right,
-            }
-            | K::HasKey {
-                value: left,
-                key: right,
-            }
-            | K::Default {
-                value: left,
-                fallback: right,
-            }
-            | K::ArrayAccess {
-                array: left,
-                index: right,
-            }
-            | K::Range {
-                lower: left,
-                upper: right,
-            }
-            | K::Require {
-                condition: left,
-                value: right,
-                ..
-            } => {
-                pending.push(left);
-                pending.push(right);
-            }
-            K::Conditional {
-                branches,
-                otherwise,
-            } => {
-                for (c, v) in branches {
-                    pending.push(c);
-                    pending.push(v);
-                }
-                pending.push(otherwise);
-            }
-            K::Comprehension { clauses, head, .. }
-            | K::DictionaryComprehension { clauses, head, .. }
-            | K::KeyedComprehension { clauses, head, .. } => {
-                for clause in clauses {
-                    match &clause.value {
-                        zirql::ValueGenerator::In { source, filter, .. }
-                        | zirql::ValueGenerator::Bind {
-                            value: source,
-                            filter,
-                            ..
-                        } => {
-                            pending.push(source);
-                            pending.extend(filter);
-                        }
-                    }
-                }
-                pending.push(head);
-                if let K::DictionaryComprehension { key, .. } = &value.value {
-                    pending.push(key);
-                }
-                if let K::KeyedComprehension {
-                    key,
-                    declared_axis_sources,
-                    empty_axis_sources,
-                    ..
-                } = &value.value
-                {
-                    pending.push(key);
-                    pending.extend(declared_axis_sources.iter().flatten());
-                    if let Some(sources) = empty_axis_sources {
-                        pending.extend(sources);
-                    }
-                }
-            }
+            _ => zirql::for_each_value_child(value, |child| pending.push(child)),
         }
     }
     false

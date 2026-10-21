@@ -346,9 +346,11 @@ impl<T> QueryExpr<T> {
         let mut emit = |_: &Document, _: QueryOutput, _: &mut zirql::Budget| {
             Err(EvaluationError::new("cannot emit in a read-only query"))
         };
-        let function_roots = functions::expression_roots(&self.functions);
-        let expressions =
-            program::expressions(std::iter::once(&self.expression).chain(function_roots));
+        let function_roots = functions::expression_roots(&self.functions, budget)?;
+        let expressions = program::expressions(
+            std::iter::once(&self.expression).chain(function_roots),
+            budget,
+        )?;
         let mut context = EvaluationContext {
             functions: functions.as_ref(),
             current_stage: 0,
@@ -1271,7 +1273,7 @@ impl ReportExpr {
             );
         }
         zirql::Located::new(
-            zirql::ValueExpressionKind::NativeQuery(Box::new(report::operand(
+            zirql::ValueExpressionKind::NativeValue(Box::new(report::operand(
                 &super::builder::expression(vec![Stage::FunctionValue {
                     value: self.value,
                     range: range(),
@@ -1607,6 +1609,78 @@ impl ReportExpr {
         })
         .with_metadata(parameters, functions)
     }
+    /// Transform each positional element with a shared expression body.
+    pub fn map(self, pattern: Pattern, body: Self) -> Self {
+        self.map_body(pattern, body, false)
+    }
+    /// Concatenate each positional body result exactly one level.
+    pub fn flat_map(self, pattern: Pattern, body: Self) -> Self {
+        self.map_body(pattern, body, true)
+    }
+    fn map_body(self, pattern: Pattern, body: Self, flatten: bool) -> Self {
+        let functions = functions::merge(&self.functions, &body.functions);
+        let parameters = merge_parameters(&self.parameters, &body.parameters);
+        let array = Box::new(self.into_expression());
+        let argument = zirql::PredicateArgument {
+            argument: Some(pattern),
+            body: Box::new(body.into_expression()),
+        };
+        let expression = if flatten {
+            zirql::ValueExpressionKind::FlatMap { array, argument }
+        } else {
+            zirql::ValueExpressionKind::Map { array, argument }
+        };
+        Self::node(expression).with_metadata(parameters, functions)
+    }
+    /// Complete overlapping windows, with a positive size and stride one.
+    pub fn windows(self, size: Self) -> Self {
+        let functions = functions::merge(&self.functions, &size.functions);
+        let parameters = merge_parameters(&self.parameters, &size.parameters);
+        Self::node(zirql::ValueExpressionKind::Windows {
+            items: Box::new(self.into_expression()),
+            size: Box::new(size.into_expression()),
+        })
+        .with_metadata(parameters, functions)
+    }
+    /// Consecutive equal field keys form ordered key/items records.
+    pub fn runs_by(self, field: impl Into<String>) -> Self {
+        let functions = self.functions.clone();
+        let parameters = self.parameters.clone();
+        Self::node(zirql::ValueExpressionKind::RunsBy {
+            rows: Box::new(self.into_expression()),
+            field: Located::new(field.into(), 0..0),
+        })
+        .with_metadata(parameters, functions)
+    }
+    /// Replace existing fields while preserving the record's layout and schema.
+    pub fn with_fields(self, fields: impl IntoIterator<Item = (String, Self)>) -> Self {
+        let mut functions = self.functions.clone();
+        let mut parameters = self.parameters.clone();
+        let fields = fields
+            .into_iter()
+            .map(|(name, value)| {
+                functions = functions::merge(&functions, &value.functions);
+                parameters = merge_parameters(&parameters, &value.parameters);
+                (Located::new(name, 0..0), value.into_expression())
+            })
+            .collect();
+        Self::node(zirql::ValueExpressionKind::With {
+            record: Box::new(self.into_expression()),
+            fields,
+        })
+        .with_metadata(parameters, functions)
+    }
+    /// Fully align records by one unique present field on each side.
+    pub fn align(self, after: Self, field: impl Into<String>) -> Self {
+        let functions = functions::merge(&self.functions, &after.functions);
+        let parameters = merge_parameters(&self.parameters, &after.parameters);
+        Self::node(zirql::ValueExpressionKind::Align {
+            left: Box::new(self.into_expression()),
+            right: Box::new(after.into_expression()),
+            field: Located::new(field.into(), 0..0),
+        })
+        .with_metadata(parameters, functions)
+    }
     pub fn require(condition: Self, value: Self, message: impl Into<String>) -> Self {
         let functions = functions::merge(&condition.functions, &value.functions);
         let parameters = merge_parameters(&condition.parameters, &value.parameters);
@@ -1661,6 +1735,24 @@ impl ReportGenerator {
         source: ReportExpr,
         filter: Option<ReportExpr>,
     ) -> Self {
+        Self::in_pattern(
+            Located::new(
+                zirql::PatternKind::Name(Located::new(name.into(), 0..0)),
+                0..0,
+            ),
+            source,
+            filter,
+            false,
+        )
+    }
+    /// Match a pattern per candidate. Selective generators skip mismatches;
+    /// strict generators report them. The pattern's names enter filter/head scope.
+    pub fn in_pattern(
+        pattern: Pattern,
+        source: ReportExpr,
+        filter: Option<ReportExpr>,
+        case: bool,
+    ) -> Self {
         let functions = functions::merge(
             &source.functions,
             &filter
@@ -1680,10 +1772,8 @@ impl ReportGenerator {
             parameters,
             clause: zirql::Located::new(
                 zirql::ValueGenerator::In {
-                    binders: vec![zirql::Located::new(
-                        zirql::PatternKind::Name(zirql::Located::new(name.into(), 0..0)),
-                        0..0,
-                    )],
+                    case,
+                    binders: vec![pattern],
                     source: source.into_expression(),
                     filter: filter.map(ReportExpr::into_expression),
                 },

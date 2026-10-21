@@ -4302,3 +4302,28 @@ fn saved_collection_suffixes_agree_inline_file_and_buffer_later_errors() {
     assert!(String::from_utf8_lossy(&failed.stderr).contains("zero"));
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn adopted_report_suffixes_agree_inline_and_in_files() {
+    let source = "[n for case present(n) in [null,1,2]] | map(n => n+1) | windows(2) | json";
+    let inline = run_stdin(source, INPUT);
+    let path = temporary_path("adopted-reports", "zirql");
+    fs::write(&path, source).unwrap();
+    let file = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args([
+            "--program-file",
+            path.to_str().unwrap(),
+            "examples/cli/function-report.mlir",
+        ])
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(inline.status.success(), "{inline:?}");
+    assert!(file.status.success(), "{file:?}");
+    assert_eq!(inline.stdout, file.stdout);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&inline.stdout).unwrap(),
+        serde_json::json!([[2, 3]])
+    );
+}

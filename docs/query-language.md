@@ -649,6 +649,40 @@ spelling. These stages retain their shared value type rules. Native sources
 keep native stages and selectors such as
 `sort_by(names)`.
 
+## Transform positional reports
+
+These forms require the development checkout, which pins Zirql Git revision
+[`967eb05c80fd122fb5a91cd9056cce124f844150`](https://github.com/zayenz/zirql/commit/967eb05c80fd122fb5a91cd9056cce124f844150).
+The published 0.6.1 integration predates them. Inline and `--program-file`
+programs use the same reader and evaluator.
+
+```sh
+cargo run --locked --bin zirium -- '
+{
+  "pairs": [n for case present(n) in [null, 1, 2]] | map(n => n + 1) | windows(2),
+  "sizes": [{"id": 1}, {"id": 1}, {"id": 2}] | runs_by("id") | map(length(_.items)),
+  "changed": {"id": 1, "amount": 2} with {amount: 3},
+  "keys": align([{"id": 1}], [{"id": 2}], by="id") | map(_.key)
+} | json' examples/cli/function-report.mlir
+```
+
+`map` evaluates one shared body per positional item. `flat_map` concatenates
+its positional body results by one level. Both accept a named or destructured
+`pattern => body`; `_` reads the whole item. A selective `for case pattern in`
+generator skips mismatches; ordinary generators remain strict. `windows(n)`
+requires a positive size and returns only complete overlapping windows.
+`runs_by("field")` keeps consecutive equal keys together in `key`/`items`
+records. `with` replaces existing fields in their original order. `align`
+requires unique present keys on both sides and returns `key`, optional `before`
+and optional `after`, preserving left order followed by right-only keys.
+
+These are operations on positional report data. Native selections retain their
+host kinds and require an explicit projection or declared positional view.
+Zirql owns expression traversal, normalization structure and evaluation;
+Zirium supplies native stages, document ownership, source coordinates, stale
+handle checks and effect admission. See the
+[builder examples](query-dsl.md#transform-report-data) for Rust and Python.
+
 ## Sort constructed rows and select extrema
 
 `sort(xs)` sorts positional scalar values, and `sort_by(rows, "field")` sorts

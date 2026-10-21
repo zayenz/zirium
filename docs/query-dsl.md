@@ -450,6 +450,61 @@ Python conversion spends the remaining request budget before
 allocating collections. Ordinary operation/type/attribute results retain their
 existing semantic wrappers.
 
+## Transform report data
+
+The methods in this section require the development checkout and its Zirql Git
+pin `967eb05c80fd122fb5a91cd9056cce124f844150`. They accept shared expressions
+and patterns; they do not execute Rust or Python callbacks. Functions and
+parameter declarations compose with the existing report metadata.
+
+```python
+import zirium
+from zirium.query import ReportExpr as E, ReportGenerator as G, ReportPattern as P
+from zirium.query import op, ops, report
+
+lowered = zirium.parse_text('"example.seed"() : () -> ()').lower_strict()
+assert lowered.document is not None
+document = lowered.document
+n = E.name("n")
+selected = E.comprehension(
+    n, [G.in_pattern(P.present(P.name("n")), [None, 1, 2], case=True)]
+)
+assert document.query(report(selected.map(P.name("n"), n + 1).windows(2))) == [[2, 3]]
+assert document.query(report(E([1, 2]).flat_map(P.name("n"), [n, n]))) == [1, 1, 2, 2]
+
+rows = E([{"id": 1}, {"id": 1}, {"id": 2}])
+assert document.query(report(rows.runs_by("id").map(
+    P.name("run"), E.name("run").field("items").length()
+))) == [2, 1]
+assert document.query(report(E({"id": 1, "amount": 2}).with_fields({"amount": 3}))) == {
+    "id": 1, "amount": 3
+}
+assert document.query(report(E([{"id": 1}]).align([{"id": 2}], "id").map(
+    P.name("entry"), E.name("entry").field("key")
+))) == [1, 2]
+
+native_rows = E([{"operation": E.native(ops().filter(op("example.seed"))), "amount": 1}])
+result = document.query(report(native_rows.map(
+    P.name("row"), E.name("row").with_fields({"amount": 2})
+)))
+assert result[0]["operation"].name == "example.seed"
+assert result[0]["amount"] == 2
+```
+
+`ReportExpr.native(query)` retains native operations, SSA values or captures
+without converting them to JSON. Python results keep document-owning wrappers.
+An ordinary native selection keeps its existing kind; constructing an array of
+native records produces positional report data. Rust exposes the same methods:
+`map(pattern, body)`, `flat_map(pattern, body)`, `windows(size)`, `runs_by(field)`,
+`with_fields(fields)` and `align(after, field)`. `ReportGenerator::in_pattern`
+accepts a located `Pattern`, a source, an optional filter and the selective
+`case` flag. Existing `in_values` generators remain strict.
+
+Zirql enumerates children and maps payloads. Zirium's normalization callback
+handles retained expression wrappers; native-root discovery decomposes only
+host stages. Native type conversion, operation ownership, coordinates and
+read-only admission remain in Zirium.
+
 ## Bounded native path builders
 
 The typed builder uses the same traversal as the

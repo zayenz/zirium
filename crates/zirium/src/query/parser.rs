@@ -608,6 +608,8 @@ impl Parser<'_, '_> {
                             && !matches!(
                                 &self.source[pair[0].range().as_range()],
                                 "default"
+                                    | "map"
+                                    | "flat_map"
                                     | "div"
                                     | "mod"
                                     | "for"

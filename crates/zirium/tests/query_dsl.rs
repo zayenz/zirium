@@ -4353,3 +4353,129 @@ fn general_collection_keys_and_tally_render_at_the_json_boundary() {
         })
     );
 }
+
+#[test]
+fn adopted_report_extensions_agree_between_text_and_builders() {
+    use zirium::query::{
+        ConstructedValue as V, Located, NativeValue, PatternKind, ReportExpr as E,
+        ReportGenerator as G, report,
+    };
+    let pattern =
+        |name: &str| Located::new(PatternKind::Name(Located::new(name.into(), 0..0)), 0..0);
+    let ints = |values: &[i64]| E::array(values.iter().copied().map(E::integer));
+    let row = |id| E::record([("id", E::integer(id))]);
+    let expression = E::record([
+        (
+            "mapped",
+            ints(&[1, 2]).map(
+                pattern("n"),
+                E::name("n").binary(zirium::query::ValueBinaryOperator::Multiply, E::integer(2)),
+            ),
+        ),
+        (
+            "flat",
+            ints(&[1, 2]).flat_map(
+                pattern("n"),
+                E::array([
+                    E::name("n"),
+                    E::name("n").binary(zirium::query::ValueBinaryOperator::Add, E::integer(10)),
+                ]),
+            ),
+        ),
+        (
+            "selected",
+            E::comprehension(
+                E::name("n"),
+                [G::in_pattern(
+                    Located::new(PatternKind::Present(Box::new(pattern("n"))), 0..0),
+                    E::array([E::null(), E::integer(2)]),
+                    None,
+                    true,
+                )],
+            ),
+        ),
+        ("windows", ints(&[1, 2, 3]).windows(E::integer(2))),
+        (
+            "runs",
+            E::array([row(1), row(1), row(2)])
+                .runs_by("id")
+                .map(pattern("run"), E::name("run").field("items").length()),
+        ),
+        (
+            "updated",
+            E::record([("id", E::integer(1)), ("n", E::integer(2))])
+                .with_fields([("n".into(), E::integer(3))]),
+        ),
+        (
+            "aligned",
+            E::array([row(1)])
+                .align(E::array([row(2)]), "id")
+                .map(pattern("entry"), E::name("entry").field("key")),
+        ),
+    ]);
+    let mut doc = document();
+    let expected = doc.query(&report(expression)).unwrap();
+    let source = r#"{
+        "mapped": [1,2] | map(n => n * 2),
+        "flat": [1,2] | flat_map(n => [n,n+10]),
+        "selected": [n for case present(n) in [null,2]],
+        "windows": [1,2,3] | windows(2),
+        "runs": [{"id":1},{"id":1},{"id":2}] | runs_by("id") | map(length(_.items)),
+        "updated": {"id":1,"n":2} with {n:3},
+        "aligned": align([{"id":1}], [{"id":2}], by="id") | map(_.key)
+    }"#;
+    let mut actual = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut doc, DialectRegistry::baseline(), |_, value| {
+            actual.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(value)) = &actual[0] else {
+        panic!("constructed report")
+    };
+    assert_eq!(value.value().data(), expected.value().data());
+    let V::Record(fields) = value.value().data() else {
+        panic!("record")
+    };
+    assert_eq!(
+        fields[0].1.data(),
+        &V::Array(vec![V::Integer(2), V::Integer(4)])
+    );
+    assert_eq!(
+        fields[4].1.data(),
+        &V::Array(vec![V::Integer(2), V::Integer(1)])
+    );
+
+    let seed = doc.query(&ops().filter(op("test.seed"))).unwrap()[0];
+    let rows = E::array([E::record([
+        ("operation", E::native(&ops().filter(op("test.seed")))),
+        ("n", E::integer(1)),
+    ])])
+    .map(
+        pattern("row"),
+        E::name("row").with_fields([("n".into(), E::integer(2))]),
+    );
+    let query = report(rows);
+    let mut budget = query.new_budget(EvaluationLimits::default());
+    let output = query
+        .evaluate_output_with_budget(
+            &doc,
+            DialectRegistry::baseline(),
+            EvaluationOptions::default(),
+            &mut budget,
+        )
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Sequence(rows)) = output else {
+        panic!("native positional report")
+    };
+    let QueryOutput::Native(NativeValue::Capture(row)) = &rows.values()[0] else {
+        panic!("native row")
+    };
+    assert_eq!(row.fields[0].1, QueryOutput::Operations(vec![seed]));
+    let QueryOutput::Native(NativeValue::Constructed(count)) = &row.fields[1].1 else {
+        panic!("scalar field")
+    };
+    assert_eq!(count.value().data(), &V::Integer(2));
+}
