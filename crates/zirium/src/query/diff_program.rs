@@ -2028,12 +2028,15 @@ impl ProjectionHost<Context<'_, '_>> for DiffProjectionHost {
         _: &mut Budget,
         range: &Range<usize>,
     ) -> Result<(), zirql::QueryError> {
-        if matches!(kind, ValueKind::Native(Kind::Strings | Kind::Count)) {
+        if matches!(
+            kind,
+            ValueKind::Native(Kind::Strings | Kind::Count) | ValueKind::Constructed(_)
+        ) {
             Ok(())
         } else {
             Err(zirql::QueryError::query(
                 range.clone(),
-                "ordering key must produce exactly one scalar",
+                "ordering key must produce one data value or exactly one native scalar",
             ))
         }
     }
@@ -2056,7 +2059,7 @@ impl ProjectionHost<Context<'_, '_>> for DiffProjectionHost {
             )),
             _ => Err(zirql::QueryError::query(
                 range.clone(),
-                "ordering key must produce exactly one scalar",
+                "ordering key must produce one data value or exactly one native scalar",
             )
             .into()),
         }

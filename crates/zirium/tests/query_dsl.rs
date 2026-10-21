@@ -2730,6 +2730,38 @@ fn report_ordering_agrees_with_typed_helpers_and_keeps_native_selector_stages() 
             .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
             .unwrap();
     }
+    let mut outputs = Vec::new();
+    Query::parse(
+        r#"fn key(n:Operation)->sequence<int> { [1, 2] }
+        fn empty(scope:Operation)->sequence<Operation> { direct_children(scope) | filter(false) }
+        fn pass(scopes:sequence<Operation>)->sequence<Operation> { scopes }
+        report sort([[1], "a", -2.0, 1, true, null]);
+        sort_by(key(input)) | names;
+        pass(empty(head(1)) | min_by(names));"#,
+    )
+    .unwrap()
+    .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+        outputs.push(value);
+        Ok(())
+    })
+    .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(value)) = &outputs[0] else {
+        panic!("structural report")
+    };
+    assert_eq!(
+        value.value().data(),
+        &V::Array(vec![
+            V::Absent,
+            V::Boolean(true),
+            V::Integer(1),
+            V::Float(-2.0),
+            V::String("a".into()),
+            V::Array(vec![V::Integer(1)])
+        ])
+    );
+    assert!(
+        matches!(&outputs[2], QueryOutput::Native(NativeValue::OperationSequence(values)) if values.is_empty())
+    );
     let prepared = r#"fn bound(n:int)->int {max(sort([n,1],descending=true)) default 0} filter(op(one(sort(["test.seed"])))) | head(bound(1)) | count"#;
     let mut output = Vec::new();
     Query::parse(prepared)
@@ -2790,11 +2822,8 @@ fn report_ordering_agrees_with_typed_helpers_and_keeps_native_selector_stages() 
         [values[0].data(), values[1].data()],
         [&V::Integer(1), &V::Integer(2)]
     );
-    for source in [
-        r#"report min_by([{"score":1},{"other":2}],"score");"#,
-        r#"report max_by([{"score":1},{"score":null}],"score");"#,
-        r#"report sort_by([{"score":1},{"score":"2"}],"score");"#,
-    ] {
+    {
+        let source = r#"report min_by([{"score":1},{"other":2}],"score");"#;
         let position = match Query::parse(source) {
             Err(error) => error.position,
             Ok(query) => {
@@ -4185,12 +4214,10 @@ fn shared_value_calls_and_saved_suffixes_keep_constructed_and_native_sources() {
     assert!(
         matches!(&siblings[0], QueryOutput::Native(NativeValue::Constructed(value)) if matches!(value.value().data(), V::Record(fields) if fields[0].1.data()==&V::Integer(2) && fields[1].1.data()==&V::Integer(6)))
     );
-    let request = "let numbers=[true]; numbers | sort";
-    let error = Query::parse(request)
-        .unwrap()
-        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
-        .unwrap_err();
-    assert_eq!(&request[error.range().unwrap()], "sort");
+    let outputs = evaluate(&mut document, "let numbers=[true]; numbers | sort");
+    assert!(
+        matches!(&outputs[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Array(vec![V::Boolean(true)]))
+    );
     let request =
         r#"fn invalid()->record {"ash":int} {let words=["ash"]; words | tally | sort} invalid()"#;
     let error = Query::parse(request)

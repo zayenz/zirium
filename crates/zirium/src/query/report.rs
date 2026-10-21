@@ -1047,26 +1047,18 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
         range: &Range<usize>,
     ) -> Result<(), zirql::QueryError> {
         if let program::Kind::Constructed(types) = kind {
-            for ty in types.iter() {
-                if !matches!(
-                    ty,
-                    ValueType::String
-                        | ValueType::Integer
-                        | ValueType::Float
-                        | ValueType::Unestablished
-                ) {
-                    return Err(zirql::QueryError::query(
-                        range.clone(),
-                        "ordering requires numbers or strings",
-                    ));
-                }
-            }
             budget.charge(types.len(), Location::Query(range.clone()))?;
             return Ok(());
         }
         if matches!(
             kind,
-            program::Kind::Strings | program::Kind::String | program::Kind::Count
+            program::Kind::Strings
+                | program::Kind::String
+                | program::Kind::Count
+                | program::Kind::JsonValue
+                | program::Kind::Array
+                | program::Kind::Map
+                | program::Kind::NativeMap
         ) {
             Ok(())
         } else {
@@ -1076,23 +1068,6 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
             ))
         }
     }
-    fn admit_ordering(
-        &self,
-        input: &QueryOutput,
-        order: zirql::NativeOrder,
-        _: &mut EvaluationContext<'_, '_>,
-        _: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<(), zirql::EvaluationError<EvaluationError>> {
-        if order != zirql::NativeOrder::Sort && output_size(functions::unretained(input)) == 0 {
-            return Err(zirql::QueryError::query(
-                range.clone(),
-                "extrema require a non-empty stream",
-            )
-            .into());
-        }
-        Ok(())
-    }
     fn ordering_key(
         &self,
         value: QueryOutput,
@@ -1100,26 +1075,6 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::NativeOrderKey, zirql::EvaluationError<EvaluationError>> {
-        if let QueryOutput::Native(NativeValue::JsonValue(value)) = functions::unretained(&value) {
-            return scalar_map_key(value, budget, range).map(zirql::NativeOrderKey::Scalar);
-        }
-        if matches!(
-            functions::unretained(&value),
-            QueryOutput::Native(NativeValue::Constructed(_))
-        ) {
-            return comprehension::project(&value, budget, range)
-                .map(zirql::NativeOrderKey::Value)
-                .map_err(zirql::EvaluationError::Host);
-        }
-        if matches!(
-            functions::unretained(&value),
-            QueryOutput::Map(_) | QueryOutput::Native(NativeValue::Map(_))
-        ) {
-            return Err(zirql::QueryError::query(
-                range.clone(),
-                "sort_by(value) requires scalar map values; project a scalar from nested maps first",
-            ).into());
-        }
         ordering_key(value, budget, range).map_err(zirql::EvaluationError::Host)
     }
     fn mapping_kind(
@@ -2473,35 +2428,4 @@ fn native_map_depth(value: &QueryOutput) -> usize {
         QueryOutput::Native(NativeValue::JsonValue(value)) => value_depth(value),
         _ => 0,
     }
-}
-
-fn scalar_map_key(
-    value: &serde_json::Value,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<zirql::ScalarMapKey, zirql::EvaluationError<EvaluationError>> {
-    use zirql::ScalarMapKey as K;
-    Ok(match value {
-        serde_json::Value::Null => K::Null,
-        serde_json::Value::Bool(value) => K::Boolean(*value),
-        serde_json::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                K::Integer(value)
-            } else if let Some(value) = value.as_u64() {
-                K::Unsigned(value)
-            } else {
-                K::Float(value.as_f64().expect("finite JSON number"))
-            }
-        }
-        serde_json::Value::String(value) => {
-            budget.charge(value.len(), Location::Query(range.clone()))?;
-            budget.charge_results(value.len(), Location::Query(range.clone()))?;
-            K::String(value.clone())
-        }
-        _ => return Err(zirql::QueryError::query(
-            range.clone(),
-            "sort_by(value) requires scalar map values; project a scalar from nested maps first",
-        )
-        .into()),
-    })
 }

@@ -180,7 +180,7 @@ item limits. For accumulating transitive users, use
 `arithmetic.fixpoint(input().union(input().users()))`.
 
 `MapQuery` returns ordered `Vec<(String, T)>` entries in Rust and a Python
-`dict` in insertion order. `sort_by_value()` stably orders scalar values;
+`dict` in insertion order. `sort_by_value()` stably orders ordinary data values;
 `sort()` orders keys. Both return a dictionary query, as do `reverse()`,
 `head(n)` and `tail(n)`. Equal values retain their current order, including
 after reversal. `head_expr` and `tail_expr` accept a `ReportExpr` bound.
@@ -255,7 +255,8 @@ outer input is empty.
 `sort_by`, `min_by`, `max_by`, `min_all_by`, and `max_all_by` accept scalar string
 or count queries. For example, `functions.sort_by(input().children().count())`
 sorts by direct child count. Sorting is stable; single extrema retain the first
-tie, and all-extrema retain every tie. Extrema on empty streams are errors.
+tie, and all-extrema retain every tie. Empty extrema retain an empty native
+selection with its admitted kind, element declaration and owner.
 
 ## Projections and editing
 
@@ -411,8 +412,8 @@ of native handles.
 
 Core collection steps handle `count`, bounds, `unique` and `tally`, and core
 ordering handles `sort`. They preserve the admitted native or constructed shape.
-Zirium supplies exact operation, type and attribute identities and retains its
-native empty-extremum refusals. Native navigation keeps its document ownership
+Zirium supplies exact operation, type and attribute identities and retains
+empty native selections with their admitted kind and element declaration. Native navigation keeps its document ownership
 checks. A plain native count or selection keeps its work and stream limits;
 attaching a prepared unit does not require an aggregate result allowance.
 
@@ -504,7 +505,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `0345851b57b35b7ade4de77466350cba56fe02ea`. They accept shared expressions
+pin `05c25a3d5f34ad431f573c55ddb0b7105a58b395`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 
@@ -636,9 +637,12 @@ best = report(rows.max_by("score"))
 empty_default = report(E([]).min().default(0))
 ```
 
-Keys require present homogeneous integers, finite floats, exact strings or one
-nominal type. Missing/absent fields and incompatible keys fail. Project an
-explicit lookup/default key before ordering when needed. The shared evaluator
+Keys use structural order: absence, Boolean, integer, finite float, string,
+nominal member, array, tuple, set, dictionary, then keyed array. Compounds compare
+recursively; sets and dictionaries use canonical membership and associations.
+Integers and floats keep separate ranks. Missing fields and invalid selector
+rows fail; actual absent keys are valid. Project an explicit lookup/default key
+when a missing field should supply a key. The shared evaluator
 extracts keys once, charges scratch/comparisons and retains original values.
 Native `OpQuery` and map ordering methods keep their existing selector behavior.
 See [constructed ordering](query-language.md#sort-constructed-rows-and-select-extrema)

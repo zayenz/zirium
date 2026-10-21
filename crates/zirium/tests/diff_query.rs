@@ -619,6 +619,7 @@ fn dictionaries_and_sets_retain_operand_order_and_native_sides() {
         (selected except head(1)) | names;
         (after | parent union after | parent) | names;
         (after | reverse intersect after) | names;
+        after | filter(false) | min_by(names);
     "#;
     let mut outputs = vec![];
     DiffProgram::parse(source)
@@ -689,6 +690,9 @@ fn dictionaries_and_sets_retain_operand_order_and_native_sides() {
         DiffProgramOutput::Strings(vec!["builtin.module".into()])
     );
     assert_eq!(outputs[9], outputs[5]);
+    assert!(
+        matches!(&outputs[10], DiffProgramOutput::Operations(zirium::diff::DiffSide::After, operations) if operations.is_empty())
+    );
 }
 
 #[test]

@@ -1055,7 +1055,7 @@ fn ordering_key(
     budget: &mut zirql::Budget,
     range: &std::ops::Range<usize>,
 ) -> Result<zirql::NativeOrderKey, EvaluationError> {
-    match output {
+    match functions::owned(output, budget, range)? {
         QueryOutput::Native(NativeValue::Capture(mut record)) => {
             let (_, key) = record
                 .fields
@@ -1068,42 +1068,27 @@ fn ordering_key(
         QueryOutput::Values(mut values) if values.len() == 1 => {
             Ok(zirql::NativeOrderKey::Text(values.pop().unwrap()))
         }
-        QueryOutput::Native(NativeValue::Retained(value)) => {
-            borrowed_ordering_key(&value, budget, range)
+        QueryOutput::Native(NativeValue::JsonValue(value)) => {
+            Ok(zirql::NativeOrderKey::Json(value))
+        }
+        QueryOutput::Array(values) => Ok(zirql::NativeOrderKey::Json(serde_json::Value::Array(
+            values,
+        ))),
+        QueryOutput::Map(entries) => {
+            program::charge_results(budget, entries.len() + 1, range)?;
+            program::charge_bytes(budget, entries.len() + 1, range)?;
+            Ok(zirql::NativeOrderKey::Json(serde_json::Value::Object(
+                entries.into_iter().collect(),
+            )))
+        }
+        value @ QueryOutput::Native(NativeValue::Constructed(_) | NativeValue::Map(_)) => {
+            comprehension::project(&value, budget, range).map(zirql::NativeOrderKey::Value)
         }
         _ => Err(EvaluationError::new(
             "ordering selector must produce exactly one string or count per operation",
         )
         .at(range.clone())),
     }
-}
-
-fn borrowed_ordering_key(
-    output: &QueryOutput,
-    budget: &mut zirql::Budget,
-    range: &std::ops::Range<usize>,
-) -> Result<zirql::NativeOrderKey, EvaluationError> {
-    let text = match functions::unretained(output) {
-        QueryOutput::Native(NativeValue::Capture(record)) => {
-            let (_, key) = record
-                .fields
-                .first()
-                .expect("ordering selectors retain one native field");
-            return borrowed_ordering_key(key, budget, range);
-        }
-        QueryOutput::Count(value) => return Ok(zirql::NativeOrderKey::Count(*value)),
-        QueryOutput::Native(NativeValue::String(value)) => value,
-        QueryOutput::Values(values) if values.len() == 1 => &values[0],
-        _ => {
-            return Err(EvaluationError::new(
-                "ordering selector must produce exactly one string or count per operation",
-            )
-            .at(range.clone()));
-        }
-    };
-    program::charge_bytes(budget, text.len(), range)?;
-    program::charge_results(budget, 1, range)?;
-    Ok(zirql::NativeOrderKey::Text(text.clone()))
 }
 
 fn value_depth(value: &serde_json::Value) -> usize {

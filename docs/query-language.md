@@ -309,30 +309,29 @@ These stages truncate an already computed stream. They do not avoid parsing the
 whole file or evaluating earlier stages.
 
 Use `sort_by(query)` to order operations by a derived key. The selector runs
-once for each operation and must return exactly one string or count. Sorting is
-stable, so operations with equal keys retain their previous order:
+against each original operation. Native string projections must return exactly
+one value; ordinary constructed and JSON data can supply a compound, Boolean
+or absent key. Counts retain their unsigned range. Sorting is stable, so equal
+keys retain their previous order:
 
 ```zirql
 filter(op("func.func")) | sort_by(attr("sym_name")) | head(10)
 ```
 
-`min` and `max` return the lexical minimum or maximum of a non-empty value
-stream. `min_by(query)` and `max_by(query)` return one operation using the same
+`min` and `max` use the intrinsic string projection on a value stream. `min_by(query)` and `max_by(query)` return one operation using the same
 selector rules as `sort_by`; the first operation wins a tie. The corresponding
 `min_all`, `max_all`, `min_all_by(query)`, and `max_all_by(query)` stages retain
-every tied extreme in its previous order. All extrema stages report an error on
-an empty stream. Use `reverse` after `sort` or `sort_by` for descending order.
+every tied extreme in its previous order. Empty extrema retain an empty native
+selection with its kind, element declaration and owner. Use `reverse` after `sort` or `sort_by` for descending order.
 
 Dictionaries keep insertion order. `map_by` uses input order, and `tally` keeps
 the first occurrence of each spelling. Use `sort_by(value)` on a dictionary
-whose values are comparable scalars of one type. Sorting returns a dictionary;
+whose values are supported ordinary data. Sorting returns a dictionary;
 `reverse`, `head`, and `tail` retain that kind through bindings, nested results,
 JSON objects, and Markdown. Equal values retain their current order, including
-after reversal. Nested map values need an explicit scalar projection.
-Here `value` is a map-entry selector, not a general pipeline stage. Supported
-categories are null, Boolean, number and string. Signed and unsigned integers
-and finite floats share the numeric category and compare without losing integer
-precision. Other categories cannot mix. Sorting, comparisons and subsequent
+after reversal. Bare `value` selects the whole entry value. Keys share the
+structural order described below, including compound JSON and exact unsigned
+integer leaves. Integer and float kinds have separate ranks. Sorting and
 bounds share the request's work and result limits.
 
 ## Building JSON structures
@@ -598,7 +597,7 @@ presence; false, zero, empty strings and empty containers remain present.
 index and returns absence for a compatible missing key. `has_key(value,key)`
 checks storage, so a stored null has a key while an omitted field does not.
 Wrong container/key types fail. Ordinary `r.field` and `a[i]` still fail on
-missing data. Arithmetic, ordering and conditions require present operands.
+missing data. Arithmetic and conditions require present operands.
 
 `value default fallback` evaluates the left side once and selects its fallback
 only for absence. Both branches receive scope, syntax, native purity and known
@@ -693,7 +692,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`0345851b57b35b7ade4de77466350cba56fe02ea`](https://github.com/zayenz/zirql/commit/0345851b57b35b7ade4de77466350cba56fe02ea).
+[`05c25a3d5f34ad431f573c55ddb0b7105a58b395`](https://github.com/zayenz/zirql/commit/05c25a3d5f34ad431f573c55ddb0b7105a58b395).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -726,22 +725,24 @@ handle checks and effect admission. See the
 
 ## Sort constructed rows and select extrema
 
-`sort(xs)` sorts positional scalar values, and `sort_by(rows, "field")` sorts
+`sort(xs)` sorts positional elements, and `sort_by(rows, "field")` sorts
 records by a static string label. Both are ascending and stable. Add
 `descending=true` to reverse key order while keeping input order within ties;
 `descending=false` is the default. The original records, field order,
 declarations and nominal identities survive.
 
-`min(xs)` and `max(xs)` return one scalar; `min_by(rows, "field")` and
+`min(xs)` and `max(xs)` return one element; `min_by(rows, "field")` and
 `max_by(rows, "field")` return one original record. Empty input is `null`, and
 the first input wins a tie. Use `min([]) default 0` for an explicit empty policy.
-Keys must be present homogeneous integers, finite floats, exact strings or
-members of one nominal type. Integer/float mixing and Boolean/native keys fail.
-Nominal members use declaration order. Missing, absent or incompatible fields
-fail at the selector; scalar failures use the call range. A later bad key still
-fails an extremum request. Project `lookup(row, "score") default 0` into a
-field first when that default is intended. Keyed inputs need an explicit
-positional value projection.
+Keys use structural order: absence, Boolean, integer, finite float, string,
+nominal member, array, tuple, set, dictionary, then keyed array. Arrays and tuples
+compare positionally; sets and dictionaries compare canonical membership and
+associations. Integers and floats retain separate ranks. Nominal metadata must
+remain coherent across every selected key, including nested members. Missing
+fields and invalid selector rows fail at the selector; an actual absent key is
+valid. A later bad key still fails an extremum request. Use an explicit
+lookup/default when a missing field should supply a key. Keyed inputs need an
+explicit positional value projection before ordering their cells.
 
 The [report example](../examples/cli/report-ordering.zirql) uses scores
 `[2,1,2,1]` on rows A, B, C and D. Ascending IDs are B, D, A, C;
@@ -751,9 +752,9 @@ descending IDs are A, C, B, D. Min selects B and max selects A:
 zirium -f examples/cli/report-ordering.zirql examples/cli/function-report.mlir
 ```
 
-These calls construct report values. Existing native operation/map stages,
-including bare `sort`, `sort_by(selector)` and `sort_by(value)`, keep their
-current semantics. Sorting extracts each key once, admits O(n) temporary slots,
+These calls return constructed values, with optional elements for single extrema.
+Native operation and map stages use the same key order and retain native
+selections, ownership and default projections. Sorting extracts each key once, admits O(n) temporary slots,
 and performs fallible O(n log n) comparisons. Descending equality keeps the left
 merge input. Extrema scan every key once without sorting or copying the entire
 input. Shared owned-output copies, field/string/nominal inspection, scratch and
@@ -2126,11 +2127,11 @@ and `alpha` with score two; the equal scores retain input order. `first` is
 the original `gamma` record. The same
 program text can be passed as the inline query argument.
 
-The default handles absence before sorting; absence is not zero in ordinary
-arithmetic or ordering. It does not catch arithmetic, type, host or budget
+The default supplies zero for an absent score; ordinary structural ordering
+places an absent key first. It does not catch arithmetic, type, host or budget
 errors. String matching is case-sensitive, with no Unicode normalization or
-regex interpretation; an empty search string matches. Sorting requires present
-homogeneous keys and preserves ties even with `descending=true`. Empty extrema
+regex interpretation; an empty search string matches. Sorting uses structural
+keys and preserves ties even with `descending=true`. Empty extrema
 return absence, and extrema choose the first input on a tie.
 
 Typed function boundaries check actual selected arguments and results. They
@@ -2152,7 +2153,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `0345851b57b35b7ade4de77466350cba56fe02ea`
+The development dependency pins Zirql `05c25a3d5f34ad431f573c55ddb0b7105a58b395`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.

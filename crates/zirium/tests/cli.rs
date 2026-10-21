@@ -2399,6 +2399,11 @@ fn ordering_bounds_and_extrema_compose_on_streams() {
         "filter(false) | min_by(names)",
         "filter(false) | names | max_all",
         "filter(false) | max_all_by(names)",
+    ] {
+        let output = run_stdin(query, input);
+        assert!(output.status.success(), "{query}: {:?}", output.stderr);
+    }
+    for query in [
         "filter(op(\"vendor.item\")) | sort_by(children | names)",
         "names | emit; filter(op(\"vendor.item\")) | min_all_by(attr(\"label\") | check(2))",
         "filter(false) | sort_by(names | emit)",
@@ -3066,28 +3071,37 @@ fn ranked_histograms_keep_order_through_bounds_bindings_and_markdown() {
         "filter(op(\"builtin.module\")) | map_by(names, children | names | tally) | sort_by(value)",
         &source,
     );
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("scalar map values"));
+    assert!(output.status.success(), "{:?}", output.stderr);
 }
 
 #[test]
 fn ranked_json_collections_keep_large_and_mixed_numbers_exact() {
-    for values in [
-        r#"{"a":9007199254740993,"z":9007199254740992}"#,
-        r#"{"a":-9007199254740992,"z":-9007199254740993}"#,
-        r#"{"a":18446744073709551615,"z":9223372036854775807}"#,
-        r#"{"a":9007199254740993,"z":9007199254740992.0}"#,
-        r#"{"a":18446744073709551616.0,"z":18446744073709551615}"#,
-        r#"{"a":0,"z":-0.5}"#,
-        r#"{"a":0.5,"z":0}"#,
-        r#"{"a":1e100,"z":18446744073709551615}"#,
-        r#"{"a":-9223372036854775808,"z":-1e100}"#,
+    for (values, first) in [
+        (r#"{"a":9007199254740993,"z":9007199254740992}"#, "z"),
+        (r#"{"a":-9007199254740992,"z":-9007199254740993}"#, "z"),
+        (r#"{"a":18446744073709551615,"z":9223372036854775807}"#, "z"),
+        (r#"{"a":9007199254740993,"z":9007199254740992.0}"#, "a"),
+        (
+            r#"{"a":18446744073709551616.0,"z":18446744073709551615}"#,
+            "z",
+        ),
+        (r#"{"a":0,"z":-0.5}"#, "a"),
+        (r#"{"a":0.5,"z":0}"#, "z"),
+        (r#"{"a":1e100,"z":18446744073709551615}"#, "z"),
+        (r#"{"a":-9223372036854775808,"z":-1e100}"#, "a"),
+        (
+            r#"{"a":[18446744073709551615],"z":[9223372036854775807]}"#,
+            "z",
+        ),
     ] {
         let output = run_stdin(&format!("{values} | sort_by(value) | head(1)"), "module {}");
         assert!(output.status.success(), "{values}: {:?}", output.stderr);
         let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert!(result.get("z").is_some(), "{values}: {result}");
-        assert!(result.get("a").is_none(), "{values}: {result}");
+        assert_eq!(
+            result.as_object().unwrap().keys().next().unwrap(),
+            first,
+            "{values}: {result}"
+        );
     }
 
     let output = run_stdin(
@@ -3158,11 +3172,16 @@ fn ranked_scalar_maps_keep_categories_and_rerank_ties() {
     let line = String::from_utf8(output.stdout).unwrap();
     assert!(line.contains(r#""result":{"a":1,"z":1}"#), "{line}");
     let output = run_stdin(r#"{"a":true,"z":1} | sort_by(value)"#, "module {}");
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("sort_by(value) requires comparable scalar map values of one type")
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["a", "z"]
     );
 }
 

@@ -742,6 +742,12 @@ def test_report_ordering_helpers_preserve_rows_ties_and_optional_results():
         "empty_max": None,
         "fallback": 7,
     }
+    keys: list[ReportInput] = [[1], "a", -2.0, 1, True, None]
+    assert doc.query(report(E(keys).sort())) == [None, True, 1, -2.0, "a", [1]]
+    assert (
+        doc.query(ops().filter(always(False)).min_by(input().names().one()).names())
+        == []
+    )
     dictionary = doc.query(report(E({"z": 1, "a": 1, "m": 0}).sort_by_value()))
     assert isinstance(dictionary, dict)
     assert list(dictionary) == ["m", "z", "a"]
