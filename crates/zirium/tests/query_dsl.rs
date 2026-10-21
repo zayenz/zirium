@@ -4481,3 +4481,23 @@ fn adopted_report_extensions_agree_between_text_and_builders() {
     };
     assert_eq!(count.value().data(), &V::Integer(2));
 }
+
+#[test]
+fn markdown_native_capture_rows_render_through_the_library() {
+    let mut document = document_from(r#""test.op"() : () -> ()"#);
+    let mut outputs = Vec::new();
+    Query::parse(include_str!(
+        "../../../examples/cli/markdown-subjects.zirql"
+    ))
+    .unwrap()
+    .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+        outputs.push(value);
+        Ok(())
+    })
+    .unwrap();
+    let QueryOutput::Text(text) = &outputs[0] else {
+        panic!("Markdown text")
+    };
+    assert!(text.starts_with("\n| subject |\n| --- |\n"));
+    assert!(text.contains("test.op"));
+}

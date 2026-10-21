@@ -399,8 +399,7 @@ let report = {"totals": totals, "complete": true};
 
 Objects and arrays also print as JSON through implicit output or `emit`.
 `count` counts outer object keys or array elements. `markdown` accepts literal
-objects with its supported table shapes and arrays of scalars; deeper structures
-produce its usual shape diagnostic. Literal construction is not a selection
+objects and arrays of record rows as tables; nested cells use compact JSON. Literal construction is not a selection
 query, so it cannot be used directly as a set operand or fixed-point body.
 
 The shared nesting, item, and work limits apply to literal construction.
@@ -678,7 +677,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`62b2d350f61d52e5bfd554724d750143ed451008`](https://github.com/zayenz/zirql/commit/62b2d350f61d52e5bfd554724d750143ed451008).
+[`843190701089ef2d1644cea8dc0abe92f080a63b`](https://github.com/zayenz/zirql/commit/843190701089ef2d1644cea8dc0abe92f080a63b).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -779,7 +778,9 @@ the active budget. Rows move into items without another deep copy. Snapshots,
 Python conversion and rendering retain that allowance and existing completeness
 rules. A grouping error leaves CLI stdout empty after earlier reports too.
 
-## Writing reports with Markdown and text
+<a id="writing-reports-with-markdown-and-text"></a>
+
+## Markdown reports
 
 Use `markdown` to emit a table from a histogram or a map of histograms.
 Use `print("text")` for headings and explanatory text between results:
@@ -868,39 +869,42 @@ Expansion bytes, object/array storage and nested construction share the active
 request limits. A limit refusal returns no partial result and keeps the enclosing
 print or literal location.
 
-The Markdown emitter supports these shapes:
+Zirium delegates ordinary data formatting to Zirql's
+[Markdown renderer](https://zayenz.se/zirql/guides/library-rendering/#render_markdown).
+Scalar counts use a paragraph; scalar collections use a `Value` table. Records
+and dictionaries use `Key` / `Value` columns, or a leading `Key` column followed
+by record fields when every value is a record. Sequences of records use the
+first-seen union of fields as columns. Rows retain input order; missing and
+absent cells are blank. Empty collections display `_No entries._`.
+Nested cells and structural dictionary keys use compact ordinary JSON with
+Markdown escaping. Nominal members and explicit keyed arrays retain their
+shared tagged shape inside those cells.
 
-| Input | Output |
-| --- | --- |
-| String stream or scalar array | A one-column table headed `Value`, preserving order and duplicates. |
-| Map of scalars | A `Key` / `Value` table. |
-| Map of maps of scalars | Outer keys become rows; the union of inner keys becomes columns. |
-| Saved count | The number as a paragraph. |
-| Empty stream or map | The paragraph *No entries.* |
+For a native-subject report, save this as `subjects.zirql`:
 
-For example, `{"a": {"add": 2}, "b": {"add": 1, "mul": 3}}` renders as:
+```zirql
+match { from subject in (input | filter(op("func.func"))); } | markdown;
+```
 
-| Key | add | mul |
-| --- | --- | --- |
-| a | 2 | |
-| b | 1 | 3 |
+Run it inline or from a file:
 
-Dictionary rows follow their current entry order. Columns follow the first
-occurrence of each inner key. Missing cells and null values are blank. Other
-scalars are strings,
-numbers, or booleans. Empty inner maps contribute blank rows; if every inner
-map is empty, only the `Key` column remains.
+```sh
+printf 'module { func.func @f() { func.return } }\n' | cargo run --locked -p zirium -- \
+  'match { from subject in (input | filter(op("func.func"))); } | markdown;'
+printf 'module { func.func @f() { func.return } }\n' | cargo run --locked -p zirium -- -f subjects.zirql
+```
 
-Operation streams, mixed scalar/map rows, arrays inside maps, and deeper maps
-produce a shape diagnostic. Use `names`, `tally`, or `map_by` to form a
-table, or use `json` for deeper data. The diagnostic identifies the offending
-entry or cell when possible.
+The `subject` column contains each operation's ordinary descriptor. Capture
+rows retain native handles until rendering. Raw operation streams still need
+an explicit row or scalar projection; computational queues and identity sets
+cannot be rendered. [Library use](query-dsl.md#markdown-reports) runs the same
+query through `Query::parse`.
 
 `markdown` preserves the current result, as `json` does. It surrounds its
 output with blank lines, escapes Markdown and HTML characters in cells, and
 renders embedded newlines as `<br>`. The table uses GitHub-flavored Markdown.
 The expanded table, including missing cells and headers, must fit
-`--max-items`; emitted text also consumes `--max-work`. A late shape or
+`--max-items`; emitted text also consumes `--max-work`. A late evaluation, rendering or
 interpolation error leaves CLI stdout empty, including earlier `print` output.
 
 ## Counting reachable operations
@@ -2091,7 +2095,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `62b2d350f61d52e5bfd554724d750143ed451008`
+The development dependency pins Zirql `843190701089ef2d1644cea8dc0abe92f080a63b`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.
@@ -2113,4 +2117,5 @@ sequences remain arrays. `--jsonl` keeps the `document` and `result` envelope.
 An operation emitted as MLIR remains a source string in that envelope. Diff
 output retains its `zirium.diff.v1` schema, document names, side and comparison
 metadata. Both CLIs buffer the whole request, including later rendering errors.
-Markdown consumer rendering retains its existing host implementation.
+The [Markdown emitter](#markdown-reports) uses the same native projection
+boundary and shared Zirql table rendering.

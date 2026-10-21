@@ -2972,11 +2972,6 @@ fn markdown_escapes_cells_and_rejects_unsuitable_shapes_atomically() {
     }
     for (query, error) in [
         (r#"print("prefix"); input | markdown"#, "markdown requires"),
-        (r#"map_by(names, names) | markdown"#, "incompatible shape"),
-        (
-            r#"map_by(names, map_by(names, names)) | markdown"#,
-            "expected a scalar",
-        ),
         (
             r#"N = names | tally; print("{N}")"#,
             "requires a count or exactly one string",
@@ -4341,4 +4336,51 @@ fn adopted_report_suffixes_agree_inline_and_in_files() {
         serde_json::from_slice::<serde_json::Value>(&inline.stdout).unwrap(),
         serde_json::json!([[2, 3]])
     );
+}
+
+#[test]
+fn markdown_native_subject_rows_replay_inline_file_and_buffer_later_errors() {
+    let source = include_str!("../../../examples/cli/markdown-subjects.zirql");
+    let input = r#""test.op"() : () -> ()"#;
+    let inline = run_stdin(source, input);
+    assert!(inline.status.success(), "{inline:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&inline.stdout),
+        "\n| subject |\n| --- |\n| {\"name\":\"test.op\",\"attributes\":{},\"operand\\_types\":\\[\\],\"result\\_types\":\\[\\]} |\n\n"
+    );
+    let path = temporary_path("markdown-subjects", "zirql");
+    fs::write(&path, source).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["-f", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let saved = child.wait_with_output().unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(saved.status.success(), "{saved:?}");
+    assert_eq!(saved.stdout, inline.stdout);
+    let failed = run_stdin(&format!("{source} filter(false) | check;"), input);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    let nested = run_stdin(
+        r#"[{"name":"a|<","nested":[1,2]},{"other":true}] | markdown"#,
+        input,
+    );
+    assert!(nested.status.success(), "{nested:?}");
+    assert_eq!(nested.stdout, b"\n| name | nested | other |\n| --- | --- | --- |\n| a\\|&lt; | \\[1,2\\] |  |\n|  |  | true |\n\n");
+    for source in [
+        "map_by(names, names) | markdown",
+        "map_by(names, map_by(names, names)) | markdown",
+    ] {
+        let output = run_stdin(source, input);
+        assert!(output.status.success(), "{output:?}");
+    }
 }

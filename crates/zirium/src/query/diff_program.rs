@@ -1792,11 +1792,6 @@ fn markdown(
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<String, EvaluationError> {
-    fn cell(text: &str) -> String {
-        text.replace('\\', "\\\\")
-            .replace('|', "\\|")
-            .replace('\n', "<br>")
-    }
     admit(budget, 1, range)?;
     let text = match value {
         DiffProgramOutput::Changes(items) => {
@@ -1810,40 +1805,40 @@ fn markdown(
             )?;
             diff.selection_to_markdown(&items).map_err(diff_error)?
         }
-        DiffProgramOutput::Strings(items) => {
+        // Diff reports historically retain headers for empty ordinary tables.
+        DiffProgramOutput::Strings(ref items) if items.is_empty() => {
             program::charge_bytes(budget, 18, range)?;
-            let mut output = String::from("| Value |\n| --- |\n");
-            for item in items {
-                program::charge_bytes(budget, item.len().saturating_mul(4) + 6, range)?;
-                output.push_str(&format!("| {} |\n", cell(&item)));
-            }
-            output
+            "| Value |\n| --- |\n".to_owned()
         }
-        DiffProgramOutput::Map(entries) => {
+        DiffProgramOutput::Map(ref entries) if entries.is_empty() => {
             program::charge_bytes(budget, 30, range)?;
-            let mut output = String::from("| Key | Value |\n| --- | --- |\n");
-            for (key, value) in entries {
-                let json = to_json(diff, &value, budget, range)?;
-                let mut value = program::serialize_json(&json, budget, range, false)?;
-                value.pop();
-                program::charge_bytes(
-                    budget,
-                    (key.len() + value.len()).saturating_mul(4) + 9,
-                    range,
-                )?;
-                output.push_str(&format!("| {} | {} |\n", cell(&key), cell(&value)));
+            "| Key | Value |\n| --- | --- |\n".to_owned()
+        }
+        value @ (DiffProgramOutput::Strings(_)
+        | DiffProgramOutput::Map(_)
+        | DiffProgramOutput::Constructed(_)) => {
+            let bytes = zirql::render_report_markdown(
+                &mut DiffRenderer { diff, range },
+                &value,
+                budget,
+                zirql::Location::Query(range.clone()),
+            )
+            .map_err(program::evaluation_error)?;
+            let mut text = String::from_utf8(bytes).expect("Markdown is UTF-8");
+            // The diff CLI supplies surrounding document framing itself.
+            if text.starts_with('\n') {
+                text.remove(0);
             }
-            output
+            if text.ends_with('\n') {
+                text.pop();
+            }
+            text
         }
-        _ => {
-            return Err(failure(
-                "markdown requires changes, values, or a map",
-                range,
-            ));
-        }
+        _ => return Err(failure("markdown requires changes or report data", range)),
     };
     Ok(text)
 }
+
 enum PrintFragment<'a> {
     Literal(&'a str),
     Binding(&'a str),
@@ -2213,8 +2208,11 @@ fn validate_stage(
         }
         DiffStage::Markdown => {
             require(
-                matches!(input, Kind::Changes | Kind::Strings | Kind::Map),
-                "markdown requires changes, values, or a map",
+                matches!(
+                    input,
+                    Kind::Changes | Kind::Strings | Kind::Map | Kind::Constructed
+                ),
+                "markdown requires changes or report data",
             )?;
             Kind::Text
         }

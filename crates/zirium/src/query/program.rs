@@ -673,7 +673,19 @@ impl<'q> ProgramHost<EvaluationContext<'_, '_, 'q>> for NativeHost {
                     }
                     model::Stage::Markdown { .. } => {
                         charge_results(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
-                        render::markdown(value, budget).map(QueryOutput::Text)
+                        zirql::render_report_markdown(
+                            &mut ReportRenderer {
+                                document: context.document,
+                                range,
+                            },
+                            value,
+                            budget,
+                            zirql::Location::Query(range.clone()),
+                        )
+                        .map(|bytes| {
+                            QueryOutput::Text(String::from_utf8(bytes).expect("Markdown is UTF-8"))
+                        })
+                        .map_err(evaluation_error)
                     }
                     _ => unreachable!("written emitter"),
                 }
@@ -1195,9 +1207,19 @@ impl Validator<'_> {
                 S::Markdown { .. } => require(
                     matches!(
                         kind,
-                        Kind::Map | Kind::NativeMap | Kind::Array | Kind::Strings | Kind::Count
+                        Kind::Map
+                            | Kind::NativeMap
+                            | Kind::Array
+                            | Kind::Strings
+                            | Kind::Count
+                            | Kind::String
+                            | Kind::Constructed(_)
+                            | Kind::Tuple(_)
+                            | Kind::Sequence(_)
+                            | Kind::Capture(_)
+                            | Kind::Captures(_)
                     ),
-                    "markdown requires values, a count, or a map of scalars or maps of scalars",
+                    "markdown requires report data; project operations to rows first",
                 )?,
                 S::Print { parts, .. } => {
                     validate_interpolation(parts, names)

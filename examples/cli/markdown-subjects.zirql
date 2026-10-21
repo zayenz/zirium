@@ -1,0 +1,1 @@
+match { from subject in (input | filter(op("test.op"))); } | markdown;

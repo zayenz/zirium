@@ -361,6 +361,23 @@ fn diff_scalar_projections_support_ordering_aggregation_and_markdown() {
         String::from_utf8(output.stdout).unwrap(),
         "| Key | Value |\n| --- | --- |\n| arith.constant | 1 |\n"
     );
+    for (source, expected) in [
+        ("filter(false) | names | markdown", "| Value |\n| --- |\n"),
+        (
+            "filter(false) | names | tally | markdown",
+            "| Key | Value |\n| --- | --- |\n",
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_zirium"))
+            .args(["--diff"])
+            .arg(&before)
+            .arg(&after)
+            .arg(source)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
 }
 
 #[test]

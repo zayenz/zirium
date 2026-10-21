@@ -111,6 +111,13 @@ A query statement writes its final value once. A binding or `do` statement
 writes nothing. Ordinary operation programs emit at each written emitter.
 The CLI stages all output until the complete program succeeds.
 
+`markdown` on a change selection retains the native change table with its context columns.
+Ordinary string, map and constructed data use Zirql's
+[shared Markdown layouts](https://zayenz.se/zirql/guides/library-rendering/#render_report_markdown).
+Diff output retains its existing table framing, including header-only empty
+string and map tables. Native before/after operation descriptors and change
+classification remain part of Zirium.
+
 Bindings retain their stream side. The reserved scalar bindings
 `before_document` and `after_document` contain the two CLI labels for
 `print("{before_document} -> {after_document}")` and similar reports.

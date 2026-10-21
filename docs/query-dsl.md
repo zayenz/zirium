@@ -479,7 +479,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `62b2d350f61d52e5bfd554724d750143ed451008`. They accept shared expressions
+pin `843190701089ef2d1644cea8dc0abe92f080a63b`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 
@@ -940,3 +940,26 @@ including platform overflow refusal, with Zirium's argument diagnostics.
 MLIR kind conversion, native handles, source coordinates and domain admission
 remain in Zirium. These are Rust adapter APIs in the development dependency,
 not additional Rust/Python query syntax. See [the shared API contract](https://zayenz.se/zirql/guides/host-integration/#declaration-metadata-and-scalar-arguments).
+
+## Markdown reports
+
+Textual reports evaluated through the Rust library use the same shared Markdown
+renderer as the CLI. Collect each `QueryOutput::Text` after the query succeeds:
+
+```rust
+use zirium::{dialect::DialectRegistry, query::{Query, QueryOutput}};
+let query = Query::parse(
+    "match { from subject in (input | filter(op(\"func.func\"))); } | markdown;"
+)?;
+let mut output = Vec::new();
+query.evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+    if let QueryOutput::Text(text) = value { output.extend_from_slice(text.as_bytes()); }
+    Ok(())
+})?;
+```
+
+`document` is the lowered MLIR document described above. Commit the collected
+bytes only after `evaluate` succeeds, so a later error discards the whole report.
+The [CLI recipe](query-language.md#markdown-reports) uses the same capture rows.
+Zirql owns [table layout, escaping and budgets](https://zayenz.se/zirql/guides/library-rendering/#render_report_markdown);
+Zirium retains operation descriptors, source output and emitter policies.
