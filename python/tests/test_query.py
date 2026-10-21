@@ -992,3 +992,19 @@ def test_collection_report_builders_keep_dictionary_values_and_runtime_bounds():
     )
     assert doc.query(report(dictionary)) == {"c": 2}
     assert doc.query(report(E([]).check(0).count())) == 0
+
+
+def test_native_tally_preserves_equal_named_handles_and_dictionary_continuation():
+    document = (
+        zirium.parse_text('"test.same"() : () -> ()\n"test.same"() : () -> ()')
+        .lower_strict()
+        .document
+    )
+    assert document is not None
+    histogram = document.query(ops().tally().reverse().head(1).sort_by_value())
+    assert histogram["kind"] == "dictionary"
+    entries = histogram["entries"]
+    assert isinstance(entries, list)
+    assert entries[0]["value"] == 1
+    assert len(entries[0]["key"]) == 1
+    assert document.query(ops().names().tally()) == {"test.same": 2}

@@ -1071,7 +1071,21 @@ macro_rules! result {
 }
 result!(Vec<OperationId>, QueryOutput::Operations(value) | QueryOutput::Native(NativeValue::OperationSequence(value)) => value);
 result!(Vec<String>, QueryOutput::Values(value) => value);
-result!(usize, QueryOutput::Count(value) => value);
+impl private::Sealed for usize {}
+impl QueryResult for usize {
+    fn from_query_output(output: QueryOutput) -> Result<Self, EvaluationError> {
+        match output {
+            QueryOutput::Count(value) => Ok(value),
+            QueryOutput::Native(NativeValue::Constructed(value)) => match value.value().data() {
+                zirql::ConstructedValue::Integer(value) => {
+                    usize::try_from(*value).map_err(|_| wrong_result())
+                }
+                _ => Err(wrong_result()),
+            },
+            _ => Err(wrong_result()),
+        }
+    }
+}
 result!(String, QueryOutput::Native(NativeValue::String(value)) => value);
 result!(Vec<TypeId>, QueryOutput::Native(NativeValue::Types(value)) => value);
 result!(Vec<AttributeId>, QueryOutput::Native(NativeValue::Attributes(value)) => value.into_iter().map(|(_, id)| id).collect());
@@ -1080,6 +1094,24 @@ impl<T: QueryResult> QueryResult for Vec<(String, T)> {
     fn from_query_output(output: QueryOutput) -> Result<Self, EvaluationError> {
         let entries = match output {
             QueryOutput::Native(NativeValue::Map(entries)) => entries,
+            QueryOutput::Native(NativeValue::Dictionary(value)) => value
+                .entries()
+                .iter()
+                .map(|(key, value)| {
+                    let key = match key {
+                        QueryOutput::Values(values) if values.len() == 1 => values[0].clone(),
+                        QueryOutput::Native(NativeValue::String(value)) => value.clone(),
+                        QueryOutput::Native(NativeValue::Constructed(value)) => {
+                            match value.value().data() {
+                                zirql::ConstructedValue::String(value) => value.clone(),
+                                _ => return Err(wrong_result()),
+                            }
+                        }
+                        _ => return Err(wrong_result()),
+                    };
+                    Ok((key, value.clone()))
+                })
+                .collect::<Result<_, EvaluationError>>()?,
             // The shared tally stage also serves the textual frontend.
             QueryOutput::Map(entries) => entries
                 .into_iter()
@@ -2493,4 +2525,68 @@ impl ReportExpr {
 
 fn collection_step(operation: zirql::Stage<()>) -> model::Step {
     zirql::Located::new(zirql::ExpressionStep::Collection(operation), 0..0)
+}
+
+impl OpQuery {
+    /// Count actual native subjects in an ordered dictionary.
+    pub fn tally(&self) -> QueryExpr<QueryOutput> {
+        self.stage(collection_step(zirql::Stage::Tally))
+    }
+}
+
+impl TypeQuery {
+    /// Count actual native subjects in an ordered dictionary.
+    pub fn tally(&self) -> QueryExpr<QueryOutput> {
+        self.stage(collection_step(zirql::Stage::Tally))
+    }
+}
+
+impl AttributeQuery {
+    /// Count actual native subjects in an ordered dictionary.
+    pub fn tally(&self) -> QueryExpr<QueryOutput> {
+        self.stage(collection_step(zirql::Stage::Tally))
+    }
+}
+
+impl QueryExpr<QueryOutput> {
+    pub fn sort(&self) -> Self {
+        self.stage(ordering_step(zirql::NativeOrder::Sort, None))
+    }
+    pub fn head_expr(&self, count: ReportExpr) -> Self {
+        self.stage(zirql::Located::new(
+            zirql::ExpressionStep::Head(count.value.expression.clone()),
+            0..0,
+        ))
+        .with_parameters(count.parameters)
+        .with_functions(count.functions)
+    }
+    pub fn tail_expr(&self, count: ReportExpr) -> Self {
+        self.stage(zirql::Located::new(
+            zirql::ExpressionStep::Tail(count.value.expression.clone()),
+            0..0,
+        ))
+        .with_parameters(count.parameters)
+        .with_functions(count.functions)
+    }
+    pub fn unique(&self) -> Self {
+        self.stage(collection_step(zirql::Stage::Unique))
+    }
+    pub fn tally(&self) -> Self {
+        self.stage(collection_step(zirql::Stage::Tally))
+    }
+    pub fn reverse(&self) -> Self {
+        self.stage(collection_step(zirql::Stage::Reverse))
+    }
+    pub fn head(&self, count: usize) -> Self {
+        self.stage(collection_step(zirql::Stage::Head(count)))
+    }
+    pub fn tail(&self, count: usize) -> Self {
+        self.stage(collection_step(zirql::Stage::Tail(count)))
+    }
+    pub fn sort_by_value(&self) -> Self {
+        self.stage(zirql::Located::new(zirql::ExpressionStep::MapSorting, 0..0))
+    }
+    pub fn count(&self) -> CountQuery {
+        self.stage(collection_step(zirql::Stage::Count))
+    }
 }

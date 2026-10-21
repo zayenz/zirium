@@ -82,7 +82,8 @@ semantics are unknown.
 Change and projected-operation streams support `unique`, bounds, reversal,
 sets, `sort_by(...)`, keyed extrema, and `map_by(...)`. `names`, `attr`,
 `result_types`, and `operand_types` produce value streams; those streams support
-`sort`, extrema, `tally`, JSON, and Markdown. Nested expressions start from the
+`unique`, `sort`, extrema, `tally`, JSON, and Markdown. Tally also accepts
+change and operation streams, retaining comparison ownership and source side. Nested expressions start from the
 current record or selection, while explicit `input` resets to all changes.
 
 Native captures and `paths(...)` are unavailable on this diff surface, including
@@ -184,3 +185,15 @@ cargo run --release -p zirium --example diff_benchmark -- 64 128 256 512 1024
 Each row reports its size, workload case, input bytes, changes, matches,
 comparison work, fallback counters, and elapsed milliseconds. Lowering happens
 before the timer.
+
+Text and typed string queries accept the same unique operation. Full diff
+programs keep actual tally keys until rendering and allow dictionary continuation:
+
+```zirql
+hist = after | tally;
+hist | reverse | head(1) | sort_by(value) | json
+```
+
+A before-side key and an after-side key remain distinct even when their operation
+names match. Use `names` explicitly when the intended identity is the spelling.
+See the shared [unique and tally reference](https://zayenz.se/zirql/guides/library-pipelines/#unique).

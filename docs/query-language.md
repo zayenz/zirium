@@ -252,8 +252,8 @@ operations without a text or JSON conversion.
 
 ## Counting values and building maps
 
-`tally` counts how many times each value occurs and returns a dictionary from strings
-to counts. For example, `names | tally` counts operations by their full names.
+`tally` counts structurally equal values or exact native subjects and returns an
+ordered dictionary with actual keys and integer counts. For example, `names | tally` counts operations by their full names.
 An empty value stream produces `{}`. Dictionaries print as JSON objects, with
 keys in first-occurrence order. `json` can also emit a map explicitly.
 
@@ -656,7 +656,8 @@ zirium 'let numbers=[3,1,3]; numbers | sort | unique | count' examples/cli/funct
 ```
 
 Saved constructed collections and constructed function results use the shared
-`sort`, `unique`, `count` and terminal `tally` stages. Constructed arrays
+`sort`, `unique`, `count` and `tally` stages. Tally returns a dictionary
+that supports reversal, bounds, check and value sorting. Constructed arrays
 also accept `filter(predicate)` with named or implicit `_` arguments. String
 arrays additionally support the compact `filter(starts_with("prefix"))`
 spelling. These stages retain their shared value type rules. Native sources
@@ -692,7 +693,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`05c25a3d5f34ad431f573c55ddb0b7105a58b395`](https://github.com/zayenz/zirql/commit/05c25a3d5f34ad431f573c55ddb0b7105a58b395).
+[`49c30dac58ed2614fb9d6ba97dafe1432fa7a9cc`](https://github.com/zayenz/zirql/commit/49c30dac58ed2614fb9d6ba97dafe1432fa7a9cc).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -1501,8 +1502,8 @@ the active evaluation allowance. Diff `emit` is a no-op; `json`, `markdown` and
 `print` transform the value written once at the end of a query statement.
 Bindings and `do` suppress that statement output. Diff mode retains its legacy
 work and per-stream limits and rejects `--max-results`. Change streams support keyed
-ordering and `map_by`. Written diff `unique` accepts change or operation streams;
-the typed Rust value query also supports deduplicating names. The document labels are available as
+ordering and `map_by`. Textual and typed diff `unique` accept the same change, operation and string
+streams. Tally retains native keys and their source side. The document labels are available as
 `before_document` and `after_document` for interpolation. See
 [semantic diff](semantic-diff.md) for the full policy.
 
@@ -2153,7 +2154,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `05c25a3d5f34ad431f573c55ddb0b7105a58b395`
+The development dependency pins Zirql `49c30dac58ed2614fb9d6ba97dafe1432fa7a9cc`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.
@@ -2231,3 +2232,16 @@ Legacy JSON map value predicates use the existing checked ordinary-data
 projection. JSON integers outside signed 64-bit range are refused with a located
 conversion error; retained entries keep their original JSON values. Null projects
 to ordinary absence. Native ordering retains its separate exact key contract.
+
+Unique and tally use Zirql's shared [structural identity contract](https://zayenz.se/zirql/guides/library-pipelines/#unique).
+Native operation keys retain document ownership. Distinct operations with the
+same name remain separate; use `names | tally` to count spellings explicitly.
+Saved tally dictionaries support lookup and dictionary continuations:
+
+```zirql
+let hist = input | tally;
+hist | reverse | head(1) | check(1) | sort_by(value) | json
+```
+
+String keys retain ordinary dictionary JSON. General keys use tagged entry
+pairs and the existing native descriptor projection only for rendering.

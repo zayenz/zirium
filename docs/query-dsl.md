@@ -227,8 +227,12 @@ let histograms = document.query(&report)?; // Vec<(String, Vec<(String, usize)>)
 ```
 
 `one()` requires exactly one string and returns a scalar. Missing or multiple
-strings are errors. `map_by` rejects duplicate keys. `tally()` instead combines
-equal strings and returns their occurrence counts in first-occurrence order.
+strings are errors. `map_by` rejects duplicate keys. String `tally()` combines equal strings and returns their occurrence counts
+in first-occurrence order. Operation, type and attribute queries also expose
+`tally()`, returning retained dictionaries through the existing erased Rust
+`QueryOutput`. Python uses the existing `MapQuery` wrapper. Non-string keys
+convert to tagged entry pairs containing actual native values; string keys
+keep ordinary dictionaries.
 `map_by` retains input order. Empty inputs produce empty maps.
 
 Map values can also be operation selections, type or attribute selections,
@@ -505,7 +509,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `05c25a3d5f34ad431f573c55ddb0b7105a58b395`. They accept shared expressions
+pin `49c30dac58ed2614fb9d6ba97dafe1432fa7a9cc`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 

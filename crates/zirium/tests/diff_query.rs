@@ -254,20 +254,23 @@ fn text_programs_keep_native_side_results_and_the_typed_projection_contract() {
         diff.query(&changes().names().unique()).unwrap(),
         ["arith.constant"]
     );
-    let error = DiffProgram::parse("names | unique")
+    let mut textual = Vec::new();
+    DiffProgram::parse("names | unique")
         .unwrap()
         .evaluate(
             &diff,
             ("before", "after"),
             EvaluationLimits::default(),
             EvaluationOptions::default(),
-            |_, _, _| Ok(()),
+            |_, value, _| {
+                textual.push(value);
+                Ok(())
+            },
         )
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("unique requires a change or operation stream")
+        .unwrap();
+    assert_eq!(
+        textual,
+        [DiffProgramOutput::Strings(vec!["arith.constant".into()])]
     );
 
     let nested_before = document(
@@ -675,7 +678,9 @@ fn dictionaries_and_sets_retain_operand_order_and_native_sides() {
         ["test.m", "test.a", "test.z"]
     );
     assert!(matches!(&outputs[3], DiffProgramOutput::Map(entries) if entries.is_empty()));
-    assert!(matches!(&outputs[4], DiffProgramOutput::Map(entries) if entries.is_empty()));
+    assert!(
+        matches!(&outputs[4], DiffProgramOutput::Dictionary(value) if value.entries().is_empty())
+    );
     assert_eq!(
         outputs[5],
         DiffProgramOutput::Strings(vec!["test.m".into(), "test.a".into(), "test.z".into()])
@@ -715,7 +720,7 @@ fn diff_existence_preserves_subjects_and_preflights_empty_sides() {
     assert_eq!(expected.len(), 4);
     assert_eq!(expected.operations()[0], expected.operations()[1]);
     let mut actual = vec![];
-    DiffProgram::parse("after | users | defs | where_exists(users)")
+    DiffProgram::parse("after | users | defs | where_exists(users) | where_exists(emit)")
         .unwrap()
         .evaluate(
             &diff,
@@ -738,7 +743,6 @@ fn diff_existence_preserves_subjects_and_preflights_empty_sides() {
     for source in [
         "after | filter(false) | where_exists(input | before)",
         "after | filter(false) | where_exists(names)",
-        "after | filter(false) | where_exists(emit)",
         "after | where_exists(users | check(99))",
     ] {
         let error = DiffProgram::parse(source)
@@ -788,7 +792,7 @@ fn shared_diff_predicates_keep_side_candidates_and_written_admission() {
         [DiffProgramOutput::Strings(vec!["builtin.module".into()])]
     );
     for source in [
-        "after | filter(false) | filter(p => p | json)",
+        "after | filter(false) | filter(p => p | count)",
         "after | filter(false) | root(p => change(\"modified\"))",
         "after | filter((a,b) => true)",
     ] {
@@ -809,4 +813,31 @@ fn shared_diff_predicates_keep_side_candidates_and_written_admission() {
         assert!(error.range().is_some(), "{source}: {error}");
         assert!(!emitted);
     }
+}
+
+#[test]
+fn diff_tally_keeps_native_sides_saved_lookup_and_dictionary_continuation() {
+    use zirium::query::{DiffProgram, DiffProgramOutput, EvaluationLimits, EvaluationOptions};
+    let before = document("module { %x = arith.constant 1 : i32 }");
+    let after = document("module { %x = arith.constant 2 : i32 }");
+    let diff = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits::default(),
+    )
+    .unwrap();
+    let mut outputs = Vec::new();
+    DiffProgram::parse("keys=after; hist=keys | tally; saved=hist; saved | reverse | head(1) | check(1) | sort_by(value); lookup(hist,keys | head(1)); a=before | head(1); b=after | head(1); {a:1,b:2} | count").unwrap().evaluate(&diff, ("before", "after"), EvaluationLimits::default(), EvaluationOptions::default(), |_, value, _| { outputs.push(value); Ok(()) }).unwrap();
+    let DiffProgramOutput::Dictionary(dictionary) = &outputs[0] else {
+        panic!("dictionary")
+    };
+    assert_eq!(dictionary.entries().len(), 1);
+    assert!(matches!(
+        &dictionary.entries()[0].0,
+        DiffProgramOutput::Operations(zirium::diff::DiffSide::After, _)
+    ));
+    assert_eq!(outputs[1], DiffProgramOutput::Count(1));
+    assert_eq!(outputs[2], DiffProgramOutput::Count(2));
 }

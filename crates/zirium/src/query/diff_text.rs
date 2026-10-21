@@ -3,7 +3,7 @@ use super::diff_program::{
     DiffProgram, DiffStage, Expression, Leaf, OwnedExpression, SetOperator, dispose_statements,
 };
 use super::{EvaluationError, OperationTraversal};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 use zirql::{ExpressionKind, Located, Stage};
 
 pub(super) fn parse(source: &str) -> Result<DiffProgram, EvaluationError> {
@@ -91,10 +91,37 @@ fn parse_expression<'a>(
         super::parser::DEFAULT_NESTING_LIMIT,
     );
     let nesting = host.nesting;
-    let expression = OwnedExpression::new(
-        zirql::read_native_expression(&mut reader, &mut host, budget, nesting)
-            .map_err(super::core_error)?,
-    );
+    let mut probe =
+        zirql::ArgumentReader::new(source, reader.position()).map_err(super::core_error)?;
+    let native_stage = probe
+        .word()
+        .ok()
+        .is_some_and(|word| zirql::ValueReaderHost::is_stage(&host, word.value));
+    let expression = if !native_stage
+        && zirql::starts_common_expression(&reader, budget, nesting).map_err(super::core_error)?
+    {
+        let value = zirql::read_value_expression(&mut reader, &mut host, budget, nesting)
+            .map_err(super::core_error)?;
+        let range = value.range.clone();
+        OwnedExpression::new(Located::new(
+            ExpressionKind::Sequence {
+                input: Box::new(Located::new(
+                    ExpressionKind::Input,
+                    range.start..range.start,
+                )),
+                steps: vec![Located::new(
+                    zirql::ExpressionStep::Value(Arc::new(value)),
+                    range.clone(),
+                )],
+            },
+            range,
+        ))
+    } else {
+        OwnedExpression::new(
+            zirql::read_native_expression(&mut reader, &mut host, budget, nesting)
+                .map_err(super::core_error)?,
+        )
+    };
     reader.skip_whitespace();
     if !reader.remaining().is_empty() {
         return Err(super::core_error(
@@ -395,11 +422,14 @@ impl<'a> DiffReader<'a> {
     }
 }
 impl zirql::ValueReaderHost for DiffReader<'_> {
+    fn retains_native_values(&self) -> bool {
+        true
+    }
     type Stage = DiffStage;
     type SetOperator = SetOperator;
     type Emitter = ();
     fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
-        zirql::FieldPipelineSource::Constructed
+        zirql::FieldPipelineSource::ValueArgument
     }
     fn is_binding(&self, name: &str) -> bool {
         name == "input" || self.bindings.contains(&name)

@@ -2766,7 +2766,6 @@ fn named_queries_build_function_histograms_and_keep_live_selections() {
             r#"filter(op("func.func")) | map_by(attr("absent"), count)"#,
             "exactly one string",
         ),
-        ("tally", "requires a value stream"),
         ("N = count; N | names", "requires operations"),
         (
             "N = names | tally; N union N",

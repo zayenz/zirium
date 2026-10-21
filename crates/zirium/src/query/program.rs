@@ -226,6 +226,16 @@ impl zirql::RenderHost for ReportRenderer<'_> {
             QueryOutput::Native(NativeValue::Tuple(value)) => View::Sequence(&value.values),
             QueryOutput::Native(NativeValue::Sequence(value)) => View::Sequence(&value.values),
             QueryOutput::Native(NativeValue::Map(fields)) => View::Record(fields),
+            QueryOutput::Native(NativeValue::Dictionary(value)) => {
+                View::Dictionary(value.entries())
+            }
+            QueryOutput::Values(values)
+                if context == zirql::RenderContext::DictionaryKey && values.len() == 1 =>
+            {
+                charge_bytes(budget, values[0].len(), range)?;
+                charge_results(budget, 1, range)?;
+                View::Projected(serde_json::Value::String(values[0].clone()))
+            }
             QueryOutput::Native(NativeValue::JsonValue(value)) => {
                 charge_results(budget, json_size(value), range)?;
                 charge_bytes(budget, json_bytes(value), range)?;
@@ -357,7 +367,10 @@ pub(super) fn copy_value(
     if matches!(
         value,
         QueryOutput::Native(
-            NativeValue::Computational(_) | NativeValue::Tuple(_) | NativeValue::Sequence(_)
+            NativeValue::Computational(_)
+                | NativeValue::Tuple(_)
+                | NativeValue::Sequence(_)
+                | NativeValue::Dictionary(_)
         )
     ) {
         charge_results(budget, 1, range)?;
@@ -625,6 +638,7 @@ pub(super) enum Kind {
     Count,
     Map,
     NativeMap,
+    Dictionary(std::sync::Arc<(Kind, Kind)>),
     Array,
     String,
     Types,
@@ -867,6 +881,7 @@ impl Validator<'_> {
                     matches!(
                         kind,
                         Kind::Map
+                            | Kind::Dictionary(_)
                             | Kind::NativeMap
                             | Kind::Array
                             | Kind::Strings

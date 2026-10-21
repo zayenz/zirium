@@ -921,7 +921,7 @@ pub(super) struct AttributeQuery {
 #[pyclass(frozen, module = "zirium.query")]
 #[derive(Clone)]
 pub(super) struct MapQuery {
-    inner: core::MapQuery<core::QueryOutput>,
+    inner: core::QueryExpr<core::QueryOutput>,
 }
 
 #[pyclass(frozen, module = "zirium.query")]
@@ -956,6 +956,11 @@ impl Predicate {
 
 #[pymethods]
 impl OpQuery {
+    fn tally(&self) -> MapQuery {
+        MapQuery {
+            inner: self.inner.tally(),
+        }
+    }
     fn operand(&self, index: usize) -> SsaQuery {
         SsaQuery {
             inner: self.inner.operand(index),
@@ -1054,7 +1059,7 @@ impl OpQuery {
     }
     fn map_by(&self, key: &ScalarStringQuery, value: &Bound<'_, PyAny>) -> PyResult<MapQuery> {
         Ok(MapQuery {
-            inner: self.inner.map_by(&key.inner, &extract(value)?),
+            inner: self.inner.map_by(&key.inner, &extract(value)?).erased(),
         })
     }
     fn sort_by(&self, key: &Bound<'_, PyAny>) -> PyResult<Self> {
@@ -1260,7 +1265,7 @@ impl StringQuery {
     }
     fn tally(&self) -> MapQuery {
         MapQuery {
-            inner: self.inner.tally().map_values_erased(),
+            inner: self.inner.tally().erased(),
         }
     }
     fn unique(&self) -> StringQuery {
@@ -1330,6 +1335,11 @@ impl ScalarStringQuery {
 
 #[pymethods]
 impl TypeQuery {
+    fn tally(&self) -> MapQuery {
+        MapQuery {
+            inner: self.inner.tally(),
+        }
+    }
     fn __bool__(&self) -> PyResult<bool> {
         Err(PyTypeError::new_err(
             "query expressions have no truth value; evaluate with document.query(expression)",
@@ -1369,6 +1379,11 @@ impl TypeQuery {
 
 #[pymethods]
 impl AttributeQuery {
+    fn tally(&self) -> MapQuery {
+        MapQuery {
+            inner: self.inner.tally(),
+        }
+    }
     fn __bool__(&self) -> PyResult<bool> {
         Err(PyTypeError::new_err(
             "query expressions have no truth value; evaluate with document.query(expression)",
@@ -1771,6 +1786,48 @@ fn native_ref(
                 )?)?;
             }
             list.into_any().unbind()
+        }
+        QueryOutput::Native(NativeValue::Dictionary(value)) => {
+            fn string_key(value: &core::QueryOutput) -> Option<&str> {
+                match value {
+                    core::QueryOutput::Values(values) if values.len() == 1 => Some(&values[0]),
+                    core::QueryOutput::Native(core::NativeValue::String(value)) => Some(value),
+                    core::QueryOutput::Native(core::NativeValue::Constructed(value)) => {
+                        match value.value().data() {
+                            core::ConstructedValue::String(value) => Some(value),
+                            _ => None,
+                        }
+                    }
+                    core::QueryOutput::Native(core::NativeValue::Retained(value)) => {
+                        string_key(value)
+                    }
+                    _ => None,
+                }
+            }
+            let dict = PyDict::new(py);
+            if value
+                .entries()
+                .iter()
+                .all(|(key, _)| string_key(key).is_some())
+            {
+                for (key, value) in value.entries() {
+                    dict.set_item(
+                        string_key(key).expect("checked string keys"),
+                        native_ref(py, state, value, budget)?,
+                    )?;
+                }
+            } else {
+                let entries = PyList::empty(py);
+                for (key, value) in value.entries() {
+                    let entry = PyDict::new(py);
+                    entry.set_item("key", native_ref(py, state, key, budget)?)?;
+                    entry.set_item("value", native_ref(py, state, value, budget)?)?;
+                    entries.append(entry)?;
+                }
+                dict.set_item("kind", "dictionary")?;
+                dict.set_item("entries", entries)?;
+            }
+            dict.into_any().unbind()
         }
         QueryOutput::Native(NativeValue::Map(entries)) => {
             let dict = PyDict::new(py);

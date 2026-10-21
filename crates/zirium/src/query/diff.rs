@@ -459,6 +459,7 @@ impl<T> DiffQueryExpr<T> {
             DiffProgramOutput::Strings(items) => Runtime::Strings(items),
             DiffProgramOutput::Count(count) => Runtime::Count(count),
             DiffProgramOutput::Constructed(_)
+            | DiffProgramOutput::Dictionary(_)
             | DiffProgramOutput::Map(_)
             | DiffProgramOutput::Json(_, _)
             | DiffProgramOutput::Text(_) => {

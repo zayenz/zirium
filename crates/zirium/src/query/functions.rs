@@ -84,8 +84,8 @@ pub(super) fn resolve_type(
     }))
 }
 
-pub(super) fn scalar_facts(
-    ty: &D<program::Kind>,
+pub(super) fn scalar_facts<K>(
+    ty: &D<K>,
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<Vec<ValueType>, zirql::QueryError> {
@@ -137,6 +137,37 @@ pub(super) fn scalar_facts(
     }
 }
 impl<'c, 'a> FunctionHost<EvaluationContext<'c, 'a>> for report::ReportHost<'_> {
+    fn ordinary_value(
+        &self,
+        value: &QueryOutput,
+        _: &mut EvaluationContext<'c, 'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Option<ConstructedValue>, zirql::EvaluationError<EvaluationError>> {
+        let text = match unretained(value) {
+            QueryOutput::Values(values) if values.len() == 1 => Some(values[0].as_str()),
+            QueryOutput::Native(NativeValue::String(value)) => Some(value.as_str()),
+            _ => None,
+        };
+        if let Some(text) = text {
+            budget.charge(text.len(), ValueLocation::Query(range.clone()))?;
+            budget.charge_results(1, ValueLocation::Query(range.clone()))?;
+            return Ok(Some(ConstructedValue::String(text.to_owned())));
+        }
+        match unretained(value) {
+            value @ QueryOutput::Native(NativeValue::JsonValue(_)) => {
+                super::comprehension::project(value, budget, range)
+                    .map(Some)
+                    .map_err(zirql::EvaluationError::Host)
+            }
+            QueryOutput::Count(count) => Ok(Some(zirql::count_value(
+                *count,
+                budget,
+                ValueLocation::Query(range.clone()),
+            )?)),
+            _ => Ok(None),
+        }
+    }
     fn native_function(
         &self,
         name: &str,
@@ -265,6 +296,31 @@ impl<'c, 'a> FunctionHost<EvaluationContext<'c, 'a>> for report::ReportHost<'_> 
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<zirql::NativeIdentity, zirql::EvaluationError<EvaluationError>> {
+        match unretained(value) {
+            QueryOutput::Native(NativeValue::Types(values)) if values.len() == 1 => {
+                if context.document.type_spelling(values[0]).is_none() {
+                    return Err(
+                        zirql::QueryError::query(range.clone(), "invalid native type").into(),
+                    );
+                }
+                let mut identity = values[0].native_identity();
+                identity[3] = 2;
+                return Ok(zirql::NativeIdentity(identity));
+            }
+            QueryOutput::Native(NativeValue::Attributes(values)) if values.len() == 1 => {
+                if context.document.attribute_value(values[0].1).is_none() {
+                    return Err(zirql::QueryError::query(
+                        range.clone(),
+                        "invalid native attribute",
+                    )
+                    .into());
+                }
+                let mut identity = values[0].1.native_identity();
+                identity[3] = 3;
+                return Ok(zirql::NativeIdentity(identity));
+            }
+            _ => {}
+        }
         worklists::identity(value, expected, context, budget, range)
     }
 
@@ -347,6 +403,59 @@ impl<'c, 'a> FunctionHost<EvaluationContext<'c, 'a>> for report::ReportHost<'_> 
             || matches!(name, "operand" | "project" | "paths" | "match")
     }
 }
+fn admit_dictionary_schema(
+    host: &report::ReportHost<'_>,
+    schema: &(program::Kind, program::Kind),
+    expected: (&D<program::Kind>, &D<program::Kind>),
+    budget: &mut Budget,
+    location: &ValueLocation,
+) -> Result<(), zirql::QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        let range = match location {
+            ValueLocation::Query(range) | ValueLocation::Source(range) => range,
+        };
+        for (kind, expected, is_key) in [
+            (&schema.0, expected.0, true),
+            (&schema.1, expected.1, false),
+        ] {
+            let mut underlying = expected;
+            while let D::Optional(inner) = underlying {
+                budget.charge(1, location.clone())?;
+                underlying = inner;
+            }
+            if let (program::Kind::Dictionary(schema), D::Dictionary(key, value)) =
+                (kind, underlying)
+            {
+                admit_dictionary_schema(host, schema, (key, value), budget, location)?;
+                continue;
+            }
+            let facts = if is_key && *kind == program::Kind::Strings {
+                budget.charge_results(1, location.clone())?;
+                Some(vec![ValueType::String])
+            } else {
+                host.scalar_types(kind, budget, range)?
+            };
+            if let Some(facts) = facts {
+                for fact in facts {
+                    zirql::admit_type_facts(
+                        &fact,
+                        expected,
+                        zirql::TypeFactPolicy::Deferred,
+                        budget,
+                        location,
+                    )?;
+                }
+            } else if *kind != host.declaration_kind(underlying, budget, range)? {
+                return Err(zirql::QueryError::query(
+                    range.clone(),
+                    "dictionary schema does not satisfy its declaration",
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
 impl RuntimeTypeHost<EvaluationContext<'_, '_>> for report::ReportHost<'_> {
     type Kind = program::Kind;
     fn constructed_value<'v>(&self, value: &'v QueryOutput) -> Option<&'v ConstructedValue> {
@@ -369,6 +478,97 @@ impl RuntimeTypeHost<EvaluationContext<'_, '_>> for report::ReportHost<'_> {
         let range = match &location {
             ValueLocation::Query(r) | ValueLocation::Source(r) => r,
         };
+        if let D::Native(program::Kind::Sequence(element)) = expected {
+            let element = zirql::copy_declaration(element, budget, &location)?;
+            return self.admit_native(
+                value,
+                &D::Sequence(Box::new(element)),
+                context,
+                budget,
+                location,
+            );
+        }
+        if let QueryOutput::Native(NativeValue::Dictionary(dictionary)) = unretained(value) {
+            let mut expected = expected;
+            while let D::Optional(inner) = expected {
+                budget.charge(1, location.clone())?;
+                expected = inner;
+            }
+            match expected {
+                D::Dictionary(key, value) => {
+                    admit_dictionary_schema(
+                        self,
+                        &dictionary.schema,
+                        (key, value),
+                        budget,
+                        &location,
+                    )?;
+                }
+                D::Native(program::Kind::Dictionary(schema)) if schema == &dictionary.schema => {}
+                _ => {
+                    return Err(zirql::QueryError::query(
+                        range.clone(),
+                        "dictionary schema does not satisfy its declaration",
+                    )
+                    .into());
+                }
+            }
+            for (key, item) in dictionary.entries() {
+                for (value, declaration) in [
+                    (
+                        key,
+                        match expected {
+                            D::Dictionary(key, _) => Some(key.as_ref()),
+                            _ => None,
+                        },
+                    ),
+                    (
+                        item,
+                        match expected {
+                            D::Dictionary(_, value) => Some(value.as_ref()),
+                            _ => None,
+                        },
+                    ),
+                ] {
+                    if let Some(declaration) = declaration {
+                        if let Some(ordinary) =
+                            self.ordinary_value(value, context, budget, range)?
+                        {
+                            zirql::admit_constructed(
+                                &ordinary,
+                                declaration,
+                                budget,
+                                location.clone(),
+                            )?;
+                            continue;
+                        }
+                        zirql::admit_value(
+                            value,
+                            declaration,
+                            self,
+                            context,
+                            budget,
+                            location.clone(),
+                        )?;
+                    } else if let Some(value) = self.constructed_value(value) {
+                        zirql::admit_constructed(value, &D::<()>::Value, budget, location.clone())?;
+                    } else if self
+                        .ordinary_value(value, context, budget, range)?
+                        .is_none()
+                    {
+                        let kind = self.kind(value, budget, range)?;
+                        self.admit_native(
+                            value,
+                            &D::Native(kind),
+                            context,
+                            budget,
+                            location.clone(),
+                        )?;
+                    }
+                }
+            }
+            return Ok(());
+        }
         {
             budget.charge(1, location.clone())?;
             match (expected, unretained(value)) {
@@ -469,7 +669,12 @@ impl RuntimeTypeHost<EvaluationContext<'_, '_>> for report::ReportHost<'_> {
                     }
                 }
                 (
-                    D::Native(kind @ (program::Kind::Capture(_) | program::Kind::Captures(_))),
+                    D::Native(
+                        kind @ (program::Kind::Capture(_)
+                        | program::Kind::Captures(_)
+                        | program::Kind::Types
+                        | program::Kind::Attributes),
+                    ),
                     value,
                 ) => {
                     admit_view_kind(value, kind, context, budget, range)?;
@@ -1086,6 +1291,31 @@ pub(super) fn normalize_outer(
             } else {
                 zirql::ValueExpressionKind::NativeQuery(query)
             };
+        }
+        if retain_native && matches!(value.value, zirql::ValueExpressionKind::NativeQuery(_)) {
+            let zirql::ValueExpressionKind::NativeQuery(query) = std::mem::replace(
+                &mut value.value,
+                zirql::ValueExpressionKind::Literal(ConstructedValue::Absent),
+            ) else {
+                unreachable!()
+            };
+            value.value = zirql::ValueExpressionKind::NativeValue(query);
+        }
+        match &mut value.value {
+            zirql::ValueExpressionKind::Lookup { value, key }
+            | zirql::ValueExpressionKind::HasKey { value, key } => {
+                for operand in [value, key] {
+                    let old = std::mem::replace(
+                        operand.as_mut(),
+                        Located::new(
+                            zirql::ValueExpressionKind::Literal(ConstructedValue::Absent),
+                            0..0,
+                        ),
+                    );
+                    **operand = normalize_outer(old, names, true, budget)?;
+                }
+            }
+            _ => {}
         }
         normalize_wrapper(value);
         Ok(())

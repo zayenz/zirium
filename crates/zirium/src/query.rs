@@ -262,6 +262,19 @@ pub enum NativeValue {
     Types(Vec<TypeId>),
     Attributes(Vec<(String, AttributeId)>),
     Map(Vec<(String, QueryOutput)>),
+    Dictionary(NativeDictionary),
+}
+
+/// An ordered dictionary retaining native keys and declared empty contracts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeDictionary {
+    entries: std::sync::Arc<Vec<(QueryOutput, QueryOutput)>>,
+    schema: std::sync::Arc<(program::Kind, program::Kind)>,
+}
+impl NativeDictionary {
+    pub fn entries(&self) -> &[(QueryOutput, QueryOutput)] {
+        &self.entries
+    }
 }
 
 /// An owned parsing error at the responsible query byte position.
@@ -1041,6 +1054,7 @@ fn output_len(output: &QueryOutput) -> usize {
             | NativeValue::Capture(_),
         ) => 1,
         QueryOutput::Native(NativeValue::Map(values)) => values.len(),
+        QueryOutput::Native(NativeValue::Dictionary(value)) => value.entries.len(),
         QueryOutput::Native(NativeValue::Constructed(_))
         | QueryOutput::Native(NativeValue::String(_))
         | QueryOutput::Count(_)
@@ -1081,9 +1095,9 @@ fn ordering_key(
                 entries.into_iter().collect(),
             )))
         }
-        value @ QueryOutput::Native(NativeValue::Constructed(_) | NativeValue::Map(_)) => {
-            comprehension::project(&value, budget, range).map(zirql::NativeOrderKey::Value)
-        }
+        value @ QueryOutput::Native(
+            NativeValue::Constructed(_) | NativeValue::Map(_) | NativeValue::Dictionary(_),
+        ) => comprehension::project(&value, budget, range).map(zirql::NativeOrderKey::Value),
         _ => Err(EvaluationError::new(
             "ordering selector must produce exactly one string or count per operation",
         )
@@ -1129,6 +1143,11 @@ fn output_size(output: &QueryOutput) -> usize {
         }
         QueryOutput::Native(NativeValue::Constructed(value)) => value.size(),
         QueryOutput::Native(NativeValue::JsonValue(value)) => json_size(value),
+        QueryOutput::Native(NativeValue::Dictionary(value)) => value
+            .entries()
+            .iter()
+            .map(|(key, value)| output_size(key).saturating_add(output_size(value)))
+            .sum(),
         QueryOutput::Native(NativeValue::Map(entries)) => entries
             .iter()
             .map(|(_, value)| 1 + output_size(value))
@@ -1370,6 +1389,7 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
         QueryOutput::Native(value) => match value {
             NativeValue::JsonValue(value) => value.clone(),
             NativeValue::Retained(_)
+            | NativeValue::Dictionary(_)
             | NativeValue::Map(_)
             | NativeValue::Computational(_)
             | NativeValue::Tuple(_)

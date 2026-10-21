@@ -300,7 +300,7 @@ pub(super) fn project(
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<V, EvaluationError> {
-    match value {
+    match super::functions::unretained(value) {
         QueryOutput::Native(NativeValue::Computational(_)) => Err(EvaluationError::new(
             "computational values cannot be projected to report data",
         )
@@ -342,6 +342,22 @@ pub(super) fn project(
                 result.push((key.clone(), project_json(value, budget, range, 0)?));
             }
             Ok(V::Record(result))
+        }
+        QueryOutput::Native(NativeValue::Dictionary(dictionary)) => {
+            let entries = dictionary.entries();
+            admit(budget, 1 + entries.len() * 2, 0, range)?;
+            let mut result = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                let key = match super::functions::unretained(key) {
+                    QueryOutput::Values(strings) if strings.len() == 1 => {
+                        admit(budget, 1, strings[0].len(), range)?;
+                        V::String(strings[0].clone())
+                    }
+                    key => project(key, budget, range)?,
+                };
+                result.push((key, project(value, budget, range)?));
+            }
+            Ok(V::Dictionary(result.into()))
         }
         QueryOutput::Native(NativeValue::Map(fields)) => {
             admit(budget, 1 + fields.len(), 0, range)?;

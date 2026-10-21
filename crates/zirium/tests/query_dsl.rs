@@ -4218,29 +4218,8 @@ fn shared_value_calls_and_saved_suffixes_keep_constructed_and_native_sources() {
     assert!(
         matches!(&outputs[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Array(vec![V::Boolean(true)]))
     );
-    let request =
-        r#"fn invalid()->record {"ash":int} {let words=["ash"]; words | tally | sort} invalid()"#;
-    let error = Query::parse(request)
-        .unwrap()
-        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("tally must be the terminal stage"),
-        "{error}"
-    );
-    let request = r#"fn invalid(root:Operation)->Operation {let words=["ash"]; words | tally | input} invalid(input | head(1))"#;
-    let error = Query::parse(request)
-        .unwrap()
-        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("tally must be the terminal stage"),
-        "{error}"
-    );
+    let request = r#"fn histogram()->dict<string,int> { let words=["ash"]; words | tally | reverse | head(1) } histogram()"#;
+    assert_eq!(evaluate(&mut document, request).len(), 1);
     let native = evaluate(
         &mut document,
         r#"let saved=filter(op("test.scope")) | head(1); saved | children | sort_by(names)"#,
@@ -4702,4 +4681,77 @@ fn collection_report_builders_share_runtime_bounds_and_dictionary_values() {
         assert!(result.is_err(), "{source}");
         assert!(!emitted);
     }
+}
+
+#[test]
+fn native_tally_retains_equal_named_operations_and_composes_in_text_and_builders() {
+    use zirium::query::NativeValue;
+    let mut document = document();
+    let selected = ops().filter(op("test.scope"));
+    let expected = document.query(&selected).unwrap();
+    let value = document.query(&selected.tally()).unwrap();
+    let QueryOutput::Native(NativeValue::Dictionary(dictionary)) = value else {
+        panic!("dictionary")
+    };
+    assert_eq!(dictionary.entries().len(), 2);
+    for ((key, _), expected) in dictionary.entries().iter().zip(&expected) {
+        assert_eq!(key, &QueryOutput::Operations(vec![*expected]));
+    }
+    let typed = document
+        .query(&selected.tally().reverse().head(1).sort_by_value())
+        .unwrap();
+    let mut textual = Vec::new();
+    Query::parse(r#"let keys=filter(op("test.scope")); let hist=keys | tally; let saved=hist; saved | reverse | head(1) | check(1) | sort_by(value); lookup(hist,keys | head(1))"#).unwrap().evaluate(&mut document, DialectRegistry::baseline(), |_, value| { textual.push(value); Ok(()) }).unwrap();
+    let mut budget = zirql::Budget::for_program(zirql::ProgramLimits {
+        work: 1_000_000,
+        results: 100_000,
+        nesting: 64,
+        stream_items: 100_000,
+    });
+    assert_eq!(
+        textual[0]
+            .to_json_with_budget(&document, &mut budget)
+            .unwrap(),
+        typed.to_json_with_budget(&document, &mut budget).unwrap()
+    );
+    assert_eq!(textual[1], QueryOutput::Count(1));
+}
+
+#[test]
+fn empty_native_tally_admits_its_retained_dictionary_schema() {
+    let mut document = document();
+    let valid = r#"fn empty(root:Operation)->dict<string,int> { root | head(0) | names | tally } empty(input | head(1))"#;
+    let mut outputs = Vec::new();
+    Query::parse(valid)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(&outputs[0], QueryOutput::Native(zirium::query::NativeValue::Dictionary(value)) if value.entries().is_empty())
+    );
+
+    let nonempty = r#"fn counts(root:Operation)->dict<string,int> { root | names | tally } let saved=counts(input | head(1)); lookup(saved,one(input | head(1) | names))"#;
+    Query::parse(nonempty)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(outputs[1], QueryOutput::Count(1));
+
+    let invalid = r#"fn empty(root:Operation)->dict<int,int> { root | head(0) | names | tally } empty(input | head(1))"#;
+    let mut emitted = false;
+    let error = Query::parse(invalid)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| {
+            emitted = true;
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(error.range().is_some());
+    assert!(!emitted);
 }

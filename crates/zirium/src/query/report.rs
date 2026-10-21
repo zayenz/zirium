@@ -201,6 +201,9 @@ pub(super) fn output_kind(
         QueryOutput::Count(_) => K::Count,
         QueryOutput::Map(_) => K::Map,
         QueryOutput::Native(NativeValue::Map(_)) => K::NativeMap,
+        QueryOutput::Native(NativeValue::Dictionary(value)) => {
+            K::Dictionary(Arc::clone(&value.schema))
+        }
         QueryOutput::Array(_) => K::Array,
         QueryOutput::Native(NativeValue::String(_)) => K::String,
         QueryOutput::Native(NativeValue::Types(_)) => K::Types,
@@ -343,19 +346,35 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
         let collection = stream
             || matches!(
                 input,
-                K::Map | K::NativeMap | K::Array | K::Captures(_) | K::Sequence(_)
+                K::Map
+                    | K::NativeMap
+                    | K::Dictionary(_)
+                    | K::Array
+                    | K::Captures(_)
+                    | K::Sequence(_)
             );
         match operation {
-            S::Unique if !stream => Err(zirql::QueryError::query(
-                range.clone(),
-                "unique requires an operation or value stream",
-            )),
-            S::Tally if *input != K::Strings => Err(zirql::QueryError::query(
-                range.clone(),
-                "tally requires a value stream; use names or attr first",
-            )),
+            S::Unique
+                if !(stream || matches!(input, K::Array | K::Captures(_) | K::Sequence(_))) =>
+            {
+                Err(zirql::QueryError::query(
+                    range.clone(),
+                    "unique requires an operation or value stream",
+                ))
+            }
+            S::Tally
+                if !(stream || matches!(input, K::Array | K::Captures(_) | K::Sequence(_))) =>
+            {
+                Err(zirql::QueryError::query(
+                    range.clone(),
+                    "tally needs a positional selection",
+                ))
+            }
             S::Count if collection => Ok(K::Count),
-            S::Tally => Ok(K::Map),
+            S::Tally => Ok(K::Dictionary(Arc::new((
+                self.subject_kind(input, budget, range)?,
+                K::Constructed(Arc::new(vec![ValueType::Integer])),
+            )))),
             _ if collection => Ok(input.clone()),
             _ => Err(zirql::QueryError::query(
                 range.clone(),
@@ -363,70 +382,96 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
             )),
         }
     }
-    fn collection_identity(
+    fn collection_unique_tally(
         &self,
-        item: &QueryOutput,
+        operation: &zirql::Stage<()>,
+        input: QueryOutput,
         context: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
-    ) -> Result<zirql::NativeCollectionKey, zirql::EvaluationError<EvaluationError>> {
-        use zirql::{NativeCollectionKey as K, NativeIdentity};
-        budget.charge(1, Location::Query(range.clone()))?;
-        match functions::unretained(item) {
-            QueryOutput::Operations(_) => {
-                worklists::identity(item, &program::Kind::Operations, context, budget, range)
-                    .map(K::Native)
-            }
-            QueryOutput::Values(values) if values.len() == 1 => {
-                program::charge_bytes(budget, values[0].len(), range)
-                    .map_err(zirql::EvaluationError::Host)?;
-                Ok(K::Text(values[0].clone()))
-            }
-            QueryOutput::Native(NativeValue::Types(values)) if values.len() == 1 => {
-                let id = values[0];
-                if context.document.type_spelling(id).is_none() {
-                    return Err(zirql::QueryError::query(
-                        range.clone(),
-                        "invalid native type identity",
-                    )
-                    .into());
-                }
-                Ok(K::Native(NativeIdentity(id.native_identity())))
-            }
-            QueryOutput::Native(NativeValue::Attributes(values)) if values.len() == 1 => {
-                let (name, id) = &values[0];
-                if context.document.attribute_value(*id).is_none() {
-                    return Err(zirql::QueryError::query(
-                        range.clone(),
-                        "invalid native attribute identity",
-                    )
-                    .into());
-                }
-                program::charge_bytes(budget, name.len(), range)
-                    .map_err(zirql::EvaluationError::Host)?;
-                Ok(K::Named(name.clone(), NativeIdentity(id.native_identity())))
-            }
-            _ => Err(zirql::QueryError::query(
-                range.clone(),
-                "identity requires one admitted native subject",
-            )
-            .into()),
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        zirql::evaluate_native_unique_tally(operation, input, self, context, budget, range)
+    }
+    fn dictionary_view<'v>(
+        &self,
+        value: &'v QueryOutput,
+    ) -> Option<&'v [(QueryOutput, QueryOutput)]> {
+        match functions::unretained(value) {
+            QueryOutput::Native(NativeValue::Dictionary(value)) => Some(value.entries()),
+            _ => None,
         }
     }
-    fn collection_tally_key(
+    fn construct_dictionary(
         &self,
-        item: QueryOutput,
+        entries: Vec<(QueryOutput, QueryOutput)>,
         _: &mut EvaluationContext<'_, '_>,
-        _: &mut Budget,
+        budget: &mut Budget,
         range: &Range<usize>,
-    ) -> Result<String, zirql::EvaluationError<EvaluationError>> {
-        if let QueryOutput::Values(mut values) = item
-            && values.len() == 1
-        {
-            Ok(values.pop().unwrap())
-        } else {
-            Err(zirql::QueryError::query(range.clone(), "tally requires a value stream").into())
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        let unknown = || program::Kind::Constructed(Arc::new(vec![ValueType::Unestablished]));
+        let mut schema = None;
+        for (key, value) in &entries {
+            let entry = (
+                self.kind(key, budget, range)?,
+                self.kind(value, budget, range)?,
+            );
+            match &mut schema {
+                None => schema = Some(entry),
+                Some((key, value)) => {
+                    if *key != entry.0 {
+                        *key = unknown();
+                    }
+                    if *value != entry.1 {
+                        *value = unknown();
+                    }
+                }
+            }
         }
+        let schema = schema.unwrap_or_else(|| (unknown(), unknown()));
+        Ok(QueryOutput::Native(NativeValue::Dictionary(
+            NativeDictionary {
+                entries: Arc::new(entries),
+                schema: Arc::new(schema),
+            },
+        )))
+    }
+    fn restore_dictionary(
+        &self,
+        input: QueryOutput,
+        entries: Vec<(QueryOutput, QueryOutput)>,
+        _: &mut EvaluationContext<'_, '_>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+        let entries = if self.dictionary_view(&input).is_none() {
+            entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let count =
+                        self.pattern_constructed(&value)
+                            .and_then(|value| match value.data() {
+                                V::Integer(count) => usize::try_from(*count).ok(),
+                                _ => None,
+                            });
+                    (key, count.map_or(value, QueryOutput::Count))
+                })
+                .collect()
+        } else {
+            entries
+        };
+        let schema = match functions::unretained(&input) {
+            QueryOutput::Native(NativeValue::Dictionary(value)) => Arc::clone(&value.schema),
+            _ => Arc::new((
+                self.subject_kind(&self.kind(&input, budget, range)?, budget, range)?,
+                program::Kind::Constructed(Arc::new(vec![ValueType::Integer])),
+            )),
+        };
+        Ok(QueryOutput::Native(NativeValue::Dictionary(
+            NativeDictionary {
+                entries: Arc::new(entries),
+                schema,
+            },
+        )))
     }
     fn restore_collection(
         &self,
@@ -1059,6 +1104,7 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
                 | program::Kind::Array
                 | program::Kind::Map
                 | program::Kind::NativeMap
+                | program::Kind::Dictionary(_)
         ) {
             Ok(())
         } else {
@@ -1103,7 +1149,10 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
         map_keys(value, budget, range).map_err(zirql::EvaluationError::Host)
     }
     fn is_map_kind(&self, kind: &program::Kind) -> bool {
-        matches!(kind, program::Kind::Map | program::Kind::NativeMap)
+        matches!(
+            kind,
+            program::Kind::Map | program::Kind::NativeMap | program::Kind::Dictionary(_)
+        )
     }
     fn map_sort_kind(
         &self,
@@ -1494,6 +1543,17 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
             K::Strings => Some(vec![ValueType::Array(zirql::ArrayType::Elements(vec![
                 ValueType::String,
             ]))]),
+            K::Dictionary(schema) => Some(vec![ValueType::Dictionary {
+                keys: if schema.0 == program::Kind::Strings {
+                    vec![ValueType::String]
+                } else {
+                    self.scalar_types(&schema.0, budget, range)?
+                        .unwrap_or_else(|| vec![ValueType::Unestablished])
+                },
+                values: self
+                    .scalar_types(&schema.1, budget, range)?
+                    .unwrap_or_else(|| vec![ValueType::Unestablished]),
+            }]),
             K::Count => Some(vec![ValueType::Integer]),
             K::String => Some(vec![ValueType::String]),
             K::Constructed(types) => Some(zirql::copy_value_types(
@@ -1662,6 +1722,9 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
         range: &Range<usize>,
     ) -> Result<program::Kind, zirql::QueryError> {
         use program::Kind as K;
+        if let program::Kind::Dictionary(schema) = input {
+            return Ok(schema.1.clone());
+        }
         match input {
             K::Constructed(types) => Ok(self.constructed_kind(zirql::collection_subject_types(
                 types,
@@ -2410,6 +2473,14 @@ pub(super) fn requires_constructed_budget(expression: &model::Expression) -> boo
 
 fn native_map_depth(value: &QueryOutput) -> usize {
     match functions::unretained(value) {
+        QueryOutput::Native(NativeValue::Dictionary(value)) => {
+            1 + value
+                .entries()
+                .iter()
+                .map(|(key, value)| native_map_depth(key).max(native_map_depth(value)))
+                .max()
+                .unwrap_or(0)
+        }
         QueryOutput::Native(NativeValue::Map(entries)) => {
             1 + entries
                 .iter()

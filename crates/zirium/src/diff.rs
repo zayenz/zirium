@@ -145,6 +145,9 @@ pub struct ChangeId {
 }
 
 impl ChangeId {
+    pub(crate) fn native_identity(self) -> [u64; 4] {
+        [self.diff, self.index as u64, 0, 0]
+    }
     pub fn index(self) -> usize {
         self.index as usize
     }
@@ -158,6 +161,14 @@ pub struct DiffOperation {
 }
 
 impl DiffOperation {
+    pub(crate) fn native_identity(self) -> [u64; 4] {
+        [
+            self.diff,
+            u64::from(self.side == DiffSide::After),
+            self.operation.native_identity()[2],
+            1,
+        ]
+    }
     pub fn side(self) -> DiffSide {
         self.side
     }

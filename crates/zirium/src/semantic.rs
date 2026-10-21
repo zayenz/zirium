@@ -172,6 +172,14 @@ pub struct OperationId {
     owner: u128,
 }
 impl OperationId {
+    pub(crate) fn native_identity(self) -> [u64; 4] {
+        [
+            self.owner as u64,
+            (self.owner >> 64) as u64,
+            (u64::from(self.generation) << 32) | u64::from(self.index),
+            0,
+        ]
+    }
     fn index(self) -> usize {
         self.index as usize
     }

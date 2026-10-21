@@ -1,6 +1,8 @@
 """Immutable queries evaluated in Rust by Document.query().
 
 Use ops() for the whole document and input() for a nested query's input.
+Unique compares actual values; tally retains native keys. String-key tallies
+return dictionaries, and other keys use tagged entry pairs with native values.
 """
 
 from abc import ABC, abstractmethod

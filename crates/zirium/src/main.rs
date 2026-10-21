@@ -807,6 +807,7 @@ fn run() -> Result<(), String> {
                 &output,
                 QueryOutput::Array(_)
                     | QueryOutput::Map(_)
+                    | QueryOutput::Native(zirium::query::NativeValue::Dictionary(_))
                     | QueryOutput::Native(zirium::query::NativeValue::Map(_))
             ) {
                 let value = output.to_json_with_budget(document, budget)?;
@@ -1126,10 +1127,9 @@ fn write_diff_value(
 ) -> Result<(), String> {
     let (before_name, after_name) = document_names;
     match value {
-        DiffRuntime::Constructed(value) => {
-            let json = value
-                .to_json_with_budget(budget)
-                .map_err(|error| error.to_string())?;
+        value @ DiffRuntime::Constructed(_) => {
+            let json =
+                diff_value_to_json(diff, &value, budget).map_err(|error| error.to_string())?;
             if ndjson {
                 write_diff_envelope(output, diff, before_name, after_name, None, json, budget)?;
             } else {
@@ -1208,9 +1208,9 @@ fn write_diff_value(
                 writeln!(output, "{item}").map_err(|e| e.to_string())?;
             }
         }
-        DiffRuntime::Map(map) => {
-            let json = diff_value_to_json(diff, &DiffRuntime::Map(map), budget)
-                .map_err(|error| error.to_string())?;
+        value @ (DiffRuntime::Map(_) | DiffRuntime::Dictionary(_)) => {
+            let json =
+                diff_value_to_json(diff, &value, budget).map_err(|error| error.to_string())?;
             if ndjson {
                 write_diff_envelope(output, diff, before_name, after_name, None, json, budget)?;
             } else {
@@ -1359,9 +1359,9 @@ fn write_ndjson_record(
                 serde_json::from_str(&text)
                     .map_err(|error| EvaluationError::new(error.to_string()))?
             }
-            value @ QueryOutput::Native(zirium::query::NativeValue::Map(_)) => {
-                value.to_json_with_budget(document, budget)?
-            }
+            value @ QueryOutput::Native(
+                zirium::query::NativeValue::Map(_) | zirium::query::NativeValue::Dictionary(_),
+            ) => value.to_json_with_budget(document, budget)?,
             QueryOutput::Native(_) => {
                 return Err(EvaluationError::new(
                     "native query results require a library consumer",
