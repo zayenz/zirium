@@ -951,9 +951,22 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
                     .map(|item| comprehension::project(item, budget, range))
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(zirql::EvaluationError::Host)?;
-                let types =
-                    zirql::copy_value_types(&value.types, budget, Location::Query(range.clone()))?;
-                return self.lift_constructed(V::Array(values), types, context, budget, range);
+                let removes = shape == zirql::SelectionShape::Filter;
+                let types = zirql::collection_selection_types(
+                    &value.types,
+                    true,
+                    false,
+                    budget,
+                    Location::Query(range.clone()),
+                )?;
+                let selected = zirql::restore_collection_declaration(
+                    value.value(),
+                    V::Array(values),
+                    removes,
+                    budget,
+                    Location::Query(range.clone()),
+                )?;
+                return self.lift_constructed(selected, types, context, budget, range);
             }
             QueryOutput::Values(_) => QueryOutput::Values(
                 items
@@ -1695,28 +1708,13 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
     ) -> Result<program::Kind, zirql::QueryError> {
         use program::Kind as K;
         match input {
-            K::Constructed(types) => {
-                let mut elements = Vec::new();
-                for ty in types.iter() {
-                    match ty {
-                        ValueType::Array(
-                            zirql::ArrayType::Positions(values)
-                            | zirql::ArrayType::Elements(values),
-                        )
-                        | ValueType::ArrayKind(values) => elements.extend(zirql::copy_value_types(
-                            values,
-                            budget,
-                            Location::Query(range.clone()),
-                        )?),
-                        _ => {
-                            return Err(zirql::QueryError::query(
-                                range.clone(),
-                                "filter requires a positional collection",
-                            ));
-                        }
-                    }
-                }
-                Ok(self.constructed_kind(elements))
+            K::Constructed(types) => Ok(self.constructed_kind(zirql::collection_subject_types(
+                types,
+                budget,
+                Location::Query(range.clone()),
+            )?)),
+            K::Array | K::Map | K::NativeMap => {
+                Ok(self.constructed_kind(vec![ValueType::Unestablished]))
             }
             K::Sequence(element) => self.declaration_kind(element, budget, range),
             K::Operations | K::Strings | K::Ssa | K::Capture(_) => Ok(input.clone()),
@@ -2118,6 +2116,19 @@ pub(super) fn evaluate_prepared_leaf(
     budget: &mut Budget,
 ) -> Result<zirql::Truth, zirql::EvaluationError<EvaluationError>> {
     if let model::Predicate::Expression { value, .. } = predicate {
+        let input = if matches!(
+            functions::unretained(&input),
+            QueryOutput::Native(NativeValue::JsonValue(_))
+        ) {
+            let data = comprehension::project(&input, budget, &value.expression.range)
+                .map_err(zirql::EvaluationError::Host)?;
+            QueryOutput::Native(NativeValue::Constructed(
+                comprehension::ConstructedReport::new(data, value.expression.range.clone(), budget)
+                    .map_err(zirql::EvaluationError::Host)?,
+            ))
+        } else {
+            input
+        };
         let matched = arguments.evaluate_predicate(&value.expression, input, captures, budget)?;
         return Ok(if matched {
             zirql::Truth::True

@@ -274,7 +274,7 @@ dependencies = [
 [[package]]
 name = "zirql"
 version = "0.2.0"
-source = "git+https://github.com/zayenz/zirql?rev=f89cb7a68a6124e0938ea582e03efc040b5ecafe#f89cb7a68a6124e0938ea582e03efc040b5ecafe"
+source = "git+https://github.com/zayenz/zirql?rev=0345851b57b35b7ade4de77466350cba56fe02ea#0345851b57b35b7ade4de77466350cba56fe02ea"
 dependencies = [
  "serde_json",
 ]

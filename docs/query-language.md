@@ -693,7 +693,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`f89cb7a68a6124e0938ea582e03efc040b5ecafe`](https://github.com/zayenz/zirql/commit/f89cb7a68a6124e0938ea582e03efc040b5ecafe).
+[`0345851b57b35b7ade4de77466350cba56fe02ea`](https://github.com/zayenz/zirql/commit/0345851b57b35b7ade4de77466350cba56fe02ea).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -2152,7 +2152,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `f89cb7a68a6124e0938ea582e03efc040b5ecafe`
+The development dependency pins Zirql `0345851b57b35b7ade4de77466350cba56fe02ea`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.
@@ -2201,3 +2201,32 @@ round-trippable formatting. These common calls work in ordinary reports and pure
 functions in this development checkout's pinned Zirql revision. Native handles
 need their existing scalar projection; conversion never formats a handle or changes
 its owner, identity or coordinates.
+
+## Collection selection and cardinality
+
+The development checkout shares `filter`, `count`, `length`, `head`, `tail`,
+`reverse` and `check` across positional arrays, sets, dictionaries and admitted
+native selections/maps. Dictionary predicates see values; retained entries keep
+their exact keys and order. Constructed predicates require known Booleans. Native
+operation predicates keep their existing subjects, ownership and completeness.
+
+```text
+let limit=2;
+let message="two" ++ " rows";
+report [3,1,3] | filter(_>1) | head(limit) | reverse | check(limit,message);
+```
+
+This emits `[3,3]`. Bounds and check messages are expressions evaluated in written
+order. Zero bounds empty the collection, oversized bounds retain it, and
+`check(0)` accepts empty input. Successful check returns the unchanged value.
+Declared empty schemas survive selection; removed record fields become optional
+while retaining their value types. Keyed arrays expose present-cell count/length
+and require explicit conversion before removal or reversal. Strings and tuples
+are refused. See the [shared signatures](https://zayenz.se/zirql/guides/library-pipelines/#filter).
+These additions require the development checkout; released Zirium 0.6.1 retains
+its published support.
+
+Legacy JSON map value predicates use the existing checked ordinary-data
+projection. JSON integers outside signed 64-bit range are refused with a located
+conversion error; retained entries keep their original JSON values. Null projects
+to ordinary absence. Native ordering retains its separate exact key contract.

@@ -1540,6 +1540,63 @@ impl ReportExpr {
     pub fn length(self) -> Self {
         self.reduce(zirql::ValueReducer::Length)
     }
+    pub fn count(self) -> Self {
+        self.length()
+    }
+    /// Retain elements or dictionary values satisfying a known Boolean body.
+    pub fn filter(self, pattern: Pattern, body: Self) -> Self {
+        let functions = functions::merge(&self.functions, &body.functions);
+        let parameters = merge_parameters(&self.parameters, &body.parameters);
+        Self::node(zirql::ValueExpressionKind::Filter {
+            array: Box::new(self.into_expression()),
+            predicate: zirql::PredicateArgument {
+                argument: Some(pattern),
+                body: Box::new(body.into_expression()),
+            },
+        })
+        .with_metadata(parameters, functions)
+    }
+    pub fn head(self, count: Self) -> Self {
+        self.bound(count, false)
+    }
+    pub fn tail(self, count: Self) -> Self {
+        self.bound(count, true)
+    }
+    fn bound(self, count: Self, tail: bool) -> Self {
+        let functions = functions::merge(&self.functions, &count.functions);
+        let parameters = merge_parameters(&self.parameters, &count.parameters);
+        let collection = Box::new(self.into_expression());
+        let count = Box::new(count.into_expression());
+        Self::node(if tail {
+            zirql::ValueExpressionKind::Tail { collection, count }
+        } else {
+            zirql::ValueExpressionKind::Head { collection, count }
+        })
+        .with_metadata(parameters, functions)
+    }
+    pub fn reverse(self) -> Self {
+        let functions = self.functions.clone();
+        let parameters = self.parameters.clone();
+        Self::node(zirql::ValueExpressionKind::Reverse(Box::new(
+            self.into_expression(),
+        )))
+        .with_metadata(parameters, functions)
+    }
+    /// Pass through nonempty input, an exact count, or an optional failure message.
+    pub fn check(self, operand: Option<Self>, message: Option<Self>) -> Self {
+        let mut functions = self.functions.clone();
+        let mut parameters = self.parameters.clone();
+        for value in operand.iter().chain(message.iter()) {
+            functions = functions::merge(&functions, &value.functions);
+            parameters = merge_parameters(&parameters, &value.parameters);
+        }
+        Self::node(zirql::ValueExpressionKind::Check {
+            collection: Box::new(self.into_expression()),
+            operand: operand.map(|v| Box::new(v.into_expression())),
+            message: message.map(|v| Box::new(v.into_expression())),
+        })
+        .with_metadata(parameters, functions)
+    }
     pub fn sum(self) -> Self {
         self.reduce(zirql::ValueReducer::Sum)
     }

@@ -1054,52 +1054,22 @@ impl Parser<'_, '_> {
             }
             "check" => {
                 self.skip_trivia();
-                let (expected, message) = if self.at(TokenKind::LParen) {
+                let mut operand = None;
+                let mut message = None;
+                if self.at(TokenKind::LParen) {
                     self.bump();
                     self.skip_trivia();
-                    if self.at(TokenKind::String) {
-                        let (message, _) = self.string("expected a check message")?;
-                        self.expect(TokenKind::RParen, "expected `)` after check message")?;
-                        (None, Some(message))
-                    } else {
-                        if !self.at(TokenKind::Integer)
-                            || self.next_kind() != Some(TokenKind::RParen)
-                                && self.next_kind() != Some(TokenKind::Comma)
-                        {
-                            let value = self.shared_value(depth + 1)?;
-                            self.expect(TokenKind::RParen, "expected `)` after check count")?;
-                            return Some(zirql::Located::new(
-                                zirql::ExpressionStep::Check {
-                                    operand: Some(value.expression.clone()),
-                                    message: None,
-                                },
-                                super::program::range(self.span(start)),
-                            ));
-                        }
-                        if !self.at(TokenKind::Integer) {
-                            self.error("expected a non-negative item count or check message");
-                            return None;
-                        }
-                        let Ok(expected) = self.current_text().parse::<usize>() else {
-                            self.error("item count is too large");
-                            return None;
-                        };
-                        self.bump();
-                        self.skip_trivia();
-                        let message = if self.at(TokenKind::Comma) {
+                    if !self.at(TokenKind::RParen) {
+                        operand = Some(self.shared_value(depth + 1)?.expression.clone());
+                        if self.at(TokenKind::Comma) {
                             self.bump();
-                            Some(self.string("expected a check message after `,`")?.0)
-                        } else {
-                            None
-                        };
-                        self.expect(TokenKind::RParen, "expected `)` after check arguments")?;
-                        (Some(expected), message)
+                            message = Some(self.shared_value(depth + 1)?.expression.clone());
+                        }
                     }
-                } else {
-                    (None, None)
-                };
+                    self.expect(TokenKind::RParen, "expected `)` after check arguments")?;
+                }
                 return Some(zirql::Located::new(
-                    zirql::ExpressionStep::Collection(zirql::Stage::Check { expected, message }),
+                    zirql::ExpressionStep::Check { operand, message },
                     super::program::range(self.span(start)),
                 ));
             }

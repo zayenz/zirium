@@ -563,6 +563,47 @@ impl ReportExpr {
             inner: self.inner.clone().length(),
         }
     }
+    fn count(&self) -> Self {
+        Self {
+            inner: self.inner.clone().count(),
+        }
+    }
+    fn filter(&self, pattern: &ReportPattern, body: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().filter(
+                pattern.pattern(&mut pattern_budget())?,
+                report_expression(body)?,
+            ),
+        })
+    }
+    fn head(&self, count: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().head(report_expression(count)?),
+        })
+    }
+    fn tail(&self, count: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().tail(report_expression(count)?),
+        })
+    }
+    fn reverse(&self) -> Self {
+        Self {
+            inner: self.inner.clone().reverse(),
+        }
+    }
+    #[pyo3(signature = (operand=None, message=None))]
+    fn check(
+        &self,
+        operand: Option<&Bound<'_, PyAny>>,
+        message: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().check(
+                operand.map(report_expression).transpose()?,
+                message.map(report_expression).transpose()?,
+            ),
+        })
+    }
     fn sum(&self) -> Self {
         Self {
             inner: self.inner.clone().sum(),

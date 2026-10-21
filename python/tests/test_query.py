@@ -966,3 +966,23 @@ def test_explicit_scalar_conversion_report_builders() -> None:
             }
         )
     ) == {"quantity": 2, "price": 12.5, "label": "2"}
+
+
+def test_collection_report_builders_keep_dictionary_values_and_runtime_bounds():
+    from zirium.query import ReportExpr as E
+    from zirium.query import ReportPattern as P
+    from zirium.query import report
+
+    doc = document()
+    selected = E([3, 1, 3]).filter(P.name("n"), E.name("n") > 1)
+    assert doc.query(
+        report(selected.head(E([0, 0]).length()).tail(9).reverse().check(2, "two rows"))
+    ) == [3, 3]
+    dictionary = (
+        E({"a": 1, "b": 3, "c": 2})
+        .filter(P.name("v"), E.name("v") > 1)
+        .reverse()
+        .head(1)
+    )
+    assert doc.query(report(dictionary)) == {"c": 2}
+    assert doc.query(report(E([]).check(0).count())) == 0

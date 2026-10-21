@@ -4604,3 +4604,75 @@ fn forward_functions_ignore_headers_in_strings_and_comments() {
     };
     assert_eq!(text, "\"fn quoted(value: int) -> int { 99 }\"\n");
 }
+
+#[test]
+fn collection_report_builders_share_runtime_bounds_and_dictionary_values() {
+    use zirium::query::{
+        ConstructedValue as V, Located, NativeValue, PatternKind, ReportExpr as E, report,
+    };
+    let mut document = document_from(r#""test.seed"() : () -> ()"#);
+    let pattern = Located::new(PatternKind::Name(Located::new("n".into(), 0..0)), 0..0);
+    let typed = report(
+        E::array([E::integer(3), E::integer(1), E::integer(3)])
+            .filter(
+                pattern,
+                E::name("n").binary(zirql::ValueBinaryOperator::Greater, E::integer(1)),
+            )
+            .head(E::integer(2))
+            .tail(E::integer(9))
+            .reverse()
+            .check(Some(E::integer(2)), Some(E::string("kept rows"))),
+    );
+    let expected = document.query(&typed).unwrap();
+    let source = r#"let limit=2; let message="kept" ++ " rows"; report [3,1,3] | filter(_>1) | head(limit) | tail(9) | reverse | check(limit,message); report {"a":1,"b":3,"c":2} | filter(_>1) | reverse | head(1); report length({1,2}); report {1:2} | filter(false) | check(0) | count;"#;
+    let mut outputs = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(actual)) = &outputs[0] else {
+        panic!("constructed")
+    };
+    assert_eq!(actual.value().data(), expected.value().data());
+    let QueryOutput::Native(NativeValue::Constructed(dictionary)) = &outputs[1] else {
+        panic!("dictionary")
+    };
+    assert_eq!(
+        dictionary.value().data(),
+        &V::Record(vec![("c".into(), V::Integer(2))])
+    );
+    let mut native = Vec::new();
+    Query::parse(
+        r#"legacy={"a":1,"b":3,"c":2}; legacy | filter(_>1) | reverse | check(2); legacy | count"#,
+    )
+    .unwrap()
+    .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+        native.push(value);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        native[0],
+        QueryOutput::Map(vec![
+            ("c".into(), serde_json::json!(2)),
+            ("b".into(), serde_json::json!(3))
+        ])
+    );
+    assert_eq!(native[1], QueryOutput::Count(3));
+    for source in ["report [] | head(true);", "report [] | check(0,7);"] {
+        let mut emitted = false;
+        let result = Query::parse(source).unwrap().evaluate(
+            &mut document,
+            DialectRegistry::baseline(),
+            |_, _| {
+                emitted = true;
+                Ok(())
+            },
+        );
+        assert!(result.is_err(), "{source}");
+        assert!(!emitted);
+    }
+}

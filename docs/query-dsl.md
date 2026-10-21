@@ -504,7 +504,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `f89cb7a68a6124e0938ea582e03efc040b5ecafe`. They accept shared expressions
+pin `0345851b57b35b7ade4de77466350cba56fe02ea`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 
@@ -1023,3 +1023,36 @@ In Rust, the corresponding scalar builders are
 [textual report recipe](query-language.md#explicit-scalar-conversions).
 These builders require this development checkout; released Zirium 0.6.1 does not
 include them.
+
+## Collection report builders
+
+In the development checkout, Rust `ReportExpr` exposes `filter(pattern, body)`,
+`count()`, `length()`, `head(count)`, `tail(count)`, `reverse()` and
+`check(operand, message)`. Bounds and optional check operands/messages are report
+expressions; use `None` for omitted Rust check arguments. These methods build the
+same prepared value nodes as text and merge parameter/function metadata. Arrays,
+sets and dictionaries retain their kind, order and declared empty schemas.
+Dictionary predicates receive values, and keys stay attached to retained entries.
+Native `OpQuery` operations retain their existing document ownership and subjects.
+
+Python mirrors the same operations:
+
+```python
+import zirium
+from zirium.query import ReportExpr as E, ReportPattern as P, report
+
+document = zirium.parse_text('"test.seed"() : () -> ()').lower_strict().document
+assert document is not None
+selected = E([3, 1, 3]).filter(P.name("n"), E.name("n") > 1)
+result = document.query(report(selected.head(2).reverse().check(2, "two rows")))
+assert result == [3, 3]
+assert document.query(report(E({"a": 1, "b": 3}).filter(P.name("v"), E.name("v") > 1))) == {"b": 3}
+```
+
+`count` and `length` return cardinality, including dictionary entries and present
+keyed cells. Other selection operations require explicit positional/entry
+conversion of keyed arrays. Tuple and string values are refused. Runtime checks
+and native Unknown/completeness rules follow the
+[shared collection reference](https://zayenz.se/zirql/guides/library-pipelines/#filter).
+These builders require this development checkout; released Zirium 0.6.1 retains
+its published API.
