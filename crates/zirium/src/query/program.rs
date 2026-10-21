@@ -851,49 +851,6 @@ impl Validator<'_> {
                         functions::value_kind(&self.host, &value.expression, kind, names, budget)
                             .map_err(core_error)?;
                 }
-                S::FunctionPrimitive {
-                    primitive,
-                    argument,
-                    ..
-                } => {
-                    let argument_kind = functions::value_kind(
-                        &self.host,
-                        &argument.expression,
-                        Kind::Operations,
-                        names,
-                        budget,
-                    )
-                    .map_err(core_error)?;
-                    require(
-                        if *primitive == functions::Primitive::SameOperation {
-                            matches!(&argument_kind, Kind::Tuple(values) if values.as_slice() == [Kind::Operations, Kind::Operations])
-                        } else {
-                            argument_kind == Kind::Operations
-                        },
-                        if *primitive == functions::Primitive::SameOperation {
-                            "same_operation requires two Operations"
-                        } else {
-                            "native primitive requires one Operation"
-                        },
-                    )?;
-                    kind = match primitive {
-                        functions::Primitive::DirectChildren => Kind::Operations,
-                        functions::Primitive::SameOperation => {
-                            Kind::Constructed(std::sync::Arc::new(vec![zirql::ValueType::Boolean]))
-                        }
-                        functions::Primitive::UserInfo => {
-                            Kind::Capture(std::sync::Arc::new(zirql::NativeCapture {
-                                fields: vec![("targets".to_owned(), Kind::Operations)],
-                            }))
-                        }
-                        functions::Primitive::CostAnnotation => {
-                            Kind::Constructed(std::sync::Arc::new(vec![
-                                zirql::ValueType::Integer,
-                                zirql::ValueType::Absent,
-                            ]))
-                        }
-                    };
-                }
                 S::Paths { value, .. } => {
                     let schema = capture::path_types(value, &kind, names, budget, &self.host)?;
                     kind = Kind::Captures(std::sync::Arc::new(schema));

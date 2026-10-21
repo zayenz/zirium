@@ -479,7 +479,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `843190701089ef2d1644cea8dc0abe92f080a63b`. They accept shared expressions
+pin `aa6e7c3eed515e703fe055c8d880e2685d0ac7f6`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 
@@ -853,7 +853,7 @@ checked document-owned IDs. `E::native(&query)` retains a typed query operand;
 `E::operation(id)` and `E::ssa_value(id)` supply explicit handles checked on
 function admission. `E::operation_sequence(ids)` preserves sequence shape,
 including zero or one operation. `E::direct_children` and `E::cost_annotation`
-use the same native primitives as the textual reader. `function_call::<T>`
+construct ordinary `Call` nodes using the same native definitions as the textual reader. `function_call::<T>`
 starts a typed native query through the existing `QueryResult` conversion;
 `report(E::call(...))` returns `ConstructedReport` for scalar/report values.
 
@@ -876,10 +876,14 @@ Use `FunctionType::Queue(Box::new(element))` and
 `FunctionType::IdentitySet(FunctionNativeType::Operation)` in signatures.
 `typed_queue` takes a `SignatureType` for an explicit empty element
 contract. All builders merge their operands' function and parameter metadata.
+The native convenience builders `direct_children`, `cost_annotation`,
+`same_operation` and `user_info` use `ReportExpr::call`; both arguments of
+`same_operation` contribute metadata and remain separate ordered arguments.
+See the [native signatures and limitations](query-language.md#typed-recursive-functions).
 
 The [complete typed reachability example](../crates/zirium/examples/typed_worklists.rs)
 constructs destructured native parameters, optional pop arms, a loop and explicit
-`user_info`/`same_operation` primitives without generating query text:
+`user_info`/`same_operation` calls without generating query text:
 
 ```sh
 cargo run -p zirium --locked --example typed_worklists

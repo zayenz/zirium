@@ -306,11 +306,6 @@ pub enum Stage {
         value: super::comprehension::ParsedComprehension,
         range: TextRange,
     },
-    FunctionPrimitive {
-        primitive: super::functions::Primitive,
-        argument: super::comprehension::ParsedComprehension,
-        range: TextRange,
-    },
     Computed {
         value: ComputedStage,
         range: TextRange,
@@ -578,7 +573,6 @@ impl Stage {
             | Self::FunctionInput { range, .. }
             | Self::FunctionValue { range, .. }
             | Self::PatternBinding { range, .. }
-            | Self::FunctionPrimitive { range, .. }
             | Self::Computed { range, .. }
             | Self::Projection { range, .. }
             | Self::Comprehension { range, .. }

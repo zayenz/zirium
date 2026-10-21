@@ -799,21 +799,6 @@ fn evaluate_host_stage(
         model::Stage::FunctionValue { value, .. } => {
             current = functions::evaluate(value, context, current, bindings, budget)?;
         }
-        model::Stage::FunctionPrimitive {
-            primitive,
-            argument,
-            range,
-        } => {
-            let value = functions::evaluate(
-                argument,
-                context,
-                QueryOutput::Operations(vec![]),
-                bindings,
-                budget,
-            )?;
-            current =
-                functions::primitive(*primitive, &value, context, budget, &program::range(*range))?;
-        }
         model::Stage::Paths { value, .. } => {
             current = QueryOutput::Native(NativeValue::Captures(capture::evaluate_paths(
                 value, context, current, bindings, budget,

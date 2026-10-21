@@ -148,7 +148,7 @@ fn has_control_values(lexed: &Lexed<'_>) -> bool {
                 let word = &lexed.source()[token.range().as_range()];
                 let next = tokens.peek().map(|token| token.kind());
                 if (zirql::is_common_control_call(word)
-                    || matches!(word, "same_operation" | "user_info"))
+                    || super::functions::is_native_function(word))
                     && matches!(next, Some(TokenKind::LParen | TokenKind::Operator))
                     || word == "let" && matches!(next, Some(TokenKind::LParen | TokenKind::LBrace))
                 {
@@ -956,48 +956,7 @@ impl Parser<'_, '_> {
                 range: self.span(start),
             });
         }
-        if matches!(
-            self.current_text(),
-            "direct_children" | "cost_annotation" | "same_operation" | "user_info"
-        ) && self.next_kind() == Some(TokenKind::LParen)
-        {
-            let primitive = match self.current_text() {
-                "direct_children" => super::functions::Primitive::DirectChildren,
-                "cost_annotation" => super::functions::Primitive::CostAnnotation,
-                "same_operation" => super::functions::Primitive::SameOperation,
-                "user_info" => super::functions::Primitive::UserInfo,
-                _ => unreachable!("recognized primitive"),
-            };
-            self.bump();
-            self.expect(TokenKind::LParen, "expected `(`")?;
-            let mut argument = self.shared_value(depth + 1)?;
-            if primitive == super::functions::Primitive::SameOperation {
-                self.expect(TokenKind::Comma, "expected `,` between Operations")?;
-                let mut right = self.shared_value(depth + 1)?;
-                let take = |value: &mut super::comprehension::ParsedComprehension| {
-                    std::mem::replace(
-                        std::sync::Arc::get_mut(&mut value.expression)
-                            .expect("fresh parser expression"),
-                        zirql::Located::new(
-                            zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Absent),
-                            0..0,
-                        ),
-                    )
-                };
-                let values = vec![take(&mut argument), take(&mut right)];
-                argument = super::comprehension::ParsedComprehension::new(zirql::Located::new(
-                    zirql::ValueExpressionKind::Tuple(values),
-                    start as usize..self.current().range().start() as usize,
-                ));
-            }
-            self.expect(TokenKind::RParen, "expected `)` after native argument")?;
-            return Some(Stage::FunctionPrimitive {
-                primitive,
-                argument,
-                range: self.span(start),
-            });
-        }
-        if self.function_mode
+        if (self.function_mode || super::functions::is_native_function(self.current_text()))
             && self.at(TokenKind::Identifier)
             && self.next_kind() == Some(TokenKind::LParen)
             && !is_native_stage(self.current_text())
@@ -2112,10 +2071,6 @@ pub(super) fn is_native_stage(name: &str) -> bool {
     matches!(
         name,
         "input"
-            | "direct_children"
-            | "cost_annotation"
-            | "same_operation"
-            | "user_info"
             | "operand"
             | "filter"
             | "reachable"
@@ -2166,19 +2121,15 @@ pub(super) fn is_native_stage(name: &str) -> bool {
 }
 
 pub(super) fn is_reserved(name: &str) -> bool {
-    (zirql::is_common_keyword(name)
-        && matches!(
-            name,
-            "input" | "and" | "or" | "not" | "true" | "false" | "null"
-        ))
+    super::functions::is_native_function(name)
+        || (zirql::is_common_keyword(name)
+            && matches!(
+                name,
+                "input" | "and" | "or" | "not" | "true" | "false" | "null"
+            ))
         || matches!(
             name,
-            "direct_children"
-                | "cost_annotation"
-                | "same_operation"
-                | "user_info"
-                | "do"
-                | "filter"
+            "do" | "filter"
                 | "closure"
                 | "slice"
                 | "backward_slice"

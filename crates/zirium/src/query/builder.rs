@@ -2250,33 +2250,16 @@ impl ReportExpr {
         .with_metadata(query.parameters.clone(), query.functions.clone())
     }
     pub fn user_info(operation: Self) -> Self {
-        Self::primitive(functions::Primitive::UserInfo, operation)
+        Self::call("user_info", [operation])
     }
     pub fn same_operation(left: Self, right: Self) -> Self {
-        Self::primitive(
-            functions::Primitive::SameOperation,
-            Self::tuple([left, right]),
-        )
+        Self::call("same_operation", [left, right])
     }
     pub fn direct_children(operation: Self) -> Self {
-        Self::primitive(functions::Primitive::DirectChildren, operation)
+        Self::call("direct_children", [operation])
     }
     pub fn cost_annotation(operation: Self) -> Self {
-        Self::primitive(functions::Primitive::CostAnnotation, operation)
-    }
-    fn primitive(primitive: functions::Primitive, argument: Self) -> Self {
-        let parameters = argument.parameters.clone();
-        let functions = argument.functions.clone();
-        Self::node(zirql::ValueExpressionKind::NativeValue(Box::new(
-            report::operand(&expression(vec![Stage::FunctionPrimitive {
-                primitive,
-                argument: ParsedComprehension::new(functions::normalize(
-                    argument.into_expression(),
-                )),
-                range: range(),
-            }])),
-        )))
-        .with_metadata(parameters, functions)
+        Self::call("cost_annotation", [operation])
     }
     /// Evaluate only the selected branch; prepare both written branches.
     pub fn conditional(condition: Self, selected: Self, otherwise: Self) -> Self {

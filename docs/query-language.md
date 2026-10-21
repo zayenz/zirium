@@ -677,7 +677,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`843190701089ef2d1644cea8dc0abe92f080a63b`](https://github.com/zayenz/zirql/commit/843190701089ef2d1644cea8dc0abe92f080a63b).
+[`aa6e7c3eed515e703fe055c8d880e2685d0ac7f6`](https://github.com/zayenz/zirql/commit/aa6e7c3eed515e703fe055c8d880e2685d0ac7f6).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -1763,16 +1763,27 @@ and call it as `name(argument)`. Its body ends with the result expression;
 earlier local `let` bindings end with semicolons. A conditional value uses
 `if condition { value } else { value }`. Functions can calculate scalar values,
 construct reports, or accept checked MLIR handles and call Zirium's native
-primitives. The examples below cover these uses. The
+functions. The examples below cover these uses. The
 [Zirql function guide](https://zayenz.se/zirql/guides/functions-and-control-flow/)
 adds further scalar examples and explains the shared execution rules.
 
-A pure function receives every input explicitly. Declarations share one request:
-all signatures register before any body is prepared, so forward and mutual calls
-work. Ordered `let` bindings belong to their lexical block. Functions cannot capture
-saved query bindings, caller parameters, the projection subject or implicit
-`input`. A local cannot redefine an existing local or parameter. Function names
-cannot replace builtins or native stages.
+Calls follow Zirql's [shared scope and admission rules](https://zayenz.se/zirql/guides/functions-and-control-flow/).
+All inputs are explicit; a function cannot capture saved query bindings, caller
+parameters, a projection subject or implicit `input`. Every written body is
+prepared before execution, including skipped branches. Native functions use the
+same ordinary call path as declared functions:
+
+| Signature | Result and domain rule |
+| --- | --- |
+| `direct_children(op: Operation) -> sequence<Operation>` | Region, block and operation containment order, including empty children. |
+| `cost_annotation(op: Operation) -> opt int` | Decoded `cost` attribute; absence is allowed, invalid or out-of-range integers fail. |
+| `same_operation(a: Operation, b: Operation) -> bool` | Equality of checked document-owned operation handles. |
+| `user_info(op: Operation) -> record{targets: sequence<Operation>}` | Complete SSA adjacency in result/use order; incomplete documents fail. |
+
+Each argument must contain one operation in the current document. Admission
+checks owners and stale handles; implementations retain their domain checks.
+The [embedding guide](https://zayenz.se/zirql/guides/embedding-programs/#define-a-native-function)
+shows the common definition contract.
 
 ```zirql
 fn subtree_cost(op: Operation) -> int {
@@ -1795,7 +1806,7 @@ malformed integer or value outside i64 fails at the annotation read.
 Calls accept zero or more comma-separated arguments. They work in reports,
 projection fields, computed native arguments and native query sources. For
 example, an `identity(op: Operation) -> Operation` call can feed
-`identity(selected) | children | count`. A primitive call such as
+`identity(selected) | children | count`. A native call such as
 `direct_children(identity(selected))` also retains the native argument.
 An explicit call source receives its written arguments rather than the
 surrounding pipeline selection.
@@ -2095,7 +2106,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `843190701089ef2d1644cea8dc0abe92f080a63b`
+The development dependency pins Zirql `aa6e7c3eed515e703fe055c8d880e2685d0ac7f6`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.

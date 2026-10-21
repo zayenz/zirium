@@ -136,7 +136,16 @@ pub(super) fn scalar_facts(
         })
     }
 }
-impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
+impl<'c, 'a, 'q> FunctionHost<EvaluationContext<'c, 'a, 'q>> for report::ReportHost<'_> {
+    fn native_function(
+        &self,
+        name: &str,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Option<zirql::NativeFunction<EvaluationContext<'c, 'a, 'q>, Self>>, zirql::QueryError>
+    {
+        native_function(name, budget, range)
+    }
     fn retains_native_admission(&self) -> bool {
         true
     }
@@ -335,17 +344,7 @@ impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> 
     fn is_operation_name(&self, name: &str) -> bool {
         zirql::is_common_operation_name(name)
             || parser::is_reserved(name)
-            || matches!(
-                name,
-                "direct_children"
-                    | "cost_annotation"
-                    | "same_operation"
-                    | "user_info"
-                    | "operand"
-                    | "project"
-                    | "paths"
-                    | "match"
-            )
+            || matches!(name, "operand" | "project" | "paths" | "match")
     }
 }
 impl<'q> RuntimeTypeHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> {
@@ -596,12 +595,63 @@ pub(super) fn error(
     failure
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Primitive {
-    DirectChildren,
-    CostAnnotation,
-    SameOperation,
-    UserInfo,
+const NATIVE_FUNCTION_NAMES: &[&str] = &[
+    "direct_children",
+    "cost_annotation",
+    "same_operation",
+    "user_info",
+];
+pub(super) fn is_native_function(name: &str) -> bool {
+    NATIVE_FUNCTION_NAMES.contains(&name)
+}
+fn native_function<'c, 'a, 'q, 'h>(
+    name: &str,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<
+    Option<zirql::NativeFunction<EvaluationContext<'c, 'a, 'q>, report::ReportHost<'h>>>,
+    zirql::QueryError,
+> {
+    let Some(index) = NATIVE_FUNCTION_NAMES
+        .iter()
+        .position(|candidate| *candidate == name)
+    else {
+        return Ok(None);
+    };
+    capture::slots::<D<program::Kind>>(8, budget, range).map_err(report::query_error)?;
+    budget.charge_results(8, ValueLocation::Query(range.clone()))?;
+    let operation = || D::Native(program::Kind::Operations);
+    let (parameters, result, invoke): (
+        _,
+        _,
+        zirql::NativeFunctionImplementation<EvaluationContext<'c, 'a, 'q>, report::ReportHost<'h>>,
+    ) = match index {
+        0 => (
+            vec![operation()],
+            D::Sequence(Box::new(operation())),
+            direct_children,
+        ),
+        1 => (
+            vec![operation()],
+            D::Optional(Box::new(D::Integer)),
+            cost_annotation,
+        ),
+        2 => (vec![operation(), operation()], D::Boolean, same_operation),
+        3 => {
+            budget.charge("targets".len(), ValueLocation::Query(range.clone()))?;
+            (
+                vec![operation()],
+                D::Record(vec![("targets".into(), D::Sequence(Box::new(operation())))]),
+                user_info,
+            )
+        }
+        _ => unreachable!("native definition index"),
+    };
+    Ok(Some(zirql::NativeFunction {
+        name: NATIVE_FUNCTION_NAMES[index],
+        signature: zirql::OperationSignature { parameters, result },
+        invoke,
+    }))
 }
 pub(super) fn unretained(mut value: &QueryOutput) -> &QueryOutput {
     while let QueryOutput::Native(NativeValue::Retained(inner)) = value {
@@ -609,175 +659,191 @@ pub(super) fn unretained(mut value: &QueryOutput) -> &QueryOutput {
     }
     value
 }
-pub(super) fn primitive(
-    primitive: Primitive,
-    argument: &QueryOutput,
+fn admitted_operation(
+    value: &QueryOutput,
     context: &mut EvaluationContext<'_, '_, '_>,
     budget: &mut Budget,
     range: &Range<usize>,
-) -> Result<QueryOutput, EvaluationError> {
-    if primitive == Primitive::SameOperation {
-        let QueryOutput::Native(NativeValue::Tuple(tuple)) = unretained(argument) else {
-            return Err(
-                EvaluationError::new("same_operation requires two Operations").at(range.clone()),
-            );
-        };
-        let [left, right] = tuple.values.as_slice() else {
-            return Err(
-                EvaluationError::new("same_operation requires two Operations").at(range.clone()),
-            );
-        };
-        let single = |value| match unretained(value) {
-            QueryOutput::Operations(values) if values.len() == 1 => Ok(values[0]),
-            _ => Err(
-                EvaluationError::new("same_operation requires two Operations").at(range.clone()),
-            ),
-        };
-        let left = single(left)?;
-        let right = single(right)?;
-        check_operations(context.document, &[left, right], budget, range)
-            .map_err(program::evaluation_error)?;
-        return ConstructedReport::new(
-            ConstructedValue::Boolean(left == right),
-            range.clone(),
-            budget,
-        )
-        .map(|v| QueryOutput::Native(NativeValue::Constructed(v)));
-    }
-    let QueryOutput::Operations(operations) = unretained(argument) else {
+) -> Result<OperationId, EvaluationError> {
+    let QueryOutput::Operations(operations) = unretained(value) else {
         return Err(
-            EvaluationError::new("native primitive requires one Operation").at(range.clone()),
+            EvaluationError::new("native function requires one Operation").at(range.clone()),
         );
     };
     if operations.len() != 1 {
         return Err(
-            EvaluationError::new("native primitive requires one Operation").at(range.clone()),
+            EvaluationError::new("native function requires one Operation").at(range.clone()),
         );
     }
     check_operations(context.document, operations, budget, range)
         .map_err(program::evaluation_error)?;
-    let operation = operations[0];
-    match primitive {
-        Primitive::SameOperation => unreachable!("binary primitive handled above"),
-        Primitive::UserInfo => {
-            if !context.document.is_semantically_complete() {
-                return Err(
-                    EvaluationError::new("user_info requires complete semantic adjacency")
-                        .at(range.clone()),
-                );
-            }
-            let mut targets = Vec::new();
-            for result in 0..context
-                .document
-                .result_types(operation)
-                .map_or(0, <[_]>::len)
-            {
-                let value = ValueId::OperationResult {
-                    operation,
-                    result: u32::try_from(result).map_err(|_| {
-                        EvaluationError::new("result index exceeds u32").at(range.clone())
-                    })?,
-                };
-                let uses = context.document.query_uses(value, |units| {
-                    capture::slots::<crate::semantic::UseSite>(units, budget, range)?;
-                    budget
-                        .charge(units, ValueLocation::Query(range.clone()))
-                        .map_err(core_error)?;
-                    budget
-                        .charge_results(units, ValueLocation::Query(range.clone()))
-                        .map_err(core_error)
+    Ok(operations[0])
+}
+fn same_operation(
+    _: &report::ReportHost<'_>,
+    values: Vec<Located<QueryOutput>>,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+    let left = admitted_operation(&values[0].value, context, budget, range)
+        .map_err(zirql::EvaluationError::Host)?;
+    let right = admitted_operation(&values[1].value, context, budget, range)
+        .map_err(zirql::EvaluationError::Host)?;
+    ConstructedReport::new(
+        ConstructedValue::Boolean(left == right),
+        range.clone(),
+        budget,
+    )
+    .map(|v| QueryOutput::Native(NativeValue::Constructed(v)))
+    .map_err(zirql::EvaluationError::Host)
+}
+fn direct_children(
+    _: &report::ReportHost<'_>,
+    values: Vec<Located<QueryOutput>>,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+    (|| -> Result<QueryOutput, EvaluationError> {
+        let operation = admitted_operation(&values[0].value, context, budget, range)?;
+
+        program::charge_results(budget, 1, range)?;
+        evaluate_children(context.document, &[operation], budget)
+            .map(|children| QueryOutput::Native(NativeValue::OperationSequence(children)))
+    })()
+    .map_err(zirql::EvaluationError::Host)
+}
+fn cost_annotation(
+    _: &report::ReportHost<'_>,
+    values: Vec<Located<QueryOutput>>,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+    (|| -> Result<QueryOutput, EvaluationError> {
+        let operation = admitted_operation(&values[0].value, context, budget, range)?;
+
+        program::charge_results(budget, 3, range)?;
+        let value = match context
+            .document
+            .attribute_id(operation, "cost")
+            .and_then(|id| context.document.attribute_value(id))
+        {
+            None => ConstructedValue::Absent,
+            Some(attribute) => {
+                let spelling = context
+                    .document
+                    .attribute_id(operation, "cost")
+                    .and_then(|id| context.document.attribute_spelling_value(id))
+                    .unwrap_or("");
+                program::charge_bytes(budget, spelling.len() + 1, range)?;
+                let integer = attribute.decoded_integer().ok_or_else(|| {
+                    EvaluationError::new("cost annotation must be an i64 integer").at(range.clone())
                 })?;
-                budget
-                    .check_items(
-                        targets.len().saturating_add(uses.len()),
-                        ValueLocation::Query(range.clone()),
-                    )
-                    .map_err(core_error)?;
-                capture::slots::<OperationId>(uses.len(), budget, range)?;
-                targets.reserve(uses.len());
-                for site in uses {
-                    let user = match site {
-                        crate::semantic::UseSite::Operand { operation, .. }
-                        | crate::semantic::UseSite::SuccessorArgument { operation, .. } => {
-                            operation
-                        }
-                    };
-                    context
-                        .document
-                        .check_operation(user)
-                        .map_err(|e| EvaluationError::new(e.to_string()).at(range.clone()))?;
-                    targets.push(user);
-                }
-            }
-            program::charge_results(budget, 3, range)?;
-            program::charge_bytes(budget, "targets".len() + 1, range)?;
-            Ok(QueryOutput::Native(NativeValue::Capture(
-                zirql::NativeCapture {
-                    fields: vec![(
-                        "targets".to_owned(),
-                        QueryOutput::Native(NativeValue::OperationSequence(targets)),
-                    )],
-                },
-            )))
-        }
-        Primitive::DirectChildren => {
-            program::charge_results(budget, 1, range)?;
-            evaluate_children(context.document, operations, budget)
-                .map(|children| QueryOutput::Native(NativeValue::OperationSequence(children)))
-        }
-        Primitive::CostAnnotation => {
-            program::charge_results(budget, 3, range)?;
-            let value = match context
-                .document
-                .attribute_id(operation, "cost")
-                .and_then(|id| context.document.attribute_value(id))
-            {
-                None => ConstructedValue::Absent,
-                Some(attribute) => {
-                    let spelling = context
-                        .document
-                        .attribute_id(operation, "cost")
-                        .and_then(|id| context.document.attribute_spelling_value(id))
-                        .unwrap_or("");
-                    program::charge_bytes(budget, spelling.len() + 1, range)?;
-                    let integer = attribute.decoded_integer().ok_or_else(|| {
-                        EvaluationError::new("cost annotation must be an i64 integer")
-                            .at(range.clone())
-                    })?;
-                    let negative = integer.digits.starts_with('-');
-                    let magnitude = u64::from_str_radix(
-                        integer.digits.trim_start_matches(['+', '-']),
-                        integer.radix,
-                    )
-                    .map_err(|_| {
-                        EvaluationError::new("cost annotation is outside i64").at(range.clone())
-                    })?;
-                    let number = if negative {
-                        if magnitude == 1u64 << 63 {
-                            i64::MIN
-                        } else {
-                            -i64::try_from(magnitude).map_err(|_| {
-                                EvaluationError::new("cost annotation is outside i64")
-                                    .at(range.clone())
-                            })?
-                        }
+                let negative = integer.digits.starts_with('-');
+                let magnitude = u64::from_str_radix(
+                    integer.digits.trim_start_matches(['+', '-']),
+                    integer.radix,
+                )
+                .map_err(|_| {
+                    EvaluationError::new("cost annotation is outside i64").at(range.clone())
+                })?;
+                let number = if negative {
+                    if magnitude == 1u64 << 63 {
+                        i64::MIN
                     } else {
-                        i64::try_from(magnitude).map_err(|_| {
+                        -i64::try_from(magnitude).map_err(|_| {
                             EvaluationError::new("cost annotation is outside i64").at(range.clone())
                         })?
-                    };
-                    ConstructedValue::Integer(number)
-                }
-            };
-            ConstructedReport::with_types(
-                value,
-                vec![ValueType::Integer, ValueType::Absent],
-                range.clone(),
-                budget,
-            )
-            .map(|v| QueryOutput::Native(NativeValue::Constructed(v)))
+                    }
+                } else {
+                    i64::try_from(magnitude).map_err(|_| {
+                        EvaluationError::new("cost annotation is outside i64").at(range.clone())
+                    })?
+                };
+                ConstructedValue::Integer(number)
+            }
+        };
+        ConstructedReport::with_types(
+            value,
+            vec![ValueType::Integer, ValueType::Absent],
+            range.clone(),
+            budget,
+        )
+        .map(|v| QueryOutput::Native(NativeValue::Constructed(v)))
+    })()
+    .map_err(zirql::EvaluationError::Host)
+}
+fn user_info(
+    _: &report::ReportHost<'_>,
+    values: Vec<Located<QueryOutput>>,
+    context: &mut EvaluationContext<'_, '_, '_>,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<QueryOutput, zirql::EvaluationError<EvaluationError>> {
+    (|| -> Result<QueryOutput, EvaluationError> {
+        let operation = admitted_operation(&values[0].value, context, budget, range)?;
+
+        if !context.document.is_semantically_complete() {
+            return Err(
+                EvaluationError::new("user_info requires complete semantic adjacency")
+                    .at(range.clone()),
+            );
         }
-    }
+        let mut targets = Vec::new();
+        for result in 0..context
+            .document
+            .result_types(operation)
+            .map_or(0, <[_]>::len)
+        {
+            let value = ValueId::OperationResult {
+                operation,
+                result: u32::try_from(result).map_err(|_| {
+                    EvaluationError::new("result index exceeds u32").at(range.clone())
+                })?,
+            };
+            let uses = context.document.query_uses(value, |units| {
+                capture::slots::<crate::semantic::UseSite>(units, budget, range)?;
+                budget
+                    .charge(units, ValueLocation::Query(range.clone()))
+                    .map_err(core_error)?;
+                budget
+                    .charge_results(units, ValueLocation::Query(range.clone()))
+                    .map_err(core_error)
+            })?;
+            budget
+                .check_items(
+                    targets.len().saturating_add(uses.len()),
+                    ValueLocation::Query(range.clone()),
+                )
+                .map_err(core_error)?;
+            capture::slots::<OperationId>(uses.len(), budget, range)?;
+            targets.reserve(uses.len());
+            for site in uses {
+                let user = match site {
+                    crate::semantic::UseSite::Operand { operation, .. }
+                    | crate::semantic::UseSite::SuccessorArgument { operation, .. } => operation,
+                };
+                context
+                    .document
+                    .check_operation(user)
+                    .map_err(|e| EvaluationError::new(e.to_string()).at(range.clone()))?;
+                targets.push(user);
+            }
+        }
+        program::charge_results(budget, 3, range)?;
+        program::charge_bytes(budget, "targets".len() + 1, range)?;
+        Ok(QueryOutput::Native(NativeValue::Capture(
+            zirql::NativeCapture {
+                fields: vec![(
+                    "targets".to_owned(),
+                    QueryOutput::Native(NativeValue::OperationSequence(targets)),
+                )],
+            },
+        )))
+    })()
+    .map_err(zirql::EvaluationError::Host)
 }
 
 /// Signature-only discovery is safe inside native preparation callbacks. The

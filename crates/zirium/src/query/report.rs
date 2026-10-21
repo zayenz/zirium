@@ -774,9 +774,6 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         }
         | model::Stage::Tally {
             constructed: value, ..
-        }
-        | model::Stage::FunctionPrimitive {
-            argument: value, ..
         } = stage
         {
             budget.charge_results(1, Location::Query(range.clone()))?;
@@ -1316,25 +1313,6 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                     value.into_shared(),
                 )));
             }
-            model::Stage::FunctionPrimitive {
-                primitive,
-                argument,
-                ..
-            } => {
-                let argument = arguments.evaluate_native(
-                    &argument.expression,
-                    QueryOutput::Operations(vec![]),
-                    budget,
-                )?;
-                return functions::primitive(
-                    *primitive,
-                    argument.value(),
-                    arguments.parts().0,
-                    budget,
-                    range,
-                )
-                .map_err(zirql::EvaluationError::Host);
-            }
             _ => {}
         }
         if pipeline::is_stream_stage(stage) && pipeline::is_stream(&input) {
@@ -1470,9 +1448,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         }
         matches!(
             stage,
-            model::Stage::FunctionInput { .. }
-                | model::Stage::FunctionValue { .. }
-                | model::Stage::FunctionPrimitive { .. }
+            model::Stage::FunctionInput { .. } | model::Stage::FunctionValue { .. }
         )
     }
     fn is_pure(&self, stage: &model::Stage) -> bool {
@@ -1947,11 +1923,7 @@ pub(super) fn push_expressions<'a>(
         model::Stage::Computed { value, .. } => {
             visit_value(&value.operand().expression, pending, budget)?
         }
-        model::Stage::FunctionValue { value, .. }
-        | model::Stage::FunctionPrimitive {
-            argument: value, ..
-        }
-        | model::Stage::Comprehension { value, .. } => {
+        model::Stage::FunctionValue { value, .. } | model::Stage::Comprehension { value, .. } => {
             visit_value(&value.expression, pending, budget)?
         }
         model::Stage::Projection { value, .. } => {
@@ -2202,7 +2174,7 @@ pub(super) fn has_constructed(expression: &model::Expression) -> bool {
         .any(|stage| {
             matches!(
                 stage,
-                model::Stage::WhereExists { .. } | model::Stage::Fixpoint { expression: model::FixedPointBody::Native(_), .. } | model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::FunctionPrimitive{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::ConstructedSuffix { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
+                model::Stage::WhereExists { .. } | model::Stage::Fixpoint { expression: model::FixedPointBody::Native(_), .. } | model::Stage::PatternBinding { .. } | model::Stage::FunctionInput{..} | model::Stage::FunctionValue{..} | model::Stage::Paths { .. } | model::Stage::Match { .. } | model::Stage::Native { .. } | model::Stage::Operand { .. } | model::Stage::Comprehension { .. } | model::Stage::ConstructedSuffix { .. } | model::Stage::Projection { .. } | model::Stage::Computed {..}
             ) || matches!(stage, model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } if has_dynamic_predicate(predicate))
             || nested(stage).into_iter().any(has_constructed)
         })
