@@ -389,6 +389,14 @@ Textual reports and typed builders produce Zirql's located `Value`,
 `evaluate_expression` supplies the current bindings, relative input and cumulative
 budget. Zirium's native stages retain their MLIR payloads and ownership checks.
 
+Native tuples, capture records and positional sequences expose ordinary data to
+the same [infix admission](https://zayenz.se/zirql/guides/library-operators/#equality)
+as constructed report values. Equality checks compatible underlying types before
+returning an unequal result; relations require numbers. Explicit optional and
+empty sequence declarations survive native wrapping. Admission of deferred
+values occurs only when that comparison executes. MLIR handles retain exact
+native identity and require the existing explicit scalar projections where needed.
+
 Projection fields are checked before enumerating subjects, so an empty selection
 retains its declared row schema and still rejects invalid fields. The shared
 [projection contract](https://zayenz.se/zirql/guides/host-integration/#correlated-native-projection)
@@ -496,7 +504,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `dd8aca20bf5313cf8a735753cc687996bb114003`. They accept shared expressions
+pin `b2b7a9e37584cf30079fabea98558f0c750f2fce`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 

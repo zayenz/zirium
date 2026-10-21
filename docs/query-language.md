@@ -561,7 +561,15 @@ while `lookup` is optional.
 Sets remove duplicates without moving the first occurrence. They accept
 constructed values, including strings, mixed kinds and nested collections.
 Lists and tuples compare by position; sets compare by membership and dictionaries
-by associations. `sort({3, 1, 3})` returns a set in order `1, 3`.
+by associations. Infix equality requires compatible underlying types: for example,
+`[1, 2] == [9, true]` fails. Ordinary native tuples, captures and positional
+sequences retain this rule. Deferred checks run when the comparison executes,
+so untaken branches do not inspect their values. Optional declarations and
+empty sequence schemas remain part of admission. Opaque MLIR leaves retain their
+exact document, source and diff-side identity. Infix relations require present
+numbers and exact integer-to-float conversion; they use the
+[ordinary operator contract](https://zayenz.se/zirql/guides/library-operators/#ordered-comparisons).
+Structural sort order does not admit list or tuple operands to `<`. `sort({3, 1, 3})` returns a set in order `1, 3`.
 Empty `{}` is a dictionary. `set<int>()`, `set<bool>()`, `set<float>()` and
 `set<string>()` construct typed empty scalar sets; `set<value>()` creates a
 general empty set. An empty nominal set needs a host-supplied value; the common
@@ -685,7 +693,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`dd8aca20bf5313cf8a735753cc687996bb114003`](https://github.com/zayenz/zirql/commit/dd8aca20bf5313cf8a735753cc687996bb114003).
+[`b2b7a9e37584cf30079fabea98558f0c750f2fce`](https://github.com/zayenz/zirql/commit/b2b7a9e37584cf30079fabea98558f0c750f2fce).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -2144,7 +2152,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `dd8aca20bf5313cf8a735753cc687996bb114003`
+The development dependency pins Zirql `b2b7a9e37584cf30079fabea98558f0c750f2fce`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.
