@@ -479,7 +479,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `90d184e9376a5ab039eecba0e62f3f1afd778a9b`. They accept shared expressions
+pin `62b2d350f61d52e5bfd554724d750143ed451008`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 

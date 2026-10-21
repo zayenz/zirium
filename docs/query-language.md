@@ -642,17 +642,43 @@ zirium 'let numbers=[3,1,3]; numbers | sort | unique | count' examples/cli/funct
 ```
 
 Saved constructed collections and constructed function results use the shared
-`sort`, `unique`, `count` and terminal string `tally` stages. Constructed arrays
+`sort`, `unique`, `count` and terminal `tally` stages. Constructed arrays
 also accept `filter(predicate)` with named or implicit `_` arguments. String
 arrays additionally support the compact `filter(starts_with("prefix"))`
 spelling. These stages retain their shared value type rules. Native sources
 keep native stages and selectors such as
-`sort_by(names)`.
+`sort_by(names)`. Zirql distinguishes that native selector from
+`sort_by(rows, "score")` by a comma at the call's own argument level. Delimiters
+inside nested expressions, strings and comments keep their normal meaning.
+For example, this uses both routes with the existing function-report fixture:
+
+```sh
+cargo run --locked --bin zirium -- '
+let ordered = sort_by([{"score":2},{"score":1}], "score");
+report ordered | count;
+sort_by((names # comma, and closing delimiter ) stay in the comment
+)) | names
+' examples/cli/function-report.mlir
+```
+
+The development adapter uses Zirql's common syntax recognition before reading
+expressions and suffixes. Plain legacy JSON/interpolation keeps its established
+parsing allowance; common words inside strings do not trigger value-program
+allocation charges. Shared parsing and checked lookahead use the active request
+budget. Native stage precedence, emission/edit boundaries, MLIR and diff meaning
+remain Zirium rules.
+
+Names depend on their position. Saved names such as `for`, `if`, `report`,
+`project`, `lookup` and `default` keep their contextual uses. Native operations,
+input/document bindings and literal/operator words retain their existing
+exclusions. Function declarations also reject Zirql's common operation names.
+The shared reader's quoted identities remain available where the frontend
+admits quoted names; its ASCII spelling check does not replace host admission.
 
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`90d184e9376a5ab039eecba0e62f3f1afd778a9b`](https://github.com/zayenz/zirql/commit/90d184e9376a5ab039eecba0e62f3f1afd778a9b).
+[`62b2d350f61d52e5bfd554724d750143ed451008`](https://github.com/zayenz/zirql/commit/62b2d350f61d52e5bfd554724d750143ed451008).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -2065,7 +2091,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `90d184e9376a5ab039eecba0e62f3f1afd778a9b`
+The development dependency pins Zirql `62b2d350f61d52e5bfd554724d750143ed451008`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.

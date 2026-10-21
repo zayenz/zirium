@@ -359,7 +359,9 @@ impl Query {
         // Admit an upper bound for lexer storage before allocating tokens. Only
         // actual comprehensions retain this spending for repeated evaluation.
         let mut admission = zirql::Budget::for_program(limits);
-        if comprehension::has_syntax(source) {
+        if zirql::has_common_expression_syntax(source, |name| {
+            matches!(name, "same_operation" | "user_info")
+        }) {
             let work = source
                 .len()
                 .checked_mul(2)

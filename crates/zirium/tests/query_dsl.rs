@@ -2691,6 +2691,7 @@ fn report_ordering_agrees_with_typed_helpers_and_keeps_native_selector_stages() 
     for source in [
         "names | sort",
         "sort_by(names) | names",
+        "sort_by((names # ignored comma, and closing delimiter )\n)) | names",
         "min_by(names) | names",
     ] {
         Query::parse(source)

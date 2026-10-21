@@ -147,20 +147,9 @@ fn has_control_values(lexed: &Lexed<'_>) -> bool {
             TokenKind::Identifier => {
                 let word = &lexed.source()[token.range().as_range()];
                 let next = tokens.peek().map(|token| token.kind());
-                if matches!(
-                    word,
-                    "match"
-                        | "loop"
-                        | "fold"
-                        | "scan"
-                        | "queue"
-                        | "pop_front"
-                        | "push_back_all"
-                        | "identity_set"
-                        | "insert"
-                        | "same_operation"
-                        | "user_info"
-                ) && matches!(next, Some(TokenKind::LParen | TokenKind::Operator))
+                if (zirql::is_common_control_call(word)
+                    || matches!(word, "same_operation" | "user_info"))
+                    && matches!(next, Some(TokenKind::LParen | TokenKind::Operator))
                     || word == "let" && matches!(next, Some(TokenKind::LParen | TokenKind::LBrace))
                 {
                     return true;
@@ -804,28 +793,47 @@ impl Parser<'_, '_> {
             }
         }
     }
+    fn starts_shared_value(&mut self, depth: usize) -> bool {
+        match super::comprehension::starts(
+            self.source,
+            self.tokens,
+            self.cursor,
+            self.budget,
+            self.nesting_limit.saturating_sub(depth),
+        ) {
+            Ok(starts) => starts,
+            Err(error) => {
+                self.shared_error(error);
+                false
+            }
+        }
+    }
+    fn ordering_call(&mut self) -> bool {
+        let reader =
+            zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
+                .expect("token boundary");
+        match zirql::probe_ordering_call(&reader, self.budget, self.nesting_limit) {
+            Ok(constructed) => constructed,
+            Err(error) => {
+                self.shared_error(error);
+                false
+            }
+        }
+    }
     fn starts_native(&mut self) -> bool {
         self.skip_trivia();
         if self.at(TokenKind::Identifier) {
+            let constructed_ordering = is_native_stage(self.current_text()) && self.ordering_call();
             let name = self.current_text();
             (name == "match" && self.next_kind() == Some(TokenKind::LBrace))
-                || self.source[self.current().range().start() as usize..]
-                    .split_once('|')
-                    .is_some_and(|(source, _)| {
-                        let source = source.trim();
-                        source.contains('.')
-                            && source.bytes().all(|byte| {
-                                byte.is_ascii_alphanumeric()
-                                    || byte == b'_'
-                                    || byte == b'.'
-                                    || byte.is_ascii_whitespace()
-                            })
-                    })
-                || is_native_stage(name)
-                    && !super::comprehension::ordering_call(
+                || zirql::has_native_field_pipeline(
+                    &zirql::ArgumentReader::new(
                         self.source,
                         self.current().range().start() as usize,
                     )
+                    .expect("token boundary"),
+                )
+                || is_native_stage(name) && !constructed_ordering
                 || self.bindings.contains(name)
                     && matches!(
                         self.next_kind(),
@@ -1023,8 +1031,7 @@ impl Parser<'_, '_> {
                 .iter()
                 .find(|token| token.kind() != TokenKind::Trivia)?;
             if &self.source[next.range().as_range()] == "."
-                && !(shared_values
-                    && super::comprehension::starts(self.source, self.tokens, self.cursor))
+                && !(shared_values && self.starts_shared_value(depth))
             {
                 let value = self.shared_native(depth, true)?;
                 return Some(Stage::Native {
@@ -1078,19 +1085,9 @@ impl Parser<'_, '_> {
                 range: self.span(start),
             });
         }
-        if shared_values && super::comprehension::starts(self.source, self.tokens, self.cursor) {
-            // Named postfix results leave subsequent stages to the host's
-            // native/constructed routing, just as a saved result does.
-            let mut prefix = self.tokens[self.cursor..]
-                .iter()
-                .filter(|token| token.kind() != TokenKind::Trivia);
-            let name = prefix.find(|token| token.kind() != TokenKind::LParen);
-            let postfix = prefix.find(|token| token.kind() != TokenKind::RParen);
-            let postfix_result = name.is_some_and(|token| token.kind() == TokenKind::Identifier)
-                && postfix.is_some_and(|token| {
-                    token.kind() == TokenKind::Operator
-                        && &self.source[token.range().as_range()] == "."
-                });
+        if shared_values && self.starts_shared_value(depth) {
+            let reader = zirql::ArgumentReader::new(self.source, start as usize).ok()?;
+            let postfix_result = zirql::has_named_value_postfix(&reader);
             let value = self.read_shared_value(depth, postfix_result)?;
             let range = self.span(start);
             return Some(if self.function_mode {
@@ -2169,72 +2166,70 @@ pub(super) fn is_native_stage(name: &str) -> bool {
 }
 
 pub(super) fn is_reserved(name: &str) -> bool {
-    matches!(
-        name,
-        "input"
-            | "direct_children"
-            | "cost_annotation"
-            | "same_operation"
-            | "user_info"
-            | "do"
-            | "filter"
-            | "closure"
-            | "slice"
-            | "backward_slice"
-            | "forward_slice"
-            | "reachable"
-            | "defs"
-            | "users"
-            | "parent"
-            | "children"
-            | "root"
-            | "subtree"
-            | "unique"
-            | "sort"
-            | "sort_by"
-            | "reverse"
-            | "head"
-            | "tail"
-            | "min"
-            | "min_by"
-            | "min_all"
-            | "min_all_by"
-            | "max"
-            | "max_by"
-            | "max_all"
-            | "max_all_by"
-            | "attr"
-            | "names"
-            | "result_types"
-            | "operand_types"
-            | "fixpoint"
-            | "where_exists"
-            | "set_attr"
-            | "remove_attr"
-            | "check"
-            | "count"
-            | "emit"
-            | "json"
-            | "markdown"
-            | "print"
-            | "tally"
-            | "value"
-            | "map_by"
-            | "union"
-            | "intersect"
-            | "except"
-            | "and"
-            | "or"
-            | "not"
-            | "true"
-            | "false"
-            | "null"
-            | "op"
-            | "dialect"
-            | "result_type"
-            | "has_attr"
-            | "string_attr_eq"
-    )
+    (zirql::is_common_keyword(name)
+        && matches!(
+            name,
+            "input" | "and" | "or" | "not" | "true" | "false" | "null"
+        ))
+        || matches!(
+            name,
+            "direct_children"
+                | "cost_annotation"
+                | "same_operation"
+                | "user_info"
+                | "do"
+                | "filter"
+                | "closure"
+                | "slice"
+                | "backward_slice"
+                | "forward_slice"
+                | "reachable"
+                | "defs"
+                | "users"
+                | "parent"
+                | "children"
+                | "root"
+                | "subtree"
+                | "unique"
+                | "sort"
+                | "sort_by"
+                | "reverse"
+                | "head"
+                | "tail"
+                | "min"
+                | "min_by"
+                | "min_all"
+                | "min_all_by"
+                | "max"
+                | "max_by"
+                | "max_all"
+                | "max_all_by"
+                | "attr"
+                | "names"
+                | "result_types"
+                | "operand_types"
+                | "fixpoint"
+                | "where_exists"
+                | "set_attr"
+                | "remove_attr"
+                | "check"
+                | "count"
+                | "emit"
+                | "json"
+                | "markdown"
+                | "print"
+                | "tally"
+                | "value"
+                | "map_by"
+                | "union"
+                | "intersect"
+                | "except"
+                | "op"
+                | "dialect"
+                | "result_type"
+                | "has_attr"
+                | "string_attr_eq"
+        )
 }
 
 struct NativeReader<'a> {

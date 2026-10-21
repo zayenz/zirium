@@ -333,7 +333,8 @@ impl<'q> FunctionHost<EvaluationContext<'_, '_, 'q>> for report::ReportHost<'_> 
         }
     }
     fn is_operation_name(&self, name: &str) -> bool {
-        parser::is_reserved(name)
+        zirql::is_common_operation_name(name)
+            || parser::is_reserved(name)
             || matches!(
                 name,
                 "direct_children"

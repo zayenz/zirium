@@ -740,11 +740,7 @@ pub(super) fn admit_parameters(
             declaration.name.value.len() + 1,
             &declaration.name.range,
         )?;
-        let mut name = declaration.name.value.bytes();
-        if !name
-            .next()
-            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
-            || !name.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        if !zirql::is_unquoted_binding_name(&declaration.name.value)
             || parser::is_reserved(&declaration.name.value)
         {
             return Err(EvaluationError::new(
