@@ -610,8 +610,8 @@ zirium --program-file examples/cli/optional-report.zirql examples/cli/function-r
 Inline programs, file programs and the [Rust/Python report builders](query-dsl.md#optional-report-values)
 use the same evaluator. Legacy plain JSON literals keep their output shape.
 External inputs remain required int/string/bool; null is a report value, not an
-optional parameter transport. Native operation identities and unsupported
-nominal/keyed report rendering retain their existing boundaries.
+optional parameter transport. Native operation identities stay document-owned. Nominal members and keyed
+arrays use Zirql's tagged JSON fallback to retain names, axes and missing cells.
 
 Rust callbacks receive `QueryOutput::Native(NativeValue::Constructed(report))`
 before rendering. `report.value()` borrows the ordered Zirql value, including
@@ -652,7 +652,7 @@ keep native stages and selectors such as
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`40640084c88e56aa58538efbb254a78b6a021bbe`](https://github.com/zayenz/zirql/commit/40640084c88e56aa58538efbb254a78b6a021bbe).
+[`90d184e9376a5ab039eecba0e62f3f1afd778a9b`](https://github.com/zayenz/zirql/commit/90d184e9376a5ab039eecba0e62f3f1afd778a9b).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -1538,9 +1538,11 @@ empty domain `[] axes([])` is refused because it does not establish a key
 type. The `axes(...)` suffix belongs directly after an indexed bracket,
 before access or a pipeline; it is not a standalone value call.
 
-Rust library results retain the keyed array and its domains. CLI JSON output
-requires an ordinary view such as `entries`, `index_set`, access or `has_key`;
-direct keyed-array JSON remains unavailable. This
+Rust library results retain the keyed array and its domains. Direct JSON output
+uses Zirql's tagged array representation, including complete declared axes and
+only present cells. For example, `zirium '[2:20] axes([2,9]) | json' input.mlir`
+keeps key `9` in `axes` without inventing a cell. Ordinary projections such as
+`entries`, `index_set`, access and `has_key` remain available. This
 [saved program](../examples/cli/indexed-arrays.zirql) shows unused keys and
 ordered stored cells:
 
@@ -2060,3 +2062,29 @@ and rendering still pay their applicable costs.
 The [shared execution measurements](https://zayenz.se/zirql/guides/computation/)
 record both bounded tail state and small-query regressions. Those library
 measurements exclude host parsing/rendering and do not predict CLI latency.
+
+## Shared data JSON
+
+The development dependency pins Zirql `90d184e9376a5ab039eecba0e62f3f1afd778a9b`
+and uses its ordinary JSON codec for constructed
+reports and data inside native maps, sequences and captures. Scalars stay JSON
+scalars, positional collections stay arrays, and records preserve field order.
+General dictionaries retain explicit key/value entries; nominal members and
+indexed arrays use tagged data so their names and declared shape survive.
+
+For a mixed native and calculated report, run this against the existing fixture:
+
+```sh
+zirium 'let subject = filter(op("func.func")) | head(1);
+  fn pair(value: Operation) -> tuple<Operation,int> { (value, 1) }
+  report pair(subject) | json' examples/cli/function-report.mlir
+```
+
+The outer tuple contains an ordinary operation sequence followed by scalar `1`.
+Zirium supplies the operation descriptor; Zirql traverses the tuple and renders
+the constructed scalar. A singleton operation in a capture field is one descriptor; ordinary operation
+sequences remain arrays. `--jsonl` keeps the `document` and `result` envelope.
+An operation emitted as MLIR remains a source string in that envelope. Diff
+output retains its `zirium.diff.v1` schema, document names, side and comparison
+metadata. Both CLIs buffer the whole request, including later rendering errors.
+Markdown consumer rendering retains its existing host implementation.

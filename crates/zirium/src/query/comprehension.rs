@@ -146,7 +146,8 @@ impl ConstructedReport {
     pub(super) fn size(&self) -> usize {
         value_size(self.value())
     }
-    /// Convert the typed report to ordinary JSON under an aggregate request budget.
+    /// Convert with Zirql's ordinary codec under the active aggregate budget.
+    /// Nominal members and keyed arrays use tagged fallback to retain their shape.
     pub fn to_json_with_budget(
         &self,
         budget: &mut Budget,
@@ -157,9 +158,13 @@ impl ConstructedReport {
             )
             .at(self.range.clone()));
         }
-        zirql::constructed_value_type(self.value(), budget, Location::Query(self.range.clone()))
-            .map_err(core_error)?;
-        to_json(self.value(), budget, &self.range, 0)
+        zirql::to_json_value(
+            self.value(),
+            zirql::JsonRepresentation::Ordinary,
+            budget,
+            Location::Query(self.range.clone()),
+        )
+        .map_err(core_error)
     }
     /// Render ordinary pretty JSON, spending bytes before buffering them.
     pub fn render_json_with_budget(&self, budget: &mut Budget) -> Result<String, EvaluationError> {
@@ -825,77 +830,4 @@ fn project_json(
             V::Record(result)
         }
     })
-}
-fn to_json(
-    value: &V,
-    budget: &mut Budget,
-    range: &Range<usize>,
-    depth: usize,
-) -> Result<serde_json::Value, EvaluationError> {
-    if depth >= 64 {
-        return Err(EvaluationError::new("value nesting limit exceeded").at(range.clone()));
-    }
-    admit(budget, 1, 0, range)?;
-    Ok(match value.data() {
-        V::Declared { .. } => unreachable!("transparent annotation"),
-        V::Absent => serde_json::Value::Null,
-        V::Member(_) | V::KeyedArray { .. } => {
-            return Err(EvaluationError::new(
-                "nominal and keyed values are unsupported in Zirium reports",
-            )
-            .at(range.clone()));
-        }
-        V::Boolean(v) => serde_json::Value::Bool(*v),
-        V::Integer(v) => serde_json::Value::Number((*v).into()),
-        V::Float(v) => serde_json::Value::Number(
-            serde_json::Number::from_f64(*v).expect("private finite report invariant"),
-        ),
-        V::String(v) => {
-            admit(budget, 0, v.len(), range)?;
-            serde_json::Value::String(v.clone())
-        }
-        V::Array(values) | V::Tuple(values) => sequence_json(values, budget, range, depth)?,
-        V::Set { elements, .. } => sequence_json(elements, budget, range, depth)?,
-        V::Dictionary(entries) => {
-            admit(budget, 4 + entries.len(), 21, range)?;
-            let mut result = Vec::with_capacity(entries.len());
-            for (key, value) in entries {
-                admit(budget, 3, 8, range)?;
-                let mut entry = serde_json::Map::new();
-                entry.insert("key".into(), to_json(key, budget, range, depth + 1)?);
-                entry.insert("value".into(), to_json(value, budget, range, depth + 1)?);
-                result.push(serde_json::Value::Object(entry));
-            }
-            let mut dictionary = serde_json::Map::new();
-            dictionary.insert(
-                "kind".into(),
-                serde_json::Value::String("dictionary".into()),
-            );
-            dictionary.insert("entries".into(), serde_json::Value::Array(result));
-            serde_json::Value::Object(dictionary)
-        }
-        V::Record(fields) => {
-            admit(budget, fields.len(), 0, range)?;
-            let mut result = serde_json::Map::new();
-            for (key, value) in fields {
-                admit(budget, 0, key.len(), range)?;
-                result.insert(key.clone(), to_json(value, budget, range, depth + 1)?);
-            }
-            serde_json::Value::Object(result)
-        }
-    })
-}
-
-fn sequence_json(
-    values: &[V],
-    budget: &mut Budget,
-    range: &Range<usize>,
-    depth: usize,
-) -> Result<serde_json::Value, EvaluationError> {
-    admit(budget, values.len(), 0, range)?;
-    let mut result = Vec::with_capacity(values.len());
-    for value in values {
-        result.push(to_json(value, budget, range, depth + 1)?);
-    }
-    Ok(serde_json::Value::Array(result))
 }

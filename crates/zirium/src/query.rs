@@ -223,7 +223,9 @@ impl QueryOutput {
     pub fn into_owned_with_budget(self, budget: &mut Budget) -> Result<Self, EvaluationError> {
         functions::owned(self, budget, &(0..0))
     }
-    /// Materialize ordinary JSON under the active request allowance.
+    /// Materialize mixed reports through Zirql's shared container traversal.
+    /// Native leaves retain Zirium descriptors and owner checks. Constructed
+    /// members/keyed arrays use tagged fallback; computational values refuse.
     pub fn to_json_with_budget(
         &self,
         document: &Document,
@@ -2092,8 +2094,9 @@ fn evaluate_attr(
 fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value {
     match output {
         QueryOutput::Native(value) => match value {
-            NativeValue::Retained(value) => output_value(document, value),
-            NativeValue::Computational(_)
+            NativeValue::Retained(_)
+            | NativeValue::Map(_)
+            | NativeValue::Computational(_)
             | NativeValue::Tuple(_)
             | NativeValue::Sequence(_)
             | NativeValue::Ssa(_)
@@ -2115,12 +2118,6 @@ fn output_value(document: &Document, output: &QueryOutput) -> serde_json::Value 
                     .iter()
                     .map(|(_, id)| document.attribute_spelling_value(*id))
                     .collect::<Vec<_>>()
-            ),
-            NativeValue::Map(values) => serde_json::Value::Object(
-                values
-                    .iter()
-                    .map(|(key, value)| (key.clone(), output_value(document, value)))
-                    .collect(),
             ),
         },
         QueryOutput::Operations(selected) => operation_json(document, selected),

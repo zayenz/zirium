@@ -790,7 +790,7 @@ fn run() -> Result<(), String> {
             if ndjson {
                 let mut record = ReportWriter {
                     output: &mut staged_output,
-                    budget: query.has_comprehensions().then_some(budget),
+                    budget: Some(budget),
                     range: 0..query_text.len(),
                 };
                 write_ndjson_record(
@@ -802,6 +802,16 @@ fn run() -> Result<(), String> {
                     fragment_scope,
                 )?;
                 return Ok(());
+            }
+            if matches!(&output, QueryOutput::Array(_) | QueryOutput::Map(_)) {
+                let value = output.to_json_with_budget(document, budget)?;
+                return write_json_output(
+                    &mut staged_output,
+                    &value,
+                    zirql::JsonLayout::Pretty,
+                    budget,
+                    0..query_text.len(),
+                );
             }
             let range = 0..query_text.len();
             if query.has_comprehensions() {
@@ -856,24 +866,8 @@ fn run() -> Result<(), String> {
                             writeln!(report, "{value}").map_err(output_staging_error)?;
                         }
                     }
-                    QueryOutput::Array(values) => {
-                        serde_json::to_writer_pretty(&mut report, &values)
-                            .map_err(|error| EvaluationError::new(error.to_string()))?;
-                        report.write_all(b"\n").map_err(output_staging_error)?;
-                    }
-                    QueryOutput::Map(entries) => {
-                        use serde::ser::{SerializeMap, Serializer};
-                        let mut serializer = serde_json::Serializer::pretty(&mut report);
-                        let mut map = serializer
-                            .serialize_map(Some(entries.len()))
-                            .map_err(|error| EvaluationError::new(error.to_string()))?;
-                        for (key, value) in entries {
-                            map.serialize_entry(&key, &value)
-                                .map_err(|error| EvaluationError::new(error.to_string()))?;
-                        }
-                        map.end()
-                            .map_err(|error| EvaluationError::new(error.to_string()))?;
-                        report.write_all(b"\n").map_err(output_staging_error)?;
+                    QueryOutput::Array(_) | QueryOutput::Map(_) => {
+                        unreachable!("shared data writer")
                     }
                     QueryOutput::Json(json) | QueryOutput::Text(json) => {
                         report
@@ -1132,24 +1126,17 @@ fn write_diff_value(
                 .to_json_with_budget(budget)
                 .map_err(|error| error.to_string())?;
             if ndjson {
-                write_diff_envelope(output, diff, before_name, after_name, None, json)?;
+                write_diff_envelope(output, diff, before_name, after_name, None, json, budget)?;
             } else {
-                serde_json::to_writer_pretty(&mut *output, &json)
+                write_json_output(output, &json, zirql::JsonLayout::Pretty, budget, 0..0)
                     .map_err(|error| error.to_string())?;
-                output.write_all(b"\n").map_err(|error| error.to_string())?;
             }
         }
         DiffRuntime::Changes(items) => {
             if ndjson {
-                let json = diff.selection_to_json(&items).map_err(|e| e.to_string())?;
-                write_diff_envelope(
-                    output,
-                    diff,
-                    before_name,
-                    after_name,
-                    None,
-                    serde_json::from_str(&json).unwrap(),
-                )?;
+                let json = diff_value_to_json(diff, &DiffRuntime::Changes(items), budget)
+                    .map_err(|error| error.to_string())?;
+                write_diff_envelope(output, diff, before_name, after_name, None, json, budget)?;
             } else {
                 output
                     .write_all(
@@ -1178,6 +1165,7 @@ fn write_diff_value(
                         diff.registry(),
                         fragment_scope,
                     )?),
+                    budget,
                 )?;
             } else {
                 diff.document(side)
@@ -1198,6 +1186,7 @@ fn write_diff_value(
             after_name,
             None,
             serde_json::json!(count),
+            budget,
         )?,
         DiffRuntime::Count(count) => writeln!(output, "{count}").map_err(|e| e.to_string())?,
         DiffRuntime::Strings(items) if ndjson => write_diff_envelope(
@@ -1207,6 +1196,7 @@ fn write_diff_value(
             after_name,
             None,
             serde_json::json!(items),
+            budget,
         )?,
         DiffRuntime::Strings(items) => {
             for item in items {
@@ -1217,20 +1207,18 @@ fn write_diff_value(
             let json = diff_value_to_json(diff, &DiffRuntime::Map(map), budget)
                 .map_err(|error| error.to_string())?;
             if ndjson {
-                write_diff_envelope(output, diff, before_name, after_name, None, json)?;
+                write_diff_envelope(output, diff, before_name, after_name, None, json, budget)?;
             } else {
-                serde_json::to_writer_pretty(&mut *output, &json)
+                write_json_output(output, &json, zirql::JsonLayout::Pretty, budget, 0..0)
                     .map_err(|error| error.to_string())?;
-                output.write_all(b"\n").map_err(|error| error.to_string())?;
             }
         }
         DiffRuntime::Json(json, side) => {
             if ndjson {
-                write_diff_envelope(output, diff, before_name, after_name, side, json)?;
+                write_diff_envelope(output, diff, before_name, after_name, side, json, budget)?;
             } else {
-                serde_json::to_writer_pretty(&mut *output, &json)
+                write_json_output(output, &json, zirql::JsonLayout::Pretty, budget, 0..0)
                     .map_err(|error| error.to_string())?;
-                output.write_all(b"\n").map_err(|e| e.to_string())?;
             }
         }
         DiffRuntime::Text(text) => {
@@ -1242,6 +1230,7 @@ fn write_diff_value(
                     after_name,
                     None,
                     serde_json::Value::String(text),
+                    budget,
                 )?;
             } else {
                 output
@@ -1273,8 +1262,15 @@ fn write_diff_envelope(
     after: &str,
     side: Option<DiffSide>,
     result: serde_json::Value,
+    budget: &mut zirql::Budget,
 ) -> Result<(), String> {
-    serde_json::to_writer(&mut *output, &serde_json::json!({
+    budget
+        .charge_results(
+            32 + before.len() + after.len(),
+            zirql::Location::Query(0..0),
+        )
+        .map_err(|error| error.to_string())?;
+    write_json_output(output, &serde_json::json!({
         "schema": "zirium.diff.v1", "before_document": before, "after_document": after,
         "result_side": side.map(|side| if side == DiffSide::Before { "before" } else { "after" }),
         "comparison": {
@@ -1286,8 +1282,27 @@ fn write_diff_envelope(
             "bounded_fallback_groups": diff.statistics().bounded_fallback_groups,
         },
         "result": result,
-    })).map_err(|e| e.to_string())?;
-    output.write_all(b"\n").map_err(|e| e.to_string())
+    }), zirql::JsonLayout::Compact, budget, 0..0).map_err(|error| error.to_string())
+}
+
+fn write_json_output(
+    output: &mut StagedOutput,
+    value: &serde_json::Value,
+    layout: zirql::JsonLayout,
+    budget: &mut zirql::Budget,
+    range: std::ops::Range<usize>,
+) -> Result<(), EvaluationError> {
+    let location = zirql::Location::Query(range);
+    let bytes = zirql::render_json_value(value, layout, budget, location.clone())
+        .map_err(EvaluationError::from)?;
+    budget
+        .charge(1, location.clone())
+        .map_err(EvaluationError::from)?;
+    budget
+        .charge_results(1, location)
+        .map_err(EvaluationError::from)?;
+    output.write_all(&bytes).map_err(output_staging_error)?;
+    output.write_all(b"\n").map_err(output_staging_error)
 }
 
 struct ReportWriter<'a> {
@@ -1317,67 +1332,70 @@ fn write_ndjson_record(
     registry: &DialectRegistry,
     fragment_scope: FragmentScope,
 ) -> Result<(), EvaluationError> {
-    use serde::ser::{SerializeMap, Serializer};
     let range = record.range.clone();
-    if let Some(budget) = &mut record.budget {
+    if !matches!(
+        &output,
+        QueryOutput::Operations(_) | QueryOutput::Formatted { .. }
+    ) {
+        let budget = record
+            .budget
+            .as_deref_mut()
+            .expect("NDJSON retains the request budget");
+        let result = match output {
+            QueryOutput::Json(text) => {
+                // A serialized emission is already admitted; parsing owns one
+                // additional tree whose maximum node count is its byte length.
+                budget
+                    .charge(text.len(), zirql::Location::Query(range.clone()))
+                    .map_err(EvaluationError::from)?;
+                budget
+                    .charge_results(text.len(), zirql::Location::Query(range.clone()))
+                    .map_err(EvaluationError::from)?;
+                serde_json::from_str(&text)
+                    .map_err(|error| EvaluationError::new(error.to_string()))?
+            }
+            QueryOutput::Native(_) => {
+                return Err(EvaluationError::new(
+                    "native query results require a library consumer",
+                ));
+            }
+            value => value.to_json_with_budget(document, budget)?,
+        };
         budget
-            .charge_results(1, zirql::Location::Query(range.clone()))
+            .charge_results(5 + name.len() + 14, zirql::Location::Query(range.clone()))
             .map_err(EvaluationError::from)?;
-        if let QueryOutput::Json(json) = &output {
-            budget
-                .charge(json.len().min(8192), zirql::Location::Query(range.clone()))
-                .map_err(EvaluationError::from)?;
-        }
+        let envelope = serde_json::json!({"document": name, "result": result});
+        return write_json_output(
+            record.output,
+            &envelope,
+            zirql::JsonLayout::Compact,
+            budget,
+            range,
+        );
     }
     let result = (|| {
         record
             .write_all(b"{\"document\":")
             .map_err(output_staging_error)?;
-        serde_json::to_writer(&mut *record, name)
-            .map_err(|error| EvaluationError::new(error.to_string()))?;
+        let budget = record
+            .budget
+            .as_deref_mut()
+            .expect("NDJSON retains the request budget");
+        let name_json = serde_json::Value::String(name.to_owned());
+        let name_bytes = zirql::render_json_value(
+            &name_json,
+            zirql::JsonLayout::Compact,
+            budget,
+            zirql::Location::Query(range.clone()),
+        )
+        .map_err(EvaluationError::from)?;
+        record
+            .write_all(&name_bytes)
+            .map_err(output_staging_error)?;
         record
             .write_all(b",\"result\":")
             .map_err(output_staging_error)?;
         match output {
-            QueryOutput::Json(json) => {
-                // The emitter already produced valid JSON. Remove formatting outside
-                // strings without reparsing objects into lexically ordered maps.
-                let mut compact = Vec::with_capacity(json.len().min(8192));
-                let mut in_string = false;
-                let mut escaped = false;
-                for byte in json.bytes() {
-                    if in_string {
-                        compact.push(byte);
-                        if escaped {
-                            escaped = false;
-                        } else if byte == b'\\' {
-                            escaped = true;
-                        } else if byte == b'"' {
-                            in_string = false;
-                        }
-                    } else if !byte.is_ascii_whitespace() {
-                        compact.push(byte);
-                        in_string = byte == b'"';
-                    }
-                    if compact.len() == compact.capacity() {
-                        record.write_all(&compact).map_err(output_staging_error)?;
-                        compact.clear();
-                    }
-                }
-                record.write_all(&compact).map_err(output_staging_error)?;
-            }
-            QueryOutput::Map(entries) => {
-                let mut serializer = serde_json::Serializer::new(&mut *record);
-                let mut map = serializer
-                    .serialize_map(Some(entries.len()))
-                    .map_err(|error| EvaluationError::new(error.to_string()))?;
-                for (key, value) in entries {
-                    map.serialize_entry(&key, &value)
-                        .map_err(|error| EvaluationError::new(error.to_string()))?;
-                }
-                map.end()
-                    .map_err(|error| EvaluationError::new(error.to_string()))?;
-            }
             QueryOutput::Operations(selected) => {
                 record.write_all(b"\"").map_err(output_staging_error)?;
                 {
@@ -1417,11 +1435,7 @@ fn write_ndjson_record(
                 }
                 record.write_all(b"\"").map_err(output_staging_error)?;
             }
-            output => {
-                let result = ndjson_value(output)?;
-                serde_json::to_writer(&mut *record, &result)
-                    .map_err(|error| EvaluationError::new(error.to_string()))?;
-            }
+            _ => unreachable!("data NDJSON uses the shared envelope writer"),
         }
         record.write_all(b"}\n").map_err(output_staging_error)?;
         Ok(())
@@ -1480,24 +1494,6 @@ impl<W: Write> Write for JsonStringWriter<W> {
     fn flush(&mut self) -> io::Result<()> {
         self.output.flush()
     }
-}
-
-fn ndjson_value(output: QueryOutput) -> Result<serde_json::Value, EvaluationError> {
-    Ok(match output {
-        QueryOutput::Native(_) => {
-            return Err(EvaluationError::new(
-                "native query results require a library consumer",
-            ));
-        }
-        QueryOutput::Operations(_) => unreachable!("operation selections stream into NDJSON"),
-        QueryOutput::Values(values) => serde_json::json!(values),
-        QueryOutput::Count(count) => serde_json::json!(count),
-        QueryOutput::Map(_) => unreachable!("maps use ordered NDJSON serialization"),
-        QueryOutput::Array(values) => serde_json::Value::Array(values),
-        QueryOutput::Json(_) => unreachable!("JSON emissions retain their serialized order"),
-        QueryOutput::Text(text) => serde_json::Value::String(text),
-        QueryOutput::Formatted { .. } => unreachable!("formatted output streams into NDJSON"),
-    })
 }
 
 fn write_stdout(chunks: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Result<(), String> {

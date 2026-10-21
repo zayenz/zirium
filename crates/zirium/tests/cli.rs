@@ -4052,7 +4052,22 @@ fn indexed_arrays_agree_inline_file_and_buffer_later_failures() {
     let failure = run_stdin(&format!("{source} report 1 div 0;"), input);
     assert!(!failure.status.success() && failure.stdout.is_empty());
     let keyed_json = run_stdin("[2:20] | json", input);
-    assert!(!keyed_json.status.success() && keyed_json.stdout.is_empty());
+    assert!(
+        keyed_json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&keyed_json.stderr)
+    );
+    let keyed: serde_json::Value = serde_json::from_slice(&keyed_json.stdout).unwrap();
+    assert_eq!(keyed["kind"], "array");
+    assert_eq!(keyed["indexing"], "explicit");
+    assert_eq!(
+        keyed["axes"][0][0],
+        serde_json::json!({"kind":"integer", "value":2})
+    );
+    assert_eq!(
+        keyed["entries"][0]["value"],
+        serde_json::json!({"kind":"integer", "value":20})
+    );
 }
 
 #[test]

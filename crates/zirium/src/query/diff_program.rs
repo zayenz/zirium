@@ -1694,74 +1694,98 @@ fn to_json(
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<serde_json::Value, EvaluationError> {
-    Ok(match value {
-        DiffProgramOutput::Constructed(value) => value.to_json_with_budget(budget)?,
-        DiffProgramOutput::Changes(items) => {
-            let (units, bytes) = diff.selection_report_size(items).map_err(diff_error)?;
-            // First admit copied report data, then charge each serialized chunk
-            // before the writer extends its buffer. Parsing the JSON tree is a
-            // second materialization of the same bounded report.
-            admit(budget, units.saturating_mul(2), range)?;
-            program::charge_bytes(budget, bytes.saturating_mul(2), range)?;
-            let mut bytes = Vec::new();
-            diff.write_selection_json(
-                program::BudgetWriter {
-                    bytes: &mut bytes,
-                    budget,
-                    range,
-                },
-                items,
-            )
-            .map_err(|error| failure(error.to_string(), range))?;
-            serde_json::from_slice(&bytes).map_err(|error| failure(error.to_string(), range))?
-        }
-        DiffProgramOutput::Operations(side, items) => {
-            admit(budget, 1 + items.len().saturating_mul(7), range)?;
-            let mut values = Vec::with_capacity(items.len());
-            for item in items {
-                if item.side() != *side {
-                    return Err(failure(
-                        "operation selection has an incompatible diff side",
-                        range,
-                    ));
-                }
-                let operation = diff.operation_id(*item).map_err(diff_error)?;
-                let name = diff.document(*side).operation_name(operation);
-                program::charge_bytes(budget, 9 + name.map_or(0, str::len), range)?;
-                values.push(serde_json::json!({ "name": name, "range": diff.document(*side).operation_source_range(operation).map(|range| [range.start(),range.end()]) }));
-            }
-            serde_json::Value::Array(values)
-        }
-        DiffProgramOutput::Strings(items) => {
-            admit(budget, 1 + items.len(), range)?;
-            program::charge_bytes(budget, items.iter().map(String::len).sum(), range)?;
-            serde_json::json!(items)
-        }
-        DiffProgramOutput::Count(count) => {
-            admit(budget, 1, range)?;
-            serde_json::json!(count)
-        }
-        DiffProgramOutput::Map(entries) => {
-            admit(budget, 1 + entries.len(), range)?;
-            let mut json = serde_json::Map::new();
-            for (key, value) in entries {
-                program::charge_bytes(budget, key.len(), range)?;
-                json.insert(key.clone(), to_json(diff, value, budget, range)?);
-            }
-            serde_json::Value::Object(json)
-        }
-        DiffProgramOutput::Json(value, _) => {
-            admit(budget, super::json_size(value), range)?;
-            program::charge_bytes(budget, json_bytes(value), range)?;
-            value.clone()
-        }
-        DiffProgramOutput::Text(text) => {
-            admit(budget, 1, range)?;
-            program::charge_bytes(budget, text.len(), range)?;
-            serde_json::Value::String(text.clone())
-        }
-    })
+    zirql::to_report_json_value(
+        &mut DiffRenderer { diff, range },
+        value,
+        budget,
+        zirql::Location::Query(range.clone()),
+    )
+    .map_err(program::evaluation_error)
 }
+
+struct DiffRenderer<'a, 'd> {
+    diff: &'a Diff<'d>,
+    range: &'a Range<usize>,
+}
+impl zirql::RenderHost for DiffRenderer<'_, '_> {
+    type Value = DiffProgramOutput;
+    type Error = EvaluationError;
+
+    fn view<'a>(
+        &mut self,
+        value: &'a DiffProgramOutput,
+        _context: zirql::RenderContext,
+        budget: &mut Budget,
+        _location: &zirql::Location,
+    ) -> Result<zirql::RenderView<'a, DiffProgramOutput>, EvaluationError> {
+        use zirql::RenderView as View;
+        Ok(match value {
+            DiffProgramOutput::Constructed(value) => {
+                View::Constructed(value.value(), zirql::JsonRepresentation::Ordinary)
+            }
+            DiffProgramOutput::Map(fields) => View::Record(fields),
+            native => View::Projected(self.project_native(native, budget)?),
+        })
+    }
+}
+impl DiffRenderer<'_, '_> {
+    fn project_native(
+        &self,
+        value: &DiffProgramOutput,
+        budget: &mut Budget,
+    ) -> Result<serde_json::Value, EvaluationError> {
+        let diff = self.diff;
+        let range = self.range;
+        Ok(match value {
+            DiffProgramOutput::Changes(items) => {
+                let (units, bytes) = diff.selection_report_size(items).map_err(diff_error)?;
+                admit(budget, units, range)?;
+                program::charge_bytes(budget, bytes, range)?;
+                diff.selection_json_value(items).map_err(diff_error)?
+            }
+            DiffProgramOutput::Operations(side, items) => {
+                admit(budget, 1 + items.len().saturating_mul(7), range)?;
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    if item.side() != *side {
+                        return Err(failure(
+                            "operation selection has an incompatible diff side",
+                            range,
+                        ));
+                    }
+                    let operation = diff.operation_id(*item).map_err(diff_error)?;
+                    let name = diff.document(*side).operation_name(operation);
+                    program::charge_bytes(budget, 9 + name.map_or(0, str::len), range)?;
+                    values.push(serde_json::json!({ "name": name, "range": diff.document(*side).operation_source_range(operation).map(|range| [range.start(),range.end()]) }));
+                }
+                serde_json::Value::Array(values)
+            }
+            DiffProgramOutput::Strings(items) => {
+                admit(budget, 1 + items.len(), range)?;
+                program::charge_bytes(budget, items.iter().map(String::len).sum(), range)?;
+                serde_json::json!(items)
+            }
+            DiffProgramOutput::Count(count) => {
+                admit(budget, 1, range)?;
+                serde_json::json!(count)
+            }
+            DiffProgramOutput::Json(value, _) => {
+                admit(budget, super::json_size(value), range)?;
+                program::charge_bytes(budget, json_bytes(value), range)?;
+                value.clone()
+            }
+            DiffProgramOutput::Text(text) => {
+                admit(budget, 1, range)?;
+                program::charge_bytes(budget, text.len(), range)?;
+                serde_json::Value::String(text.clone())
+            }
+            DiffProgramOutput::Constructed(_) | DiffProgramOutput::Map(_) => {
+                unreachable!("borrowed report containers")
+            }
+        })
+    }
+}
+
 fn markdown(
     diff: &Diff<'_>,
     value: DiffProgramOutput,

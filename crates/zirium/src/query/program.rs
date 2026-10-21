@@ -280,106 +280,92 @@ pub(super) fn charge_bytes(
     Ok(())
 }
 
-/// Admit the owned JSON tree before copying native leaves into it.
+/// Materialize report containers through Zirql; native descriptors stay here.
 pub(super) fn to_json(
     document: &Document,
     value: &QueryOutput,
     budget: &mut zirql::Budget,
     range: &Range<usize>,
 ) -> Result<serde_json::Value, EvaluationError> {
-    let value = functions::unretained(value);
-    match value {
-        QueryOutput::Native(NativeValue::Computational(value)) => {
-            return Err(EvaluationError::new(
-                "computational values cannot be rendered or serialized",
-            )
-            .at(if range.is_empty() {
-                value.range.clone()
-            } else {
-                range.clone()
-            }));
-        }
-        QueryOutput::Native(NativeValue::Tuple(value)) => {
-            charge_results(budget, value.values.len() + 1, range)?;
-            return value
-                .values
-                .iter()
-                .map(|v| to_json(document, v, budget, range))
-                .collect::<Result<Vec<_>, _>>()
-                .map(serde_json::Value::Array);
-        }
-        QueryOutput::Native(NativeValue::Sequence(value)) => {
-            charge_results(budget, value.values.len() + 1, range)?;
-            return value
-                .values
-                .iter()
-                .map(|v| to_json(document, v, budget, range))
-                .collect::<Result<Vec<_>, _>>()
-                .map(serde_json::Value::Array);
-        }
-        QueryOutput::Native(NativeValue::Ssa(value)) => {
-            capture::check_value(document, *value, range)?;
-            let (kind, index) = match value {
-                ValueId::OperationResult { result, .. } => ("operation_result", *result),
-                ValueId::BlockArgument { argument, .. } => ("block_argument", *argument),
-            };
-            let ty = document.value_type(ValueReference::Resolved(*value));
-            charge_results(budget, 7, range)?;
-            charge_bytes(budget, kind.len() + 15 + ty.map_or(0, str::len), range)?;
-            return Ok(serde_json::json!({"kind":kind,"index":index,"type":ty}));
-        }
-        QueryOutput::Native(NativeValue::Capture(record)) => {
-            return record_json(document, record, budget, range);
-        }
-        QueryOutput::Native(NativeValue::Captures(value)) => {
-            capture::slots::<serde_json::Value>(value.len(), budget, range)?;
-            charge_results(budget, value.len() + 1, range)?;
-            let mut rows = Vec::with_capacity(value.len());
-            for row in value.rows() {
-                rows.push(record_json(document, row, budget, range)?);
-            }
-            return Ok(serde_json::Value::Array(rows));
-        }
-        _ => {}
-    }
-    if let QueryOutput::Native(NativeValue::Constructed(value)) = value {
-        return value.to_json_with_budget(budget);
-    }
-    if let QueryOutput::Native(NativeValue::Map(entries)) = value {
-        charge_results(budget, 1 + entries.len(), range)?;
-        let mut result = serde_json::Map::new();
-        for (key, value) in entries {
-            charge_bytes(budget, key.len(), range)?;
-            result.insert(key.clone(), to_json(document, value, budget, range)?);
-        }
-        return Ok(serde_json::Value::Object(result));
-    }
-    let (units, bytes) = json_allocation(document, value);
-    charge_results(budget, units, range)?;
-    charge_bytes(budget, bytes, range)?;
-    Ok(output_value(document, value))
+    zirql::to_report_json_value(
+        &mut ReportRenderer { document, range },
+        value,
+        budget,
+        zirql::Location::Query(range.clone()),
+    )
+    .map_err(evaluation_error)
 }
 
-fn record_json(
-    document: &Document,
-    record: &zirql::NativeCapture<QueryOutput>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<serde_json::Value, EvaluationError> {
-    capture::slots::<(String, serde_json::Value)>(record.fields.len(), budget, range)?;
-    charge_results(budget, record.fields.len() + 1, range)?;
-    let mut result = serde_json::Map::new();
-    for (name, value) in &record.fields {
-        charge_bytes(budget, name.len(), range)?;
-        let mut rendered = to_json(document, value, budget, range)?;
-        if matches!(value,QueryOutput::Operations(values) if values.len()==1)
-            && let serde_json::Value::Array(values) = &mut rendered
-        {
-            rendered = values.pop().expect("one operation descriptor");
-        }
-        result.insert(name.clone(), rendered);
+struct ReportRenderer<'a> {
+    document: &'a Document,
+    range: &'a Range<usize>,
+}
+impl zirql::RenderHost for ReportRenderer<'_> {
+    type Value = QueryOutput;
+    type Error = EvaluationError;
+
+    fn view<'a>(
+        &mut self,
+        value: &'a QueryOutput,
+        context: zirql::RenderContext,
+        budget: &mut Budget,
+        _location: &zirql::Location,
+    ) -> Result<zirql::RenderView<'a, QueryOutput>, EvaluationError> {
+        use zirql::RenderView as View;
+        let document = self.document;
+        let range = self.range;
+        Ok(match value {
+            QueryOutput::Native(NativeValue::Retained(value)) => View::Value(value),
+            QueryOutput::Native(NativeValue::Computational(value)) => {
+                return Err(EvaluationError::new(
+                    "computational values cannot be rendered or serialized",
+                )
+                .at(if range.is_empty() {
+                    value.range.clone()
+                } else {
+                    range.clone()
+                }));
+            }
+            QueryOutput::Native(NativeValue::Tuple(value)) => View::Sequence(&value.values),
+            QueryOutput::Native(NativeValue::Sequence(value)) => View::Sequence(&value.values),
+            QueryOutput::Native(NativeValue::Map(fields)) => View::Record(fields),
+            QueryOutput::Native(NativeValue::Capture(capture)) => View::Capture(capture),
+            QueryOutput::Native(NativeValue::Captures(captures)) => View::Captures(captures.rows()),
+            QueryOutput::Native(NativeValue::Constructed(value)) => {
+                if budget.remaining_results().is_none() {
+                    return Err(EvaluationError::new(
+                        "constructed reports require an aggregate result allowance",
+                    )
+                    .at(value.range()));
+                }
+                View::Constructed(value.value(), zirql::JsonRepresentation::Ordinary)
+            }
+            QueryOutput::Native(NativeValue::Ssa(value)) => {
+                capture::check_value(document, *value, range)?;
+                let (kind, index) = match value {
+                    ValueId::OperationResult { result, .. } => ("operation_result", *result),
+                    ValueId::BlockArgument { argument, .. } => ("block_argument", *argument),
+                };
+                let ty = document.value_type(ValueReference::Resolved(*value));
+                charge_results(budget, 7, range)?;
+                charge_bytes(budget, kind.len() + 15 + ty.map_or(0, str::len), range)?;
+                View::Projected(serde_json::json!({"kind":kind,"index":index,"type":ty}))
+            }
+            _ => {
+                let (units, bytes) = json_allocation(document, value);
+                charge_results(budget, units, range)?;
+                charge_bytes(budget, bytes, range)?;
+                let mut projected = output_value(document, value);
+                if context == zirql::RenderContext::CaptureField
+                    && matches!(value, QueryOutput::Operations(values) if values.len() == 1)
+                    && let serde_json::Value::Array(values) = &mut projected
+                {
+                    projected = values.pop().expect("one operation descriptor");
+                }
+                View::Projected(projected)
+            }
+        })
     }
-    Ok(serde_json::Value::Object(result))
 }
 
 fn json_allocation(document: &Document, value: &QueryOutput) -> (usize, usize) {
@@ -418,12 +404,6 @@ fn json_allocation(document: &Document, value: &QueryOutput) -> (usize, usize) {
                 .map(|(_, id)| document.attribute_spelling_value(*id).map_or(0, str::len))
                 .sum(),
         ),
-        QueryOutput::Native(NativeValue::Map(rows)) => {
-            rows.iter().fold((1, 0), |(units, bytes), (key, value)| {
-                let (u, b) = json_allocation(document, value);
-                (units + 1 + u, bytes + key.len() + b)
-            })
-        }
         QueryOutput::Values(rows) => (1 + rows.len(), rows.iter().map(String::len).sum()),
         QueryOutput::Map(rows) => (
             1 + rows.iter().map(|(_, v)| 1 + json_size(v)).sum::<usize>(),
@@ -437,40 +417,20 @@ fn json_allocation(document: &Document, value: &QueryOutput) -> (usize, usize) {
     }
 }
 
-pub(super) struct BudgetWriter<'a> {
-    pub(super) bytes: &'a mut Vec<u8>,
-    pub(super) budget: &'a mut zirql::Budget,
-    pub(super) range: &'a Range<usize>,
-}
-impl std::io::Write for BudgetWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        charge_bytes(self.budget, bytes.len(), self.range).map_err(std::io::Error::other)?;
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 pub(super) fn serialize_json(
     value: &serde_json::Value,
     budget: &mut zirql::Budget,
     range: &Range<usize>,
     pretty: bool,
 ) -> Result<String, EvaluationError> {
-    let mut bytes = Vec::new();
-    let writer = BudgetWriter {
-        bytes: &mut bytes,
-        budget,
-        range,
-    };
-    let result = if pretty {
-        serde_json::to_writer_pretty(writer, value)
+    let layout = if pretty {
+        zirql::JsonLayout::Pretty
     } else {
-        serde_json::to_writer(writer, value)
+        zirql::JsonLayout::Compact
     };
-    result.map_err(|error| EvaluationError::new(error.to_string()).at(range.clone()))?;
+    let mut bytes =
+        zirql::render_json_value(value, layout, budget, zirql::Location::Query(range.clone()))
+            .map_err(core_error)?;
     charge_results(budget, 1, range)?;
     charge_bytes(budget, 1, range)?;
     bytes.push(b'\n');
@@ -483,30 +443,8 @@ fn json(
     budget: &mut zirql::Budget,
     range: &Range<usize>,
 ) -> Result<String, EvaluationError> {
-    use serde::ser::{SerializeMap, Serializer};
-    let mut bytes = Vec::new();
-    if let QueryOutput::Map(entries) = value {
-        let mut serializer = serde_json::Serializer::pretty(BudgetWriter {
-            bytes: &mut bytes,
-            budget,
-            range,
-        });
-        let mut map = serializer
-            .serialize_map(Some(entries.len()))
-            .map_err(|e| EvaluationError::new(e.to_string()))?;
-        for (key, value) in entries {
-            map.serialize_entry(key, value)
-                .map_err(|e| EvaluationError::new(e.to_string()))?;
-        }
-        map.end().map_err(|e| EvaluationError::new(e.to_string()))?;
-    } else {
-        let value = to_json(document, value, budget, range)?;
-        return serialize_json(&value, budget, range, true);
-    }
-    charge_results(budget, 1, range)?;
-    charge_bytes(budget, 1, range)?;
-    bytes.push(b'\n');
-    Ok(String::from_utf8(bytes).expect("JSON is UTF-8"))
+    let value = to_json(document, value, budget, range)?;
+    serialize_json(&value, budget, range, true)
 }
 
 pub(super) fn copy_value(

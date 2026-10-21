@@ -711,19 +711,19 @@ impl Diff<'_> {
         Ok((units, bytes))
     }
 
-    pub(crate) fn write_selection_json(
+    /// Native change descriptors, after the caller admits selection_report_size.
+    pub(crate) fn selection_json_value(
         &self,
-        output: impl std::io::Write,
         ids: &[ChangeId],
-    ) -> Result<(), serde_json::Error> {
-        use serde::ser::{SerializeSeq, Serializer};
-        let mut serializer = serde_json::Serializer::pretty(output);
-        let mut sequence = serializer.serialize_seq(Some(ids.len()))?;
+    ) -> Result<serde_json::Value, DiffError> {
+        let mut changes = Vec::with_capacity(ids.len());
         for &id in ids {
-            let change = self.change(id).map_err(serde::ser::Error::custom)?;
-            sequence.serialize_element(&self.serializable_change(change))?;
+            changes.push(
+                serde_json::to_value(self.serializable_change(self.change(id)?))
+                    .expect("native change descriptors serialize"),
+            );
         }
-        sequence.end()
+        Ok(serde_json::Value::Array(changes))
     }
 
     pub fn to_text(&self) -> String {

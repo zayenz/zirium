@@ -405,7 +405,14 @@ Typed constructed requests select aggregate limits automatically.
 `evaluate_with_program_limits` accepts explicit limits, and
 `evaluate_output_with_budget` retains the caller's remaining allowance for
 conversion. Native handles stay document-owned; report values carry their query
-location. Render explicitly with ConstructedReport's budgeted JSON methods.
+location. Render explicitly with `ConstructedReport`'s budgeted JSON methods,
+or call `QueryOutput::to_json_with_budget(document, budget)` for mixed native
+reports. Both use Zirql's shared ordinary codec and container traversal. Nominal
+members and keyed arrays use tagged fallback, retaining member names and complete
+axes. Native descriptors and document envelopes remain Zirium projections.
+Python converts constructed data through that same codec to ordinary Python
+lists, dictionaries and scalars; native operation, SSA, type and attribute results
+retain their document-owning wrappers.
 
 Python mirrors this surface through `zirium.query`:
 
@@ -453,7 +460,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `40640084c88e56aa58538efbb254a78b6a021bbe`. They accept shared expressions
+pin `90d184e9376a5ab039eecba0e62f3f1afd778a9b`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 

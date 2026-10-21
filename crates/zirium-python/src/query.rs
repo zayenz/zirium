@@ -1676,13 +1676,8 @@ fn native_ref(
         QueryOutput::Values(values) => values.into_pyobject(py)?.into_any().unbind(),
         QueryOutput::Count(count) => count.into_pyobject(py)?.into_any().unbind(),
         QueryOutput::Native(NativeValue::Constructed(value)) => {
-            core::constructed_value_type(
-                value.value(),
-                budget,
-                core::ValueLocation::Query(value.range()),
-            )
-            .map_err(py_error)?;
-            constructed(py, value.value(), budget, &value.range())?
+            let json = value.to_json_with_budget(budget).map_err(py_error)?;
+            json_to_python(py, &json, budget, &value.range())?
         }
         QueryOutput::Native(NativeValue::String(value)) => {
             value.into_pyobject(py)?.into_any().unbind()
@@ -1854,93 +1849,91 @@ fn capture_record_ref(
     Ok(dict.into_any().unbind())
 }
 
-fn constructed(
+fn json_to_python(
     py: Python<'_>,
-    value: &core::ConstructedValue,
+    value: &serde_json::Value,
     budget: &mut core::Budget,
     range: &std::ops::Range<usize>,
 ) -> PyResult<Py<PyAny>> {
-    use core::ConstructedValue as V;
-    budget.charge(1, zirql_location(range)).map_err(py_error)?;
+    // Python failures remain Python errors; the outer result carries the
+    // request's nesting guard without translating those failures.
     budget
-        .charge_results(1, zirql_location(range))
+        .within_evaluation::<_, core::EvaluationError>(1, zirql_location(range), |budget| {
+            Ok(json_node_to_python(py, value, budget, range))
+        })
+        .map_err(py_error)?
+}
+
+fn json_node_to_python(
+    py: Python<'_>,
+    value: &serde_json::Value,
+    budget: &mut core::Budget,
+    range: &std::ops::Range<usize>,
+) -> PyResult<Py<PyAny>> {
+    use serde_json::Value as V;
+    let slots = match value {
+        V::Array(values) => values.len(),
+        V::Object(fields) => fields.len(),
+        _ => 0,
+    };
+    budget
+        .charge(slots + 1, zirql_location(range))
         .map_err(py_error)?;
-    Ok(match value.data() {
-        V::Declared { .. } => unreachable!("transparent annotation"),
-        V::Absent => py.None(),
-        V::Boolean(value) => value.into_pyobject(py)?.to_owned().into_any().unbind(),
-        V::Integer(value) => value.into_pyobject(py)?.into_any().unbind(),
-        V::Float(value) => value.into_pyobject(py)?.into_any().unbind(),
+    budget
+        .charge_results(slots + 1, zirql_location(range))
+        .map_err(py_error)?;
+    Ok(match value {
+        V::Null => py.None(),
+        V::Bool(value) => value.into_pyobject(py)?.to_owned().into_any().unbind(),
+        V::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                value.into_pyobject(py)?.into_any().unbind()
+            } else if let Some(value) = value.as_u64() {
+                value.into_pyobject(py)?.into_any().unbind()
+            } else {
+                value
+                    .as_f64()
+                    .expect("finite JSON number")
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind()
+            }
+        }
         V::String(value) => {
-            budget
-                .charge(value.len(), zirql_location(range))
-                .map_err(py_error)?;
+            charge_python_text(value, budget, range)?;
             value.into_pyobject(py)?.into_any().unbind()
         }
-        V::Array(values) | V::Tuple(values) => constructed_sequence(py, values, budget, range)?,
-        V::Set { elements, .. } => constructed_sequence(py, elements, budget, range)?,
-        V::Dictionary(entries) => {
-            budget
-                .charge(21 + entries.len(), zirql_location(range))
-                .map_err(py_error)?;
-            budget
-                .charge_results(4 + entries.len(), zirql_location(range))
-                .map_err(py_error)?;
-            let result = PyDict::new(py);
-            let items = PyList::empty(py);
-            for (key, value) in entries {
-                budget.charge(8, zirql_location(range)).map_err(py_error)?;
-                budget
-                    .charge_results(3, zirql_location(range))
-                    .map_err(py_error)?;
-                let entry = PyDict::new(py);
-                entry.set_item("key", constructed(py, key, budget, range)?)?;
-                entry.set_item("value", constructed(py, value, budget, range)?)?;
-                items.append(entry)?;
-            }
-            result.set_item("kind", "dictionary")?;
-            result.set_item("entries", items)?;
-            result.into_any().unbind()
-        }
-        V::Record(fields) => {
-            budget
-                .charge(fields.len(), zirql_location(range))
-                .map_err(py_error)?;
-            budget
-                .charge_results(fields.len(), zirql_location(range))
-                .map_err(py_error)?;
-            let result = PyDict::new(py);
-            for (name, value) in fields {
-                budget
-                    .charge(name.len(), zirql_location(range))
-                    .map_err(py_error)?;
-                result.set_item(name, constructed(py, value, budget, range)?)?;
+        V::Array(values) => {
+            let result = PyList::empty(py);
+            for value in values {
+                result.append(json_to_python(py, value, budget, range)?)?;
             }
             result.into_any().unbind()
         }
-        V::Member(_) | V::KeyedArray { .. } => {
-            return Err(PyTypeError::new_err("unsupported constructed report kind"));
+        V::Object(fields) => {
+            let result = PyDict::new(py);
+            for (label, value) in fields {
+                charge_python_text(label, budget, range)?;
+                result.set_item(label, json_to_python(py, value, budget, range)?)?;
+            }
+            result.into_any().unbind()
         }
     })
 }
-fn constructed_sequence(
-    py: Python<'_>,
-    values: &[core::ConstructedValue],
+
+fn charge_python_text(
+    text: &str,
     budget: &mut core::Budget,
     range: &std::ops::Range<usize>,
-) -> PyResult<Py<PyAny>> {
+) -> PyResult<()> {
     budget
-        .charge(values.len(), zirql_location(range))
+        .charge(text.len(), zirql_location(range))
         .map_err(py_error)?;
     budget
-        .charge_results(values.len(), zirql_location(range))
-        .map_err(py_error)?;
-    let result = PyList::empty(py);
-    for value in values {
-        result.append(constructed(py, value, budget, range)?)?;
-    }
-    Ok(result.into_any().unbind())
+        .charge_results(text.len(), zirql_location(range))
+        .map_err(py_error)
 }
+
 fn zirql_location(range: &std::ops::Range<usize>) -> core::ValueLocation {
     core::ValueLocation::Query(range.clone())
 }
