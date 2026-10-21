@@ -946,3 +946,23 @@ def test_adopted_report_builders_keep_order_and_native_owners() -> None:
     assert row["n"] == 2
     del doc, result, row
     assert operation.name == "test.seed"
+
+
+def test_explicit_scalar_conversion_report_builders() -> None:
+    from zirium.query import ReportExpr as E
+    from zirium.query import report
+
+    lowered = zirium.parse_text(
+        '"test.amount"() {quantity = "002"} : () -> ()'
+    ).lower_strict()
+    assert lowered.document is not None
+    doc = lowered.document
+    assert doc.query(
+        report(
+            {
+                "quantity": E(ops().string_attr("quantity").one()).parse_int(),
+                "price": E("1.25e1").parse_float(),
+                "label": E(2).to_string(),
+            }
+        )
+    ) == {"quantity": 2, "price": 12.5, "label": "2"}

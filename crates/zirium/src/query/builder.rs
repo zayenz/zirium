@@ -1539,6 +1539,18 @@ impl ReportExpr {
     pub fn ends_with(self, suffix: Self) -> Self {
         self.binary(zirql::ValueBinaryOperator::EndsWith, suffix)
     }
+    /// Parse a string using Zirql's checked signed decimal integer grammar.
+    pub fn parse_int(self) -> Self {
+        self.unary(zirql::ValueUnaryOperator::ParseInt)
+    }
+    /// Parse a decimal string as finite binary64; reject nonzero underflow.
+    pub fn parse_float(self) -> Self {
+        self.unary(zirql::ValueUnaryOperator::ParseFloat)
+    }
+    /// Format a present primitive scalar as round-trippable text.
+    pub fn to_string(self) -> Self {
+        self.unary(zirql::ValueUnaryOperator::ToString)
+    }
     pub fn one(self) -> Self {
         let functions = self.functions.clone();
         let parameters = self.parameters.clone();

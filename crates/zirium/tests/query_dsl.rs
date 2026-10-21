@@ -4501,3 +4501,43 @@ fn markdown_native_capture_rows_render_through_the_library() {
     assert!(text.starts_with("\n| subject |\n| --- |\n"));
     assert!(text.contains("test.op"));
 }
+
+#[test]
+fn scalar_conversion_reports_share_native_projections_and_callable_builders() {
+    use zirium::query::{ConstructedValue as V, NativeValue, ReportExpr as E, report};
+    let mut document = document_from(r#""test.amount"() {quantity = "002"} : () -> ()"#);
+    let typed = report(E::record([
+        (
+            "quantity",
+            E::from(ops().string_attr("quantity").one()).parse_int(),
+        ),
+        ("price", E::string("1.25e1").parse_float()),
+        ("label", E::integer(2).to_string()),
+    ]));
+    let actual = document.query(&typed).unwrap();
+    let mut outputs = Vec::new();
+    Query::parse(r#"fn quantity(text:string)->int { parse_int(text) } report {"quantity":quantity(one(input | attr("quantity"))),"price":parse_float("1.25e1"),"label":to_string(2)};"#).unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| { outputs.push(value); Ok(()) }).unwrap();
+    let QueryOutput::Native(NativeValue::Constructed(parsed)) = &outputs[0] else {
+        panic!("constructed")
+    };
+    let V::Record(parsed_fields) = parsed.value().data() else {
+        panic!("record")
+    };
+    assert_eq!(parsed_fields[0].1.data(), &V::Integer(2));
+    assert_eq!(parsed_fields[1].1.data(), &V::Float(12.5));
+    assert_eq!(parsed_fields[2].1.data(), &V::String("2".into()));
+    assert_eq!(
+        actual.value(),
+        &V::Record(vec![
+            ("quantity".into(), V::Integer(2)),
+            ("price".into(), V::Float(12.5)),
+            ("label".into(), V::String("2".into()))
+        ])
+    );
+    assert!(
+        document
+            .query(&report(E::native(&ops()).to_string()))
+            .is_err()
+    );
+}

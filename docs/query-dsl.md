@@ -479,7 +479,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `aa6e7c3eed515e703fe055c8d880e2685d0ac7f6`. They accept shared expressions
+pin `402eede8a28008b52a36afa1fd301b3bab251e0a`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 
@@ -967,3 +967,30 @@ bytes only after `evaluate` succeeds, so a later error discards the whole report
 The [CLI recipe](query-language.md#markdown-reports) uses the same capture rows.
 Zirql owns [table layout, escaping and budgets](https://zayenz.se/zirql/guides/library-rendering/#render_report_markdown);
 Zirium retains operation descriptors, source output and emitter policies.
+
+## Explicit scalar conversion builders
+
+Rust `ReportExpr` and Python `ReportExpr` expose `parse_int()`, `parse_float()` and
+`to_string()`. Each forwards to the common unary evaluator; the host supplies no
+conversion implementation. For example, Python can build a label from an explicit
+native count projection:
+
+```python
+from zirium.query import ReportExpr as E, ops, report
+
+query = report({
+    "count": E(ops().count()).to_string(),
+    "quantity": E("002").parse_int(),
+    "price": E("1.25e1").parse_float(),
+})
+result = document.query(query)
+```
+
+In Rust, the corresponding scalar builders are
+`ReportExpr::from(ops().count()).to_string()`,
+`ReportExpr::string("002").parse_int()` and
+`ReportExpr::string("1.25e1").parse_float()`. See the
+[shared contract](https://zayenz.se/zirql/guides/library-strings/#parse_int) and
+[textual report recipe](query-language.md#explicit-scalar-conversions).
+These builders require this development checkout; released Zirium 0.6.1 does not
+include them.

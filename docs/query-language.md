@@ -677,7 +677,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`aa6e7c3eed515e703fe055c8d880e2685d0ac7f6`](https://github.com/zayenz/zirql/commit/aa6e7c3eed515e703fe055c8d880e2685d0ac7f6).
+[`402eede8a28008b52a36afa1fd301b3bab251e0a`](https://github.com/zayenz/zirql/commit/402eede8a28008b52a36afa1fd301b3bab251e0a).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -2106,7 +2106,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `aa6e7c3eed515e703fe055c8d880e2685d0ac7f6`
+The development dependency pins Zirql `402eede8a28008b52a36afa1fd301b3bab251e0a`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.
@@ -2130,3 +2130,28 @@ output retains its `zirium.diff.v1` schema, document names, side and comparison
 metadata. Both CLIs buffer the whole request, including later rendering errors.
 The [Markdown emitter](#markdown-reports) uses the same native projection
 boundary and shared Zirql table rendering.
+
+## Explicit scalar conversions
+
+Project native operations to ordinary scalars before converting them. From the
+repository root, save this query as `conversion-report.zq` and run it against the
+existing function report fixture:
+
+```zirql
+fn label(total:int)->string { "operations=" ++ to_string(total) }
+let total = input | count;
+report {"label":label(total), "parsed":parse_int("002"), "price":parse_float("1.25e1")};
+```
+
+```sh
+cargo run --locked -p zirium -- \
+  --program-file conversion-report.zq examples/cli/function-report.mlir
+```
+
+The report retains the operation count in its label, with parsed integer `2` and
+price `12.5`. [The shared scalar reference](https://zayenz.se/zirql/guides/library-strings/#parse_int)
+defines exact decimal grammar, overflow and underflow errors, signed zero and
+round-trippable formatting. These common calls work in ordinary reports and pure
+functions in this development checkout's pinned Zirql revision. Native handles
+need their existing scalar projection; conversion never formats a handle or changes
+its owner, identity or coordinates.

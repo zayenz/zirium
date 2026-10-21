@@ -538,6 +538,21 @@ impl ReportExpr {
     fn ends_with(&self, suffix: &Bound<'_, PyAny>) -> PyResult<Self> {
         self.binary(core::ValueBinaryOperator::EndsWith, suffix)
     }
+    fn parse_int(&self) -> Self {
+        Self {
+            inner: self.inner.clone().parse_int(),
+        }
+    }
+    fn parse_float(&self) -> Self {
+        Self {
+            inner: self.inner.clone().parse_float(),
+        }
+    }
+    fn to_string(&self) -> Self {
+        Self {
+            inner: self.inner.clone().to_string(),
+        }
+    }
     fn one(&self) -> Self {
         Self {
             inner: self.inner.clone().one(),
