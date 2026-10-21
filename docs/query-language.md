@@ -21,8 +21,9 @@ Intersection and difference deduplicate in left-operand order.
 
 Zirium supplies operation selection, SSA navigation, dialect semantics and edits.
 Its scalar expressions, constructed collections, patterns and pure functions use
-[Zirql](https://zayenz.se/zirql/guides/language-reference/). This guide covers
-their syntax and behavior alongside MLIR queries. Start with
+[Zirql](https://zayenz.se/zirql/guides/library-reference/). The library reference
+owns their shared signatures and semantics. This guide supplies MLIR recipes,
+native projections, accepted syntax and output/edit policy. Start with
 [calculated values](#calculate-with-shared-values), then use the local sections on
 [comprehensions](#positional-comprehensions),
 [optional fields](#optional-fields-and-lazy-defaults) and
@@ -220,22 +221,13 @@ Zirium renders a dictionary with non-string keys as
 Keys and values are converted recursively; sets and tuples render as arrays.
 The language keeps the original set key for lookup and equality.
 
-Lists such as `samples` retain order and duplicates. A comprehension
-`[expression for row in samples if condition]` visits those rows in order,
-keeps the rows whose condition is true, and evaluates its expression for each.
-`row.count` reads a named field; `samples[1]` reads the first list element.
-Strict field and index access fail when the field or position is missing.
-Use `lookup(row, "count") default 0` when a missing or `null` count should
-become zero. False, zero and empty containers are present values.
-
-Value expressions accept signed integers, finite floats, Booleans, strings and
-`null` (absence). Use `+`, `-`, `*`, `/`, integer `div` and `mod` for arithmetic;
-`==`, `!=`, `<`, `<=`, `>` and `>=` for comparisons; and `and`, `or` and `not`
-for Boolean conditions. `++` concatenates strings or positional lists. Strings
-in these expressions are literal: `"{row}"` keeps its braces. The separate
-[JSON-template stages](#building-json-structures) support interpolation.
-The [comprehension section](#positional-comprehensions) gives the detailed
-expression rules, including numeric limits and validation of skipped branches.
+The shared [collection reference](https://zayenz.se/zirql/guides/library-collections/),
+[operators](https://zayenz.se/zirql/guides/library-operators/) and
+[presence helpers](https://zayenz.se/zirql/guides/library-presence/)
+define iteration, access, arithmetic and missing-value behavior. Zirium spells
+absence `null`. Strings in shared expressions are literal: `"{row}"` keeps its
+braces. The separate [JSON-template stages](#building-json-structures) support
+interpolation.
 
 This program calculates only from `samples`; it does not inspect the document.
 The [shared collection rules](https://zayenz.se/zirql/guides/values/#dictionaries-and-collection-order)
@@ -252,10 +244,10 @@ operations without a text or JSON conversion.
 
 ## Counting values and building maps
 
-`tally` counts structurally equal values or exact native subjects and returns an
-ordered dictionary with actual keys and integer counts. For example, `names | tally` counts operations by their full names.
-An empty value stream produces `{}`. Dictionaries print as JSON objects, with
-keys in first-occurrence order. `json` can also emit a map explicitly.
+Use [tally](https://zayenz.se/zirql/guides/library-pipelines/#tally) to count
+values or native subjects. Project `names` first to count operation spellings;
+unprojected operations retain document identity. String-key histograms emit
+ordered JSON objects, and `json` can emit a map explicitly.
 
 To map function names to their number of matmuls:
 
@@ -301,38 +293,29 @@ become queries relative to the current function.
 
 ## Ordering, bounds, and extrema
 
-`sort` orders a value stream lexically or a dictionary by its string keys.
-`reverse` reverses an operation stream, value stream, or dictionary. `head(n)`
-keeps the first `n` items,
-while `tail(n)` keeps the last `n`; both preserve the retained items' order.
-These stages truncate an already computed stream. They do not avoid parsing the
-whole file or evaluating earlier stages.
+The shared [ordering reference](https://zayenz.se/zirql/guides/library-ordering/)
+and [collection stages](https://zayenz.se/zirql/guides/library-pipelines/)
+define sorting, extrema, bounds and reversal for values and native inputs.
+Bounds truncate an already computed stream; they do not avoid parsing the file
+or evaluating earlier stages.
 
-Use `sort_by(query)` to order operations by a derived key. The selector runs
-against each original operation. Native string projections must return exactly
-one value; ordinary constructed and JSON data can supply a compound, Boolean
-or absent key. Counts retain their unsigned range. Sorting is stable, so equal
-keys retain their previous order:
+Zirium's native `sort`, `min` and `max` use the intrinsic string projection on
+value streams; dictionaries sort by key. Operations need an explicit selector:
 
 ```zirql
 filter(op("func.func")) | sort_by(attr("sym_name")) | head(10)
 ```
 
-`min` and `max` use the intrinsic string projection on a value stream. `min_by(query)` and `max_by(query)` return one operation using the same
-selector rules as `sort_by`; the first operation wins a tie. The corresponding
-`min_all`, `max_all`, `min_all_by(query)`, and `max_all_by(query)` stages retain
-every tied extreme in its previous order. Empty extrema retain an empty native
-selection with its kind, element declaration and owner. Use `reverse` after `sort` or `sort_by` for descending order.
+Native string selectors must return exactly one value. Ordinary constructed and
+JSON data can supply compound, Boolean or absent keys; counts retain their
+unsigned range. Native extrema keep selected handles, their owner and result
+kind, including empty selections. The `_all` forms retain every tied native
+subject. Use `reverse` after a native sort for descending order.
 
-Dictionaries keep insertion order. `map_by` uses input order, and `tally` keeps
-the first occurrence of each spelling. Use `sort_by(value)` on a dictionary
-whose values are supported ordinary data. Sorting returns a dictionary;
-`reverse`, `head`, and `tail` retain that kind through bindings, nested results,
-JSON objects, and Markdown. Equal values retain their current order, including
-after reversal. Bare `value` selects the whole entry value. Keys share the
-structural order described below, including compound JSON and exact unsigned
-integer leaves. Integer and float kinds have separate ranks. Sorting and
-bounds share the request's work and result limits.
+`map_by` and `tally` dictionaries support `sort_by(value)`, bounds and reversal
+through saved results, nested reports, JSON and Markdown. Bare `value` selects
+the whole dictionary value. Navigation retains its domain order; dictionary
+operations follow the shared contracts linked above.
 
 ## Building JSON structures
 
@@ -487,30 +470,11 @@ zirium 'let n=1; n+2' examples/cli/arithmetic.mlir
 Both commands print `3`. The same expressions work in program files and through
 `Query::parse`; no function declaration or `report` prefix is required.
 
-The supported expression forms are:
-
-- Absence (`null`), Boolean, signed integer, finite decimal float, and string literals; earlier
-  bindings and generator names; grouping with parentheses.
-- Positional arrays, string dictionaries, scalar sets, tuples and nested comprehensions.
-- Numeric sign, `not`, checked `+`, `-`, `*`, `/`, integer `div` and `mod`;
-  numeric `<`, `<=`, `>`, `>=`; typed `==` (also `=`) and `!=`.
-- Boolean `and` and `or`; string or positional-array `++`; record access
-  `r.field`, array access `a[i]`, dictionary access `d[key]`, and inclusive integer ranges `lo..hi`.
-- `length`, `sum`, `forall`, `exists`, `require`, `group_by`, `sort`, `sort_by`,
-  `min`, `max`, `min_by`, `max_by`, `one`, `occurs`, `absent`, `lookup`, `has_key`,
-  `contains`, `starts_with` and `ends_with` calls; lazy `default`;
-  explicitly projected native queries and correlated `project` rows.
-
-`contains(text, fragment)`, `starts_with(text, prefix)` and
-`ends_with(text, suffix)` each take two strings and return a fixed Boolean.
-Matching is exact and case-sensitive, with no coercion, regex, case folding or
-Unicode normalization. An empty search matches every string. For example,
-`contains("Ångström", "ström")` is true, `starts_with("Ångström", "ång")` is
-false, and `ends_with("Ångström", "")` is true. Precomposed `é` does not contain
-decomposed `é`. Both operands evaluate in written order. Known non-string
-operands fail before execution, including in skipped branches. Scans and
-failure diagnostics use the continuing query budget; matching borrows existing
-text without substring or normalization copies.
+The [library reference](https://zayenz.se/zirql/guides/library-reference/)
+organizes the shared expression forms and their contracts. Use its
+[scalar and string entries](https://zayenz.se/zirql/guides/library-strings/)
+for exact matching and conversion, and [operators](https://zayenz.se/zirql/guides/library-operators/)
+for numeric limits, type compatibility and lazy Boolean evaluation.
 
 Project a domain name first, then apply the helpers to that string:
 
@@ -522,15 +486,6 @@ let labels = filter(op("func.func")) | attr("sym_name");
 The native `op(...)` and `string_attr_eq(...)` selectors retain their existing
 host semantics. These helpers also work in typed function bodies and native
 expression arguments. Inline and file programs use the same evaluator.
-
-Array positions start at one. Integer arithmetic uses signed 64-bit values and
-refuses overflow or division by zero. Floats use finite binary64 values;
-nonzero literals or arithmetic results rounded to zero fail. Mixed numeric
-operations require exact integer-to-float conversion. Strings receive no numeric
-coercion. Boolean operands short-circuit, so `false and (1 div 0 == 1)` skips the
-runtime division. Every branch still receives scope and type validation before
-execution; a skipped branch cannot hide incompatible types or an unsupported
-call. Other expression calls and unlisted forms are refused.
 
 Use an explicit projection such as `names`, `attr`, or `count` before constructing
 scalar reports from operations. Native operation, type, and attribute handles
@@ -557,22 +512,12 @@ duplicate key fails before evaluating its value. `.field` uses a static string
 label and `[key]` accepts a computed key. Strict access fails on a missing key,
 while `lookup` is optional.
 
-Sets remove duplicates without moving the first occurrence. They accept
-constructed values, including strings, mixed kinds and nested collections.
-Lists and tuples compare by position; sets compare by membership and dictionaries
-by associations. Infix equality requires compatible underlying types: for example,
-`[1, 2] == [9, true]` fails. Ordinary native tuples, captures and positional
-sequences retain this rule. Deferred checks run when the comparison executes,
-so untaken branches do not inspect their values. Optional declarations and
-empty sequence schemas remain part of admission. Opaque MLIR leaves retain their
-exact document, source and diff-side identity. Infix relations require present
-numbers and exact integer-to-float conversion; they use the
-[ordinary operator contract](https://zayenz.se/zirql/guides/library-operators/#ordered-comparisons).
-Structural sort order does not admit list or tuple operands to `<`. `sort({3, 1, 3})` returns a set in order `1, 3`.
-Empty `{}` is a dictionary. `set<int>()`, `set<bool>()`, `set<float>()` and
-`set<string>()` construct typed empty scalar sets; `set<value>()` creates a
-general empty set. An empty nominal set needs a host-supplied value; the common
-reader does not resolve nominal names. Ordinary native sets and general native
+The [collection entries](https://zayenz.se/zirql/guides/library-collections/#sets)
+define empty sets and dictionaries, structural identity and insertion order.
+[Infix operators](https://zayenz.se/zirql/guides/library-operators/#equality)
+retain their compatible-type and numeric admission through ordinary native
+wrappers. Opaque MLIR leaves retain exact document, source and diff-side identity.
+Empty nominal sets need host evidence. Ordinary native sets and general native
 dictionaries are not available in Zirium's current host representation.
 
 The [saved collection report](../examples/cli/brace-collections.zirql) combines
@@ -591,19 +536,9 @@ parsing, candidates before filters, construction, copying and rendering.
 
 ### Optional fields and lazy defaults
 
-`null` is an absent report value. `occurs(value)` and `absent(value)` inspect
-presence; false, zero, empty strings and empty containers remain present.
-`lookup(value,key)` accepts a record string label or one-based positional array
-index and returns absence for a compatible missing key. `has_key(value,key)`
-checks storage, so a stored null has a key while an omitted field does not.
-Wrong container/key types fail. Ordinary `r.field` and `a[i]` still fail on
-missing data. Arithmetic and conditions require present operands.
-
-`value default fallback` evaluates the left side once and selects its fallback
-only for absence. Both branches receive scope, syntax, native purity and known
-type checks, while skipped fallback data and native execution stay untouched.
-Selected arithmetic or host errors retain their locations. Parenthesize mixed
-operators; `default` follows MiniZinc precedence and associates left to right.
+Zirium spells absence `null` and uses the shared
+[presence, lookup and lazy-default contracts](https://zayenz.se/zirql/guides/library-presence/).
+A stored null remains distinct from omitted storage:
 
 ```zirql
 let info = {"id": 4, "stored": null};
@@ -655,16 +590,13 @@ zirium 'let numbers=[3,1,3]; sum(numbers)' examples/cli/function-report.mlir
 zirium 'let numbers=[3,1,3]; numbers | sort | unique | count' examples/cli/function-report.mlir
 ```
 
-Saved constructed collections and constructed function results use the shared
-`sort`, `unique`, `count` and `tally` stages. Tally returns a dictionary
-that supports reversal, bounds, check and value sorting. Constructed arrays
-also accept `filter(predicate)` with named or implicit `_` arguments. String
-arrays additionally support the compact `filter(starts_with("prefix"))`
-spelling. These stages retain their shared value type rules. Native sources
-keep native stages and selectors such as
-`sort_by(names)`. Zirql distinguishes that native selector from
-`sort_by(rows, "score")` by a comma at the call's own argument level. Delimiters
-inside nested expressions, strings and comments keep their normal meaning.
+Saved constructed collections and function results use the shared
+[collection stages](https://zayenz.se/zirql/guides/library-pipelines/).
+String arrays also accept `filter(starts_with("prefix"))`. Native selectors such
+as `sort_by(names)` retain their domain projections; constructed
+`sort_by(rows, "score")` uses a literal field selector. Zirql distinguishes them
+by a comma at the call's own argument level. Nested expressions, strings and
+comments keep their normal meaning.
 For example, this uses both routes with the existing function-report fixture:
 
 ```sh
@@ -707,15 +639,10 @@ cargo run --locked --bin zirium -- '
 } | json' examples/cli/function-report.mlir
 ```
 
-`map` evaluates one shared body per positional item. `flat_map` concatenates
-its positional body results by one level. Both accept a named or destructured
-`pattern => body`; `_` reads the whole item. A selective `for case pattern in`
-generator skips mismatches; ordinary generators remain strict. `windows(n)`
-requires a positive size and returns only complete overlapping windows.
-`runs_by("field")` keeps consecutive equal keys together in `key`/`items`
-records. `with` replaces existing fields in their original order. `align`
-requires unique present keys on both sides and returns `key`, optional `before`
-and optional `after`, preserving left order followed by right-only keys.
+The shared entries describe [map and flat_map](https://zayenz.se/zirql/guides/library-pipelines/#map),
+[selective generators](https://zayenz.se/zirql/guides/library-collections/#comprehensions),
+[windows, runs and alignment](https://zayenz.se/zirql/guides/library-grouping/)
+and [record updates](https://zayenz.se/zirql/guides/library-operators/#record-update).
 
 These are operations on positional report data. Native selections retain their
 host kinds and require an explicit projection or declared positional view.
@@ -726,24 +653,11 @@ handle checks and effect admission. See the
 
 ## Sort constructed rows and select extrema
 
-`sort(xs)` sorts positional elements, and `sort_by(rows, "field")` sorts
-records by a static string label. Both are ascending and stable. Add
-`descending=true` to reverse key order while keeping input order within ties;
-`descending=false` is the default. The original records, field order,
-declarations and nominal identities survive.
-
-`min(xs)` and `max(xs)` return one element; `min_by(rows, "field")` and
-`max_by(rows, "field")` return one original record. Empty input is `null`, and
-the first input wins a tie. Use `min([]) default 0` for an explicit empty policy.
-Keys use structural order: absence, Boolean, integer, finite float, string,
-nominal member, array, tuple, set, dictionary, then keyed array. Arrays and tuples
-compare positionally; sets and dictionaries compare canonical membership and
-associations. Integers and floats retain separate ranks. Nominal metadata must
-remain coherent across every selected key, including nested members. Missing
-fields and invalid selector rows fail at the selector; an actual absent key is
-valid. A later bad key still fails an extremum request. Use an explicit
-lookup/default when a missing field should supply a key. Keyed inputs need an
-explicit positional value projection before ordering their cells.
+Constructed calls use the shared [ordering and extrema contract](https://zayenz.se/zirql/guides/library-ordering/),
+including literal field selectors, descending ties, structural key order and
+optional single extrema. In this frontend, empty constructed extrema are
+`null`; use `min([]) default 0` for an explicit fallback. Keyed inputs require an
+explicit positional projection before reordering cells.
 
 The [report example](../examples/cli/report-ordering.zirql) uses scores
 `[2,1,2,1]` on rows A, B, C and D. Ascending IDs are B, D, A, C;
@@ -753,23 +667,15 @@ descending IDs are A, C, B, D. Min selects B and max selects A:
 zirium -f examples/cli/report-ordering.zirql examples/cli/function-report.mlir
 ```
 
-These calls return constructed values, with optional elements for single extrema.
-Native operation and map stages use the same key order and retain native
-selections, ownership and default projections. Sorting extracts each key once, admits O(n) temporary slots,
-and performs fallible O(n log n) comparisons. Descending equality keeps the left
-merge input. Extrema scan every key once without sorting or copying the entire
-input. Shared owned-output copies, field/string/nominal inspection, scratch and
-comparisons spend the continuing request budget; limits fail without partial
-output. CLI output stays buffered until the full program succeeds.
+Native operation and dictionary stages use the same key order while retaining
+their native selections, ownership and default projections described above.
+CLI output stays buffered until the whole program, including rendering, succeeds.
 
 ## Stable record groups
 
-`group_by(rows, "field")` accepts a positional record array and a literal string
-selector. Keys must be homogeneous integers, strings or nominal members of one
-type. It returns records with `key` then `items`, preserving first-seen group
-order and every row's order and duplicates. Empty input returns an empty array;
-other record fields may differ. Keyed arrays need an explicit positional
-conversion. Keys retain typed identity and receive no string coercion.
+Use [group_by](https://zayenz.se/zirql/guides/library-grouping/#group_by) to
+collect positional report rows by a field. Project native subjects into those
+rows explicitly; keyed arrays need an explicit positional view.
 
 For the [function fixture](../examples/cli/function-report.mlir), this short
 program groups functions by their represented `arith.addi` count:
@@ -787,14 +693,9 @@ and item `plain`. The [CLI example](cli-examples.md#group-functions-by-match-cou
 executes the same inline and saved forms. [Typed report builders](query-dsl.md#constructed-report-builders)
 return the native ordered data before explicit rendering.
 
-Preflight checks known key types even in skipped branches. Missing fields fail
-when executed; missing or incompatible keys point to the selector, while
-non-array input and non-record rows point to the call. Child failures retain
-their query or source locations. Grouping evaluates rows once and charges scans,
-comparisons, nominal metadata, new containers/slots and copied keys/labels under
-the active budget. Rows move into items without another deep copy. Snapshots,
-Python conversion and rendering retain that allowance and existing completeness
-rules. A grouping error leaves CLI stdout empty after earlier reports too.
+Grouping uses the request's continuing budget, including snapshots, Python
+conversion and rendering. Zirium retains native owners and completeness rules;
+a grouping error leaves stdout empty after earlier reports too.
 
 <a id="writing-reports-with-markdown-and-text"></a>
 
@@ -2206,11 +2107,10 @@ its owner, identity or coordinates.
 
 ## Collection selection and cardinality
 
-The development checkout shares `filter`, `count`, `length`, `head`, `tail`,
-`reverse` and `check` across positional arrays, sets, dictionaries and admitted
-native selections/maps. Dictionary predicates see values; retained entries keep
-their exact keys and order. Constructed predicates require known Booleans. Native
-operation predicates keep their existing subjects, ownership and completeness.
+The development checkout uses the [shared collection stages](https://zayenz.se/zirql/guides/library-pipelines/)
+and [length](https://zayenz.se/zirql/guides/library-collections/#length) for
+ordinary report data and admitted native selections/maps. Operation predicates
+retain their native subjects, document ownership and completeness policy.
 
 ```text
 let limit=2;
@@ -2218,15 +2118,9 @@ let message="two" ++ " rows";
 report [3,1,3] | filter(_>1) | head(limit) | reverse | check(limit,message);
 ```
 
-This emits `[3,3]`. Bounds and check messages are expressions evaluated in written
-order. Zero bounds empty the collection, oversized bounds retain it, and
-`check(0)` accepts empty input. Successful check returns the unchanged value.
-Declared empty schemas survive selection; removed record fields become optional
-while retaining their value types. Keyed arrays expose present-cell count/length
-and require explicit conversion before removal or reversal. Strings and tuples
-are refused. See the [shared signatures](https://zayenz.se/zirql/guides/library-pipelines/#filter).
-These additions require the development checkout; released Zirium 0.6.1 retains
-its published support.
+This emits `[3,3]`. Keyed arrays retain axes and missing cells; project cells
+explicitly before removal or reversal. These additions require the development
+checkout; released Zirium 0.6.1 retains its published support.
 
 Legacy JSON map value predicates use the existing checked ordinary-data
 projection. JSON integers outside signed 64-bit range are refused with a located

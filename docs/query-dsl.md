@@ -641,16 +641,12 @@ best = report(rows.max_by("score"))
 empty_default = report(E([]).min().default(0))
 ```
 
-Keys use structural order: absence, Boolean, integer, finite float, string,
-nominal member, array, tuple, set, dictionary, then keyed array. Compounds compare
-recursively; sets and dictionaries use canonical membership and associations.
-Integers and floats keep separate ranks. Missing fields and invalid selector
-rows fail; actual absent keys are valid. Project an explicit lookup/default key
-when a missing field should supply a key. The shared evaluator
-extracts keys once, charges scratch/comparisons and retains original values.
-Native `OpQuery` and map ordering methods keep their existing selector behavior.
-See [constructed ordering](query-language.md#sort-constructed-rows-and-select-extrema)
-for input conversion, empty/tie rules and the executable report.
+The [shared ordering entry](https://zayenz.se/zirql/guides/library-ordering/)
+defines structural keys, selector errors, empty results and ties. Use an explicit
+lookup/default field when missing storage should supply a key. Native `OpQuery`
+and map builders retain their existing selector API and document ownership.
+The [MLIR recipe](query-language.md#sort-constructed-rows-and-select-extrema)
+runs the same constructed report through the text frontend.
 
 ## Optional report values
 

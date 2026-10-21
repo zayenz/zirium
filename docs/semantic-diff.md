@@ -94,16 +94,15 @@ Text programs and typed builders use one native diff host with Zirql's statement
 expression, predicate and collection execution. Nested fixed-point bodies,
 selectors and navigation share the active work, item and nesting allowance.
 
-Set union keeps first appearance from the left operand, then the right;
-intersection and difference deduplicate in left-operand order. Navigation keeps
-its domain order. Dictionaries from `map_by` keep input order and `tally` keeps
-first-seen keys. `sort` orders dictionary keys and `sort_by(value)` stably sorts
-scalar values. `reverse`, `head(n)` and `tail(n)` retain dictionary kind and
-current order through saved results, nesting and JSON objects. Equal value keys
-retain their incoming order. An empty dictionary remains a dictionary.
+Diff selections follow the shared [native set operators](https://zayenz.se/zirql/guides/library-native/#native-set-operators),
+[collection stages](https://zayenz.se/zirql/guides/library-pipelines/) and
+[ordering](https://zayenz.se/zirql/guides/library-ordering/). Dictionary sorting,
+reversal and bounds retain dictionary kind in saved, nested and JSON results.
+Navigation keeps its domain order. Native identity includes comparison ownership
+and before/after side; ordering never derives it from rendered descriptors.
 
-Fixed points compare ordered selections, including duplicates, and refuse cycles
-or a change of side. The initial change stream must fit the item ceiling before
+[Fixed points](https://zayenz.se/zirql/guides/library-native/#fixpoint) must retain
+the admitted side. The initial change stream must fit the item ceiling before
 filtering. Flat pipelines and set chains do not add a nesting level per term.
 
 Diff output follows its statement-end policy: `emit` passes the value through
