@@ -4,7 +4,17 @@
   "patterns": [
     {
       "name": "comment.line.number-sign.zirql",
-      "match": "#.*$"
+      "match": "[#%].*$"
+    },
+    {
+      "name": "comment.block.zirql",
+      "begin": "/\\*",
+      "end": "\\*/"
+    },
+    {
+      "name": "entity.name.quoted.zirql",
+      "begin": "'",
+      "end": "'"
     },
     {
       "name": "string.quoted.double.zirql",
@@ -19,7 +29,7 @@
     },
     {
       "name": "keyword.control.zirql",
-      "match": "(?<![\\w.])\\b(?:let|param|report|fn|if|else|for|in|match|from|bind|where)\\b(?!\\s*:)"
+      "match": "(?<![\\w.])\\b(?:let|param|report|fn|if|then|elseif|else|endif|for|in|match|from|bind|where|case|with|loop|break|continue)\\b(?!\\s*:)"
     },
     {
       "name": "keyword.operator.word.zirql",
@@ -35,7 +45,7 @@
     },
     {
       "name": "constant.numeric.zirql",
-      "match": "\\b[0-9]+(?:\\.(?!\\.)[0-9]*)?(?:[eE][+-]?[0-9]+)?\\b"
+      "match": "\\b(?:0[xX][0-9A-Fa-f]+|0o[0-7]+|[0-9]+(?:\\.(?!\\.)[0-9]*)?(?:[eE][+-]?[0-9]+)?)\\b"
     },
     {
       "name": "entity.name.function.zirql",
@@ -51,7 +61,7 @@
     },
     {
       "name": "keyword.operator.zirql",
-      "match": "=>|->|\\.\\.|\\+\\+|<=|>=|==|!=|[|+*/<>=-]"
+      "match": "\\/\\\\|\\\\/|=>|->|\\.\\.|\\+\\+|<=|>=|==|!=|[|+*/<>=-]"
     }
   ]
 }

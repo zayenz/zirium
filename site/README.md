@@ -30,12 +30,25 @@ does not run Rust tests, benchmarks or release checks.
 
 ## Zirql syntax highlighting
 
-Use `zirql` for query code fences. The grammar in
-`../assets/syntax/zirql.tmLanguage.json` is an unchanged copy of the
-[shared Zirql grammar](https://github.com/zayenz/zirql/blob/main/assets/syntax/zirql.tmLanguage.json).
-Copy updates from that file to keep the three documentation sites consistent.
-The site configuration adds host-specific keywords using the same token scopes.
-Highlighting does not validate queries.
+Use `zirql` for query code fences. Zirql owns the common grammar;
+`../assets/syntax/zirql.tmLanguage.json` is a checked-in copy from the full
+commit in `../assets/syntax/zirql-revision.txt`. Do not edit that copy directly.
+From a Zirql checkout, run its revision-pinned synchronization commands:
+
+```sh
+node scripts/sync-syntax.mjs sync <full-Zirql-commit> ../zincite ../zirium
+node scripts/sync-syntax.mjs check <full-Zirql-commit> ../zincite ../zirium
+```
+
+Review and commit the grammar and revision marker here, then run this site's
+`check` and `build` commands. Builds use the local asset and need no Zirql
+checkout. See [Zirql's contributor procedure](https://github.com/zayenz/zirql/blob/main/site/README.md#syntax-highlighting)
+for the common update path.
+
+The site configuration adds Zirium's host keywords and retains the legacy
+surface's hash comments and decimal numbers, omitting single-quoted names and
+block comments. Common forms come from Zirql. Highlighting describes spelling;
+parsing and host policy decide which constructs a query may execute.
 
 Existing `zirium` code fences also use the Zirql grammar. MLIR input keeps its
 separate fence label.

@@ -2,13 +2,23 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import zirql from '../assets/syntax/zirql.tmLanguage.json' with { type: 'json' };
 
-// Keep shared Zirql token scopes; add only this host's syntax.
+// Zirium's legacy surface uses hash comments, decimal numbers and no quoted
+// names or block comments. Keep these lexical distinctions local to the site;
+// highlighting does not determine the host's evaluator capabilities.
 const queryLanguage = {
   ...zirql,
-  patterns: [...zirql.patterns, {
-    name: 'keyword.control.zirql',
-    match: String.raw`(?<![\w.])\b(?:do|emit|union|intersect|except)\b(?!\s*:)`,
-  }],
+  patterns: [
+    { name: 'comment.line.number-sign.zirql', match: '#.*$' },
+    { name: 'constant.numeric.zirql', match: String.raw`\b[0-9]+(?:\.(?!\.)[0-9]*)?(?:[eE][+-]?[0-9]+)?\b` },
+    ...zirql.patterns.filter(({ name }) => ![
+      'comment.line.number-sign.zirql', 'comment.block.zirql',
+      'entity.name.quoted.zirql', 'constant.numeric.zirql',
+    ].includes(name)),
+    {
+      name: 'keyword.control.zirql',
+      match: String.raw`(?<![\w.])\b(?:do|emit|union|intersect|except)\b(?!\s*:)`,
+    },
+  ],
 };
 
 const base = process.env.SITE_BASE || '/zirium';
