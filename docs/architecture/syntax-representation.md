@@ -28,19 +28,18 @@ and source mappings. See [retention profiles](../getting-started.md#choose-a-ret
 ## Query expressions
 
 Text queries and typed builders retain located Zirql `ExpressionStep` values.
-`Value` holds an ordinary value expression, including record construction;
-`Projection` holds correlated scalar fields. Both share their immutable bodies.
-The remaining `Stage` payloads contain Zirium's native operations and the
-composition stages awaiting migration. Their `Arc` storage also makes typed
-query reuse share nested trees.
+`Value` and `Projection` hold ordinary values and correlated scalar fields.
+Filter, match, ordering, mapping, existence, fixed-point and path composition
+also have direct core steps. Their immutable bodies share `Arc` storage, so
+reusing a typed query does not copy its nested expression trees.
 
-A submitted request registers its functions once, then prepares each shared
-expression through `PreparedFunctions::prepare_expression`. The prepared entry
-retains its result kind and written arguments. Execution supplies fresh bindings,
-relative input, document access and the same budget through `evaluate_expression`.
-Zirql checks projection fields before enumerating subjects and retains declared
-empty row schemas. The [projection contract](https://zayenz.se/zirql/guides/host-integration/#correlated-native-projection)
-describes the subject and scalar-value hooks.
+A request registers its functions once, then prepares shared expressions through
+`PreparedFunctions::prepare_expression`. The prepared entry retains the result
+kind and written arguments. Execution supplies bindings, relative input,
+document access and the same budget through `evaluate_expression`. Diff programs
+use `evaluate_native_expression` with the same prepared native machinery and the
+shared statement driver. Both routes retain native results from selector bodies,
+including results that also support scalar projection.
 
 The text frontend delegates function collection, parameter and pattern-let
 reading, lexical name progression and separators to Zirql's `read_program`.
@@ -50,12 +49,28 @@ frontend metadata used by existing builders and preparation. Zirium's callbacks
 admit native signature types and reserved names, select native versus projected
 binding results, and recognize legacy `name =` and `do` syntax.
 
-Zirium keeps request preparation, native-only stream execution, MLIR ownership
-and stale-handle checks. Emission payloads retain the requested
-format and pass-through behavior; CLI buffering remains a request boundary.
-Native capture records retain handles, while projected report records contain
-ordinary Zirql data. See the [typed report builders](../query-dsl.md#constructed-report-builders)
-for the public Rust interface.
+Zirql owns composition scope and iteration. Filter and selector bodies receive
+one subject; a fixed-point body receives the complete current selection. Match
+sources and guards see the original input and earlier named captures. Collection
+steps own stable unique, tally, bounds and count. Empty capture results retain
+their declared schema, and selector ties retain input order.
+
+Zirium's `ProjectionHost` hooks admit native kinds and scalar ordering keys,
+expose subjects, restore selection and map shapes, and check exact handle
+identity. Guard and path hooks supply MLIR predicates and SSA neighbors. Native
+`Stage` payloads retain navigation, dialect facts, edits and emission. The
+strict closure specialization stays native because it follows dialect-defined
+edges. Diff relation checks retain the before/after side even for empty results.
+See the [embedding boundary](https://zayenz.se/zirql/guides/host-integration/)
+and [native composition guide](https://zayenz.se/zirql/guides/native-programs/).
+
+Zirium keeps request preparation, frontend metadata, MLIR ownership and
+stale-handle checks. Emission payloads retain the requested format and
+pass-through behavior; CLI buffering remains a request boundary. Capture records
+retain handles, while projected reports contain ordinary Zirql data. The
+[typed query guide](../query-dsl.md#nested-queries-and-native-maps) gives a runnable
+composition recipe; the [report builders](../query-dsl.md#constructed-report-builders)
+show the explicit projection boundary.
 
 ## Measure representation costs
 

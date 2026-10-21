@@ -525,61 +525,83 @@ impl DiffQueryResult for usize {
 }
 
 fn lower(stages: &[Stage]) -> Result<Expression, EvaluationError> {
-    use zirql::{Located, Stage as Shared};
+    use zirql::{ExpressionStep as S, Located, Stage as C};
     let mut lowered = Vec::new();
     for stage in stages {
-        let native = match stage {
-            Stage::ChangeFilter(predicate) => {
-                diff_program::stream(Shared::Filter(lower_change(predicate)?), 0..0)?
+        let common = match stage {
+            Stage::ChangeFilter(p) => Some(S::Filter(std::sync::Arc::new(
+                diff_program::guard_predicate(lower_change(p)?),
+            ))),
+            Stage::OperationFilter(p) => Some(S::Filter(std::sync::Arc::new(
+                diff_program::guard_predicate(lower_operation(&p.checked_model()?)?),
+            ))),
+            Stage::WhereExists(body) => Some(S::WhereExists(std::sync::Arc::new(
+                zirql::NativeBody::new(lower(body)?, 0..0),
+            ))),
+            Stage::Fixpoint(body) => Some(S::FixedPoint(std::sync::Arc::new(
+                zirql::NativeBody::new(lower(body)?, 0..0),
+            ))),
+            Stage::Unique => Some(S::Collection(C::Unique)),
+            Stage::Head(n) => Some(S::Collection(C::Head(*n))),
+            Stage::Tail(n) => Some(S::Collection(C::Tail(*n))),
+            Stage::Count => Some(S::Collection(C::Count)),
+            Stage::Reverse => Some(S::Collection(C::Reverse)),
+            Stage::Sort | Stage::Min(_) | Stage::Max(_) => {
+                Some(S::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
+                    order: match stage {
+                        Stage::Sort => zirql::NativeOrder::Sort,
+                        Stage::Min(false) => zirql::NativeOrder::Min,
+                        Stage::Min(true) => zirql::NativeOrder::MinAll,
+                        Stage::Max(false) => zirql::NativeOrder::Max,
+                        Stage::Max(true) => zirql::NativeOrder::MaxAll,
+                        _ => unreachable!(),
+                    },
+                    selector: None,
+                })))
             }
-            Stage::OperationFilter(predicate) => diff_program::stream(
-                Shared::Filter(lower_operation(&predicate.checked_model()?)?),
-                0..0,
-            )?,
-            Stage::Project(side) => DiffStage::Project(*side),
-            Stage::Users(index) => DiffStage::Users(*index),
-            Stage::Defs(index) => DiffStage::Defs(*index),
-            Stage::Parent => DiffStage::Parent,
-            Stage::Children => DiffStage::Children,
-            Stage::Subtree => DiffStage::Subtree,
-            Stage::Root(predicate) => {
-                let DiffStage::Stream(filter) = diff_program::stream(
-                    Shared::Filter(lower_operation(&predicate.checked_model()?)?),
-                    0..0,
-                )?
-                else {
-                    unreachable!("stream builds a native pipeline")
-                };
-                DiffStage::Root(filter)
-            }
-            Stage::Reachable => DiffStage::Graph(OperationTraversal::Reachable),
-            Stage::Closure => DiffStage::Graph(OperationTraversal::Closure),
-            Stage::Slice => DiffStage::Graph(OperationTraversal::Slice),
-            Stage::ForwardSlice => DiffStage::Graph(OperationTraversal::ForwardSlice),
-            Stage::WhereExists(body) => DiffStage::WhereExists(diff_program::nested(lower(body)?)),
-            Stage::Fixpoint(body) => DiffStage::Fixpoint(diff_program::nested(lower(body)?)),
-            Stage::Unique => diff_program::stream(Shared::Unique, 0..0)?,
-            Stage::Head(count) => diff_program::stream(Shared::Head(*count), 0..0)?,
-            Stage::Count => diff_program::stream(Shared::Count, 0..0)?,
-            Stage::Reverse => DiffStage::Reverse,
-            Stage::Tail(count) => DiffStage::Tail(*count),
-            Stage::Names => DiffStage::Names,
-            Stage::Attr(name) => DiffStage::Attr(name.clone()),
-            Stage::ResultTypes => DiffStage::ResultTypes,
-            Stage::OperandTypes => DiffStage::OperandTypes,
-            Stage::Sort => DiffStage::Sort,
-            Stage::Min(all) => DiffStage::Extreme {
-                maximum: false,
-                all: *all,
-            },
-            Stage::Max(all) => DiffStage::Extreme {
-                maximum: true,
-                all: *all,
-            },
+            _ => None,
         };
-        lowered.push(Located::new(native, 0..0));
+        let step = if let Some(common) = common {
+            common
+        } else {
+            S::Stage(match stage {
+                Stage::Project(side) => DiffStage::Project(*side),
+                Stage::Users(n) => DiffStage::Users(*n),
+                Stage::Defs(n) => DiffStage::Defs(*n),
+                Stage::Parent => DiffStage::Parent,
+                Stage::Children => DiffStage::Children,
+                Stage::Subtree => DiffStage::Subtree,
+                Stage::Root(p) => DiffStage::Root(
+                    zirql::Pipeline::with_group_not_nesting(
+                        vec![Located::new(
+                            C::Filter(lower_operation(&p.checked_model()?)?),
+                            0..0,
+                        )],
+                        0..0,
+                        zirql::MAX_NESTING,
+                    )
+                    .map_err(super::core_error)?,
+                ),
+                Stage::Reachable => DiffStage::Graph(OperationTraversal::Reachable),
+                Stage::Closure => DiffStage::Graph(OperationTraversal::Closure),
+                Stage::Slice => DiffStage::Graph(OperationTraversal::Slice),
+                Stage::ForwardSlice => DiffStage::Graph(OperationTraversal::ForwardSlice),
+                Stage::Names => DiffStage::Names,
+                Stage::Attr(name) => DiffStage::Attr(name.clone()),
+                Stage::ResultTypes => DiffStage::ResultTypes,
+                Stage::OperandTypes => DiffStage::OperandTypes,
+                _ => unreachable!("common stages handled above"),
+            })
+        };
+        lowered.push(Located::new(step, 0..0));
     }
-    Ok(diff_program::sequence(lowered, 0..0))
+    Ok(Located::new(
+        zirql::ExpressionKind::Sequence {
+            input: Box::new(Located::new(zirql::ExpressionKind::Input, 0..0)),
+            steps: lowered,
+        },
+        0..0,
+    ))
 }
 fn lower_change(predicate: &ChangePredicate) -> Result<zirql::Predicate<Leaf>, EvaluationError> {
     if let Some(error) = predicate.invalid {

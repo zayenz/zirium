@@ -1690,6 +1690,9 @@ fn native_ref(
         }
         QueryOutput::Values(values) => values.into_pyobject(py)?.into_any().unbind(),
         QueryOutput::Count(count) => count.into_pyobject(py)?.into_any().unbind(),
+        QueryOutput::Native(NativeValue::JsonValue(value)) => {
+            json_to_python(py, value, budget, &(0..0))?
+        }
         QueryOutput::Native(NativeValue::Constructed(value)) => {
             let json = value.to_json_with_budget(budget).map_err(py_error)?;
             json_to_python(py, &json, budget, &value.range())?

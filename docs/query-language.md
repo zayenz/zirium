@@ -685,7 +685,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 ## Transform positional reports
 
 These forms require the development checkout, which pins Zirql Git revision
-[`23b4e4e70a9225dfeea51642c130da2431b12d9d`](https://github.com/zayenz/zirql/commit/23b4e4e70a9225dfeea51642c130da2431b12d9d).
+[`dd8aca20bf5313cf8a735753cc687996bb114003`](https://github.com/zayenz/zirql/commit/dd8aca20bf5313cf8a735753cc687996bb114003).
 The published 0.6.1 integration predates them. Inline and `--program-file`
 programs use the same reader and evaluator.
 
@@ -1245,9 +1245,9 @@ saved selections. Domain closure and the optimized `fixpoint(closure)` worklist
 remain host operations.
 
 By default, each evaluation permits 10,000,000 work units and 1,000,000 items per
-stream. Work counts stage input items (at least one per stage), fixed-point
-iterations, ordered comparisons, retained checkpoint and body-input copies,
-and dependency, ancestor, and subtree visits. These limits do not
+stream. Work counts scope and type preparation, stage input items (at least one
+per stage), fixed-point iterations, ordered comparisons, retained checkpoint and
+body-input copies, and dependency, ancestor, and subtree visits. These limits do not
 bound time or memory bytes. CLI callers can set `--max-work N` and
 `--max-items N`; Rust callers can use `Query::evaluate_with_limits` and
 `EvaluationLimits`. A limit error follows the usual no-stdout CLI contract.
@@ -1492,7 +1492,8 @@ the active evaluation allowance. Diff `emit` is a no-op; `json`, `markdown` and
 `print` transform the value written once at the end of a query statement.
 Bindings and `do` suppress that statement output. Diff mode retains its legacy
 work and per-stream limits and rejects `--max-results`. Change streams support keyed
-ordering and `map_by`, and the document labels are available as
+ordering and `map_by`. Written diff `unique` accepts change or operation streams;
+the typed Rust value query also supports deduplicating names. The document labels are available as
 `before_document` and `after_document` for interpolation. See
 [semantic diff](semantic-diff.md) for the full policy.
 
@@ -2042,6 +2043,25 @@ request against the same unchanged document. An edit or different document
 invalidates the context even for empty queues and sets. Retained aliases and
 earlier scan states keep their original values.
 
+## Native composition boundary
+
+The development checkout lowers filters, matches, ordering, maps, existence,
+fixed points and paths directly to Zirql composition steps. Text queries, Rust
+builders and Python builders use the same preparation and iteration rules.
+Zirium supplies native predicates, navigation, handle identity and output shape;
+diff queries additionally retain their existing supported forms and side rules.
+A native result remains native until a query explicitly projects scalar fields.
+
+Selectors and `where_exists` receive one subject. A `fixpoint` body receives the
+whole current selection. Match sources and guards retain the original input and
+only earlier named captures. Equal ordering keys keep input order; unique keeps
+the first native identity; empty capture results keep their field schema.
+Existing strict-closure, empty-extremum, budget and emission behavior applies.
+The [native map recipe](query-dsl.md#nested-queries-and-native-maps) uses these
+rules through the public builders. The
+[architecture note](architecture/syntax-representation.md#query-expressions)
+describes the remaining adapter hooks.
+
 ## Named fold and scan steps
 
 `fold(items, initial, step)` applies a named pure function from left to right.
@@ -2124,7 +2144,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `23b4e4e70a9225dfeea51642c130da2431b12d9d`
+The development dependency pins Zirql `dd8aca20bf5313cf8a735753cc687996bb114003`
 and uses its ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.

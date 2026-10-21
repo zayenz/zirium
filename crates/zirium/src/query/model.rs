@@ -111,7 +111,10 @@ pub(super) fn step_range(step: &Step) -> TextRange {
     TextRange::new(step.range.start as u32, step.range.end as u32).expect("ordered query range")
 }
 pub(super) fn step_is_terminal(step: &Step) -> bool {
-    matches!(&step.value, zirql::ExpressionStep::Stage(stage) if stage.is_terminal())
+    matches!(
+        &step.value,
+        zirql::ExpressionStep::Collection(zirql::Stage::Count)
+    ) || matches!(&step.value, zirql::ExpressionStep::Stage(stage) if stage.is_terminal())
 }
 impl Expression {
     pub(crate) fn is_single_closure(&self) -> bool {
@@ -155,6 +158,20 @@ impl Expression {
             .chain(self.rest.iter().flat_map(|(_, steps)| steps))
             .find_map(|step| match &step.value {
                 zirql::ExpressionStep::Stage(stage) => stage.first_non_selection_stage(),
+                zirql::ExpressionStep::Filter(_)
+                | zirql::ExpressionStep::Ordering(_)
+                | zirql::ExpressionStep::WhereExists(_)
+                | zirql::ExpressionStep::FixedPoint(_)
+                | zirql::ExpressionStep::Collection(
+                    zirql::Stage::Unique
+                    | zirql::Stage::Head(_)
+                    | zirql::Stage::Tail(_)
+                    | zirql::Stage::Reverse
+                    | zirql::Stage::Check { .. },
+                )
+                | zirql::ExpressionStep::Head(_)
+                | zirql::ExpressionStep::Tail(_)
+                | zirql::ExpressionStep::Check { .. } => None,
                 _ => Some(step_range(step)),
             })
     }
@@ -297,47 +314,30 @@ impl ComputedPredicate {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComputedStage {
-    Head(super::comprehension::ParsedComprehension),
-    Tail(super::comprehension::ParsedComprehension),
     Defs(super::comprehension::ParsedComprehension),
     Users(super::comprehension::ParsedComprehension),
-    Check(super::comprehension::ParsedComprehension),
     Attr(super::comprehension::ParsedComprehension),
 }
 impl ComputedStage {
     pub(super) fn operand(&self) -> &super::comprehension::ParsedComprehension {
         match self {
-            Self::Head(value)
-            | Self::Tail(value)
-            | Self::Defs(value)
-            | Self::Users(value)
-            | Self::Check(value)
-            | Self::Attr(value) => value,
+            Self::Defs(value) | Self::Users(value) | Self::Attr(value) => value,
         }
     }
     pub(super) fn parameter_type(&self) -> zirql::ParameterType {
         match self {
             Self::Attr(_) => zirql::ParameterType::String,
-            Self::Head(_) | Self::Tail(_) | Self::Defs(_) | Self::Users(_) | Self::Check(_) => {
-                zirql::ParameterType::Int
-            }
+            Self::Defs(_) | Self::Users(_) => zirql::ParameterType::Int,
         }
     }
     pub(super) fn placeholder(&self, range: TextRange) -> Stage {
         match self {
-            Self::Head(_) => Stage::Head { count: 0, range },
-            Self::Tail(_) => Stage::Tail { count: 0, range },
             Self::Defs(_) => Stage::Defs {
                 index: Some(0),
                 range,
             },
             Self::Users(_) => Stage::Users {
                 index: Some(0),
-                range,
-            },
-            Self::Check(_) => Stage::Check {
-                expected: Some(0),
-                message: None,
                 range,
             },
             Self::Attr(_) => Stage::Attr {
@@ -350,17 +350,17 @@ impl ComputedStage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
+    Guard {
+        predicate: Predicate,
+        range: TextRange,
+    },
+    /// Strict, dialect-aware closure over the selected operations.
+    ClosureFixedPoint {
+        range: TextRange,
+    },
     Parameter {
         index: usize,
         ty: zirql::ParameterType,
-        range: TextRange,
-    },
-    Paths {
-        value: super::capture::ParsedPaths,
-        range: TextRange,
-    },
-    Match {
-        value: super::capture::ParsedMatch,
         range: TextRange,
     },
     Native {
@@ -389,13 +389,6 @@ pub enum Stage {
         step: StructuredStage,
         range: TextRange,
     },
-    ConstructedSuffix {
-        value: super::comprehension::ParsedComprehension,
-        range: TextRange,
-    },
-    TallyContinuation {
-        range: TextRange,
-    },
     Literal {
         value: JsonLiteral,
         range: TextRange,
@@ -411,20 +404,7 @@ pub enum Stage {
         name: String,
         range: TextRange,
     },
-    Tally {
-        constructed: super::comprehension::ParsedComprehension,
-        range: TextRange,
-    },
     Value {
-        range: TextRange,
-    },
-    MapBy {
-        key: Box<Expression>,
-        value: Box<Expression>,
-        range: TextRange,
-    },
-    NativeMap {
-        mapping: zirql::NativeMap<super::comprehension::ParsedComprehension>,
         range: TextRange,
     },
     Reachable {
@@ -432,11 +412,6 @@ pub enum Stage {
     },
     Input {
         range: TextRange,
-    },
-    Filter {
-        predicate: Predicate,
-        range: TextRange,
-        constructed: Option<super::comprehension::ParsedComprehension>,
     },
     Closure {
         range: TextRange,
@@ -468,60 +443,6 @@ pub enum Stage {
     Subtree {
         range: TextRange,
     },
-    Unique {
-        constructed: super::comprehension::ParsedComprehension,
-        range: TextRange,
-    },
-    Sort {
-        constructed: super::comprehension::ParsedComprehension,
-        range: TextRange,
-    },
-    SortBy {
-        selector: super::report::OrderingSelector,
-        range: TextRange,
-    },
-    RetainSelector {
-        range: TextRange,
-    },
-    Reverse {
-        range: TextRange,
-    },
-    Head {
-        count: usize,
-        range: TextRange,
-    },
-    Tail {
-        count: usize,
-        range: TextRange,
-    },
-    Min {
-        range: TextRange,
-    },
-    MinBy {
-        selector: super::report::OrderingSelector,
-        range: TextRange,
-    },
-    MinAll {
-        range: TextRange,
-    },
-    MinAllBy {
-        selector: super::report::OrderingSelector,
-        range: TextRange,
-    },
-    Max {
-        range: TextRange,
-    },
-    MaxBy {
-        selector: super::report::OrderingSelector,
-        range: TextRange,
-    },
-    MaxAll {
-        range: TextRange,
-    },
-    MaxAllBy {
-        selector: super::report::OrderingSelector,
-        range: TextRange,
-    },
     Attr {
         name: String,
         range: TextRange,
@@ -539,14 +460,6 @@ pub enum Stage {
         expression: Box<Expression>,
         range: TextRange,
     },
-    WhereExists {
-        relation: super::comprehension::ParsedComprehension,
-        range: TextRange,
-    },
-    Fixpoint {
-        expression: FixedPointBody,
-        range: TextRange,
-    },
     SetAttr {
         name: String,
         value: String,
@@ -554,15 +467,6 @@ pub enum Stage {
     },
     RemoveAttr {
         name: String,
-        range: TextRange,
-    },
-    Check {
-        expected: Option<usize>,
-        message: Option<String>,
-        range: TextRange,
-    },
-    Count {
-        constructed: super::comprehension::ParsedComprehension,
         range: TextRange,
     },
     Emit {
@@ -577,33 +481,6 @@ pub enum Stage {
     },
 }
 
-/// Fixed-point bodies retain legacy emit-capable selections or pure native calls.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FixedPointBody {
-    Selection(Box<Expression>),
-    Native(super::comprehension::ParsedComprehension),
-}
-impl FixedPointBody {
-    pub(super) fn is_single_closure(&self) -> bool {
-        match self {
-            Self::Selection(expression) => expression.is_single_closure(),
-            Self::Native(value) => super::report::fixed_point_is_closure(value),
-        }
-    }
-    fn is_read_only(&self) -> bool {
-        match self {
-            Self::Selection(expression) => expression.is_read_only(),
-            Self::Native(_) => true,
-        }
-    }
-    fn is_selection_only(&self) -> bool {
-        match self {
-            Self::Selection(expression) => expression.is_selection_only(),
-            Self::Native(_) => true,
-        }
-    }
-}
-
 impl Stage {
     pub(super) fn is_read_only(&self) -> bool {
         match self {
@@ -615,45 +492,28 @@ impl Stage {
             | Stage::Markdown { .. }
             | Stage::Print { .. } => false,
             Stage::Group { expression, .. } => expression.is_read_only(),
-            Stage::Fixpoint { expression, .. } => expression.is_read_only(),
-            Stage::WhereExists { relation, .. } => {
-                super::report::native_body_is_read_only(relation)
-            }
-            Stage::SortBy { selector, .. }
-            | Stage::MinBy { selector, .. }
-            | Stage::MinAllBy { selector, .. }
-            | Stage::MaxBy { selector, .. }
-            | Stage::MaxAllBy { selector, .. } => selector.is_read_only(),
-            Stage::NativeMap { mapping, .. } => super::report::map_is_read_only(mapping),
-            Stage::MapBy { key, value, .. } => key.is_read_only() && value.is_read_only(),
             _ => true,
         }
     }
 
     pub fn range(&self) -> TextRange {
         match self {
-            Self::Parameter { range, .. }
-            | Self::Paths { range, .. }
-            | Self::Match { range, .. }
+            Self::Guard { range, .. }
+            | Self::ClosureFixedPoint { range }
+            | Self::Parameter { range, .. }
             | Self::Native { range, .. }
             | Self::Operand { range, .. }
             | Self::FunctionInput { range, .. }
             | Self::PatternBinding { range, .. }
             | Self::Computed { range, .. }
-            | Self::ConstructedSuffix { range, .. }
-            | Self::TallyContinuation { range }
             | Self::Structured { range, .. }
             | Self::Literal { range, .. }
             | Self::Markdown { range }
             | Self::Print { range, .. }
             | Self::Binding { range, .. }
-            | Self::Tally { range, .. }
             | Self::Value { range }
-            | Self::NativeMap { range, .. }
-            | Self::MapBy { range, .. }
             | Self::Reachable { range }
             | Self::Input { range }
-            | Self::Filter { range, .. }
             | Self::Closure { range }
             | Self::Slice { range }
             | Self::ForwardSlice { range }
@@ -663,32 +523,13 @@ impl Stage {
             | Self::Children { range }
             | Self::Root { range, .. }
             | Self::Subtree { range }
-            | Self::Unique { range, .. }
-            | Self::Sort { range, .. }
-            | Self::SortBy { range, .. }
-            | Self::RetainSelector { range }
-            | Self::Reverse { range }
-            | Self::Head { range, .. }
-            | Self::Tail { range, .. }
-            | Self::Min { range }
-            | Self::MinBy { range, .. }
-            | Self::MinAll { range }
-            | Self::MinAllBy { range, .. }
-            | Self::Max { range }
-            | Self::MaxBy { range, .. }
-            | Self::MaxAll { range }
-            | Self::MaxAllBy { range, .. }
             | Self::Attr { range, .. }
             | Self::Names { range }
             | Self::ResultTypes { range }
             | Self::OperandTypes { range }
             | Self::Group { range, .. }
-            | Self::Fixpoint { range, .. }
-            | Self::WhereExists { range, .. }
             | Self::SetAttr { range, .. }
             | Self::RemoveAttr { range, .. }
-            | Self::Check { range, .. }
-            | Self::Count { range, .. }
             | Self::Emit { range }
             | Self::Format { range, .. }
             | Self::Json { range } => *range,
@@ -696,39 +537,26 @@ impl Stage {
     }
     fn is_selection_only(&self) -> bool {
         match self {
-            Self::Paths { .. }
-            | Self::Match { .. }
+            Self::Guard { .. }
             | Self::Native { .. }
             | Self::Operand { .. }
             | Self::SetAttr { .. }
             | Self::RemoveAttr { .. }
-            | Self::Count { .. }
-            | Self::Tally { .. }
             | Self::Value { .. }
-            | Self::RetainSelector { .. }
-            | Self::NativeMap { .. }
-            | Self::MapBy { .. }
-            | Self::Literal { .. }
-            | Self::ConstructedSuffix { .. } => false,
+            | Self::Literal { .. } => false,
             Self::Group { expression, .. } => expression.is_selection_only(),
-            Self::Fixpoint { expression, .. } => expression.is_selection_only(),
             _ => true,
         }
     }
     fn first_non_selection_stage(&self) -> Option<TextRange> {
         match self {
-            Self::Group { expression, .. }
-            | Self::Fixpoint {
-                expression: FixedPointBody::Selection(expression),
-                ..
-            } => expression.first_non_selection_stage(),
+            Self::Group { expression, .. } => expression.first_non_selection_stage(),
             _ if !self.is_selection_only() => Some(self.range()),
             _ => None,
         }
     }
     pub(crate) fn is_terminal(&self) -> bool {
         match self {
-            Self::Count { .. } => true,
             Self::Group { expression, .. } => expression.is_terminal(),
             _ => false,
         }
@@ -739,15 +567,28 @@ impl Stage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StructuredStage {
     One,
-    MapBy {
-        key: Box<Expression>,
-        value: Box<Expression>,
-    },
-    WhereExists(Box<Expression>),
     StringAttr(String),
     Attributes(String),
-    Types {
-        operands: bool,
-    },
+    Types { operands: bool },
     Spellings,
+}
+
+pub(super) fn shared_predicate(predicate: Predicate) -> zirql::Predicate<NativeStage> {
+    use zirql::PredicateKind as P;
+    let range = predicate.range().as_range();
+    let value = match predicate {
+        Predicate::Not { predicate, .. } => P::Not(Box::new(shared_predicate(*predicate))),
+        Predicate::Group { predicate, .. } => P::Group(Box::new(shared_predicate(*predicate))),
+        Predicate::And { predicates, .. } => {
+            P::And(predicates.into_iter().map(shared_predicate).collect())
+        }
+        Predicate::Or { predicates, .. } => {
+            P::Or(predicates.into_iter().map(shared_predicate).collect())
+        }
+        predicate => P::Leaf(std::sync::Arc::new(Stage::Guard {
+            range: predicate.range(),
+            predicate,
+        })),
+    };
+    zirql::Located::new(value, range)
 }

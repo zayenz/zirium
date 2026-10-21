@@ -109,12 +109,7 @@ pub(super) fn is_stream_stage(stage: &model::Stage) -> bool {
     use model::{Stage as S, StructuredStage as N};
     matches!(
         stage,
-        S::Filter { .. }
-            | S::Head { .. }
-            | S::Count { .. }
-            | S::Unique { .. }
-            | S::Tally { .. }
-            | S::Input { .. }
+        S::Input { .. }
             | S::Reachable { .. }
             | S::Closure { .. }
             | S::Slice { .. }
@@ -124,13 +119,6 @@ pub(super) fn is_stream_stage(stage: &model::Stage) -> bool {
             | S::Parent { .. }
             | S::Children { .. }
             | S::Subtree { .. }
-            | S::Sort { .. }
-            | S::Reverse { .. }
-            | S::Tail { .. }
-            | S::Min { .. }
-            | S::Max { .. }
-            | S::MinAll { .. }
-            | S::MaxAll { .. }
             | S::Attr { .. }
             | S::Names { .. }
             | S::ResultTypes { .. }
@@ -188,16 +176,7 @@ pub(super) fn lower(stages: &[model::Stage]) -> Result<NativePipeline<'_>, Evalu
     let stages = stages
         .iter()
         .map(|stage| {
-            let value = match stage {
-                model::Stage::Filter { predicate, .. } => Stage::Filter(lower_predicate(predicate)),
-                model::Stage::Head { count, .. } => Stage::Head(*count),
-                model::Stage::Tail { count, .. } => Stage::Tail(*count),
-                model::Stage::Reverse { .. } => Stage::Reverse,
-                model::Stage::Unique { .. } => Stage::Unique,
-                model::Stage::Count { .. } => Stage::Count,
-                model::Stage::Tally { .. } => Stage::Tally,
-                _ => Stage::Host(stage),
-            };
+            let value = Stage::Host(stage);
             Located::new(value, range(stage.range()))
         })
         .collect::<Vec<_>>();

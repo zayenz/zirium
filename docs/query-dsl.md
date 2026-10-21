@@ -327,23 +327,29 @@ let selected = consumers.evaluate_with_options(
 ```
 
 The defaults are 10 million work units and 1 million items. Limits cover expression
-nodes, stage inputs, visited predicate nodes, traversal work, and nested result
-sizes. They are not byte or wall-clock bounds. Boolean evaluation short-circuits;
-skipped branches consume no evaluation work.
+nodes, scope and type preparation, stage inputs, visited predicate nodes,
+traversal work, and nested result sizes. They are not byte or wall-clock bounds.
+Boolean evaluation short-circuits; skipped branches consume no evaluation work.
 
 Nested expressions and predicates have a 64-level limit; flat
 pipelines, boolean chains, and set chains do not consume a level per term.
 Excessive nesting is reported when the expression is evaluated.
 
-Ordinary and diff programs share statement order, immutable binding scope, groups and set
-sequencing with Zirql. In the development checkout, ordinary text programs also
-use `zirql::read_program` for function collection, parameters, pattern lets and
-separators. The adapter preserves the public parser's statements, final expression
+Ordinary and diff programs use Zirql's statement order, immutable bindings,
+groups, sets and composition steps. In the development checkout, ordinary text
+programs also use `zirql::read_program` for function collection, parameters,
+pattern lets and separators. The adapter preserves the public parser's statements, final expression
 and parameter positions; typed builders continue to construct that frontend
 model directly. Zirium retains legacy bindings, `do` and native output policy.
-Native selectors reenter the expression runner with the same document or comparison, bindings and budget. Typed diff fixed-point bodies
-and navigation use the same active allowance. The textual `Query` API also accepts
-`evaluate_with_program_limits`; `--max-results` exposes its aggregate allowance
+
+Filter, match, ordering, mapping, existence, fixed-point and path bodies prepare
+through the shared runner. Each selector and existence relation receives one
+subject; a fixed point receives the complete
+selection. Match clauses keep their original input and earlier named captures.
+Native hooks retain MLIR identity, result shape and the diff side. Typed diff
+fixed-point bodies and navigation use the same active allowance. The textual
+`Query` API also accepts `evaluate_with_program_limits`;
+`--max-results` exposes its aggregate allowance
 in the CLI. Typed expression APIs retain their existing limits and native values.
 See [query language limits](query-language.md) for the
 aggregate units and the caller-owned printing boundary.
@@ -376,8 +382,8 @@ See [semantic diff](semantic-diff.md) for examples.
 subject. `ReportExpr` contains the shared value tree; construction reads no
 document and accepts no query-source strings or evaluator callbacks.
 
-Textual reports and typed builders produce Zirql's located `Value` and
-`Projection` steps directly. Each request registers its functions with one
+Textual reports and typed builders produce Zirql's located `Value`,
+`Projection` and composition steps directly. Each request registers its functions with one
 `PreparedFunctions` unit, including requests with no function declarations.
 `prepare_expression` checks the written bodies and retains their result kinds;
 `evaluate_expression` supplies the current bindings, relative input and cumulative
@@ -395,11 +401,12 @@ admitted handles as well as scalar results. Both forms execute in the same
 prepared unit; report-only positions still require an explicit scalar projection
 of native handles.
 
-Native stages keep their direct execution and document ownership checks.
-Constructed suffixes such as `count`, `sort`, `unique` and `tally` use their
-prepared value bodies when their input is constructed. A plain native count or
-selection keeps its existing work and stream limits; attaching a prepared unit
-does not require an aggregate result allowance for those requests.
+Core collection steps handle `count`, bounds, `unique` and `tally`, and core
+ordering handles `sort`. They preserve the admitted native or constructed shape.
+Zirium supplies exact operation, type and attribute identities and retains its
+native empty-extremum refusals. Native navigation keeps its document ownership
+checks. A plain native count or selection keeps its work and stream limits;
+attaching a prepared unit does not require an aggregate result allowance.
 
 ```rust
 use zirium::query::{ReportExpr, bound_ops, op, ops};
@@ -489,7 +496,7 @@ existing semantic wrappers.
 ## Transform report data
 
 The methods in this section require the development checkout and its Zirql Git
-pin `23b4e4e70a9225dfeea51642c130da2431b12d9d`. They accept shared expressions
+pin `dd8aca20bf5313cf8a735753cc687996bb114003`. They accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 

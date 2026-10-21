@@ -803,7 +803,12 @@ fn run() -> Result<(), String> {
                 )?;
                 return Ok(());
             }
-            if matches!(&output, QueryOutput::Array(_) | QueryOutput::Map(_)) {
+            if matches!(
+                &output,
+                QueryOutput::Array(_)
+                    | QueryOutput::Map(_)
+                    | QueryOutput::Native(zirium::query::NativeValue::Map(_))
+            ) {
                 let value = output.to_json_with_budget(document, budget)?;
                 return write_json_output(
                     &mut staged_output,
@@ -1353,6 +1358,9 @@ fn write_ndjson_record(
                     .map_err(EvaluationError::from)?;
                 serde_json::from_str(&text)
                     .map_err(|error| EvaluationError::new(error.to_string()))?
+            }
+            value @ QueryOutput::Native(zirium::query::NativeValue::Map(_)) => {
+                value.to_json_with_budget(document, budget)?
             }
             QueryOutput::Native(_) => {
                 return Err(EvaluationError::new(

@@ -907,7 +907,6 @@ type Entry<'q> = zirql::PreparedFunctionValue<'q, report::Operand, program::Kind
 /// Every submitted request owns this unit, including an empty function list.
 /// It stores no document, bindings, budget or result; execution supplies them.
 pub(super) struct Session<'q, 'a, 'd> {
-    pub(super) host: &'a report::ReportHost<'q>,
     unit: zirql::PreparedFunctions<'q, 'a, EvaluationContext<'a, 'd, 'q>, report::ReportHost<'q>>,
     native_arguments: BTreeMap<(usize, usize), Entry<'q>>,
     bindings: BTreeMap<usize, zirql::PreparedPatternBinding<'q, report::Operand, program::Kind>>,
@@ -924,7 +923,6 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
         budget: &mut Budget,
     ) -> Result<Self, EvaluationError> {
         Ok(Self {
-            host,
             unit: zirql::PreparedFunctions::prepare_patterns(
                 functions.iter().map(|f| f.declaration.as_ref()),
                 host,
@@ -948,7 +946,7 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
         budget: &mut Budget,
     ) -> Result<program::Kind, EvaluationError> {
         let source = &expressions[&(expression as *const _ as usize)];
-        let native_only = !report::has_constructed(expression)
+        let native_only = !report::needs_preparation(expression)
             && names
                 .values()
                 .all(|kind| !matches!(kind, program::Kind::Constructed(_)));
@@ -971,6 +969,11 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                 .insert(source as *const _ as usize, Some(entry));
             kind
         };
+        // Core preparation owns common bodies. Only opaque legacy groups still
+        // need Session entries for their native execution path.
+        if !native_only && report::native_groups(source, budget)?.is_empty() {
+            return Ok(result);
+        }
         for steps in
             std::iter::once(&expression.first).chain(expression.rest.iter().map(|(_, steps)| steps))
         {
@@ -1021,10 +1024,7 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                     }
 
                     for nested in report::nested(stage) {
-                        let relative = if matches!(
-                            stage.as_ref(),
-                            model::Stage::Fixpoint { .. } | model::Stage::Group { .. }
-                        ) {
+                        let relative = if matches!(stage.as_ref(), model::Stage::Group { .. }) {
                             kind.clone()
                         } else {
                             program::Kind::Operations
@@ -1283,17 +1283,6 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
     }
 }
 
-pub(super) fn evaluate(
-    value: &ParsedComprehension,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    input: QueryOutput,
-    bindings: &zirql::Bindings<QueryOutput>,
-    budget: &mut Budget,
-) -> Result<QueryOutput, EvaluationError> {
-    context
-        .functions
-        .run_native_argument(&value.expression, context, &input, bindings, budget)
-}
 pub(super) fn owned(
     mut value: QueryOutput,
     budget: &mut Budget,
@@ -1479,11 +1468,6 @@ pub(super) fn normalize_outer(
     budget: &mut Budget,
 ) -> Result<zirql::ValueExpression<report::Operand>, zirql::QueryError> {
     let result = zirql::walk_value_mut(&mut value, budget, 64, |value, _, budget| {
-        if let zirql::ValueExpressionKind::NativeQuery(query)
-        | zirql::ValueExpressionKind::NativeValue(query) = &mut value.value
-        {
-            report::retain_tally_continuations(query, budget)?;
-        }
         if let zirql::ValueExpressionKind::Name(name) = &value.value
             && names.contains(name)
         {

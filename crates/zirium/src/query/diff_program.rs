@@ -12,8 +12,7 @@ use std::sync::Arc;
 use std::{borrow::Cow, collections::BTreeMap, ops::Range};
 use zirql::ProjectionHost;
 use zirql::{
-    Bindings, Budget, ExpressionKind, ExpressionStep, Host, Located, NativeInput, ProgramHost,
-    Stage, Truth,
+    Bindings, Budget, ExpressionKind, Host, Located, NativeInput, ProgramHost, Stage, Truth,
 };
 
 /// Native results from a diff text program. Selections retain comparison and
@@ -141,13 +140,25 @@ impl DiffProgram {
             options,
             emit: &mut emit,
         };
-        zirql::evaluate_program(
+        zirql::evaluate_program_with(
             &self.program,
             &DiffHost,
             input,
             &mut context,
             bindings,
             budget,
+            &mut |expression, input, context, bindings, budget| {
+                zirql::evaluate_native_expression(
+                    expression,
+                    &DiffProjectionHost {
+                        reject_string_unique: true,
+                    },
+                    input,
+                    context,
+                    bindings,
+                    budget,
+                )
+            },
         )
         .map_err(program::evaluation_error)?;
         Ok(())
@@ -263,10 +274,7 @@ pub(super) enum Leaf {
 
 #[derive(Debug)]
 pub(super) enum DiffStage {
-    Value(SharedValue),
-    Nested(Box<OwnedExpression>),
-    Stream(zirql::Pipeline<Leaf>),
-    SelectionUnique(zirql::Pipeline<Leaf>),
+    Guard(Leaf),
     Input,
     Project(DiffSide),
     Users(Option<usize>),
@@ -276,79 +284,14 @@ pub(super) enum DiffStage {
     Root(zirql::Pipeline<Leaf>),
     Subtree,
     Graph(OperationTraversal),
-    Fixpoint(Box<OwnedExpression>),
-    WhereExists(Box<OwnedExpression>),
-    Reverse,
-    Head(usize),
-    Tail(usize),
-    Count,
-    SortMapValue,
     Names,
     Attr(String),
     ResultTypes,
     OperandTypes,
-    Sort,
-    Extreme {
-        maximum: bool,
-        all: bool,
-    },
-    Order {
-        kind: Order,
-        selector: Box<OwnedExpression>,
-    },
-    MapBy {
-        key: Box<OwnedExpression>,
-        value: Box<OwnedExpression>,
-    },
-    Check(Option<usize>),
     Json,
     Markdown,
     Print(String),
     Noop,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) enum Order {
-    Sort,
-    Min,
-    Max,
-    MinAll,
-    MaxAll,
-}
-
-pub(super) fn sequence(stages: Vec<Located<DiffStage>>, range: Range<usize>) -> Expression {
-    Located::new(
-        ExpressionKind::Sequence {
-            input: Box::new(Located::new(ExpressionKind::Input, range.clone())),
-            steps: stages
-                .into_iter()
-                .map(|stage| Located::new(ExpressionStep::Stage(stage.value), stage.range))
-                .collect(),
-        },
-        range,
-    )
-}
-
-pub(super) fn nested(expression: Expression) -> Box<OwnedExpression> {
-    let range = expression.range.clone();
-    Box::new(OwnedExpression::new(Located::new(
-        ExpressionKind::Group(Box::new(expression)),
-        range,
-    )))
-}
-
-pub(super) fn stream(
-    stage: Stage<Leaf>,
-    range: Range<usize>,
-) -> Result<DiffStage, EvaluationError> {
-    Ok(DiffStage::Stream(
-        zirql::Pipeline::with_group_not_nesting(
-            vec![Located::new(stage, range.clone())],
-            range,
-            zirql::MAX_NESTING,
-        )
-        .map_err(core_error)?,
-    ))
 }
 
 pub(super) fn initial_changes(
@@ -370,7 +313,13 @@ pub(super) fn evaluate_typed(
     options: EvaluationOptions,
     budget: &mut Budget,
 ) -> Result<DiffProgramOutput, EvaluationError> {
-    validate_expression(expression, Kind::Changes, &BTreeMap::new())?;
+    validate_shared(
+        expression,
+        ValueKind::Native(Kind::Changes),
+        &BTreeMap::new(),
+        &DiffProjectionHost,
+        budget,
+    )?;
     let input = initial_changes(diff, budget, &expression.range)?;
     let mut discard = |_: &Diff<'_>, _: DiffProgramOutput, _: &mut Budget| Ok(());
     let mut context = Context {
@@ -503,25 +452,8 @@ impl ProgramHost<Context<'_, '_>> for DiffHost {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<DiffProgramOutput, zirql::EvaluationError<EvaluationError>> {
-        let result =
-            if let DiffStage::Stream(pipeline) | DiffStage::SelectionUnique(pipeline) = stage {
-                if matches!(stage, DiffStage::SelectionUnique(_))
-                    && !matches!(
-                        value,
-                        DiffProgramOutput::Changes(_) | DiffProgramOutput::Operations(_, _)
-                    )
-                {
-                    Err(failure(
-                        "unique requires a change or operation stream",
-                        range,
-                    ))
-                } else {
-                    evaluate_stream(pipeline, value, context, bindings, budget)
-                }
-            } else {
-                charge(budget, value.len().max(1), range)
-                    .and_then(|()| evaluate_stage(stage, value, context, bindings, budget, range))
-            };
+        let result = charge(budget, value.len().max(1), range)
+            .and_then(|()| evaluate_stage(stage, value, context, bindings, budget, range));
         result
             .and_then(|value| {
                 check(budget, value.len(), range)?;
@@ -578,8 +510,15 @@ fn evaluate_expression(
     bindings: &Bindings<DiffProgramOutput>,
     budget: &mut Budget,
 ) -> Result<DiffProgramOutput, EvaluationError> {
-    zirql::evaluate_expression(expression, &DiffHost, input, context, bindings, budget)
-        .map_err(program::evaluation_error)
+    zirql::evaluate_native_expression(
+        expression,
+        &DiffProjectionHost,
+        input,
+        context,
+        bindings,
+        budget,
+    )
+    .map_err(program::evaluation_error)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -908,30 +847,7 @@ fn evaluate_stage(
 ) -> Result<DiffProgramOutput, EvaluationError> {
     let diff = context.diff;
     match stage {
-        DiffStage::Value(value_expression) => {
-            let result = zirql::evaluate_native_value_with_types(
-                &value_expression.0,
-                &DiffProjectionHost,
-                value,
-                context,
-                bindings,
-                budget,
-            )
-            .map_err(program::evaluation_error)?;
-            super::comprehension::ConstructedReport::with_types(
-                result.value,
-                result.types,
-                range.clone(),
-                budget,
-            )
-            .map(DiffProgramOutput::Constructed)
-        }
-        DiffStage::Stream(_) | DiffStage::SelectionUnique(_) => {
-            unreachable!("stream stages use the shared runner")
-        }
-        DiffStage::Nested(value_expression) => {
-            evaluate_expression(value_expression, value, context, bindings, budget)
-        }
+        DiffStage::Guard(_) => Err(failure("predicate guard is not an executable stage", range)),
         DiffStage::Input => initial_changes(diff, budget, range),
         DiffStage::Project(side) => {
             let DiffProgramOutput::Changes(changes) = value else {
@@ -957,111 +873,10 @@ fn evaluate_stage(
         | DiffStage::Root(_)
         | DiffStage::Subtree
         | DiffStage::Graph(_) => navigate(value, stage, context, bindings, budget, range),
-        DiffStage::WhereExists(body) => where_exists(value, body, context, bindings, budget, range),
-        DiffStage::Fixpoint(body) => fixed_point(value, body, context, bindings, budget, range),
         DiffStage::Names
         | DiffStage::Attr(_)
         | DiffStage::ResultTypes
         | DiffStage::OperandTypes => project(diff, value, stage, budget, range),
-        DiffStage::Count => Ok(DiffProgramOutput::Count(value.len())),
-        DiffStage::SortMapValue => {
-            let DiffProgramOutput::Map(entries) = value else {
-                return Err(failure("sort_by(value) requires a map", range));
-            };
-            zirql::sort_map_by_value(
-                entries,
-                budget,
-                zirql::Location::Query(range.clone()),
-                |value, budget| match value {
-                    DiffProgramOutput::Count(count) => Ok(zirql::ScalarMapKey::Unsigned(
-                        u64::try_from(*count).map_err(|_| {
-                            zirql::EvaluationError::Host(failure(
-                                "count exceeds unsigned map key range",
-                                range,
-                            ))
-                        })?,
-                    )),
-                    DiffProgramOutput::Json(value, _) => {
-                        super::scalar_map_key(value, budget, range)
-                    }
-                    _ => Err(zirql::EvaluationError::Host(failure(
-                        "sort_by(value) requires scalar map values",
-                        range,
-                    ))),
-                },
-            )
-            .map(DiffProgramOutput::Map)
-            .map_err(program::evaluation_error)
-        }
-        DiffStage::Reverse | DiffStage::Head(_) | DiffStage::Tail(_) => {
-            if let DiffProgramOutput::Map(mut entries) = value {
-                let selection = match stage {
-                    DiffStage::Reverse => zirql::MapSelection::Reverse,
-                    DiffStage::Head(count) => zirql::MapSelection::Head(*count),
-                    DiffStage::Tail(count) => zirql::MapSelection::Tail(*count),
-                    _ => unreachable!(),
-                };
-                zirql::select_map(
-                    &mut entries,
-                    selection,
-                    budget,
-                    zirql::Location::Query(range.clone()),
-                )
-                .map_err(core_error)?;
-                return Ok(DiffProgramOutput::Map(entries));
-            }
-            let (kind, mut items) = rows(value)?;
-            match stage {
-                DiffStage::Reverse => zirql::reverse(&mut items),
-                DiffStage::Head(count) => items.truncate(*count),
-                DiffStage::Tail(count) => zirql::tail(&mut items, *count),
-                _ => {}
-            }
-            Ok(from_rows(kind, items))
-        }
-        DiffStage::Sort | DiffStage::Extreme { .. } => {
-            if matches!(stage, DiffStage::Sort)
-                && let DiffProgramOutput::Map(entries) = value
-            {
-                return super::order_map_keys(entries, budget, range).map(DiffProgramOutput::Map);
-            }
-            let DiffProgramOutput::Strings(strings) = value else {
-                return Err(failure("sort and extrema require strings", range));
-            };
-            let order = match stage {
-                DiffStage::Extreme {
-                    maximum: false,
-                    all: false,
-                } => zirql::NativeOrder::Min,
-                DiffStage::Extreme {
-                    maximum: true,
-                    all: false,
-                } => zirql::NativeOrder::Max,
-                DiffStage::Extreme {
-                    maximum: false,
-                    all: true,
-                } => zirql::NativeOrder::MinAll,
-                DiffStage::Extreme {
-                    maximum: true,
-                    all: true,
-                } => zirql::NativeOrder::MaxAll,
-                _ => zirql::NativeOrder::Sort,
-            };
-            super::order_strings(strings, order, budget, range).map(DiffProgramOutput::Strings)
-        }
-        DiffStage::Order { kind, selector } => {
-            order(value, *kind, selector, context, bindings, budget, range)
-        }
-        DiffStage::MapBy {
-            key,
-            value: expression,
-        } => map(value, key, expression, context, bindings, budget, range),
-        DiffStage::Check(expected) => {
-            let actual = value.len();
-            zirql::check_cardinality(actual, *expected, None, range.clone())
-                .map_err(super::core_error)?;
-            Ok(value)
-        }
         DiffStage::Json => {
             if matches!(value, DiffProgramOutput::Json(_, _)) {
                 return Err(failure("json cannot be applied twice", range));
@@ -1228,169 +1043,6 @@ fn breadth_first_subtrees(
     Ok(expanded)
 }
 
-fn where_exists(
-    value: DiffProgramOutput,
-    body: &Expression,
-    context: &mut Context<'_, '_>,
-    bindings: &Bindings<DiffProgramOutput>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<DiffProgramOutput, EvaluationError> {
-    let (kind, items) = rows(value)?;
-    zirql::filter_native_exists(
-        items,
-        budget,
-        zirql::Location::Query(range.clone()),
-        |item, budget| {
-            validate_row(context.diff, item).map_err(zirql::EvaluationError::Host)?;
-            charge(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
-            admit(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
-            let input = from_rows(kind, vec![item.clone()]);
-            let result = evaluate_expression(body, input, context, bindings, budget)
-                .map_err(zirql::EvaluationError::Host)?;
-            let (result_kind, result) = rows(result).map_err(zirql::EvaluationError::Host)?;
-            if result_kind != kind {
-                return Err(zirql::EvaluationError::Host(failure(
-                    "where_exists relation must preserve its native kind and projected diff side",
-                    range,
-                )));
-            }
-            for item in &result {
-                validate_row(context.diff, item).map_err(zirql::EvaluationError::Host)?;
-            }
-            Ok(result)
-        },
-    )
-    .map(|items| from_rows(kind, items))
-    .map_err(program::evaluation_error)
-}
-
-fn validate_relation_purity(expression: &Expression) -> Result<(), EvaluationError> {
-    let mut pending = vec![expression];
-    while let Some(expression) = pending.pop() {
-        match &expression.value {
-            ExpressionKind::Input | ExpressionKind::Binding(_) => {}
-            ExpressionKind::Group(value) | ExpressionKind::Field { value, .. } => {
-                pending.push(value)
-            }
-            ExpressionKind::Set { left, right, .. } => {
-                pending.push(left);
-                pending.push(right);
-            }
-            ExpressionKind::Record(fields) => pending.extend(fields.iter().map(|(_, value)| value)),
-            ExpressionKind::Sequence { input, steps } => {
-                pending.push(input);
-                for step in steps {
-                    let ExpressionStep::Stage(stage) = &step.value else {
-                        return Err(failure("where_exists relation cannot emit", &step.range));
-                    };
-                    match stage {
-                        DiffStage::Noop
-                        | DiffStage::Json
-                        | DiffStage::Markdown
-                        | DiffStage::Print(_) => {
-                            return Err(failure(
-                                "where_exists relation cannot render or emit",
-                                &step.range,
-                            ));
-                        }
-                        DiffStage::Nested(body)
-                        | DiffStage::Fixpoint(body)
-                        | DiffStage::WhereExists(body) => pending.push(body),
-                        DiffStage::Order { selector, .. } => pending.push(selector),
-                        DiffStage::MapBy { key, value } => {
-                            pending.push(key);
-                            pending.push(value);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn fixed_point(
-    value: DiffProgramOutput,
-    body: &Expression,
-    context: &mut Context<'_, '_>,
-    bindings: &Bindings<DiffProgramOutput>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<DiffProgramOutput, EvaluationError> {
-    let DiffProgramOutput::Operations(side, current) = value else {
-        return Err(failure("fixpoint requires projected operations", range));
-    };
-    zirql::evaluate_native_fixed_point(
-        current,
-        context,
-        budget,
-        zirql::Location::Query(range.clone()),
-        |current, context, budget| {
-            let input = copy_operations(side, current, budget, range)
-                .map_err(zirql::EvaluationError::Host)?;
-            let next = evaluate_expression(body, input, context, bindings, budget)
-                .map_err(zirql::EvaluationError::Host)?;
-            let DiffProgramOutput::Operations(next_side, next) = next else {
-                return Err(zirql::EvaluationError::Host(failure(
-                    "fixpoint body must return operations",
-                    range,
-                )));
-            };
-            if next_side != side {
-                return Err(zirql::EvaluationError::Host(failure(
-                    "fixpoint body must preserve the projected diff side",
-                    range,
-                )));
-            }
-            Ok(next)
-        },
-        |current, _, budget| {
-            let DiffProgramOutput::Operations(_, copied) =
-                copy_operations(side, current, budget, range)
-                    .map_err(zirql::EvaluationError::Host)?
-            else {
-                unreachable!("copied operations");
-            };
-            Ok(copied)
-        },
-        |left, right, _, budget| {
-            zirql::ordered_native_equal(
-                left,
-                right,
-                budget,
-                zirql::Location::Query(range.clone()),
-                |left, right, _| Ok(left == right),
-            )
-        },
-    )
-    .map(|current| DiffProgramOutput::Operations(side, current))
-    .map_err(program::evaluation_error)
-}
-
-fn copy_operations(
-    side: DiffSide,
-    operations: &[DiffOperation],
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<DiffProgramOutput, EvaluationError> {
-    check(budget, operations.len(), range)?;
-    let work = operations
-        .len()
-        .checked_add(1)
-        .filter(|_| {
-            operations
-                .len()
-                .checked_mul(std::mem::size_of::<DiffOperation>())
-                .is_some_and(|bytes| bytes <= isize::MAX as usize)
-        })
-        .ok_or_else(|| failure("fixpoint allocation size overflow", range))?;
-    charge(budget, work, range)?;
-    admit(budget, operations.len(), range)?;
-    Ok(DiffProgramOutput::Operations(side, operations.to_vec()))
-}
-
 fn project(
     diff: &Diff<'_>,
     value: DiffProgramOutput,
@@ -1554,110 +1206,6 @@ fn combine(
         )),
         _ => Err(failure("stage requires a stream", range)),
     }
-}
-
-fn order(
-    value: DiffProgramOutput,
-    kind: Order,
-    selector: &Expression,
-    context: &mut Context<'_, '_>,
-    bindings: &Bindings<DiffProgramOutput>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<DiffProgramOutput, EvaluationError> {
-    let (stream, items) = rows(value)?;
-    if !matches!(stream, Kind::Changes | Kind::Operations(_)) {
-        return Err(failure(
-            "keyed ordering requires changes or operations",
-            range,
-        ));
-    }
-    let order = match kind {
-        Order::Sort => zirql::NativeOrder::Sort,
-        Order::Min => zirql::NativeOrder::Min,
-        Order::Max => zirql::NativeOrder::Max,
-        Order::MinAll => zirql::NativeOrder::MinAll,
-        Order::MaxAll => zirql::NativeOrder::MaxAll,
-    };
-    let items = zirql::order_native_by(
-        items,
-        order,
-        budget,
-        zirql::Location::Query(range.clone()),
-        |item, budget| {
-            admit(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
-            let input = from_rows(stream, vec![item.clone()]);
-            let key = evaluate_expression(selector, input, context, bindings, budget)
-                .map_err(zirql::EvaluationError::Host)?;
-            Ok(match key {
-                DiffProgramOutput::Count(count) => zirql::NativeOrderKey::Count(count),
-                DiffProgramOutput::Strings(mut strings) if strings.len() == 1 => {
-                    zirql::NativeOrderKey::Text(strings.pop().unwrap())
-                }
-                _ => {
-                    return Err(zirql::EvaluationError::Host(failure(
-                        "ordering key must produce exactly one scalar",
-                        range,
-                    )));
-                }
-            })
-        },
-    )
-    .map_err(program::evaluation_error)?;
-    Ok(from_rows(stream, items))
-}
-
-fn map(
-    value: DiffProgramOutput,
-    key: &Expression,
-    expression: &Expression,
-    context: &mut Context<'_, '_>,
-    bindings: &Bindings<DiffProgramOutput>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<DiffProgramOutput, EvaluationError> {
-    let (kind, items) = rows(value)?;
-    if !matches!(kind, Kind::Changes | Kind::Operations(_)) {
-        return Err(failure(
-            "map_by requires a change or operation stream",
-            range,
-        ));
-    }
-    let mapping = zirql::NativeMap {
-        key,
-        value: expression,
-    };
-    let entries = zirql::map_native_by(
-        items,
-        context,
-        budget,
-        zirql::Location::Query(range.clone()),
-        |item, context, budget| {
-            admit(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
-            let input = from_rows(kind, vec![item.clone()]);
-            let key_input = copy(&input, budget, range).map_err(zirql::EvaluationError::Host)?;
-            let key = evaluate_expression(mapping.key, key_input, context, bindings, budget)
-                .map_err(zirql::EvaluationError::Host)?;
-            Ok(if let DiffProgramOutput::Strings(keys) = key {
-                Some(keys)
-            } else {
-                None
-            })
-        },
-        |item, context, budget| {
-            admit(budget, 1, range).map_err(zirql::EvaluationError::Host)?;
-            evaluate_expression(
-                mapping.value,
-                from_rows(kind, vec![item]),
-                context,
-                bindings,
-                budget,
-            )
-            .map_err(zirql::EvaluationError::Host)
-        },
-    )
-    .map_err(program::evaluation_error)?;
-    Ok(DiffProgramOutput::Map(entries))
 }
 
 fn json_bytes(value: &serde_json::Value) -> usize {
@@ -1948,13 +1496,16 @@ fn validate_program(
             zirql::Statement::Bind { name, expression } => (expression, Some(name)),
             zirql::Statement::Evaluate { expression, .. } => (expression, None),
         };
-        let kind = validate_expression(expression, Kind::Changes, &names)?;
-        let shared_kind = validate_shared(
+        let shared_kind = zirql::native_entry_kind(
             expression,
-            ValueKind::Native(Kind::Changes),
+            &DiffProjectionHost {
+                reject_string_unique: true,
+            },
+            &ValueKind::Native(Kind::Changes),
             &shared_names,
             budget,
-        )?;
+        )
+        .map_err(core_error)?;
         if let Some(name) = name {
             if matches!(
                 name.value.as_str(),
@@ -1965,6 +1516,10 @@ fn validate_program(
                     &name.range,
                 ));
             }
+            let kind = match &shared_kind {
+                ValueKind::Native(kind) => *kind,
+                ValueKind::Constructed(_) => Kind::Constructed,
+            };
             shared_names.insert(name.value.clone(), shared_kind);
             if names.insert(name.value.clone(), kind).is_some() {
                 return Err(failure(
@@ -1975,61 +1530,6 @@ fn validate_program(
         }
     }
     Ok(())
-}
-fn validate_expression(
-    expression: &Expression,
-    input: Kind,
-    names: &BTreeMap<String, Kind>,
-) -> Result<Kind, EvaluationError> {
-    // The left-associated set spine is flat language structure, so inspect it
-    // iteratively rather than treating each set term as another nesting level.
-    let mut rights = Vec::new();
-    let mut first = expression;
-    while let ExpressionKind::Set { left, right, .. } = &first.value {
-        rights.push(right.as_ref());
-        first = left;
-    }
-    let kind = match &first.value {
-        ExpressionKind::Input => input,
-        ExpressionKind::Binding(name) => *names
-            .get(name)
-            .ok_or_else(|| failure(format!("undefined binding: {name}"), &first.range))?,
-        ExpressionKind::Group(inner) => validate_expression(inner, input, names)?,
-        ExpressionKind::Sequence {
-            input: expression,
-            steps,
-        } => {
-            let mut kind = validate_expression(expression, input, names)?;
-            for step in steps {
-                let ExpressionStep::Stage(stage) = &step.value else {
-                    unreachable!("diff emitters are value stages")
-                };
-                kind = validate_stage(stage, kind, names, &step.range)?;
-            }
-            kind
-        }
-        ExpressionKind::Set { .. } => unreachable!("the flat set spine was removed"),
-        ExpressionKind::Record(_) | ExpressionKind::Field { .. } => {
-            return Err(failure(
-                "records are unsupported in diff mode",
-                &first.range,
-            ));
-        }
-    };
-    for right in rights.into_iter().rev() {
-        let other = validate_expression(right, input, names)?;
-        if kind != other || !matches!(kind, Kind::Changes | Kind::Operations(_)) {
-            return Err(failure(
-                if matches!((kind, other), (Kind::Operations(_), Kind::Operations(_))) {
-                    "set operations require operation selections from the same diff side"
-                } else {
-                    "set operations require selections of the same kind"
-                },
-                &expression.range,
-            ));
-        }
-    }
-    Ok(kind)
 }
 fn validate_stage(
     stage: &DiffStage,
@@ -2045,56 +1545,10 @@ fn validate_stage(
         }
     };
     let selection = matches!(input, Kind::Changes | Kind::Operations(_));
-    let stream = selection || input == Kind::Strings;
     Ok(match stage {
-        DiffStage::Stream(pipeline) | DiffStage::SelectionUnique(pipeline) => {
-            if matches!(stage, DiffStage::SelectionUnique(_)) {
-                require(selection, "unique requires a change or operation stream")?;
-            }
-            let mut kind = input;
-            for stage in pipeline.stages() {
-                match &stage.value {
-                    Stage::Filter(predicate) => {
-                        require(selection, "filter requires a change or operation stream")?;
-                        let mut pending = vec![predicate];
-                        while let Some(predicate) = pending.pop() {
-                            match &predicate.value {
-                                zirql::PredicateKind::Leaf(Leaf::Change(_) | Leaf::Changed(_)) => {
-                                    require(
-                                        input == Kind::Changes,
-                                        "change predicates require a change stream",
-                                    )?
-                                }
-                                zirql::PredicateKind::Not(p) | zirql::PredicateKind::Group(p) => {
-                                    pending.push(p)
-                                }
-                                zirql::PredicateKind::And(ps) | zirql::PredicateKind::Or(ps) => {
-                                    pending.extend(ps)
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    Stage::Head(_)
-                    | Stage::Tail(_)
-                    | Stage::Reverse
-                    | Stage::Check { .. }
-                    | Stage::Unique => require(stream, "stage requires a stream")?,
-                    Stage::Count => {
-                        require(stream, "count requires a stream")?;
-                        kind = Kind::Count;
-                    }
-                    Stage::Tally => {
-                        require(input == Kind::Strings, "tally requires a value stream")?;
-                        kind = Kind::Map;
-                    }
-                    _ => unreachable!("diff native pipelines contain only shared stages"),
-                }
-            }
-            kind
+        DiffStage::Guard(_) => {
+            return Err(failure("predicate guard is not an executable stage", range));
         }
-        DiffStage::Value(_) => Kind::Constructed,
-        DiffStage::Nested(expression) => validate_expression(expression, input, names)?,
         DiffStage::Input => Kind::Changes,
         DiffStage::Project(side) => {
             require(input == Kind::Changes, "side projection requires changes")?;
@@ -2113,35 +1567,6 @@ fn validate_stage(
             )?;
             input
         }
-        DiffStage::WhereExists(body) => {
-            require(
-                selection,
-                "where_exists requires changes or projected operations",
-            )?;
-            validate_relation_purity(body)?;
-            let result = validate_expression(body, input, names)?;
-            require(
-                result == input,
-                "where_exists relation must preserve its native kind and projected diff side",
-            )?;
-            input
-        }
-        DiffStage::Fixpoint(body) => {
-            require(
-                matches!(input, Kind::Operations(_)),
-                "fixpoint requires projected operations",
-            )?;
-            let result = validate_expression(body, input, names)?;
-            require(
-                matches!(result, Kind::Operations(_)),
-                "fixpoint body must return operations",
-            )?;
-            require(
-                result == input,
-                "fixpoint body must preserve the projected diff side",
-            )?;
-            input
-        }
         DiffStage::Names
         | DiffStage::Attr(_)
         | DiffStage::ResultTypes
@@ -2149,48 +1574,7 @@ fn validate_stage(
             require(selection, "projection requires changes or operations")?;
             Kind::Strings
         }
-        DiffStage::Count => {
-            require(
-                stream || input == Kind::Map,
-                "count requires a stream or map",
-            )?;
-            Kind::Count
-        }
-        DiffStage::SortMapValue => {
-            require(input == Kind::Map, "sort_by(value) requires a map")?;
-            input
-        }
-        DiffStage::Reverse | DiffStage::Head(_) | DiffStage::Tail(_) => {
-            require(
-                stream || input == Kind::Map,
-                "stage requires a stream or map",
-            )?;
-            input
-        }
-        DiffStage::Sort if input == Kind::Map => input,
-        DiffStage::Sort | DiffStage::Extreme { .. } => {
-            require(input == Kind::Strings, "sort and extrema require strings")?;
-            input
-        }
-        DiffStage::Order { selector, .. } => {
-            require(selection, "keyed ordering requires changes or operations")?;
-            let kind = validate_expression(selector, input, names)?;
-            require(
-                matches!(kind, Kind::Strings | Kind::Count),
-                "ordering key must produce exactly one scalar",
-            )?;
-            input
-        }
-        DiffStage::MapBy { key, value } => {
-            require(selection, "map_by requires a change or operation stream")?;
-            require(
-                validate_expression(key, input, names)? == Kind::Strings,
-                "map_by key must produce exactly one string",
-            )?;
-            validate_expression(value, input, names)?;
-            Kind::Map
-        }
-        DiffStage::Check(_) | DiffStage::Noop => input,
+        DiffStage::Noop => input,
         DiffStage::Json => {
             require(input != Kind::Json, "json cannot be applied twice")?;
             Kind::Json
@@ -2228,7 +1612,13 @@ enum ValueKind {
     Native(Kind),
     Constructed(Arc<Vec<zirql::ValueType>>),
 }
-struct DiffProjectionHost;
+struct DiffProjectionHost {
+    reject_string_unique: bool,
+}
+#[allow(non_upper_case_globals)]
+const DiffProjectionHost: DiffProjectionHost = DiffProjectionHost {
+    reject_string_unique: false,
+};
 
 fn value_scope(names: &BTreeMap<String, Kind>) -> BTreeMap<String, ValueKind> {
     names
@@ -2298,6 +1688,561 @@ impl ProgramHost<Context<'_, '_>> for DiffProjectionHost {
 }
 impl ProjectionHost<Context<'_, '_>> for DiffProjectionHost {
     type Kind = ValueKind;
+    fn is_constructed_kind(&self, kind: &ValueKind) -> bool {
+        matches!(kind, ValueKind::Constructed(_))
+    }
+    fn subject_kind(
+        &self,
+        input: &ValueKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<ValueKind, zirql::QueryError> {
+        match input {
+            ValueKind::Native(Kind::Changes | Kind::Operations(_) | Kind::Strings) => {
+                Ok(input.clone())
+            }
+            _ => Err(zirql::QueryError::query(
+                range.clone(),
+                "native diff enumeration requires a stream",
+            )),
+        }
+    }
+    fn selection_kind(
+        &self,
+        input: &ValueKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<ValueKind, zirql::QueryError> {
+        match input {
+            ValueKind::Native(Kind::Changes | Kind::Operations(_)) => Ok(input.clone()),
+            _ => Err(zirql::QueryError::query(
+                range.clone(),
+                "relation requires changes or projected operations",
+            )),
+        }
+    }
+    fn validate_existence(
+        &self,
+        input: &ValueKind,
+        result: &ValueKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), zirql::QueryError> {
+        if input == result {
+            Ok(())
+        } else {
+            Err(zirql::QueryError::query(
+                range.clone(),
+                "where_exists relation must preserve its native kind and projected diff side",
+            ))
+        }
+    }
+    fn fixed_point_kind(
+        &self,
+        input: &ValueKind,
+        result: &ValueKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<ValueKind, zirql::QueryError> {
+        if !matches!(input, ValueKind::Native(Kind::Operations(_))) {
+            return Err(zirql::QueryError::query(
+                range.clone(),
+                "fixpoint requires projected operations",
+            ));
+        }
+        if input != result {
+            return Err(zirql::QueryError::query(
+                range.clone(),
+                "fixpoint body must preserve the projected diff side",
+            ));
+        }
+        Ok(input.clone())
+    }
+    fn restore_selection(
+        &self,
+        input: DiffProgramOutput,
+        items: Vec<DiffProgramOutput>,
+        _: zirql::SelectionShape,
+        context: &mut Context<'_, '_>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<DiffProgramOutput, zirql::EvaluationError<EvaluationError>> {
+        let (kind, _) = rows(input).map_err(zirql::EvaluationError::Host)?;
+        let mut result = Vec::new();
+        for item in items {
+            let (item_kind, item_rows) = rows(item).map_err(zirql::EvaluationError::Host)?;
+            if item_kind != kind {
+                return Err(zirql::QueryError::query(
+                    range.clone(),
+                    "native diff selection changed kind or side",
+                )
+                .into());
+            }
+            for row in item_rows {
+                validate_row(context.diff, &row).map_err(zirql::EvaluationError::Host)?;
+                push(&mut result, row, budget, range).map_err(zirql::EvaluationError::Host)?;
+            }
+        }
+        Ok(from_rows(kind, result))
+    }
+    fn admit_selection(
+        &self,
+        value: DiffProgramOutput,
+        context: &mut Context<'_, '_>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<DiffProgramOutput, zirql::EvaluationError<EvaluationError>> {
+        let (kind, items) = rows(value).map_err(zirql::EvaluationError::Host)?;
+        if !matches!(kind, Kind::Changes | Kind::Operations(_)) {
+            return Err(zirql::QueryError::query(
+                range.clone(),
+                "relation requires changes or projected operations",
+            )
+            .into());
+        }
+        for item in &items {
+            validate_row(context.diff, item).map_err(zirql::EvaluationError::Host)?;
+        }
+        check(budget, items.len(), range).map_err(zirql::EvaluationError::Host)?;
+        Ok(from_rows(kind, items))
+    }
+    fn set_kind(
+        &self,
+        left: &ValueKind,
+        right: &ValueKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<ValueKind, zirql::QueryError> {
+        if left == right
+            && matches!(
+                left,
+                ValueKind::Native(Kind::Changes | Kind::Operations(_) | Kind::Strings)
+            )
+        {
+            Ok(left.clone())
+        } else {
+            Err(zirql::QueryError::query(
+                range.clone(),
+                "set operands require the same native kind and same diff side",
+            ))
+        }
+    }
+    fn same_selection(
+        &self,
+        left: &DiffProgramOutput,
+        right: &DiffProgramOutput,
+        _: &mut Context<'_, '_>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<bool, zirql::EvaluationError<EvaluationError>> {
+        match (left, right) {
+            (DiffProgramOutput::Operations(ls, left), DiffProgramOutput::Operations(rs, right))
+                if ls == rs =>
+            {
+                zirql::ordered_native_equal(
+                    left,
+                    right,
+                    budget,
+                    zirql::Location::Query(range.clone()),
+                    |a, b, _| Ok(a == b),
+                )
+            }
+            _ => Err(zirql::QueryError::query(
+                range.clone(),
+                "fixpoint body must preserve the projected diff side",
+            )
+            .into()),
+        }
+    }
+    fn validate_guard_leaf(
+        &self,
+        payload: &DiffStage,
+        input: &ValueKind,
+        names: &BTreeMap<String, ValueKind>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), zirql::QueryError> {
+        let DiffStage::Guard(leaf) = payload else {
+            return Err(zirql::QueryError::query(
+                range.clone(),
+                "expected diff predicate leaf",
+            ));
+        };
+        if !matches!(
+            input,
+            ValueKind::Native(Kind::Changes | Kind::Operations(_))
+        ) {
+            return Err(zirql::QueryError::query(
+                range.clone(),
+                "filter requires a change or operation stream",
+            ));
+        }
+        if matches!(leaf, Leaf::Change(_) | Leaf::Changed(_))
+            && *input != ValueKind::Native(Kind::Changes)
+        {
+            return Err(zirql::QueryError::query(
+                range.clone(),
+                "change predicates require a change stream",
+            ));
+        }
+        validate_filter(
+            &Located::new(zirql::PredicateKind::Leaf(leaf.clone()), range.clone()),
+            input.clone(),
+            names,
+            budget,
+        )
+    }
+    fn value_arguments<'s>(
+        &self,
+        payload: &'s DiffStage,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::NativeValueArguments<'s, Context<'_, '_>, Self>, zirql::QueryError> {
+        let values: Vec<_> = match payload {
+            DiffStage::Guard(Leaf::Expression(value)) => vec![&*value.0],
+            DiffStage::Guard(Leaf::Dynamic { arguments, .. }) => {
+                arguments.iter().map(|value| &*value.0).collect()
+            }
+            _ => Vec::new(),
+        };
+        budget.charge_results(values.len(), zirql::Location::Query(range.clone()))?;
+        Ok(values
+            .into_iter()
+            .map(|value| (value, ValueKind::Native(Kind::Changes)))
+            .collect())
+    }
+    fn scoped_value_arguments<'s>(
+        &self,
+        payload: &'s DiffStage,
+        input: &ValueKind,
+        _: &BTreeMap<String, ValueKind>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::ScopedNativeValueArguments<'s, Context<'_, '_>, Self>, zirql::QueryError>
+    {
+        Ok(self
+            .value_arguments(payload, budget, range)?
+            .into_iter()
+            .map(|(expression, _)| zirql::ScopedNativeArgument {
+                expression,
+                relative: Some(input.clone()),
+                locals: Vec::new(),
+                allow_effects: false,
+            })
+            .collect())
+    }
+    fn evaluate_guard_leaf_with_arguments(
+        &self,
+        payload: &DiffStage,
+        input: &DiffProgramOutput,
+        bindings: &Bindings<DiffProgramOutput>,
+        arguments: &mut dyn zirql::NativeArguments<Context<'_, '_>, Self>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Truth, zirql::EvaluationError<EvaluationError>> {
+        let DiffStage::Guard(leaf) = payload else {
+            return Err(
+                zirql::QueryError::query(range.clone(), "expected diff predicate leaf").into(),
+            );
+        };
+        let result = match leaf {
+            Leaf::Expression(value) => {
+                let input = copy(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+                arguments.evaluate_predicate(&value.0, input, None, budget)?
+            }
+            Leaf::Dynamic {
+                name,
+                arguments: values,
+            } => {
+                let mut strings = Vec::new();
+                for value in values {
+                    let input = copy(input, budget, range).map_err(zirql::EvaluationError::Host)?;
+                    let value =
+                        arguments.evaluate_match_value(&value.0, input, bindings, budget)?;
+                    let DiffProgramOutput::Constructed(value) = value.value() else {
+                        return Err(zirql::QueryError::query(
+                            range.clone(),
+                            "diff predicate argument needs a string",
+                        )
+                        .into());
+                    };
+                    let zirql::ConstructedValue::String(value) = value.value().data() else {
+                        return Err(zirql::QueryError::query(
+                            range.clone(),
+                            "diff predicate argument needs a string",
+                        )
+                        .into());
+                    };
+                    program::charge_bytes(budget, value.len(), range)
+                        .map_err(zirql::EvaluationError::Host)?;
+                    strings.push(value.clone());
+                }
+                let leaf = resolved_leaf(name, strings).map_err(zirql::EvaluationError::Host)?;
+                let (_, items) =
+                    rows(copy(input, budget, range).map_err(zirql::EvaluationError::Host)?)
+                        .map_err(zirql::EvaluationError::Host)?;
+                let [row] = items.as_slice() else {
+                    return Err(zirql::QueryError::query(
+                        range.clone(),
+                        "predicate needs one native subject",
+                    )
+                    .into());
+                };
+                matches_leaf(arguments.parts().0.diff, row, &leaf)
+                    .map_err(zirql::EvaluationError::Host)?
+            }
+            _ => {
+                let (_, items) =
+                    rows(copy(input, budget, range).map_err(zirql::EvaluationError::Host)?)
+                        .map_err(zirql::EvaluationError::Host)?;
+                let [row] = items.as_slice() else {
+                    return Err(zirql::QueryError::query(
+                        range.clone(),
+                        "predicate needs one native subject",
+                    )
+                    .into());
+                };
+                validate_row(arguments.parts().0.diff, row)
+                    .map_err(zirql::EvaluationError::Host)?;
+                matches_leaf(arguments.parts().0.diff, row, leaf)
+                    .map_err(zirql::EvaluationError::Host)?
+            }
+        };
+        Ok(if result { Truth::True } else { Truth::False })
+    }
+    fn ordering_key_kind(
+        &self,
+        kind: &ValueKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), zirql::QueryError> {
+        if matches!(kind, ValueKind::Native(Kind::Strings | Kind::Count)) {
+            Ok(())
+        } else {
+            Err(zirql::QueryError::query(
+                range.clone(),
+                "ordering key must produce exactly one scalar",
+            ))
+        }
+    }
+    fn ordering_key(
+        &self,
+        value: DiffProgramOutput,
+        _: &mut Context<'_, '_>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::NativeOrderKey, zirql::EvaluationError<EvaluationError>> {
+        match value {
+            DiffProgramOutput::Count(count) => Ok(zirql::NativeOrderKey::Count(count)),
+            DiffProgramOutput::Strings(mut values) if values.len() == 1 => {
+                Ok(zirql::NativeOrderKey::Text(values.pop().unwrap()))
+            }
+            DiffProgramOutput::Constructed(value) => Ok(zirql::NativeOrderKey::Value(
+                value
+                    .into_value(budget, range)
+                    .map_err(zirql::EvaluationError::Host)?,
+            )),
+            _ => Err(zirql::QueryError::query(
+                range.clone(),
+                "ordering key must produce exactly one scalar",
+            )
+            .into()),
+        }
+    }
+    fn mapping_kind(
+        &self,
+        key: &ValueKind,
+        _: &ValueKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<ValueKind, zirql::QueryError> {
+        if *key == ValueKind::Native(Kind::Strings) {
+            Ok(ValueKind::Native(Kind::Map))
+        } else {
+            Err(zirql::QueryError::query(
+                range.clone(),
+                "map_by key must produce exactly one string",
+            ))
+        }
+    }
+    fn mapping_keys(
+        &self,
+        value: DiffProgramOutput,
+        _: &mut Context<'_, '_>,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Option<Vec<String>>, zirql::EvaluationError<EvaluationError>> {
+        Ok(if let DiffProgramOutput::Strings(values) = value {
+            Some(values)
+        } else {
+            None
+        })
+    }
+    fn is_map_kind(&self, kind: &ValueKind) -> bool {
+        *kind == ValueKind::Native(Kind::Map)
+    }
+    fn map_sort_kind(
+        &self,
+        kind: &ValueKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<ValueKind, zirql::QueryError> {
+        if self.is_map_kind(kind) {
+            Ok(kind.clone())
+        } else {
+            Err(zirql::QueryError::query(
+                range.clone(),
+                "sort_by(value) requires a map",
+            ))
+        }
+    }
+    fn map_entries(
+        &self,
+        value: DiffProgramOutput,
+        _: &mut Context<'_, '_>,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<(String, DiffProgramOutput)>, zirql::EvaluationError<EvaluationError>> {
+        if let DiffProgramOutput::Map(entries) = value {
+            Ok(entries)
+        } else {
+            Err(zirql::QueryError::query(range.clone(), "expected a native diff map").into())
+        }
+    }
+    fn construct_map(
+        &self,
+        entries: Vec<(String, DiffProgramOutput)>,
+        _: &mut Context<'_, '_>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<DiffProgramOutput, zirql::EvaluationError<EvaluationError>> {
+        check(budget, entries.len(), range).map_err(zirql::EvaluationError::Host)?;
+        Ok(DiffProgramOutput::Map(entries))
+    }
+    fn collection_kind(
+        &self,
+        operation: &Stage<()>,
+        input: &ValueKind,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<ValueKind, zirql::QueryError> {
+        if let ValueKind::Constructed(types) = input {
+            return zirql::collection_value_types(operation, types, budget, range)
+                .map(|types| self.constructed_kind(types));
+        }
+        let ValueKind::Native(kind) = input else {
+            unreachable!()
+        };
+        let selection = matches!(kind, Kind::Changes | Kind::Operations(_));
+        let stream = selection || *kind == Kind::Strings;
+        match operation {
+            Stage::Unique if self.reject_string_unique && !selection => {
+                Err(zirql::QueryError::query(
+                    range.clone(),
+                    "unique requires a change or operation stream",
+                ))
+            }
+            Stage::Tally if *kind != Kind::Strings => Err(zirql::QueryError::query(
+                range.clone(),
+                "tally requires a value stream",
+            )),
+            Stage::Count if stream || *kind == Kind::Map => Ok(ValueKind::Native(Kind::Count)),
+            Stage::Tally => Ok(ValueKind::Native(Kind::Map)),
+            _ if stream || *kind == Kind::Map => Ok(input.clone()),
+            _ => Err(zirql::QueryError::query(
+                range.clone(),
+                "stage requires a stream or map",
+            )),
+        }
+    }
+    fn collection_identity(
+        &self,
+        item: &DiffProgramOutput,
+        context: &mut Context<'_, '_>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::NativeCollectionKey, zirql::EvaluationError<EvaluationError>> {
+        let (kind, rows) = rows(copy(item, budget, range).map_err(zirql::EvaluationError::Host)?)
+            .map_err(zirql::EvaluationError::Host)?;
+        let [row] = rows.as_slice() else {
+            return Err(zirql::QueryError::query(
+                range.clone(),
+                "identity requires one diff subject",
+            )
+            .into());
+        };
+        validate_row(context.diff, row).map_err(zirql::EvaluationError::Host)?;
+        Ok(match row {
+            Row::String(value) => zirql::NativeCollectionKey::Text(value.clone()),
+            Row::Change(id) => zirql::NativeCollectionKey::Native(zirql::NativeIdentity([
+                0,
+                id.index() as u64,
+                0,
+                0,
+            ])),
+            Row::Operation(id) => zirql::NativeCollectionKey::Native(zirql::NativeIdentity([
+                if kind == Kind::Operations(DiffSide::Before) {
+                    1
+                } else {
+                    2
+                },
+                context
+                    .diff
+                    .document(id.side())
+                    .operation_key(
+                        context
+                            .diff
+                            .operation_id(*id)
+                            .map_err(|e| zirql::EvaluationError::Host(diff_error(e)))?,
+                    )
+                    .map_err(|e| zirql::QueryError::query(range.clone(), e.to_string()))?,
+                0,
+                0,
+            ])),
+        })
+    }
+    fn collection_tally_key(
+        &self,
+        item: DiffProgramOutput,
+        _: &mut Context<'_, '_>,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<String, zirql::EvaluationError<EvaluationError>> {
+        if let DiffProgramOutput::Strings(mut values) = item
+            && values.len() == 1
+        {
+            Ok(values.pop().unwrap())
+        } else {
+            Err(zirql::QueryError::query(range.clone(), "tally requires strings").into())
+        }
+    }
+    fn restore_collection(
+        &self,
+        input: DiffProgramOutput,
+        result: zirql::NativeValue<DiffProgramOutput>,
+        context: &mut Context<'_, '_>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<DiffProgramOutput, zirql::EvaluationError<EvaluationError>> {
+        match result {
+            zirql::NativeValue::Stream(items) => self.restore_selection(
+                input,
+                items,
+                zirql::SelectionShape::Preserve,
+                context,
+                budget,
+                range,
+            ),
+            zirql::NativeValue::Count(count) => Ok(DiffProgramOutput::Count(count)),
+            zirql::NativeValue::Tally(entries) => Ok(DiffProgramOutput::Map(
+                entries
+                    .into_iter()
+                    .map(|(key, count)| (key, DiffProgramOutput::Count(count)))
+                    .collect(),
+            )),
+        }
+    }
+
     fn kind(
         &self,
         value: &DiffProgramOutput,
@@ -2349,33 +2294,12 @@ impl ProjectionHost<Context<'_, '_>> for DiffProjectionHost {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<ValueKind, zirql::QueryError> {
-        if let DiffStage::Value(value) = stage {
-            let types =
-                zirql::native_value_types(&value.0, self, input.clone(), names.clone(), budget)?;
-            return Ok(self.constructed_kind(types));
-        }
-        match stage {
-            DiffStage::Nested(expression) => {
-                return validate_shared(expression, input.clone(), names, budget)
-                    .map_err(projection_error);
-            }
-            DiffStage::WhereExists(value) | DiffStage::Fixpoint(value) => {
-                let result = zirql::native_expression_kind(value, self, input, names, budget)?;
-                if result != *input {
-                    return Err(zirql::QueryError::query(
-                        range.clone(),
-                        "native body must preserve its diff kind and side",
-                    ));
+        if let DiffStage::Root(pipeline) = stage {
+            for step in pipeline.stages() {
+                if let zirql::Stage::Filter(predicate) = &step.value {
+                    validate_filter(predicate, input.clone(), names, budget)?;
                 }
             }
-            DiffStage::Order { selector, .. } => {
-                zirql::native_expression_kind(selector, self, input, names, budget)?;
-            }
-            DiffStage::MapBy { key, value } => {
-                zirql::native_expression_kind(key, self, input, names, budget)?;
-                zirql::native_expression_kind(value, self, input, names, budget)?;
-            }
-            _ => {}
         }
         let ValueKind::Native(input_kind) = input else {
             return Err(zirql::QueryError::query(
@@ -2392,22 +2316,9 @@ impl ProjectionHost<Context<'_, '_>> for DiffProjectionHost {
             .collect();
         let result =
             validate_stage(stage, *input_kind, &native_names, range).map_err(projection_error)?;
-        match stage {
-            DiffStage::Stream(pipeline) | DiffStage::Root(pipeline) => {
-                for stage in pipeline.stages() {
-                    if let Stage::Filter(predicate) = &stage.value {
-                        validate_filter(predicate, input.clone(), names, budget)?;
-                    }
-                }
-            }
-            _ => {}
-        }
         Ok(ValueKind::Native(result))
     }
     fn is_pure(&self, stage: &DiffStage) -> bool {
-        if let DiffStage::Nested(expression) = stage {
-            return validate_relation_purity(expression).is_ok();
-        }
         !matches!(
             stage,
             DiffStage::Json | DiffStage::Markdown | DiffStage::Print(_) | DiffStage::Noop
@@ -2609,6 +2520,9 @@ fn resolve_leaf(
         };
         values.push(value);
     }
+    resolved_leaf(name, values)
+}
+fn resolved_leaf(name: &str, values: Vec<String>) -> Result<Leaf, EvaluationError> {
     let mut values = values.into_iter();
     let value = values.next().expect("domain signature has one argument");
     Ok(match name {
@@ -2631,46 +2545,35 @@ fn validate_shared(
     expression: &Expression,
     input: ValueKind,
     names: &BTreeMap<String, ValueKind>,
+    host: &DiffProjectionHost,
     budget: &mut Budget,
 ) -> Result<ValueKind, EvaluationError> {
-    let mut rights = Vec::new();
-    let mut first = expression;
-    while let ExpressionKind::Set { left, right, .. } = &first.value {
-        rights.push(right.as_ref());
-        first = left;
-    }
-    budget
-        .charge(1, zirql::Location::Query(first.range.clone()))
-        .map_err(core_error)?;
-    let result = match &first.value {
-        ExpressionKind::Input => input.clone(),
-        ExpressionKind::Binding(name) => names
-            .get(name)
-            .cloned()
-            .ok_or_else(|| failure(format!("undefined binding: {name}"), &first.range))?,
-        ExpressionKind::Group(value) => validate_shared(value, input.clone(), names, budget)?,
-        ExpressionKind::Sequence {
-            input: source,
-            steps,
-        } => {
-            let mut kind = validate_shared(source, input.clone(), names, budget)?;
-            for step in steps {
-                let ExpressionStep::Stage(stage) = &step.value else {
-                    return Err(failure("unsupported diff emitter", &step.range));
-                };
-                kind = DiffProjectionHost
-                    .stage_kind(stage, &kind, names, budget, &step.range)
-                    .map_err(core_error)?;
-            }
-            kind
-        }
-        _ => return Err(failure("unsupported diff expression", &first.range)),
+    zirql::native_expression_kind(expression, host, &input, names, budget).map_err(core_error)
+}
+
+pub(super) fn native_predicate(predicate: zirql::Predicate<DiffStage>) -> zirql::Predicate<Leaf> {
+    use zirql::PredicateKind as P;
+    let range = predicate.range;
+    let value = match predicate.value {
+        P::Leaf(DiffStage::Guard(leaf)) => P::Leaf(leaf),
+        P::Leaf(_) => unreachable!("native predicate leaf"),
+        P::Not(p) => P::Not(Box::new(native_predicate(*p))),
+        P::Group(p) => P::Group(Box::new(native_predicate(*p))),
+        P::And(ps) => P::And(ps.into_iter().map(native_predicate).collect()),
+        P::Or(ps) => P::Or(ps.into_iter().map(native_predicate).collect()),
     };
-    for right in rights.into_iter().rev() {
-        let other = validate_shared(right, input.clone(), names, budget)?;
-        DiffProjectionHost
-            .set_kind(&result, &other, budget, &right.range)
-            .map_err(core_error)?;
-    }
-    Ok(result)
+    Located::new(value, range)
+}
+
+pub(super) fn guard_predicate(predicate: zirql::Predicate<Leaf>) -> zirql::Predicate<DiffStage> {
+    use zirql::PredicateKind as P;
+    let range = predicate.range;
+    let value = match predicate.value {
+        P::Leaf(leaf) => P::Leaf(DiffStage::Guard(leaf)),
+        P::Not(p) => P::Not(Box::new(guard_predicate(*p))),
+        P::Group(p) => P::Group(Box::new(guard_predicate(*p))),
+        P::And(ps) => P::And(ps.into_iter().map(guard_predicate).collect()),
+        P::Or(ps) => P::Or(ps.into_iter().map(guard_predicate).collect()),
+    };
+    Located::new(value, range)
 }

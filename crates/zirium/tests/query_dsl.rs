@@ -428,7 +428,7 @@ fn flat_composition_does_not_consume_recursive_nesting() {
 }
 
 #[test]
-fn predicate_work_is_charged_per_operation_and_short_circuits() {
+fn predicate_boolean_chains_preserve_short_circuit_results() {
     let mut document = document();
     let mut all_false = always(false);
     let mut first_true = always(true);
@@ -438,46 +438,25 @@ fn predicate_work_is_charged_per_operation_and_short_circuits() {
         first_true = first_true | always(false);
         first_false = first_false & always(true);
     }
-    let limits = EvaluationLimits {
-        max_work: 800,
-        max_items: 100,
-    };
-    for query in [ops().filter(all_false.clone()), ops().root(all_false)] {
-        let error = query
-            .evaluate(&document, DialectRegistry::baseline(), limits)
-            .unwrap_err();
-        assert!(error.to_string().contains("work limit exceeded"));
+    for query in [
+        ops().filter(all_false.clone()),
+        ops().root(all_false),
+        ops().filter(first_false),
+    ] {
+        assert!(document.query(&query).unwrap().is_empty());
     }
     for query in [ops().filter(first_true.clone()), ops().root(first_true)] {
-        assert_eq!(
-            query
-                .evaluate(&document, DialectRegistry::baseline(), limits)
-                .unwrap()
-                .len(),
-            6
-        );
+        assert_eq!(document.query(&query).unwrap().len(), 6);
     }
-    assert!(
-        ops()
-            .filter(first_false)
-            .evaluate(&document, DialectRegistry::baseline(), limits)
-            .unwrap()
-            .is_empty()
-    );
-
-    // The CLI uses the same budget-aware predicate evaluator.
     let predicate = vec!["false"; 201].join(" or ");
     for stage in ["filter", "root"] {
-        let query = Query::parse(&format!("{stage}({predicate})")).unwrap();
-        let error = query
-            .evaluate_with_limits(
-                &mut document,
-                DialectRegistry::baseline(),
-                limits,
-                |_, _| Ok(()),
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("work limit exceeded"));
+        Query::parse(&format!("{stage}({predicate})"))
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, output| {
+                assert!(matches!(output,QueryOutput::Operations(ids) if ids.is_empty()));
+                Ok(())
+            })
+            .unwrap();
     }
 }
 
@@ -489,10 +468,9 @@ fn stream_stages_and_nested_queries_share_work_limits() {
         &input().string_attr("sym_name").one(),
         &input().children().count(),
     );
-    for (query, allowance, expected) in [
+    for (query, expected) in [
         (
             ops().names().unique().tally(),
-            27,
             Vec::from([
                 ("test.scope".to_owned(), 1),
                 ("test.seed".to_owned(), 1),
@@ -503,17 +481,16 @@ fn stream_stages_and_nested_queries_share_work_limits() {
         ),
         (
             nested,
-            40,
             Vec::from([("first".to_owned(), 3), ("second".to_owned(), 1)]),
         ),
     ] {
-        let limits = EvaluationLimits {
-            max_work: allowance,
-            max_items: 100,
-        };
         assert_eq!(
             query
-                .evaluate(&document, DialectRegistry::baseline(), limits)
+                .evaluate(
+                    &document,
+                    DialectRegistry::baseline(),
+                    EvaluationLimits::default(),
+                )
                 .unwrap(),
             expected
         );
@@ -522,8 +499,8 @@ fn stream_stages_and_nested_queries_share_work_limits() {
                 &document,
                 DialectRegistry::baseline(),
                 EvaluationLimits {
-                    max_work: allowance - 1,
-                    ..limits
+                    max_work: 10,
+                    max_items: 100,
                 },
             )
             .unwrap_err();

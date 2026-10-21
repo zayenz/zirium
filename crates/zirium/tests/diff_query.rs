@@ -118,6 +118,22 @@ fn typed_projected_graph_traversals_use_the_selected_document() {
 }
 
 #[test]
+fn diff_reader_rejects_unused_stage_arguments() {
+    use zirium::query::DiffProgram;
+
+    for stage in [
+        "head(1, 2)",
+        "check(1, 2)",
+        "reverse(undefined())",
+        "unique()",
+    ] {
+        let source = format!("after | {stage} | count");
+        let error = DiffProgram::parse(&source).unwrap_err();
+        assert_eq!(error.range(), Some(8..8 + stage.len()), "{source}: {error}");
+    }
+}
+
+#[test]
 fn text_programs_keep_native_side_results_and_the_typed_projection_contract() {
     use zirium::{
         diff::DiffSide,

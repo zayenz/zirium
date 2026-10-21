@@ -9,18 +9,27 @@ use zirium::query::{
 fn native_stages(steps: &[zirium::query::parser::Step]) -> Vec<&Stage> {
     steps
         .iter()
-        .map(|step| match &step.value {
-            zirql::ExpressionStep::Stage(stage) => stage.as_ref(),
-            _ => panic!("expected native stage"),
+        .filter_map(|step| match &step.value {
+            zirql::ExpressionStep::Stage(stage) => Some(stage.as_ref()),
+            _ => None,
         })
         .collect()
 }
 
-fn initial_predicate(program: &Program) -> &Predicate {
-    let Stage::Filter { predicate, .. } = native_stages(&program.expression().first)[0] else {
+fn initial_predicate(program: &Program) -> &zirql::Predicate<std::sync::Arc<Stage>> {
+    let zirql::ExpressionStep::Filter(predicate) = &program.expression().first[0].value else {
         panic!("expected filter")
     };
     predicate
+}
+fn leaf(predicate: &zirql::Predicate<std::sync::Arc<Stage>>) -> Option<&Predicate> {
+    let zirql::PredicateKind::Leaf(stage) = &predicate.value else {
+        return None;
+    };
+    let Stage::Guard { predicate, .. } = stage.as_ref() else {
+        return None;
+    };
+    Some(predicate)
 }
 
 #[test]
@@ -121,8 +130,8 @@ fn parser_distinguishes_do_statements_from_emitting_queries() {
         [zirium::query::parser::Statement::Do(_)]
     ));
     assert!(matches!(
-        native_stages(&program.expression().first).as_slice(),
-        [Stage::Filter { .. }]
+        &program.expression().first[0].value,
+        zirql::ExpressionStep::Filter(_)
     ));
 
     let missing_semicolon = Query::parse(r#"do set_attr("tag", "hot")"#).unwrap_err();
@@ -184,10 +193,10 @@ fn parser_builds_ranged_syntax_with_insignificant_whitespace() {
     let program = parsed.program().unwrap();
     assert_eq!(program.range().as_range(), 1..source.len());
     assert!(
-        matches!(initial_predicate(program), Predicate::Op { name, .. } if name == "arith.addi")
+        matches!(leaf(initial_predicate(program)), Some(Predicate::Op { name, .. }) if name == "arith.addi")
     );
     assert!(
-        matches!(native_stages(&program.expression().first[1..]).as_slice(), [Stage::SetAttr { name, value, .. }, Stage::Count { .. }] if name == "tag" && value == "hot")
+        matches!(native_stages(&program.expression().first[1..]).as_slice(), [Stage::SetAttr { name, value, .. }] if name == "tag" && value == "hot")
     );
 }
 
@@ -214,8 +223,7 @@ fn parser_builds_ranged_relationship_stages() {
             Stage::Users { .. },
             Stage::Parent { .. },
             Stage::Children { .. },
-            Stage::Subtree { .. },
-            Stage::Unique { .. }
+            Stage::Subtree { .. }
         ]
     ));
     assert_eq!(
@@ -231,19 +239,19 @@ fn parser_builds_ordering_reduction_and_bound_stages() {
     let source = r#"sort_by(attr("rank")) | reverse | head(10) | tail(3) | min_by(children | count) | min_all_by(names) | max_by(names) | max_all_by(names)"#;
     let parsed = parse(&lex(source));
     assert!(parsed.diagnostics().is_empty());
-    assert!(matches!(
-        native_stages(&parsed.program().unwrap().expression().first).as_slice(),
-        [
-            Stage::SortBy { .. },
-            Stage::Reverse { .. },
-            Stage::Head { count: 10, .. },
-            Stage::Tail { count: 3, .. },
-            Stage::MinBy { .. },
-            Stage::MinAllBy { .. },
-            Stage::MaxBy { .. },
-            Stage::MaxAllBy { .. }
-        ]
-    ));
+    use zirql::{ExpressionStep as S, NativeOrder as O, Stage as C};
+    let steps = &parsed.program().unwrap().expression().first;
+    assert!(matches!(&steps[1].value, S::Collection(C::Reverse)));
+    assert!(matches!(&steps[2].value, S::Collection(C::Head(10))));
+    assert!(matches!(&steps[3].value, S::Collection(C::Tail(3))));
+    let orders = steps
+        .iter()
+        .filter_map(|step| match &step.value {
+            S::Ordering(order) => Some(order.order),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(orders, [O::Sort, O::Min, O::MinAll, O::Max, O::MaxAll]);
 }
 
 #[test]
@@ -317,21 +325,32 @@ fn parser_builds_boolean_predicates_with_precedence_and_parentheses() {
         r#"filter(op("a") or has_attr("tag") and not string_attr_eq("state", "skip"))"#,
     ));
     let predicate = initial_predicate(parsed.program().unwrap());
+    use zirql::PredicateKind as P;
+    let P::Or(predicates) = &predicate.value else {
+        panic!("expected disjunction")
+    };
+    assert!(matches!(leaf(&predicates[0]),Some(Predicate::Op{name,..}) if name=="a"));
+    let P::And(predicates) = &predicates[1].value else {
+        panic!("expected conjunction")
+    };
     assert!(matches!(
-        predicate,
-        Predicate::Or { predicates, .. }
-            if matches!(predicates.as_slice(), [Predicate::Op { name, .. }, Predicate::And { predicates, .. }]
-                if name == "a" && matches!(predicates.as_slice(), [Predicate::HasAttr { .. }, Predicate::Not { predicate, .. }]
-                    if matches!(predicate.as_ref(), Predicate::Attr { name, value, .. } if name == "state" && value == "skip")))
+        leaf(&predicates[0]),
+        Some(Predicate::HasAttr { .. })
     ));
-
-    let grouped = parse(&lex(r#"filter((op("a") or op("b")) and has_attr("tag"))"#));
-    assert!(matches!(
-        initial_predicate(grouped.program().unwrap()),
-        Predicate::And { predicates, .. }
-            if matches!(predicates.first(), Some(Predicate::Group { predicate, range })
-                if matches!(predicate.as_ref(), Predicate::Or { .. }) && range.as_range() == (7..27))
-    ));
+    let P::Not(predicate) = &predicates[1].value else {
+        panic!("expected negation")
+    };
+    assert!(
+        matches!(leaf(predicate),Some(Predicate::Attr{name,value,..}) if name=="state" && value=="skip")
+    );
+    let grouped = parse(&lex(r#"filter((op("a") or op("b")) and has_attr("x"))"#));
+    let P::And(predicates) = &initial_predicate(grouped.program().unwrap()).value else {
+        panic!("expected conjunction")
+    };
+    assert!(
+        matches!(&predicates[0].value,P::Group(predicate) if matches!(predicate.value,P::Or(_)))
+    );
+    assert_eq!(predicates[0].range, 7..27);
 }
 
 #[test]
@@ -381,9 +400,12 @@ fn unary_and_boolean_chain_complexity_is_stack_safe() {
                 .join(operator)
         );
         let parsed = parse(&lex(&chain));
-        match (operator, initial_predicate(parsed.program().unwrap())) {
-            (" or ", Predicate::Or { predicates, .. })
-            | (" and ", Predicate::And { predicates, .. }) => {
+        match (
+            operator,
+            &initial_predicate(parsed.program().unwrap()).value,
+        ) {
+            (" or ", zirql::PredicateKind::Or(predicates))
+            | (" and ", zirql::PredicateKind::And(predicates)) => {
                 assert_eq!(predicates.len(), 10_000)
             }
             _ => panic!("expected a flat boolean chain"),
@@ -422,7 +444,7 @@ fn lexed_input_binds_the_parser_source_and_size_checks_do_not_wrap() {
     let parsed = parse(&lexed);
     assert!(parsed.diagnostics().is_empty());
     assert!(
-        matches!(initial_predicate(parsed.program().unwrap()), Predicate::Op { name, .. } if name == "é")
+        matches!(leaf(initial_predicate(parsed.program().unwrap())), Some(Predicate::Op { name, .. }) if name == "é")
     );
 
     assert!(query_size_supported(MAX_QUERY_BYTES));

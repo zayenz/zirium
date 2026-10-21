@@ -194,7 +194,7 @@ impl<T> QueryExpr<T> {
             range: range(),
         })
     }
-    fn nested<U, V>(&self, other: &QueryExpr<V>, stage: Stage) -> QueryExpr<U> {
+    fn nested<U, V>(&self, other: &QueryExpr<V>, stage: impl Into<model::Step>) -> QueryExpr<U> {
         self.append(
             stage,
             other.depth.saturating_add(1),
@@ -209,8 +209,8 @@ impl<T> QueryExpr<T> {
     /// The result owns its collection storage; operation, type, and attribute IDs
     /// remain scoped to `document`. Evaluation is read-only and deterministic.
     /// Work and result materialization are bounded by `limits`; exceeding either
-    /// bound returns [`EvaluationError`]. Cost follows visited stages and produced
-    /// items rather than expression-construction time.
+    /// bound returns [`EvaluationError`]. Cost covers scope and type preparation,
+    /// visited stages and produced items; building an expression does no evaluation.
     pub fn evaluate(
         &self,
         document: &Document,
@@ -262,7 +262,7 @@ impl<T> QueryExpr<T> {
     pub fn new_budget(&self, limits: EvaluationLimits) -> zirql::Budget {
         if !self.functions.is_empty()
             || !self.parameters.is_empty()
-            || report::has_constructed(&self.expression)
+            || report::requires_constructed_budget(&self.expression)
         {
             zirql::Budget::for_program(ProgramLimits {
                 work: limits.max_work,
@@ -304,7 +304,7 @@ impl<T> QueryExpr<T> {
         }
         if (!self.functions.is_empty()
             || !self.parameters.is_empty()
-            || report::has_constructed(&self.expression))
+            || report::requires_constructed_budget(&self.expression))
             && budget.remaining_results().is_none()
         {
             return Err(EvaluationError::new(
@@ -394,23 +394,31 @@ pub enum PathEdge {
     Users,
 }
 
-fn path_target(predicate: model::Predicate) -> zirql::Predicate<model::Predicate> {
-    use model::Predicate as P;
-    let location = program::range(predicate.range());
-    let value = match predicate {
-        P::Not { predicate, .. } => zirql::PredicateKind::Not(Box::new(path_target(*predicate))),
-        P::Group { predicate, .. } => {
-            zirql::PredicateKind::Group(Box::new(path_target(*predicate)))
-        }
-        P::And { predicates, .. } => {
-            zirql::PredicateKind::And(predicates.into_iter().map(path_target).collect())
-        }
-        P::Or { predicates, .. } => {
-            zirql::PredicateKind::Or(predicates.into_iter().map(path_target).collect())
-        }
-        predicate => zirql::PredicateKind::Leaf(predicate),
+fn guard_predicate(
+    predicate: zirql::Predicate<model::Predicate>,
+) -> zirql::Predicate<model::NativeStage> {
+    let range = predicate.range;
+    use zirql::PredicateKind as P;
+    let value = match predicate.value {
+        P::Leaf(predicate) => P::Leaf(std::sync::Arc::new(Stage::Guard {
+            range: predicate.range(),
+            predicate,
+        })),
+        P::Not(predicate) => P::Not(Box::new(guard_predicate(*predicate))),
+        P::Group(predicate) => P::Group(Box::new(guard_predicate(*predicate))),
+        P::And(predicates) => P::And(predicates.into_iter().map(guard_predicate).collect()),
+        P::Or(predicates) => P::Or(predicates.into_iter().map(guard_predicate).collect()),
     };
-    zirql::Located::new(value, location)
+    zirql::Located::new(value, range)
+}
+fn ordering_step(order: zirql::NativeOrder, selector: Option<report::Operand>) -> model::Step {
+    zirql::Located::new(
+        zirql::ExpressionStep::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
+            order,
+            selector: selector.map(|query| zirql::NativeBody::new(query, 0..0)),
+        })),
+        0..0,
+    )
 }
 
 impl Document {
@@ -444,11 +452,12 @@ impl OpQuery {
         let functions = predicate.functions.clone();
         let parameters = predicate.parameters.clone();
         self.append(
-            Stage::Filter {
-                constructed: None,
-                predicate: predicate.inner,
-                range: range(),
-            },
+            zirql::Located::new(
+                zirql::ExpressionStep::Filter(std::sync::Arc::new(model::shared_predicate(
+                    predicate.inner,
+                ))),
+                0..0,
+            ),
             predicate.depth + 1,
             predicate.nodes + 1,
             predicate.invalid,
@@ -494,15 +503,15 @@ impl OpQuery {
             },
         };
         self.append(
-            Stage::Paths {
-                value: capture::ParsedPaths::new(zirql::NativePaths {
+            zirql::Located::new(
+                zirql::ExpressionStep::Paths(std::sync::Arc::new(zirql::NativePaths {
                     edge: zirql::Located::new(std::sync::Arc::new(edge), 0..0),
-                    target: path_target(to.inner),
+                    target: model::shared_predicate(to.inner),
                     max_depth: zirql::Located::new(max_depth, 0..0),
                     range: 0..0,
-                }),
-                range: range(),
-            },
+                })),
+                0..0,
+            ),
             to.depth + 1,
             to.nodes + 1,
             to.invalid,
@@ -526,10 +535,13 @@ impl OpQuery {
     pub fn where_exists(&self, query: &OpQuery) -> Self {
         self.nested(
             query,
-            Stage::Structured {
-                step: StructuredStage::WhereExists(Box::new(query.expression.clone())),
-                range: range(),
-            },
+            zirql::Located::new(
+                zirql::ExpressionStep::WhereExists(std::sync::Arc::new(zirql::NativeBody::new(
+                    report::value_operand(&query.expression),
+                    0..0,
+                ))),
+                0..0,
+            ),
         )
     }
     /// Build a map. Each key query must return one string; duplicate keys are errors.
@@ -539,13 +551,13 @@ impl OpQuery {
         value: &QueryExpr<T>,
     ) -> MapQuery<T> {
         self.append(
-            Stage::Structured {
-                step: StructuredStage::MapBy {
-                    key: Box::new(key.expression.clone()),
-                    value: Box::new(value.expression.clone()),
-                },
-                range: range(),
-            },
+            zirql::Located::new(
+                zirql::ExpressionStep::Mapping(std::sync::Arc::new(zirql::NativeMap {
+                    key: zirql::NativeBody::new(report::value_operand(&key.expression), 0..0),
+                    value: zirql::NativeBody::new(report::value_operand(&value.expression), 0..0),
+                })),
+                0..0,
+            ),
             key.depth.max(value.depth) + 1,
             key.nodes.saturating_add(value.nodes).saturating_add(1),
             key.invalid.or(value.invalid),
@@ -600,11 +612,16 @@ impl OpQuery {
     pub fn fixpoint(&self, body: &OpQuery) -> Self {
         self.nested(
             body,
-            Stage::Fixpoint {
-                expression: super::model::FixedPointBody::Selection(Box::new(
-                    body.expression.clone(),
-                )),
-                range: range(),
+            if body.expression.is_single_closure() {
+                model::native(Stage::ClosureFixedPoint { range: range() })
+            } else {
+                zirql::Located::new(
+                    zirql::ExpressionStep::FixedPoint(std::sync::Arc::new(zirql::NativeBody::new(
+                        report::value_operand(&body.expression),
+                        0..0,
+                    ))),
+                    0..0,
+                )
             },
         )
     }
@@ -639,43 +656,63 @@ impl OpQuery {
         self.stage(Stage::ForwardSlice { range: range() })
     }
 }
-stages!(StringQuery; min => Min: StringQuery, max => Max: StringQuery,
-    min_all => MinAll: StringQuery, max_all => MaxAll: StringQuery);
+impl StringQuery {
+    pub fn min(&self) -> Self {
+        self.stage(ordering_step(zirql::NativeOrder::Min, None))
+    }
+    pub fn max(&self) -> Self {
+        self.stage(ordering_step(zirql::NativeOrder::Max, None))
+    }
+    pub fn min_all(&self) -> Self {
+        self.stage(ordering_step(zirql::NativeOrder::MinAll, None))
+    }
+    pub fn max_all(&self) -> Self {
+        self.stage(ordering_step(zirql::NativeOrder::MaxAll, None))
+    }
+}
 impl StringQuery {
     pub fn sort(&self) -> Self {
-        self.stage(Stage::Sort {
-            constructed: report::collection_suffix(zirql::ValueSuffix::Sort, range()),
-            range: range(),
-        })
+        self.stage(ordering_step(zirql::NativeOrder::Sort, None))
     }
     pub fn tally(&self) -> MapQuery<usize> {
-        self.stage(Stage::Tally {
-            constructed: report::collection_suffix(zirql::ValueSuffix::Tally, range()),
-            range: range(),
-        })
+        self.stage(collection_step(zirql::Stage::Tally))
     }
 }
 
 macro_rules! stream {
     ($ty:ty) => {
-        stages!($ty; reverse => Reverse: Self);
         impl $ty {
+            pub fn reverse(&self) -> Self {
+                self.stage(collection_step(zirql::Stage::Reverse))
+            }
             pub fn unique(&self) -> Self {
-                self.stage(Stage::Unique {
-                    constructed: report::collection_suffix(zirql::ValueSuffix::Unique, range()),
-                    range: range(),
-                })
+                self.stage(collection_step(zirql::Stage::Unique))
             }
             pub fn count(&self) -> CountQuery {
-                self.stage(Stage::Count {
-                    constructed: report::collection_suffix(zirql::ValueSuffix::Count, range()),
-                    range: range(),
-                })
+                self.stage(collection_step(zirql::Stage::Count))
             }
-            pub fn head(&self, count: usize) -> Self { self.stage(Stage::Head { count, range: range() }) }
-            pub fn tail(&self, count: usize) -> Self { self.stage(Stage::Tail { count, range: range() }) }
-            pub fn head_expr(&self, count: ReportExpr) -> Self { self.stage(Stage::Computed {value:model::ComputedStage::Head(count.value),range:range()}).with_parameters(count.parameters).with_functions(count.functions) }
-            pub fn tail_expr(&self, count: ReportExpr) -> Self { self.stage(Stage::Computed {value:model::ComputedStage::Tail(count.value),range:range()}).with_parameters(count.parameters).with_functions(count.functions) }
+            pub fn head(&self, count: usize) -> Self {
+                self.stage(collection_step(zirql::Stage::Head(count)))
+            }
+            pub fn tail(&self, count: usize) -> Self {
+                self.stage(collection_step(zirql::Stage::Tail(count)))
+            }
+            pub fn head_expr(&self, count: ReportExpr) -> Self {
+                self.stage(zirql::Located::new(
+                    zirql::ExpressionStep::Head(count.value.expression.clone()),
+                    0..0,
+                ))
+                .with_parameters(count.parameters)
+                .with_functions(count.functions)
+            }
+            pub fn tail_expr(&self, count: ReportExpr) -> Self {
+                self.stage(zirql::Located::new(
+                    zirql::ExpressionStep::Tail(count.value.expression.clone()),
+                    0..0,
+                ))
+                .with_parameters(count.parameters)
+                .with_functions(count.functions)
+            }
         }
     };
 }
@@ -699,53 +736,38 @@ impl<T> MapQuery<T> {
         }
     }
     pub fn sort(&self) -> Self {
-        self.stage(Stage::Sort {
-            constructed: report::collection_suffix(zirql::ValueSuffix::Sort, range()),
-            range: range(),
-        })
+        self.stage(ordering_step(zirql::NativeOrder::Sort, None))
     }
     pub fn sort_by_value(&self) -> Self {
-        self.stage(Stage::SortBy {
-            selector: report::OrderingSelector::MapValue(range()),
-            range: range(),
-        })
+        self.stage(zirql::Located::new(zirql::ExpressionStep::MapSorting, 0..0))
     }
     pub fn reverse(&self) -> Self {
-        self.stage(Stage::Reverse { range: range() })
+        self.stage(collection_step(zirql::Stage::Reverse))
     }
     pub fn head(&self, count: usize) -> Self {
-        self.stage(Stage::Head {
-            count,
-            range: range(),
-        })
+        self.stage(collection_step(zirql::Stage::Head(count)))
     }
     pub fn tail(&self, count: usize) -> Self {
-        self.stage(Stage::Tail {
-            count,
-            range: range(),
-        })
+        self.stage(collection_step(zirql::Stage::Tail(count)))
     }
     pub fn head_expr(&self, count: ReportExpr) -> Self {
-        self.stage(Stage::Computed {
-            value: model::ComputedStage::Head(count.value),
-            range: range(),
-        })
+        self.stage(zirql::Located::new(
+            zirql::ExpressionStep::Head(count.value.expression.clone()),
+            0..0,
+        ))
         .with_parameters(count.parameters)
         .with_functions(count.functions)
     }
     pub fn tail_expr(&self, count: ReportExpr) -> Self {
-        self.stage(Stage::Computed {
-            value: model::ComputedStage::Tail(count.value),
-            range: range(),
-        })
+        self.stage(zirql::Located::new(
+            zirql::ExpressionStep::Tail(count.value.expression.clone()),
+            0..0,
+        ))
         .with_parameters(count.parameters)
         .with_functions(count.functions)
     }
     pub fn count(&self) -> CountQuery {
-        self.stage(Stage::Count {
-            constructed: report::collection_suffix(zirql::ValueSuffix::Count, range()),
-            range: range(),
-        })
+        self.stage(collection_step(zirql::Stage::Count))
     }
 }
 impl StringQuery {
@@ -826,11 +848,11 @@ impl OrderKey for usize {}
 macro_rules! ordering {
     ($($method:ident => $stage:ident),*) => { impl OpQuery { $(
         pub fn $method<T: OrderKey>(&self, selector: &QueryExpr<T>) -> Self {
-            self.nested(selector, Stage::$stage { selector: super::report::OrderingSelector::new(&selector.expression), range: range() })
+            self.nested(selector, ordering_step(zirql::NativeOrder::$stage, Some(report::value_operand(&selector.expression))))
         }
     )* }};
 }
-ordering!(sort_by => SortBy, min_by => MinBy, max_by => MaxBy, min_all_by => MinAllBy, max_all_by => MaxAllBy);
+ordering!(sort_by => Sort, min_by => Min, max_by => Max, min_all_by => MinAll, max_all_by => MaxAll);
 
 /// An operation predicate. Combine with `&`, `|`, and `!`.
 #[derive(Clone, Debug)]
@@ -1074,7 +1096,7 @@ pub(super) fn evaluate_structured(
     step: &StructuredStage,
     context: &mut EvaluationContext<'_, '_, '_>,
     current: QueryOutput,
-    bindings: &zirql::Bindings<QueryOutput>,
+    _bindings: &zirql::Bindings<QueryOutput>,
     budget: &mut zirql::Budget,
 ) -> Result<QueryOutput, EvaluationError> {
     Ok(match step {
@@ -1087,74 +1109,6 @@ pub(super) fn evaluate_structured(
                 EvaluationError::new(format!("one requires exactly one string, got {count}"))
             })?;
             QueryOutput::Native(NativeValue::String(value))
-        }
-        StructuredStage::WhereExists(query) => QueryOutput::Operations(
-            zirql::filter_native_exists(
-                take_operations(current, "where_exists")?,
-                budget,
-                zirql::Location::Query(0..0),
-                |operation, budget| {
-                    program::charge_results(budget, 1, &(0..0))
-                        .map_err(zirql::EvaluationError::Host)?;
-                    let result = evaluate_expression(
-                        query,
-                        context,
-                        QueryOutput::Operations(vec![*operation]),
-                        bindings,
-                        budget,
-                    )
-                    .map_err(zirql::EvaluationError::Host)?;
-                    take_operations(result, "where_exists").map_err(zirql::EvaluationError::Host)
-                },
-            )
-            .map_err(program::evaluation_error)?,
-        ),
-        StructuredStage::MapBy { key, value } => {
-            let selected = take_operations(current, "map_by")?;
-            let mapping = zirql::NativeMap {
-                key: &**key,
-                value: &**value,
-            };
-            let mut items = 0usize;
-            let entries = zirql::map_native_by(
-                selected,
-                context,
-                budget,
-                zirql::Location::Query(0..0),
-                |operation, context, budget| {
-                    program::charge_results(budget, 1, &(0..0))
-                        .map_err(zirql::EvaluationError::Host)?;
-                    let seed = QueryOutput::Operations(vec![*operation]);
-                    let input = program::copy_value(&seed, budget, &(0..0))
-                        .map_err(zirql::EvaluationError::Host)?;
-                    let key = String::from_query_output(
-                        evaluate_expression(mapping.key, context, input, bindings, budget)
-                            .map_err(zirql::EvaluationError::Host)?,
-                    )
-                    .map_err(zirql::EvaluationError::Host)?;
-                    program::charge_results(budget, 1, &(0..0))
-                        .map_err(zirql::EvaluationError::Host)?;
-                    Ok(Some(vec![key]))
-                },
-                |operation, context, budget| {
-                    program::charge_results(budget, 1, &(0..0))
-                        .map_err(zirql::EvaluationError::Host)?;
-                    let value = evaluate_expression(
-                        mapping.value,
-                        context,
-                        QueryOutput::Operations(vec![operation]),
-                        bindings,
-                        budget,
-                    )
-                    .map_err(zirql::EvaluationError::Host)?;
-                    items = items.saturating_add(output_size(&value).saturating_add(1));
-                    check_items(budget, items).map_err(zirql::EvaluationError::Host)?;
-                    charge(budget, output_size(&value)).map_err(zirql::EvaluationError::Host)?;
-                    Ok(value)
-                },
-            )
-            .map_err(program::evaluation_error)?;
-            QueryOutput::Native(NativeValue::Map(entries))
         }
         StructuredStage::StringAttr(name) => {
             let mut values = Vec::new();
@@ -2185,7 +2139,9 @@ impl MatchBuilder {
         self
     }
     pub fn build(self) -> CaptureQuery {
-        let native = |value: capture::ParsedOperand| capture::native_source(value, 0..0);
+        let native = |value: capture::ParsedOperand| {
+            zirql::NativeBody::new(capture::native_source(value, 0..0), 0..0)
+        };
         let count = self.clauses.len();
         let clauses = self
             .clauses
@@ -2201,21 +2157,21 @@ impl MatchBuilder {
                             name,
                             value: native(value),
                         },
-                        zirql::MatchClause::Where { predicate } => {
-                            zirql::MatchClause::Where { predicate }
-                        }
+                        zirql::MatchClause::Where { predicate } => zirql::MatchClause::Where {
+                            predicate: guard_predicate(predicate),
+                        },
                     },
                     clause.range,
                 )
             })
             .collect();
-        let mut query = QueryExpr::start(vec![Stage::Match {
-            value: capture::ParsedMatch::new(zirql::NativeMatch {
+        let mut query = QueryExpr::start_step(zirql::Located::new(
+            zirql::ExpressionStep::Match(std::sync::Arc::new(zirql::NativeMatch {
                 clauses,
                 range: 0..0,
-            }),
-            range: range(),
-        }])
+            })),
+            0..0,
+        ))
         .with_parameters(self.parameters)
         .with_functions(self.functions);
         query.depth = self.depth.max(count.saturating_add(1));
@@ -2468,4 +2424,8 @@ impl ReportExpr {
         })
         .with_metadata(parameters, functions)
     }
+}
+
+fn collection_step(operation: zirql::Stage<()>) -> model::Step {
+    zirql::Located::new(zirql::ExpressionStep::Collection(operation), 0..0)
 }

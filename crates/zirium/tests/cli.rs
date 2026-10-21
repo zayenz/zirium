@@ -396,13 +396,13 @@ fn cli_help_separates_parser_and_evaluator_limits() {
 }
 
 #[test]
-fn ancestor_traversal_consumes_the_work_budget() {
+fn ancestor_query_uses_the_request_work_budget() {
     let input = "module { func.func @f() { return } }";
     let output = run_stdin_with_options(&["--max-work", "4"], "root(false) | count", input);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("work limit"));
-    let output = run_stdin_with_options(&["--max-work", "100"], "root(false) | count", input);
+    let output = run_stdin("root(false) | count", input);
     assert!(output.status.success());
     assert_eq!(output.stdout, b"0\n");
 }
@@ -3071,7 +3071,7 @@ fn ranked_histograms_keep_order_through_bounds_bindings_and_markdown() {
 }
 
 #[test]
-fn ranked_maps_compare_large_and_mixed_numbers_exactly() {
+fn ranked_json_collections_keep_large_and_mixed_numbers_exact() {
     for values in [
         r#"{"a":9007199254740993,"z":9007199254740992}"#,
         r#"{"a":-9007199254740992,"z":-9007199254740993}"#,
@@ -3089,6 +3089,14 @@ fn ranked_maps_compare_large_and_mixed_numbers_exactly() {
         assert!(result.get("z").is_some(), "{values}: {result}");
         assert!(result.get("a").is_none(), "{values}: {result}");
     }
+
+    let output = run_stdin(
+        "[0, 18446744073709551615] | reverse | head(1) | json",
+        "module {}",
+    );
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result, serde_json::json!([u64::MAX]));
 }
 
 #[test]

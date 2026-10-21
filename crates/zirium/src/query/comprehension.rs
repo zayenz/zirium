@@ -305,6 +305,7 @@ pub(super) fn project(
             "computational values cannot be projected to report data",
         )
         .at(range.clone())),
+        QueryOutput::Native(NativeValue::JsonValue(value)) => project_json(value, budget, range, 0),
         QueryOutput::Native(NativeValue::Constructed(value)) => {
             zirql::copy_constructed_value(value.value(), budget, Location::Query(range.clone()))
                 .map_err(core_error)

@@ -484,7 +484,10 @@ impl Parser<'_, '_> {
             }
         }
     }
-    fn shared_paths(&mut self, depth: usize) -> Option<super::capture::ParsedPaths> {
+    fn shared_paths(
+        &mut self,
+        depth: usize,
+    ) -> Option<zirql::NativePaths<super::model::NativeStage, super::model::NativeStage>> {
         let mut reader =
             zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
                 .ok()?;
@@ -500,7 +503,7 @@ impl Parser<'_, '_> {
         match zirql::read_paths(&mut reader, &mut host, self.budget, nesting) {
             Ok(value) => {
                 self.sync(reader.position());
-                Some(super::capture::ParsedPaths::new(value))
+                Some(value)
             }
             Err(error) => {
                 self.shared_error(error);
@@ -508,7 +511,12 @@ impl Parser<'_, '_> {
             }
         }
     }
-    fn shared_match(&mut self, depth: usize) -> Option<super::capture::ParsedMatch> {
+    fn shared_match(
+        &mut self,
+        depth: usize,
+    ) -> Option<
+        zirql::NativeMatch<zirql::NativeBody<super::report::Operand>, super::model::NativeStage>,
+    > {
         let mut reader =
             zirql::ArgumentReader::new(self.source, self.current().range().start() as usize)
                 .ok()?;
@@ -524,7 +532,7 @@ impl Parser<'_, '_> {
         match zirql::read_match(&mut reader, &mut host, self.budget, nesting) {
             Ok(value) => {
                 self.sync(reader.position());
-                Some(super::capture::ParsedMatch::new(value))
+                Some(value)
             }
             Err(error) => {
                 self.shared_error(error);
@@ -702,17 +710,17 @@ impl Parser<'_, '_> {
         }
         if self.at_identifier("paths") && self.next_kind() == Some(TokenKind::LParen) {
             let value = self.shared_paths(depth)?;
-            return Some(super::model::native(Stage::Paths {
-                value,
-                range: self.span(start),
-            }));
+            return Some(zirql::Located::new(
+                zirql::ExpressionStep::Paths(std::sync::Arc::new(value)),
+                super::program::range(self.span(start)),
+            ));
         }
         if self.at_identifier("match") && self.next_kind() == Some(TokenKind::LBrace) {
             let value = self.shared_match(depth)?;
-            return Some(super::model::native(Stage::Match {
-                value,
-                range: self.span(start),
-            }));
+            return Some(zirql::Located::new(
+                zirql::ExpressionStep::Match(std::sync::Arc::new(value)),
+                super::program::range(self.span(start)),
+            ));
         }
         if self.at(TokenKind::Identifier) && self.next_kind() == Some(TokenKind::Operator) {
             let next = self.tokens[self.cursor + 1..]
@@ -769,10 +777,7 @@ impl Parser<'_, '_> {
                     return None;
                 }
             };
-            return Some(super::model::native(Stage::ConstructedSuffix {
-                value,
-                range: self.span(start),
-            }));
+            return Some(super::model::value(value));
         }
         if shared_values && self.starts_shared_value(depth) {
             let reader = zirql::ArgumentReader::new(self.source, start as usize).ok()?;
@@ -831,10 +836,12 @@ impl Parser<'_, '_> {
                 }
             }
             "reachable" => Stage::Reachable { range },
-            "tally" => Stage::Tally {
-                constructed: super::report::collection_suffix(zirql::ValueSuffix::Tally, range),
-                range,
-            },
+            "tally" => {
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Collection(zirql::Stage::Tally),
+                    super::program::range(range),
+                ));
+            }
             "value" => Stage::Value { range },
             "map_by" => {
                 self.expect(TokenKind::LParen, "expected `(` after map_by")?;
@@ -849,11 +856,19 @@ impl Parser<'_, '_> {
                     self.error("map_by queries cannot edit or emit");
                     return None;
                 }
-                Stage::MapBy {
-                    key,
-                    value,
-                    range: self.span(start),
-                }
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Mapping(std::sync::Arc::new(zirql::NativeMap {
+                        key: zirql::NativeBody::new(
+                            super::report::value_operand(&key),
+                            super::program::range(key.range),
+                        ),
+                        value: zirql::NativeBody::new(
+                            super::report::value_operand(&value),
+                            super::program::range(value.range),
+                        ),
+                    })),
+                    super::program::range(self.span(start)),
+                ));
             }
             "input" => Stage::Input { range },
             "closure" => Stage::Closure { range },
@@ -904,14 +919,21 @@ impl Parser<'_, '_> {
             "parent" => Stage::Parent { range },
             "children" => Stage::Children { range },
             "subtree" => Stage::Subtree { range },
-            "unique" => Stage::Unique {
-                constructed: super::report::collection_suffix(zirql::ValueSuffix::Unique, range),
-                range,
-            },
-            "sort" => Stage::Sort {
-                constructed: super::report::collection_suffix(zirql::ValueSuffix::Sort, range),
-                range,
-            },
+            "unique" => {
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Collection(zirql::Stage::Unique),
+                    super::program::range(range),
+                ));
+            }
+            "sort" => {
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
+                        order: zirql::NativeOrder::Sort,
+                        selector: None,
+                    })),
+                    super::program::range(range),
+                ));
+            }
             "sort_by" | "min_by" | "min_all_by" | "max_by" | "max_all_by" => {
                 self.expect(TokenKind::LParen, "expected `(` after selector stage")?;
                 let selector = Box::new(self.expression(depth + 1)?);
@@ -920,18 +942,36 @@ impl Parser<'_, '_> {
                     self.error("selector queries cannot edit or emit");
                     return None;
                 }
-                let selector = super::report::OrderingSelector::new(&selector);
-                let range = self.span(start);
-                match name.as_str() {
-                    "sort_by" => Stage::SortBy { selector, range },
-                    "min_by" => Stage::MinBy { selector, range },
-                    "min_all_by" => Stage::MinAllBy { selector, range },
-                    "max_by" => Stage::MaxBy { selector, range },
-                    "max_all_by" => Stage::MaxAllBy { selector, range },
+                let order = match name.as_str() {
+                    "sort_by" => zirql::NativeOrder::Sort,
+                    "min_by" => zirql::NativeOrder::Min,
+                    "max_by" => zirql::NativeOrder::Max,
+                    "min_all_by" => zirql::NativeOrder::MinAll,
+                    "max_all_by" => zirql::NativeOrder::MaxAll,
                     _ => unreachable!(),
-                }
+                };
+                let step = if selector.is_map_value() && order == zirql::NativeOrder::Sort {
+                    zirql::ExpressionStep::MapSorting
+                } else {
+                    zirql::ExpressionStep::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
+                        order,
+                        selector: Some(zirql::NativeBody::new(
+                            super::report::value_operand(&selector),
+                            super::program::range(selector.range),
+                        )),
+                    }))
+                };
+                return Some(zirql::Located::new(
+                    step,
+                    super::program::range(self.span(start)),
+                ));
             }
-            "reverse" => Stage::Reverse { range },
+            "reverse" => {
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Collection(zirql::Stage::Reverse),
+                    super::program::range(range),
+                ));
+            }
             "head" | "tail" => {
                 self.expect(TokenKind::LParen, "expected `(` after head or tail")?;
                 self.skip_trivia();
@@ -943,14 +983,15 @@ impl Parser<'_, '_> {
                         return None;
                     }
                     self.expect(TokenKind::RParen, "expected `)` after item count")?;
-                    return Some(super::model::native(Stage::Computed {
-                        value: if name == "head" {
-                            ComputedStage::Head(value)
-                        } else {
-                            ComputedStage::Tail(value)
-                        },
-                        range: self.span(start),
-                    }));
+                    let step = if name == "head" {
+                        zirql::ExpressionStep::Head(value.expression.clone())
+                    } else {
+                        zirql::ExpressionStep::Tail(value.expression.clone())
+                    };
+                    return Some(zirql::Located::new(
+                        step,
+                        super::program::range(self.span(start)),
+                    ));
                 }
                 if !self.at(TokenKind::Integer) {
                     self.error("expected a non-negative item count");
@@ -964,15 +1005,53 @@ impl Parser<'_, '_> {
                 self.expect(TokenKind::RParen, "expected `)` after item count")?;
                 let range = self.span(start);
                 if name == "head" {
-                    Stage::Head { count, range }
+                    return Some(zirql::Located::new(
+                        zirql::ExpressionStep::Collection(zirql::Stage::Head(count)),
+                        super::program::range(range),
+                    ));
                 } else {
-                    Stage::Tail { count, range }
+                    return Some(zirql::Located::new(
+                        zirql::ExpressionStep::Collection(zirql::Stage::Tail(count)),
+                        super::program::range(range),
+                    ));
                 }
             }
-            "min" => Stage::Min { range },
-            "min_all" => Stage::MinAll { range },
-            "max" => Stage::Max { range },
-            "max_all" => Stage::MaxAll { range },
+            "min" => {
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
+                        order: zirql::NativeOrder::Min,
+                        selector: None,
+                    })),
+                    super::program::range(range),
+                ));
+            }
+            "min_all" => {
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
+                        order: zirql::NativeOrder::MinAll,
+                        selector: None,
+                    })),
+                    super::program::range(range),
+                ));
+            }
+            "max" => {
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
+                        order: zirql::NativeOrder::Max,
+                        selector: None,
+                    })),
+                    super::program::range(range),
+                ));
+            }
+            "max_all" => {
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
+                        order: zirql::NativeOrder::MaxAll,
+                        selector: None,
+                    })),
+                    super::program::range(range),
+                ));
+            }
             "check" => {
                 self.skip_trivia();
                 let (expected, message) = if self.at(TokenKind::LParen) {
@@ -989,10 +1068,13 @@ impl Parser<'_, '_> {
                         {
                             let value = self.shared_value(depth + 1)?;
                             self.expect(TokenKind::RParen, "expected `)` after check count")?;
-                            return Some(super::model::native(Stage::Computed {
-                                value: ComputedStage::Check(value),
-                                range: self.span(start),
-                            }));
+                            return Some(zirql::Located::new(
+                                zirql::ExpressionStep::Check {
+                                    operand: Some(value.expression.clone()),
+                                    message: None,
+                                },
+                                super::program::range(self.span(start)),
+                            ));
                         }
                         if !self.at(TokenKind::Integer) {
                             self.error("expected a non-negative item count or check message");
@@ -1016,16 +1098,17 @@ impl Parser<'_, '_> {
                 } else {
                     (None, None)
                 };
-                Stage::Check {
-                    expected,
-                    message,
-                    range: self.span(start),
-                }
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Collection(zirql::Stage::Check { expected, message }),
+                    super::program::range(self.span(start)),
+                ));
             }
-            "count" => Stage::Count {
-                constructed: super::report::collection_suffix(zirql::ValueSuffix::Count, range),
-                range,
-            },
+            "count" => {
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Collection(zirql::Stage::Count),
+                    super::program::range(range),
+                ));
+            }
             "emit" => Stage::Emit { range },
             "format" => {
                 let options = self.format_options()?;
@@ -1053,7 +1136,12 @@ impl Parser<'_, '_> {
                 self.expect(TokenKind::LParen, "expected `(` after filter")?;
                 let predicate = self.predicate(depth + 1)?;
                 self.expect(TokenKind::RParen, "expected `)` after filter predicate")?;
-                filter_stage(predicate, self.span(start))
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::Filter(std::sync::Arc::new(
+                        super::model::shared_predicate(predicate),
+                    )),
+                    super::program::range(self.span(start)),
+                ));
             }
             "root" => {
                 self.expect(TokenKind::LParen, "expected `(` after root")?;
@@ -1097,15 +1185,17 @@ impl Parser<'_, '_> {
                     TokenKind::RParen,
                     "expected `)` after where_exists relation",
                 )?;
-                let relation = super::report::native_selector(query);
-                if !super::report::native_body_is_read_only(&relation) {
+                if !super::report::operand_is_read_only(&query) {
                     self.error("where_exists relation cannot edit or emit");
                     return None;
                 }
-                Stage::WhereExists {
-                    relation,
-                    range: self.span(start),
-                }
+                let range = super::program::range(self.span(start));
+                return Some(zirql::Located::new(
+                    zirql::ExpressionStep::WhereExists(std::sync::Arc::new(
+                        zirql::NativeBody::new(query, range.clone()),
+                    )),
+                    range,
+                ));
             }
             "fixpoint" => {
                 self.expect(TokenKind::LParen, "expected `(` after fixpoint")?;
@@ -1118,10 +1208,18 @@ impl Parser<'_, '_> {
                         range: stage,
                     });
                 }
-                Stage::Fixpoint {
-                    expression: super::model::FixedPointBody::Selection(expression),
-                    range: self.span(start),
-                }
+                let range = super::program::range(self.span(start));
+                let step = if expression.is_single_closure() {
+                    return Some(super::model::native(Stage::ClosureFixedPoint {
+                        range: self.span(start),
+                    }));
+                } else {
+                    zirql::ExpressionStep::FixedPoint(std::sync::Arc::new(zirql::NativeBody::new(
+                        super::report::value_operand(&expression),
+                        range.clone(),
+                    )))
+                };
+                return Some(zirql::Located::new(step, range));
             }
             "set_attr" => return self.set_attr(start, depth + 1).map(super::model::native),
             "remove_attr" => return self.remove_attr(start, depth + 1).map(super::model::native),
@@ -2346,7 +2444,6 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
     type Stage = super::model::NativeStage;
     type SetOperator = SetOperator;
     type Emitter = super::program::Emitter;
-    type Predicate = Predicate;
     fn retains_native_values(&self) -> bool {
         self.function_mode
     }
@@ -2396,22 +2493,18 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         locals: &[&str],
         budget: &mut zirql::Budget,
         nesting: usize,
-    ) -> Result<Option<super::model::NativeStage>, zirql::QueryError> {
+    ) -> Result<Option<zirql::ReadStep<Self>>, zirql::QueryError> {
         if !super::comprehension::constructed_filter_call(reader.source(), reader.position()) {
             return Ok(None);
         }
-        match self.parse_stage_in_scope(reader, locals, budget, nesting)? {
-            zirql::ExpressionStep::Stage(stage) => Ok(Some(stage)),
-            _ => {
-                unreachable!("constructed filter is a native stage")
-            }
-        }
+        self.parse_stage_in_scope(reader, locals, budget, nesting)
+            .map(Some)
     }
     fn parse_predicate_leaf(
         &mut self,
         reader: &mut zirql::ArgumentReader<'_>,
         budget: &mut zirql::Budget,
-    ) -> Result<Predicate, zirql::QueryError> {
+    ) -> Result<super::model::NativeStage, zirql::QueryError> {
         self.parse_predicate_leaf_in_scope(reader, &[], budget, self.nesting)
     }
     fn parse_predicate_leaf_in_scope(
@@ -2420,7 +2513,7 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         locals: &[&str],
         budget: &mut zirql::Budget,
         nesting: usize,
-    ) -> Result<Predicate, zirql::QueryError> {
+    ) -> Result<super::model::NativeStage, zirql::QueryError> {
         let mut parser = self.parser(reader.position(), locals, budget)?;
         parser.nesting_limit = nesting;
         let result = parser.primary_predicate(0);
@@ -2429,7 +2522,10 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         }
         let predicate = result.ok_or_else(|| reader.error("expected a native predicate"))?;
         reader.advance(predicate.range().end() as usize - reader.position())?;
-        Ok(predicate)
+        Ok(std::sync::Arc::new(Stage::Guard {
+            range: predicate.range(),
+            predicate,
+        }))
     }
     fn is_predicate_leaf(&self, name: &str) -> bool {
         matches!(
@@ -2448,12 +2544,15 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         &mut self,
         predicate: zirql::PredicateArgument<super::report::Operand>,
         range: std::ops::Range<usize>,
-    ) -> Result<Predicate, zirql::QueryError> {
+    ) -> Result<super::model::NativeStage, zirql::QueryError> {
         let subject = predicate_input(range.clone());
-        Ok(Predicate::Expression {
-            value: super::comprehension::ParsedComprehension::new(predicate.bind(subject)),
+        Ok(std::sync::Arc::new(Stage::Guard {
+            predicate: Predicate::Expression {
+                value: super::comprehension::ParsedComprehension::new(predicate.bind(subject)),
+                range: TextRange::new(range.start as u32, range.end as u32).expect("ordered range"),
+            },
             range: TextRange::new(range.start as u32, range.end as u32).expect("ordered range"),
-        })
+        }))
     }
     fn parse_predicate_leaf_in_argument(
         &mut self,
@@ -2462,8 +2561,15 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         locals: &[&str],
         budget: &mut zirql::Budget,
         nesting: usize,
-    ) -> Result<Predicate, zirql::QueryError> {
-        let mut predicate = self.parse_predicate_leaf_in_scope(reader, locals, budget, nesting)?;
+    ) -> Result<super::model::NativeStage, zirql::QueryError> {
+        let payload = self.parse_predicate_leaf_in_scope(reader, locals, budget, nesting)?;
+        let Stage::Guard {
+            mut predicate,
+            range,
+        } = std::sync::Arc::try_unwrap(payload).expect("fresh predicate")
+        else {
+            unreachable!()
+        };
         let mut bind = |value: &mut super::comprehension::ParsedComprehension| -> Result<(), zirql::QueryError> {
             let argument = argument.map(|pattern| zirql::copy_pattern(pattern, budget)).transpose()?;
             let body = std::mem::replace(&mut value.expression, std::sync::Arc::new(zirql::Located::new(zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Absent), 0..0)));
@@ -2489,143 +2595,7 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
             },
             _ => {}
         }
-        Ok(predicate)
-    }
-    fn filter(
-        &mut self,
-        predicate: zirql::Predicate<Predicate>,
-        range: std::ops::Range<usize>,
-    ) -> super::model::NativeStage {
-        std::sync::Arc::new(filter_stage(
-            lower_shared_predicate(predicate),
-            TextRange::new(range.start as u32, range.end as u32).expect("ordered query range"),
-        ))
-    }
-
-    fn where_exists(
-        &mut self,
-        query: super::report::Operand,
-        range: std::ops::Range<usize>,
-    ) -> Result<super::model::NativeStage, zirql::QueryError> {
-        let relation = super::report::native_selector(query);
-        if !super::report::native_body_is_read_only(&relation) {
-            return Err(zirql::QueryError::query(
-                range,
-                "where_exists relation cannot edit or emit",
-            ));
-        }
-        Ok(std::sync::Arc::new(Stage::WhereExists {
-            relation,
-            range: TextRange::new(range.start as u32, range.end as u32)
-                .expect("ordered query range"),
-        }))
-    }
-    fn fixed_point(
-        &mut self,
-        query: super::report::Operand,
-        range: std::ops::Range<usize>,
-    ) -> Result<super::model::NativeStage, zirql::QueryError> {
-        let selector = super::report::OrderingSelector::from_operand(query);
-        if !selector.is_read_only() {
-            return Err(zirql::QueryError::query(
-                range,
-                "fixpoint body cannot edit or emit",
-            ));
-        }
-        let super::report::OrderingSelector::Query(value) = selector else {
-            unreachable!("native fixed-point body");
-        };
-        Ok(std::sync::Arc::new(Stage::Fixpoint {
-            expression: super::model::FixedPointBody::Native(value),
-            range: TextRange::new(range.start as u32, range.end as u32)
-                .expect("ordered query range"),
-        }))
-    }
-    fn map_sorting(
-        &mut self,
-        range: std::ops::Range<usize>,
-    ) -> Result<super::model::NativeStage, zirql::QueryError> {
-        let range =
-            TextRange::new(range.start as u32, range.end as u32).expect("ordered query range");
-        Ok(std::sync::Arc::new(Stage::SortBy {
-            selector: super::report::OrderingSelector::MapValue(range),
-            range,
-        }))
-    }
-    fn ordering(
-        &mut self,
-        ordering: zirql::NativeOrdering<super::report::Operand>,
-        range: std::ops::Range<usize>,
-    ) -> Result<super::model::NativeStage, zirql::QueryError> {
-        use zirql::NativeOrder as O;
-        let range =
-            TextRange::new(range.start as u32, range.end as u32).expect("ordered query range");
-        let Some(selector) = ordering.selector else {
-            return Ok(std::sync::Arc::new(match ordering.order {
-                O::Sort => Stage::Sort {
-                    constructed: super::report::collection_suffix(zirql::ValueSuffix::Sort, range),
-                    range,
-                },
-                O::Min => Stage::Min { range },
-                O::Max => Stage::Max { range },
-                O::MinAll => Stage::MinAll { range },
-                O::MaxAll => Stage::MaxAll { range },
-            }));
-        };
-        let selector = if native_map_value(&selector) {
-            let selector_range =
-                TextRange::new(selector.range.start as u32, selector.range.end as u32)
-                    .expect("ordered selector range");
-            zirql::dispose_expression(selector);
-            super::report::OrderingSelector::MapValue(selector_range)
-        } else {
-            super::report::OrderingSelector::from_operand(selector)
-        };
-        if !selector.is_read_only() {
-            return Err(zirql::QueryError::query(
-                range.as_range(),
-                "selector queries cannot edit or emit",
-            ));
-        }
-        Ok(std::sync::Arc::new(match ordering.order {
-            O::Sort => Stage::SortBy { selector, range },
-            O::Min => Stage::MinBy { selector, range },
-            O::Max => Stage::MaxBy { selector, range },
-            O::MinAll => Stage::MinAllBy { selector, range },
-            O::MaxAll => Stage::MaxAllBy { selector, range },
-        }))
-    }
-    fn mapping(
-        &mut self,
-        mapping: zirql::NativeMap<super::report::Operand>,
-        range: std::ops::Range<usize>,
-    ) -> Result<super::model::NativeStage, zirql::QueryError> {
-        let mapping = zirql::NativeMap {
-            key: super::report::native_selector(mapping.key),
-            value: super::report::native_selector(mapping.value),
-        };
-        if !super::report::map_is_read_only(&mapping) {
-            return Err(zirql::QueryError::query(
-                range,
-                "map_by queries cannot edit or emit",
-            ));
-        }
-        Ok(std::sync::Arc::new(Stage::NativeMap {
-            mapping,
-            range: TextRange::new(range.start as u32, range.end as u32)
-                .expect("ordered query range"),
-        }))
-    }
-    fn matching(
-        &mut self,
-        matching: zirql::NativeMatch<super::report::Operand, Predicate>,
-        range: std::ops::Range<usize>,
-    ) -> Result<super::model::NativeStage, zirql::QueryError> {
-        Ok(std::sync::Arc::new(Stage::Match {
-            value: super::capture::ParsedMatch::new(matching),
-            range: TextRange::new(range.start as u32, range.end as u32)
-                .expect("ordered query range"),
-        }))
+        Ok(std::sync::Arc::new(Stage::Guard { predicate, range }))
     }
     fn parse_path_edge(
         &mut self,
@@ -2648,11 +2618,18 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
         SetOperator::from_keyword(word)
     }
 }
-fn lower_shared_predicate(predicate: zirql::Predicate<Predicate>) -> Predicate {
+fn lower_shared_predicate(predicate: zirql::Predicate<super::model::NativeStage>) -> Predicate {
     let range = TextRange::new(predicate.range.start as u32, predicate.range.end as u32)
         .expect("shared predicate ranges are ordered source offsets");
     match predicate.value {
-        zirql::PredicateKind::Leaf(predicate) => predicate,
+        zirql::PredicateKind::Leaf(predicate) => {
+            let Stage::Guard { predicate, .. } =
+                std::sync::Arc::try_unwrap(predicate).expect("fresh guard leaf")
+            else {
+                unreachable!()
+            };
+            predicate
+        }
         zirql::PredicateKind::Not(predicate) => Predicate::Not {
             predicate: Box::new(lower_shared_predicate(*predicate)),
             range,
@@ -2672,23 +2649,6 @@ fn lower_shared_predicate(predicate: zirql::Predicate<Predicate>) -> Predicate {
     }
 }
 
-fn native_map_value(query: &super::report::Operand) -> bool {
-    use zirql::{ExpressionKind as X, ExpressionStep as S};
-    match &query.value {
-        X::Group(query) => native_map_value(query),
-        X::Sequence { input, steps } if matches!(input.value, X::Input) => {
-            matches!(
-                steps.as_slice(),
-                [zirql::Located {
-                    value: S::Stage(stage),
-                    ..
-                }] if matches!(stage.as_ref(), Stage::Value { .. })
-            )
-        }
-        _ => false,
-    }
-}
-
 fn predicate_input(
     range: std::ops::Range<usize>,
 ) -> zirql::ValueExpression<super::report::Operand> {
@@ -2699,89 +2659,6 @@ fn predicate_input(
         ))),
         range,
     )
-}
-
-fn filter_stage(predicate: Predicate, range: TextRange) -> Stage {
-    fn value(predicate: &Predicate) -> Option<zirql::ValueExpression<super::report::Operand>> {
-        use zirql::ValueExpressionKind as K;
-        let range = predicate.range().as_range();
-        let kind = match predicate {
-            Predicate::Expression { value, .. } => K::NativeValue(Box::new(zirql::Located::new(
-                zirql::ExpressionKind::Sequence {
-                    input: Box::new(zirql::Located::new(
-                        zirql::ExpressionKind::Input,
-                        range.clone(),
-                    )),
-                    steps: vec![
-                        zirql::Located::new(
-                            zirql::ExpressionStep::Value(std::sync::Arc::new(zirql::Located::new(
-                                K::PredicateSubject,
-                                range.clone(),
-                            ))),
-                            range.clone(),
-                        ),
-                        zirql::Located::new(
-                            zirql::ExpressionStep::Value(std::sync::Arc::clone(&value.expression)),
-                            range.clone(),
-                        ),
-                    ],
-                },
-                range.clone(),
-            ))),
-            Predicate::Bool { value, .. } => K::Literal(zirql::ConstructedValue::Boolean(*value)),
-            Predicate::Group { predicate, .. } => return value(predicate),
-            Predicate::Not { predicate, .. } => K::Unary {
-                operator: zirql::ValueUnaryOperator::Not,
-                operand: Box::new(value(predicate)?),
-            },
-            Predicate::And { predicates, .. } | Predicate::Or { predicates, .. } => {
-                let operator = if matches!(predicate, Predicate::And { .. }) {
-                    zirql::ValueBinaryOperator::And
-                } else {
-                    zirql::ValueBinaryOperator::Or
-                };
-                let mut predicates = predicates.iter();
-                let mut result = value(predicates.next()?)?;
-                for predicate in predicates {
-                    result = zirql::Located::new(
-                        K::Binary {
-                            operator,
-                            left: Box::new(result),
-                            right: Box::new(value(predicate)?),
-                        },
-                        range.clone(),
-                    );
-                }
-                return Some(result);
-            }
-            _ => return None,
-        };
-        Some(zirql::Located::new(kind, range))
-    }
-    let constructed = value(&predicate).map(|body| {
-        let range = range.as_range();
-        super::comprehension::ParsedComprehension::new(zirql::Located::new(
-            zirql::ValueExpressionKind::Filter {
-                array: Box::new(zirql::Located::new(
-                    zirql::ValueExpressionKind::NativeQuery(Box::new(zirql::Located::new(
-                        zirql::ExpressionKind::Input,
-                        range.clone(),
-                    ))),
-                    range.clone(),
-                )),
-                predicate: zirql::PredicateArgument {
-                    argument: None,
-                    body: Box::new(body),
-                },
-            },
-            range,
-        ))
-    });
-    Stage::Filter {
-        predicate,
-        constructed,
-        range,
-    }
 }
 
 #[cfg(test)]

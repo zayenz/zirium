@@ -1,7 +1,6 @@
 //! The existing diff surface frontend, lowered once into shared expressions.
 use super::diff_program::{
-    DiffProgram, DiffStage, Expression, Leaf, Order, OwnedExpression, SetOperator,
-    dispose_statements, stream,
+    DiffProgram, DiffStage, Expression, Leaf, OwnedExpression, SetOperator, dispose_statements,
 };
 use super::{EvaluationError, OperationTraversal};
 use std::ops::Range;
@@ -134,32 +133,14 @@ fn parse_stage(stage: &str, range: &Range<usize>) -> Result<DiffStage, Evaluatio
         "closure" => DiffStage::Graph(OperationTraversal::Closure),
         "slice" | "backward_slice" => DiffStage::Graph(OperationTraversal::Slice),
         "forward_slice" => DiffStage::Graph(OperationTraversal::ForwardSlice),
-        "unique" => {
-            let DiffStage::Stream(pipeline) = stream(Stage::Unique, range.clone())? else {
-                unreachable!("stream builds a native pipeline")
-            };
-            DiffStage::SelectionUnique(pipeline)
-        }
-        "count" => DiffStage::Count,
-        "tally" => return stream(Stage::Tally, range.clone()),
         "names" => DiffStage::Names,
         "result_types" => DiffStage::ResultTypes,
         "operand_types" => DiffStage::OperandTypes,
-        "reverse" => DiffStage::Reverse,
-        "sort" => DiffStage::Sort,
-        "min" | "max" | "min_all" | "max_all" => DiffStage::Extreme {
-            maximum: stage.starts_with("max"),
-            all: stage.ends_with("_all"),
-        },
-        "check" => DiffStage::Check(None),
         "emit" => DiffStage::Noop,
         "json" => DiffStage::Json,
         "markdown" => DiffStage::Markdown,
         _ if stage.starts_with("users(") => DiffStage::Users(Some(number("users")?)),
         _ if stage.starts_with("defs(") => DiffStage::Defs(Some(number("defs")?)),
-        _ if stage.starts_with("head(") => DiffStage::Head(number("head")?),
-        _ if stage.starts_with("tail(") => DiffStage::Tail(number("tail")?),
-        _ if stage.starts_with("check(") => DiffStage::Check(Some(number("check")?)),
         _ if stage.starts_with("attr(") => {
             let names = extract_string_calls(stage, "attr");
             if names.len() != 1 {
@@ -395,7 +376,7 @@ impl<'a> DiffReader<'a> {
                 .transpose()?;
             let range = value.range.clone();
             let subject = Located::new(
-                zirql::ValueExpressionKind::NativeQuery(Box::new(Located::new(
+                zirql::ValueExpressionKind::NativeValue(Box::new(Located::new(
                     ExpressionKind::Input,
                     range.clone(),
                 ))),
@@ -417,7 +398,6 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
     type Stage = DiffStage;
     type SetOperator = SetOperator;
     type Emitter = ();
-    type Predicate = Leaf;
     fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
         zirql::FieldPipelineSource::Constructed
     }
@@ -493,16 +473,20 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
             let value =
                 zirql::read_value_expression_in_scope(reader, self, locals, budget, nesting)?;
             reader.expect(')')?;
-            let stage = match value.value {
+            let range = value.range.clone();
+            let value = match value.value {
                 zirql::ValueExpressionKind::NativeQuery(expression)
                 | zirql::ValueExpressionKind::NativeValue(expression) => {
-                    DiffStage::Nested(super::diff_program::nested(*expression))
+                    zirql::ValueExpressionKind::NativeValue(Box::new(Located::new(
+                        ExpressionKind::Group(expression),
+                        range.clone(),
+                    )))
                 }
-                kind => DiffStage::Value(super::diff_program::SharedValue(std::sync::Arc::new(
-                    Located::new(kind, value.range),
-                ))),
+                kind => kind,
             };
-            return Ok(zirql::ExpressionStep::Stage(stage));
+            return Ok(zirql::ExpressionStep::Value(std::sync::Arc::new(
+                Located::new(value, range),
+            )));
         }
         let name = reader.word()?;
         if name.value == "root" {
@@ -510,16 +494,15 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
             let predicate =
                 zirql::read_native_predicate_argument(reader, self, locals, budget, nesting)?;
             reader.expect(')')?;
-            let DiffStage::Stream(pipeline) =
-                stream(Stage::Filter(predicate), start..reader.position()).map_err(|error| {
-                    zirql::QueryError::query(
-                        error.range.unwrap_or(start..reader.position()),
-                        error.message,
-                    )
-                })?
-            else {
-                unreachable!("stream filter")
-            };
+            let predicate = super::diff_program::native_predicate(predicate);
+            let pipeline = zirql::Pipeline::with_group_not_nesting(
+                vec![Located::new(
+                    Stage::Filter(predicate),
+                    start..reader.position(),
+                )],
+                start..reader.position(),
+                zirql::MAX_NESTING,
+            )?;
             return Ok(zirql::ExpressionStep::Stage(DiffStage::Root(pipeline)));
         }
         reader.skip_whitespace();
@@ -548,6 +531,89 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
             zirql::Location::Query(start..reader.position()),
         )?;
         let part = self.source[start..reader.position()].trim_end();
+        if matches!(
+            name.value,
+            "unique"
+                | "count"
+                | "tally"
+                | "reverse"
+                | "sort"
+                | "min"
+                | "max"
+                | "min_all"
+                | "max_all"
+        ) && part != name.value
+        {
+            return Err(zirql::QueryError::query(
+                start..reader.position(),
+                format!("unknown or unsupported diff query stage `{part}`"),
+            ));
+        }
+        let one_argument = |name| {
+            let arguments = split_diff_call_arguments(part, name)
+                .map_err(|error| zirql::QueryError::query(start..reader.position(), error))?;
+            if arguments.len() != 1 || arguments[0].is_empty() {
+                return Err(zirql::QueryError::query(
+                    start..reader.position(),
+                    format!("{name} requires one argument"),
+                ));
+            }
+            Ok(arguments[0])
+        };
+        let collection = match name.value {
+            "unique" => Some(Stage::Unique),
+            "count" => Some(Stage::Count),
+            "tally" => Some(Stage::Tally),
+            "reverse" => Some(Stage::Reverse),
+            "head" | "tail" => {
+                let count = one_argument(name.value)?.parse::<usize>().map_err(|_| {
+                    zirql::QueryError::query(
+                        start..reader.position(),
+                        "expected non-negative item count",
+                    )
+                })?;
+                Some(if name.value == "head" {
+                    Stage::Head(count)
+                } else {
+                    Stage::Tail(count)
+                })
+            }
+            "check" => {
+                let expected = if part == "check" {
+                    None
+                } else {
+                    Some(one_argument("check")?.parse::<usize>().map_err(|_| {
+                        zirql::QueryError::query(
+                            start..reader.position(),
+                            "expected non-negative count",
+                        )
+                    })?)
+                };
+                Some(Stage::Check {
+                    expected,
+                    message: None,
+                })
+            }
+            _ => None,
+        };
+        if let Some(collection) = collection {
+            return Ok(zirql::ExpressionStep::Collection(collection));
+        }
+        if let Some(order) = match name.value {
+            "sort" => Some(zirql::NativeOrder::Sort),
+            "min" => Some(zirql::NativeOrder::Min),
+            "max" => Some(zirql::NativeOrder::Max),
+            "min_all" => Some(zirql::NativeOrder::MinAll),
+            "max_all" => Some(zirql::NativeOrder::MaxAll),
+            _ => None,
+        } {
+            return Ok(zirql::ExpressionStep::Ordering(std::sync::Arc::new(
+                zirql::NativeOrdering {
+                    order,
+                    selector: None,
+                },
+            )));
+        }
         let stage = parse_stage(part, &(start..reader.position())).map_err(|error| {
             zirql::QueryError::query(
                 error.range.unwrap_or(start..reader.position()),
@@ -560,8 +626,9 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
         &mut self,
         reader: &mut zirql::ArgumentReader<'_>,
         budget: &mut zirql::Budget,
-    ) -> Result<Leaf, zirql::QueryError> {
+    ) -> Result<DiffStage, zirql::QueryError> {
         self.leaf(reader, None, &[], budget, self.nesting)
+            .map(DiffStage::Guard)
     }
     fn parse_predicate_leaf_in_scope(
         &mut self,
@@ -569,8 +636,9 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
         locals: &[&str],
         budget: &mut zirql::Budget,
         nesting: usize,
-    ) -> Result<Leaf, zirql::QueryError> {
+    ) -> Result<DiffStage, zirql::QueryError> {
         self.leaf(reader, None, locals, budget, nesting)
+            .map(DiffStage::Guard)
     }
     fn parse_predicate_leaf_in_argument(
         &mut self,
@@ -579,8 +647,9 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
         locals: &[&str],
         budget: &mut zirql::Budget,
         nesting: usize,
-    ) -> Result<Leaf, zirql::QueryError> {
+    ) -> Result<DiffStage, zirql::QueryError> {
         self.leaf(reader, argument, locals, budget, nesting)
+            .map(DiffStage::Guard)
     }
     fn is_predicate_leaf(&self, name: &str) -> bool {
         matches!(
@@ -600,73 +669,17 @@ impl zirql::ValueReaderHost for DiffReader<'_> {
         &mut self,
         predicate: zirql::PredicateArgument<Expression>,
         range: Range<usize>,
-    ) -> Result<Leaf, zirql::QueryError> {
+    ) -> Result<DiffStage, zirql::QueryError> {
         let subject = Located::new(
-            zirql::ValueExpressionKind::NativeQuery(Box::new(Located::new(
+            zirql::ValueExpressionKind::NativeValue(Box::new(Located::new(
                 ExpressionKind::Input,
                 range.clone(),
             ))),
             range,
         );
-        Ok(Leaf::Expression(super::diff_program::SharedValue(
-            std::sync::Arc::new(predicate.bind(subject)),
+        Ok(DiffStage::Guard(Leaf::Expression(
+            super::diff_program::SharedValue(std::sync::Arc::new(predicate.bind(subject))),
         )))
-    }
-    fn filter(&mut self, predicate: zirql::Predicate<Leaf>, range: Range<usize>) -> DiffStage {
-        stream(Stage::Filter(predicate), range).expect("shared reader bounded the filter")
-    }
-    fn ordering(
-        &mut self,
-        ordering: zirql::NativeOrdering<Expression>,
-        _range: Range<usize>,
-    ) -> Result<DiffStage, zirql::QueryError> {
-        use zirql::NativeOrder as O;
-        Ok(match ordering.selector {
-            Some(selector) => DiffStage::Order {
-                kind: match ordering.order {
-                    O::Sort => Order::Sort,
-                    O::Min => Order::Min,
-                    O::Max => Order::Max,
-                    O::MinAll => Order::MinAll,
-                    O::MaxAll => Order::MaxAll,
-                },
-                selector: super::diff_program::nested(selector),
-            },
-            None => match ordering.order {
-                O::Sort => DiffStage::Sort,
-                O::Min | O::Max | O::MinAll | O::MaxAll => DiffStage::Extreme {
-                    maximum: matches!(ordering.order, O::Max | O::MaxAll),
-                    all: matches!(ordering.order, O::MinAll | O::MaxAll),
-                },
-            },
-        })
-    }
-    fn map_sorting(&mut self, _: Range<usize>) -> Result<DiffStage, zirql::QueryError> {
-        Ok(DiffStage::SortMapValue)
-    }
-    fn mapping(
-        &mut self,
-        mapping: zirql::NativeMap<Expression>,
-        _: Range<usize>,
-    ) -> Result<DiffStage, zirql::QueryError> {
-        Ok(DiffStage::MapBy {
-            key: super::diff_program::nested(mapping.key),
-            value: super::diff_program::nested(mapping.value),
-        })
-    }
-    fn fixed_point(
-        &mut self,
-        query: Expression,
-        _: Range<usize>,
-    ) -> Result<DiffStage, zirql::QueryError> {
-        Ok(DiffStage::Fixpoint(super::diff_program::nested(query)))
-    }
-    fn where_exists(
-        &mut self,
-        query: Expression,
-        _: Range<usize>,
-    ) -> Result<DiffStage, zirql::QueryError> {
-        Ok(DiffStage::WhereExists(super::diff_program::nested(query)))
     }
     fn set_operator(&self, word: &str) -> Option<SetOperator> {
         match word {
