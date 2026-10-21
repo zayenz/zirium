@@ -835,8 +835,8 @@ impl ParsedBinding {
 }
 
 type Entry<'q> = zirql::PreparedFunctionValue<'q, report::Operand, program::Kind>;
-/// One submitted request owns this unit and every entry prepared by it. It never
-/// stores a document, bindings, budget or result; execution supplies that context.
+/// Every submitted request owns this unit, including an empty function list.
+/// It stores no document, bindings, budget or result; execution supplies them.
 pub(super) struct Session<'q, 'a, 'd> {
     pub(super) host: &'a report::ReportHost<'q>,
     unit: zirql::PreparedFunctions<'q, 'a, EvaluationContext<'a, 'd, 'q>, report::ReportHost<'q>>,
@@ -871,7 +871,7 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
         input: program::Kind,
         names: &BTreeMap<String, program::Kind>,
         budget: &mut Budget,
-    ) -> Result<(), EvaluationError> {
+    ) -> Result<program::Kind, EvaluationError> {
         let entry = self
             .unit
             .prepare_value(value, names, Some(input), budget)
@@ -879,11 +879,12 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
         budget
             .charge_results(1, ValueLocation::Query(value.range.clone()))
             .map_err(core_error)?;
+        let kind = entry.kind().clone();
         self.entries.insert(
             (stage as *const _ as usize, value as *const _ as usize),
             entry,
         );
-        Ok(())
+        Ok(kind)
     }
     pub(super) fn prepare_expression(
         &mut self,
@@ -898,20 +899,46 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
         {
             let mut kind = input.clone();
             for stage in stages {
-                match stage {
-                    model::Stage::Comprehension { value, .. }
-                    | model::Stage::FunctionValue { value, .. }
-                    | model::Stage::Fixpoint {
+                let prepared_kind = match stage {
+                    model::Stage::Comprehension { value, .. } => {
+                        let kind = self.prepare_value(
+                            stage,
+                            &value.expression,
+                            kind.clone(),
+                            names,
+                            budget,
+                        )?;
+                        let types = host
+                            .scalar_types(&kind, budget, &value.expression.range)
+                            .map_err(core_error)?
+                            .ok_or_else(|| {
+                                EvaluationError::new(
+                                    "native handles require an explicit scalar projection",
+                                )
+                                .at(value.expression.range.clone())
+                            })?;
+                        Some(host.constructed_kind(types))
+                    }
+                    model::Stage::FunctionValue { value, .. } => Some(self.prepare_value(
+                        stage,
+                        &value.expression,
+                        kind.clone(),
+                        names,
+                        budget,
+                    )?),
+                    model::Stage::Fixpoint {
                         expression: model::FixedPointBody::Native(value),
                         ..
                     } => {
-                        self.prepare_value(stage, &value.expression, kind.clone(), names, budget)?
+                        self.prepare_value(stage, &value.expression, kind.clone(), names, budget)?;
+                        None
                     }
                     model::Stage::WhereExists { relation, .. } => {
                         let subject = host
                             .subject_kind(&kind, budget, &program::range(stage.range()))
                             .map_err(core_error)?;
                         self.prepare_value(stage, &relation.expression, subject, names, budget)?;
+                        None
                     }
                     model::Stage::Projection { value, .. } => {
                         let mut scope = copy_scope(names, budget, &program::range(stage.range()))
@@ -923,6 +950,7 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                         for (_, value) in &value.projection.fields {
                             self.prepare_value(stage, value, subject.clone(), &scope, budget)?;
                         }
+                        None
                     }
                     _ => {
                         for argument in host
@@ -952,8 +980,9 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                                 budget,
                             )?;
                         }
+                        None
                     }
-                }
+                };
                 for nested in report::nested(stage) {
                     self.prepare_expression(
                         nested,
@@ -969,6 +998,10 @@ impl<'q, 'a, 'd> Session<'q, 'a, 'd> {
                         host,
                         budget,
                     )?;
+                }
+                if let Some(prepared_kind) = prepared_kind {
+                    kind = prepared_kind;
+                    continue;
                 }
                 kind = program::Validator {
                     host: report::ReportHost {
@@ -1145,12 +1178,9 @@ pub(super) fn evaluate(
     bindings: &zirql::Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<QueryOutput, EvaluationError> {
-    if let Some(session) = context.functions {
-        session.run(&value.expression, context, &input, bindings, budget)
-    } else {
-        report::evaluate(value, context, input, bindings, budget)
-            .map(|v| QueryOutput::Native(NativeValue::Constructed(v)))
-    }
+    context
+        .functions
+        .run(&value.expression, context, &input, bindings, budget)
 }
 pub(super) fn owned(
     mut value: QueryOutput,
@@ -1327,11 +1357,13 @@ pub(super) fn normalize(
     }
     value
 }
-/// Outer native scalar bindings retain their explicit projection boundary.
-/// Common admission still rejects lexical shadowing before execution.
+/// Normalize outer reads under the frontend's result policy. Constructed-only
+/// bodies project scalar data; function-capable bodies may retain native handles.
+/// Common admission rejects lexical shadowing before execution.
 pub(super) fn normalize_outer(
     mut value: zirql::ValueExpression<report::Operand>,
     names: &std::collections::HashSet<String>,
+    retain_native: bool,
     budget: &mut Budget,
 ) -> Result<zirql::ValueExpression<report::Operand>, zirql::QueryError> {
     let result = zirql::walk_value_mut(&mut value, budget, 64, |value, _, budget| {
@@ -1345,10 +1377,15 @@ pub(super) fn normalize_outer(
         {
             budget.charge(name.len() + 2, ValueLocation::Query(value.range.clone()))?;
             budget.charge_results(2, ValueLocation::Query(value.range.clone()))?;
-            value.value = zirql::ValueExpressionKind::NativeValue(Box::new(Located::new(
+            let query = Box::new(Located::new(
                 zirql::ExpressionKind::Binding(name.clone()),
                 value.range.clone(),
-            )));
+            ));
+            value.value = if retain_native {
+                zirql::ValueExpressionKind::NativeValue(query)
+            } else {
+                zirql::ValueExpressionKind::NativeQuery(query)
+            };
         }
         normalize_wrapper(value);
         Ok(())

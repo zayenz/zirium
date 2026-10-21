@@ -372,6 +372,25 @@ See [semantic diff](semantic-diff.md) for examples.
 subject. `ReportExpr` contains the shared value tree; construction reads no
 document and accepts no query-source strings or evaluator callbacks.
 
+Each textual or typed request prepares its shared expressions with Zirql's
+`PreparedFunctions`, including requests with no function declarations. Reports,
+correlated projection fields and computed native arguments use that prepared
+unit with the current bindings, relative input and cumulative budget. Projection
+fields are checked before enumerating subjects, so an empty selection retains
+its declared row schema and still rejects invalid fields.
+
+The ordinary textual report frontend projects saved scalar streams and counts
+through `NativeQuery`. Function-capable bodies use `NativeValue` to retain
+admitted handles as well as scalar results. Both forms execute in the same
+prepared unit; report-only positions still require an explicit scalar projection
+of native handles.
+
+Native stages keep their direct execution and document ownership checks.
+Constructed suffixes such as `count`, `sort`, `unique` and `tally` use their
+prepared value bodies when their input is constructed. A plain native count or
+selection keeps its existing work and stream limits; attaching a prepared unit
+does not require an aggregate result allowance for those requests.
+
 ```rust
 use zirium::query::{ReportExpr, bound_ops, op, ops};
 let f = bound_ops("f");

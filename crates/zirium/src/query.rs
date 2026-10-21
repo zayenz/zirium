@@ -87,7 +87,7 @@ pub struct EvaluationOptions {
 
 // Document access and host policy stay outside the caller-owned core budget.
 struct EvaluationContext<'a, 'document, 'query> {
-    functions: Option<&'a functions::Session<'query, 'a, 'document>>,
+    functions: &'a functions::Session<'query, 'a, 'document>,
     current_stage: usize,
     document: &'a mut DocumentAccess<'document>,
     registry: &'a DialectRegistry,
@@ -323,16 +323,6 @@ impl EvaluationError {
 }
 
 impl Query {
-    fn requires_value_session(&self) -> bool {
-        report::requires_session(&self.expression)
-            || self.statements.iter().any(|statement| match statement {
-                model::Statement::Binding { expression, .. }
-                | model::Statement::PatternBinding { expression, .. }
-                | model::Statement::Do(expression)
-                | model::Statement::Query(expression) => report::requires_session(expression),
-            })
-    }
-
     pub fn parse(source: &str) -> Result<Self, QueryError> {
         Self::parse_with_program_limits(source, comprehension::default_limits())
     }
@@ -548,11 +538,13 @@ impl Query {
         )
     }
 
-    /// Whether this parsed program uses the bounded constructed report path.
+    /// Set the active-call bound for the request's prepared shared expressions.
     pub fn with_function_limits(mut self, limits: FunctionLimits) -> Self {
         self.function_limits = limits;
         self
     }
+    /// Whether shared syntax requires aggregate result accounting. Native-only
+    /// requests keep their existing work and stream bounds.
     pub fn has_comprehensions(&self) -> bool {
         !self.functions.is_empty() || self.parse_results != 0
     }
@@ -654,21 +646,13 @@ impl Query {
         let function_host = report::ReportHost {
             functions: &self.functions,
         };
-        let mut functions = if self.functions.is_empty() && !self.requires_value_session() {
-            None
-        } else {
-            Some(functions::Session::new(
-                &self.functions,
-                &function_host,
-                self.function_limits,
-                budget,
-            )?)
-        };
-        if let Some(session) = &mut functions {
-            session.prepare_program(self, document_name, &function_host, budget)?;
-        } else {
-            program::validate(self, document_name, budget)?;
-        }
+        let mut functions = functions::Session::new(
+            &self.functions,
+            &function_host,
+            self.function_limits,
+            budget,
+        )?;
+        functions.prepare_program(self, document_name, &function_host, budget)?;
 
         let function_roots = functions::expression_roots(&self.functions, budget)?;
         let expressions = program::expressions(
@@ -708,7 +692,7 @@ impl Query {
         });
         let bindings = zirql::Bindings::new(initial).map_err(core_error)?;
         let mut context = EvaluationContext {
-            functions: functions.as_ref(),
+            functions: &functions,
             current_stage: 0,
             document: &mut access,
             registry,
@@ -785,9 +769,9 @@ fn evaluate_host_stage(
 ) -> Result<QueryOutput, EvaluationError> {
     current = functions::owned(current, budget, &program::range(stage.range()))?;
     if matches!(current, QueryOutput::Native(NativeValue::Constructed(_)))
-        && let Some(value) = report::constructed_suffix(stage, budget)?
+        && let Some(value) = report::constructed_suffix(stage)
     {
-        return report::evaluate_suffix(&value, context, current, bindings, budget);
+        return functions::evaluate(value, context, current, bindings, budget);
     }
     if let QueryOutput::Native(NativeValue::OperationSequence(operations)) = current {
         current = QueryOutput::Operations(operations);
@@ -806,10 +790,9 @@ fn evaluate_host_stage(
             current = QueryOutput::Native(NativeValue::Retained(std::sync::Arc::clone(value)));
         }
         model::Stage::PatternBinding { .. } => {
-            let session = context.functions.ok_or_else(|| {
-                EvaluationError::new("pattern binding requires a prepared session")
-            })?;
-            current = session.run_binding(context, &current, bindings, budget)?;
+            current = context
+                .functions
+                .run_binding(context, &current, bindings, budget)?;
         }
         model::Stage::FunctionValue { value, .. } => {
             current = functions::evaluate(value, context, current, bindings, budget)?;
@@ -1323,25 +1306,10 @@ fn evaluate_host_stage(
                                 .map_err(zirql::EvaluationError::Host)?
                         }
                         model::FixedPointBody::Native(value) => {
-                            let output = if let Some(session) = context.functions {
-                                session
-                                    .run(&value.expression, context, &input, bindings, budget)
-                                    .map_err(zirql::EvaluationError::Host)?
-                            } else {
-                                let zirql::ValueExpressionKind::NativeValue(query) =
-                                    &value.expression.value
-                                else {
-                                    unreachable!("fixed points retain a native body")
-                                };
-                                zirql::evaluate_expression(
-                                    query,
-                                    &report::ReportHost,
-                                    input,
-                                    context,
-                                    bindings,
-                                    budget,
-                                )?
-                            };
+                            let output = context
+                                .functions
+                                .run(&value.expression, context, &input, bindings, budget)
+                                .map_err(zirql::EvaluationError::Host)?;
                             fixed_point_result(output, budget, &range)
                                 .map_err(zirql::EvaluationError::Host)?
                         }
@@ -1743,23 +1711,10 @@ fn sort_operations_by(
             program::charge_results(budget, 2, range).map_err(zirql::EvaluationError::Host)?;
             charge(budget, 1).map_err(zirql::EvaluationError::Host)?;
             let input = QueryOutput::Operations(vec![*operation]);
-            let output = if let Some(session) = context.functions {
-                session
-                    .run(&value.expression, context, &input, bindings, budget)
-                    .map_err(zirql::EvaluationError::Host)?
-            } else {
-                let zirql::ValueExpressionKind::NativeValue(query) = &value.expression.value else {
-                    unreachable!("ordering selectors retain a native query")
-                };
-                zirql::evaluate_expression(
-                    query,
-                    &report::ReportHost,
-                    input,
-                    context,
-                    bindings,
-                    budget,
-                )?
-            };
+            let output = context
+                .functions
+                .run(&value.expression, context, &input, bindings, budget)
+                .map_err(zirql::EvaluationError::Host)?;
             ordering_key(output, budget, &value.expression.range)
                 .map_err(zirql::EvaluationError::Host)
         },

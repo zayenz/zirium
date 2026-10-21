@@ -232,6 +232,7 @@ impl Parser<'_, '_> {
                         declaration.value = match super::functions::normalize_outer(
                             declaration.value,
                             &self.bindings,
+                            true,
                             self.budget,
                         ) {
                             Ok(value) => value,
@@ -577,16 +578,17 @@ impl Parser<'_, '_> {
             nesting,
         ) {
             Ok(value) => {
-                let value = if self.function_mode {
-                    match super::functions::normalize_outer(value, &self.bindings, self.budget) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            self.shared_error(error);
-                            return None;
-                        }
+                let value = match super::functions::normalize_outer(
+                    value,
+                    &self.bindings,
+                    self.function_mode,
+                    self.budget,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.shared_error(error);
+                        return None;
                     }
-                } else {
-                    value
                 };
                 if !self.function_mode {
                     let written = self.tokens[self.cursor..]
@@ -654,7 +656,28 @@ impl Parser<'_, '_> {
         };
         let nesting = host.nesting;
         match zirql::read_projection(&mut reader, &mut host, self.budget, nesting) {
-            Ok(value) => {
+            Ok(mut value) => {
+                for (_, field) in &mut value.fields {
+                    let expression = std::mem::replace(
+                        field,
+                        zirql::Located::new(
+                            zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Absent),
+                            0..0,
+                        ),
+                    );
+                    *field = match super::functions::normalize_outer(
+                        expression,
+                        &self.bindings,
+                        self.function_mode,
+                        self.budget,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.shared_error(error);
+                            return None;
+                        }
+                    };
+                }
                 self.sync(reader.position());
                 Some(super::report::ParsedProjection::new(value))
             }
@@ -1127,7 +1150,10 @@ impl Parser<'_, '_> {
                 }
             }
             "reachable" => Stage::Reachable { range },
-            "tally" => Stage::Tally { range },
+            "tally" => Stage::Tally {
+                constructed: super::report::collection_suffix(zirql::ValueSuffix::Tally, range),
+                range,
+            },
             "value" => Stage::Value { range },
             "map_by" => {
                 self.expect(TokenKind::LParen, "expected `(` after map_by")?;
@@ -1197,8 +1223,14 @@ impl Parser<'_, '_> {
             "parent" => Stage::Parent { range },
             "children" => Stage::Children { range },
             "subtree" => Stage::Subtree { range },
-            "unique" => Stage::Unique { range },
-            "sort" => Stage::Sort { range },
+            "unique" => Stage::Unique {
+                constructed: super::report::collection_suffix(zirql::ValueSuffix::Unique, range),
+                range,
+            },
+            "sort" => Stage::Sort {
+                constructed: super::report::collection_suffix(zirql::ValueSuffix::Sort, range),
+                range,
+            },
             "sort_by" | "min_by" | "min_all_by" | "max_by" | "max_all_by" => {
                 self.expect(TokenKind::LParen, "expected `(` after selector stage")?;
                 let selector = Box::new(self.expression(depth + 1)?);
@@ -1309,7 +1341,10 @@ impl Parser<'_, '_> {
                     range: self.span(start),
                 }
             }
-            "count" => Stage::Count { range },
+            "count" => Stage::Count {
+                constructed: super::report::collection_suffix(zirql::ValueSuffix::Count, range),
+                range,
+            },
             "emit" => Stage::Emit { range },
             "format" => {
                 let options = self.format_options()?;
@@ -2483,7 +2518,10 @@ impl zirql::ValueReaderHost for NativeReader<'_> {
             TextRange::new(range.start as u32, range.end as u32).expect("ordered query range");
         let Some(selector) = ordering.selector else {
             return Ok(match ordering.order {
-                O::Sort => Stage::Sort { range },
+                O::Sort => Stage::Sort {
+                    constructed: super::report::collection_suffix(zirql::ValueSuffix::Sort, range),
+                    range,
+                },
                 O::Min => Stage::Min { range },
                 O::Max => Stage::Max { range },
                 O::MinAll => Stage::MinAll { range },

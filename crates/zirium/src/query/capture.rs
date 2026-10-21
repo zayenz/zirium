@@ -62,9 +62,7 @@ pub(super) fn evaluate_paths(
     budget: &mut Budget,
 ) -> Result<CaptureMatches, EvaluationError> {
     let range = &value.paths.range;
-    let host = context
-        .functions
-        .map_or(&report::ReportHost, |session| session.host);
+    let host = context.functions.host;
     let kind = report::output_kind(&input, budget, range)?;
     let names = report::runtime_kinds(bindings, budget, range)?;
     let schema = Arc::new(path_types(value, &kind, &names, budget, host)?);
@@ -456,9 +454,7 @@ pub(super) fn evaluate(
     let range = &value.matching.range;
     let input_kind = report::output_kind(&input, budget, range)?;
     let names = report::runtime_kinds(bindings, budget, range)?;
-    let host = context
-        .functions
-        .map_or(&report::ReportHost, |session| session.host);
+    let host = context.functions.host;
     let schema = Arc::new(types(value, &input_kind, &names, budget, host)?);
     let values = zirql::evaluate_match(&value.matching, host, input, context, bindings, budget)
         .map_err(program::evaluation_error)?;
@@ -555,20 +551,9 @@ pub(super) fn evaluate_operand(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<QueryOutput, EvaluationError> {
-    if let Some(session) = context.functions {
-        return session.run(&value.value.expression, context, &input, bindings, budget);
-    }
-    let zirql::ValueExpressionKind::NativeValue(query) = &value.value.expression.value else {
-        return Err(
-            EvaluationError::new("scoped native operand requires a prepared session").at(value
-                .value
-                .expression
-                .range
-                .clone()),
-        );
-    };
-    zirql::evaluate_expression(query, &report::ReportHost, input, context, bindings, budget)
-        .map_err(program::evaluation_error)
+    context
+        .functions
+        .run(&value.value.expression, context, &input, bindings, budget)
 }
 pub(super) fn operand(
     operation: &ParsedOperand,

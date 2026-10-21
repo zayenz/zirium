@@ -351,6 +351,7 @@ pub enum Stage {
         range: TextRange,
     },
     Tally {
+        constructed: super::comprehension::ParsedComprehension,
         range: TextRange,
     },
     Value {
@@ -407,9 +408,11 @@ pub enum Stage {
         range: TextRange,
     },
     Unique {
+        constructed: super::comprehension::ParsedComprehension,
         range: TextRange,
     },
     Sort {
+        constructed: super::comprehension::ParsedComprehension,
         range: TextRange,
     },
     SortBy {
@@ -498,6 +501,7 @@ pub enum Stage {
         range: TextRange,
     },
     Count {
+        constructed: super::comprehension::ParsedComprehension,
         range: TextRange,
     },
     Emit {
@@ -585,7 +589,7 @@ impl Stage {
             | Self::Markdown { range }
             | Self::Print { range, .. }
             | Self::Binding { range, .. }
-            | Self::Tally { range }
+            | Self::Tally { range, .. }
             | Self::Value { range }
             | Self::NativeMap { range, .. }
             | Self::MapBy { range, .. }
@@ -601,8 +605,8 @@ impl Stage {
             | Self::Children { range }
             | Self::Root { range, .. }
             | Self::Subtree { range }
-            | Self::Unique { range }
-            | Self::Sort { range }
+            | Self::Unique { range, .. }
+            | Self::Sort { range, .. }
             | Self::SortBy { range, .. }
             | Self::RetainSelector { range }
             | Self::Reverse { range }
@@ -626,7 +630,7 @@ impl Stage {
             | Self::SetAttr { range, .. }
             | Self::RemoveAttr { range, .. }
             | Self::Check { range, .. }
-            | Self::Count { range }
+            | Self::Count { range, .. }
             | Self::Emit { range }
             | Self::Format { range, .. }
             | Self::Json { range } => *range,

@@ -21,7 +21,8 @@ It needs no benchmark dependency or external profiling tool. Output rows use
 - Parsing constructs and drops each query, independently of document size.
 - Evaluation runs a pre-parsed query on a pre-lowered document. Cases
   cover count, exact-name and boolean filters, users, union, subtree, one closure
-  step, a fixed point, and an intermediate emission.
+  step, a fixed point, an intermediate emission, and an ordinary report with no
+  function declarations.
 - A direct filter scans operation names through the semantic API, without
   the query interpreter, as a reference for filtering overhead.
 - Deep fixed-point cases increase dependency depth in one function, separately
@@ -281,3 +282,63 @@ controls remain under `/private/tmp/zirql045-measure`. The named main run is
 `final-ea30035-204d010-v2`; `collect-v2.py analyze --name final-ea30035-204d010-v2`
 regenerates its analysis without invoking a target. The private collector has
 no product dependency or installation effect.
+
+## Prepared report execution
+
+Every textual and typed request owns one prepared function unit, including an
+empty declaration list. Zirium prepares shared report entries, projection fields
+and native argument bodies before statement execution. Those entries run with
+the current lexical bindings, relative input and request budget. Type discovery
+uses the same function-aware kind rules and Zirium's scalar projection facts.
+A report-only stage requires constructed data; typed value entries may retain
+native handles.
+
+The ordinary textual report frontend normalizes saved names to scalar query
+projections. Function-capable bodies retain native value queries so their calls
+can pass checked handles. These are admission policies on shared value nodes;
+both use the same prepared runner.
+
+Zirium keeps statement sequencing, bindings, native stage dispatch and emission.
+Native selections and counts retain their existing work and stream bounds.
+Overloaded collection stages retain a lowered constructed body in their stage
+payload. Preparation checks that body only for constructed input, so borrowed
+native argument execution can use the same body without rebuilding syntax.
+
+### Small-query comparison
+
+The smoke command above ran before and after this consolidation on arm64 macOS
+with Rust 1.98.1 (`48a229cea`), the same release profile, fixtures and arguments.
+The baseline is Zirium `16fee69fdd93411b87564c9a95e065853d913cb4`; both builds
+use Zirql `967eb05c80fd122fb5a91cd9056cce124f844150`. The added harness case is
+`report {"sum": 2 + 3, "items": [1, 2, 3]} | json`, with no declarations.
+All cases passed their output checks in both runs.
+
+Times are microseconds per query: median, with the three-sample minimum–maximum
+in parentheses. Evaluation includes request preparation and result handling;
+the report also includes JSON rendering.
+
+| Case | Phase | Operations | Before µs | Prepared path µs |
+| --- | --- | ---: | ---: | ---: |
+| report | parse | — | 6.095 (6.093–6.112) | 6.357 (6.326–6.358) |
+| count | parse | — | 0.390 (0.389–0.393) | 0.628 (0.623–0.633) |
+| report | evaluate | 29 | 8.631 (8.627–8.638) | 9.744 (9.720–9.745) |
+| report | evaluate | 225 | 10.127 (10.119–10.220) | 11.116 (11.100–11.376) |
+| count | evaluate | 29 | 1.293 (1.292–1.295) | 1.458 (1.445–1.470) |
+| filter | evaluate | 29 | 4.554 (4.554–4.562) | 4.835 (4.756–4.838) |
+| count | evaluate | 225 | 3.142 (3.133–3.156) | 3.357 (3.340–3.360) |
+| filter | evaluate | 225 | 24.749 (24.411–24.880) | 24.455 (24.453–24.542) |
+| direct filter | evaluate | 29 | 0.110 (0.110–0.110) | 0.112 (0.111–0.112) |
+
+The first prepared-path run took 11.253 µs (11.222–11.336) for the 29-operation
+report. Inspection found repeated kind discovery immediately after preparing
+that entry. Reusing its prepared kind for stage type flow reduced the median
+to 9.744 µs; final whole-expression validation still checks composition rules.
+The remaining report increase is about 1.1 µs on this small input. Native count
+evaluation adds about 0.17 µs. Count parsing retains its constructed overload
+body and costs about 0.24 µs more. The larger filter's ranges overlap; these
+three-sample smoke observations do not establish a general throughput bound.
+
+Complete command output remains in `profile-before.log`, `profile-after-initial.log`
+and `profile-after.log` under `/private/tmp/zirql-parallel-20261021/base-116`.
+The unchanged correlated report controls also retain native fields and rendered
+results for `double` and `mix`, with operation and match totals 5 and 2.

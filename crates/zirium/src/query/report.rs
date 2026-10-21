@@ -145,19 +145,9 @@ fn evaluate_selector(
     budget: &mut Budget,
     range: &Range<usize>,
 ) -> Result<QueryOutput, EvaluationError> {
-    let value = if let Some(session) = context.functions {
-        session.run(&selector.expression, context, &input, bindings, budget)?
-    } else {
-        zirql::evaluate_expression(
-            map_operand(selector),
-            &ReportHost,
-            input,
-            context,
-            bindings,
-            budget,
-        )
-        .map_err(program::evaluation_error)?
-    };
+    let value = context
+        .functions
+        .run(&selector.expression, context, &input, bindings, budget)?;
     map_result(value, budget, range)
 }
 pub(super) fn native_body_is_read_only(value: &comprehension::ParsedComprehension) -> bool {
@@ -321,56 +311,6 @@ pub(super) fn operand(expression: &model::Expression) -> Operand {
     value
 }
 
-pub(super) fn types(
-    value: &comprehension::ParsedComprehension,
-    input: program::Kind,
-    names: &BTreeMap<String, program::Kind>,
-    budget: &mut Budget,
-) -> Result<Vec<ValueType>, EvaluationError> {
-    let names = copy_kinds(names, budget, &value.expression.range)?;
-    zirql::native_value_types::<EvaluationContext<'_, '_, '_>, _>(
-        &value.expression,
-        &ReportHost,
-        input,
-        names,
-        budget,
-    )
-    .map_err(core_error)
-}
-fn copy_kinds(
-    names: &BTreeMap<String, program::Kind>,
-    budget: &mut Budget,
-    range: &Range<usize>,
-) -> Result<BTreeMap<String, program::Kind>, EvaluationError> {
-    program::charge_bytes(budget, names.keys().map(|name| name.len() + 1).sum(), range)?;
-    Ok(names.clone())
-}
-pub(super) fn projection_types(
-    value: &ParsedProjection,
-    input: program::Kind,
-    names: &BTreeMap<String, program::Kind>,
-    budget: &mut Budget,
-) -> Result<Vec<ValueType>, EvaluationError> {
-    if parser::is_reserved(&value.projection.subject.value) || value.projection.subject.value == "_"
-    {
-        return Err(
-            EvaluationError::new("projection subject name is reserved").at(value
-                .projection
-                .subject
-                .range
-                .clone()),
-        );
-    }
-    let names = copy_kinds(names, budget, &value.projection.subject.range)?;
-    zirql::projection_types::<EvaluationContext<'_, '_, '_>, _>(
-        &value.projection,
-        &ReportHost,
-        input,
-        names,
-        budget,
-    )
-    .map_err(core_error)
-}
 /// Preserve tally's following location when native preparation checks one stage
 /// at a time. Constructed tally is terminal; native tally may feed map stages.
 pub(super) fn retain_tally_continuations(
@@ -430,23 +370,45 @@ pub(super) fn retain_tally_continuations(
 /// with an established constructed kind uses this shared value tree.
 pub(super) fn constructed_suffix(
     stage: &model::Stage,
-    budget: &mut Budget,
-) -> Result<Option<comprehension::ParsedComprehension>, EvaluationError> {
-    let suffix = match stage {
-        model::Stage::ConstructedSuffix { value, .. } => return Ok(Some(value.clone())),
-        model::Stage::Filter {
+) -> Option<&comprehension::ParsedComprehension> {
+    match stage {
+        model::Stage::ConstructedSuffix { value, .. }
+        | model::Stage::Count {
+            constructed: value, ..
+        }
+        | model::Stage::Sort {
+            constructed: value, ..
+        }
+        | model::Stage::Unique {
+            constructed: value, ..
+        }
+        | model::Stage::Tally {
+            constructed: value, ..
+        }
+        | model::Stage::Filter {
             constructed: Some(value),
             ..
-        } => return Ok(Some(value.clone())),
-        model::Stage::Count { .. } => zirql::ValueSuffix::Count,
-        model::Stage::Sort { .. } => zirql::ValueSuffix::Sort,
-        model::Stage::Unique { .. } => zirql::ValueSuffix::Unique,
-        model::Stage::Tally { .. } => zirql::ValueSuffix::Tally,
-        _ => return Ok(None),
-    };
-    lower_suffix(Located::new(suffix, program::range(stage.range())), budget)
-        .map(Some)
-        .map_err(core_error)
+        } => Some(value),
+        _ => None,
+    }
+}
+
+/// These fixed bodies belong to the overloaded native stages. Retaining them
+/// does not opt native requests into constructed allocation accounting; their
+/// preparation and execution are charged when the input is constructed.
+pub(super) fn collection_suffix(
+    suffix: zirql::ValueSuffix<Operand>,
+    range: crate::source::TextRange,
+) -> comprehension::ParsedComprehension {
+    let range = program::range(range);
+    let input = Located::new(
+        zirql::ValueExpressionKind::NativeQuery(Box::new(Located::new(X::Input, range.clone()))),
+        range.clone(),
+    );
+    comprehension::ParsedComprehension::new(
+        zirql::lower_value_suffix(input, Located::new(suffix, range))
+            .expect("a suffix on current input cannot follow a terminal tally"),
+    )
 }
 
 pub(super) fn lower_suffix(
@@ -472,36 +434,6 @@ pub(super) fn lower_suffix(
     Ok(comprehension::ParsedComprehension::new(value))
 }
 
-pub(super) fn evaluate_suffix(
-    value: &comprehension::ParsedComprehension,
-    context: &mut EvaluationContext<'_, '_, '_>,
-    input: QueryOutput,
-    bindings: &Bindings<QueryOutput>,
-    budget: &mut Budget,
-) -> Result<QueryOutput, EvaluationError> {
-    if value_requires_session(&value.expression)
-        && let Some(session) = context.functions
-    {
-        return session.run(&value.expression, context, &input, bindings, budget);
-    }
-    let result = zirql::evaluate_native_value_with_types(
-        &value.expression,
-        &ReportHost,
-        input,
-        context,
-        bindings,
-        budget,
-    )
-    .map_err(program::evaluation_error)?;
-    comprehension::ConstructedReport::with_types(
-        result.value,
-        result.types,
-        value.expression.range.clone(),
-        budget,
-    )
-    .map(|value| QueryOutput::Native(NativeValue::Constructed(value)))
-}
-
 pub(super) fn evaluate(
     value: &comprehension::ParsedComprehension,
     context: &mut EvaluationContext<'_, '_, '_>,
@@ -509,25 +441,10 @@ pub(super) fn evaluate(
     bindings: &Bindings<QueryOutput>,
     budget: &mut Budget,
 ) -> Result<comprehension::ConstructedReport, EvaluationError> {
-    if let Some(session) = context.functions {
-        let result = session.run(&value.expression, context, &input, bindings, budget)?;
-        return functions::constructed(result, budget, &value.expression.range);
-    }
-    let result = zirql::evaluate_native_value_with_types(
-        &value.expression,
-        &ReportHost,
-        input,
-        context,
-        bindings,
-        budget,
-    )
-    .map_err(program::evaluation_error)?;
-    comprehension::ConstructedReport::with_types(
-        result.value,
-        result.types,
-        value.expression.range.clone(),
-        budget,
-    )
+    let result = context
+        .functions
+        .run(&value.expression, context, &input, bindings, budget)?;
+    functions::constructed(result, budget, &value.expression.range)
 }
 pub(super) fn project(
     value: &ParsedProjection,
@@ -547,19 +464,10 @@ pub(super) fn project(
                 .clone()),
         );
     }
-    let result = if let Some(session) = context.functions {
-        session.run_projection(&value.projection, context, input, bindings, budget)?
-    } else {
-        zirql::evaluate_projection_with_types(
-            &value.projection,
-            &ReportHost,
-            input,
-            context,
-            bindings,
-            budget,
-        )
-        .map_err(program::evaluation_error)?
-    };
+    let result =
+        context
+            .functions
+            .run_projection(&value.projection, context, input, bindings, budget)?;
     comprehension::ConstructedReport::with_types(result.value, result.types, range.clone(), budget)
 }
 pub(super) fn runtime_kinds(
@@ -855,6 +763,18 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
         if let model::Stage::FunctionValue { value, .. }
         | model::Stage::Comprehension { value, .. }
         | model::Stage::ConstructedSuffix { value, .. }
+        | model::Stage::Count {
+            constructed: value, ..
+        }
+        | model::Stage::Sort {
+            constructed: value, ..
+        }
+        | model::Stage::Unique {
+            constructed: value, ..
+        }
+        | model::Stage::Tally {
+            constructed: value, ..
+        }
         | model::Stage::FunctionPrimitive {
             argument: value, ..
         } = stage
@@ -902,6 +822,19 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 }
             }
             return Ok(values);
+        }
+        if let model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } = stage
+            && !has_dynamic_predicate(predicate)
+        {
+            if let model::Stage::Filter {
+                constructed: Some(value),
+                ..
+            } = stage
+            {
+                budget.charge_results(1, Location::Query(range.clone()))?;
+                return Ok(vec![(&value.expression, program::Kind::Operations)]);
+            }
+            return Ok(Vec::new());
         }
         let capacity = match stage {
             model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } => {
@@ -1040,14 +973,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             return Ok(arguments);
         }
         if matches!(input, program::Kind::Constructed(_)) {
-            let value = match stage {
-                model::Stage::ConstructedSuffix { value, .. } => Some(value),
-                model::Stage::Filter {
-                    constructed: Some(value),
-                    ..
-                } => Some(value),
-                _ => None,
-            };
+            let value = constructed_suffix(stage);
             if let Some(value) = value {
                 budget.charge_results(1, Location::Query(range.clone()))?;
                 return Ok(vec![zirql::ScopedNativeArgument {
@@ -1056,6 +982,17 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                     locals: Vec::new(),
                 }]);
             }
+        }
+        // Resolution declares the stable overload body; native input uses the
+        // direct stage and must not prepare that body as a value argument.
+        if matches!(
+            stage,
+            model::Stage::Count { .. }
+                | model::Stage::Sort { .. }
+                | model::Stage::Unique { .. }
+                | model::Stage::Tally { .. }
+        ) {
+            return Ok(Vec::new());
         }
         if let model::Stage::Projection { value, .. } = stage {
             let projection = &value.projection;
@@ -1139,14 +1076,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             functions::unretained(&input),
             QueryOutput::Native(NativeValue::Constructed(_))
         ) {
-            let value = match stage {
-                model::Stage::ConstructedSuffix { value, .. }
-                | model::Stage::Filter {
-                    constructed: Some(value),
-                    ..
-                } => Some(value),
-                _ => None,
-            };
+            let value = constructed_suffix(stage);
             if let Some(value) = value {
                 return arguments
                     .evaluate_native(&value.expression, input, budget)
@@ -1346,7 +1276,6 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
             )?;
             return Ok(QueryOutput::Operations(selected));
         }
-        let prepared = arguments.parts().0.functions.is_some();
         match stage {
             model::Stage::Native { value, .. } => {
                 let value = arguments.evaluate_native(&value.value.expression, input, budget)?;
@@ -1368,12 +1297,12 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 )
                 .map_err(zirql::EvaluationError::Host);
             }
-            model::Stage::Match { value, .. } if prepared => {
+            model::Stage::Match { value, .. } => {
                 return capture::evaluate_with_arguments(value, self, input, arguments, budget)
                     .map(|value| QueryOutput::Native(NativeValue::Captures(value)))
                     .map_err(zirql::EvaluationError::Host);
             }
-            model::Stage::Paths { value, .. } if prepared => {
+            model::Stage::Paths { value, .. } => {
                 return capture::evaluate_paths_with_arguments(
                     value, self, input, arguments, budget,
                 )
@@ -1381,9 +1310,7 @@ impl<'q> ProjectionHost<EvaluationContext<'_, '_, 'q>> for ReportHost<'_> {
                 .map_err(zirql::EvaluationError::Host);
             }
             model::Stage::FunctionValue { value, .. }
-            | model::Stage::Comprehension { value, .. }
-                if prepared =>
-            {
+            | model::Stage::Comprehension { value, .. } => {
                 let value = arguments.evaluate_native(&value.expression, input, budget)?;
                 return Ok(QueryOutput::Native(NativeValue::Retained(
                     value.into_shared(),
@@ -2134,33 +2061,15 @@ pub(super) fn evaluate_predicate_leaf(
     budget: &mut Budget,
 ) -> Result<zirql::Truth, EvaluationError> {
     if let model::Predicate::Expression { value, .. } = predicate {
-        if let Some(session) = context.functions {
-            let result = session.run(&value.expression, context, &input, bindings, budget)?;
-            let result = functions::constructed(result, budget, &value.expression.range)?;
-            let V::Boolean(matched) = result.value().data() else {
-                return Err(EvaluationError::new("predicate needs a known Boolean")
-                    .at(value.expression.range.clone()));
-            };
-            return Ok(if *matched {
-                zirql::Truth::True
-            } else {
-                zirql::Truth::False
-            });
-        }
-        let zirql::ValueExpressionKind::PredicateScope { predicate, .. } = &value.expression.value
-        else {
-            unreachable!("bound predicate")
+        let result = context
+            .functions
+            .run(&value.expression, context, &input, bindings, budget)?;
+        let result = functions::constructed(result, budget, &value.expression.range)?;
+        let V::Boolean(matched) = result.value().data() else {
+            return Err(EvaluationError::new("predicate needs a known Boolean")
+                .at(value.expression.range.clone()));
         };
-        let matched = zirql::evaluate_native_predicate(
-            predicate,
-            &ReportHost,
-            input,
-            context,
-            bindings,
-            budget,
-        )
-        .map_err(program::evaluation_error)?;
-        return Ok(if matched {
+        return Ok(if *matched {
             zirql::Truth::True
         } else {
             zirql::Truth::False
@@ -2285,186 +2194,6 @@ pub(super) fn has_dynamic_predicate(predicate: &model::Predicate) -> bool {
     }
 }
 
-/// Native/control forms need the prepared runner even without declarations.
-/// Ordinary report values retain their existing constructed-only path.
-pub(super) fn requires_session(expression: &model::Expression) -> bool {
-    expression
-        .first
-        .iter()
-        .chain(expression.rest.iter().flat_map(|(_, stages)| stages))
-        .any(stage_requires_session)
-}
-fn stage_requires_session(stage: &model::Stage) -> bool {
-    if matches!(
-        stage,
-        model::Stage::NativeMap { .. } | model::Stage::WhereExists { .. }
-    ) {
-        return true;
-    }
-    if ordering_selector(stage).is_some_and(|(selector, _)| selector.body().is_some()) {
-        return true;
-    }
-    match stage {
-        model::Stage::PatternBinding { .. }
-        | model::Stage::FunctionPrimitive { .. }
-        | model::Stage::FunctionInput { .. } => true,
-        model::Stage::FunctionValue { value, .. } => {
-            matches!(
-                value.expression.value,
-                zirql::ValueExpressionKind::Field { .. }
-            ) || value_requires_session(&value.expression)
-        }
-        model::Stage::Comprehension { value, .. }
-        | model::Stage::ConstructedSuffix { value, .. } => {
-            value_requires_session(&value.expression)
-        }
-        model::Stage::Projection { value, .. } => value
-            .projection
-            .fields
-            .iter()
-            .any(|(_, value)| value_requires_session(value)),
-        model::Stage::Computed { value, .. } => value_requires_session(&value.operand().expression),
-        model::Stage::Filter { predicate, .. } | model::Stage::Root { predicate, .. } => {
-            predicate_requires_session(predicate)
-        }
-        model::Stage::Native { value, .. }
-        | model::Stage::Operand {
-            operation: value, ..
-        } => value_requires_session(&value.value.expression),
-        model::Stage::Match { value, .. } => {
-            value
-                .matching
-                .clauses
-                .iter()
-                .any(|clause| match &clause.value {
-                    zirql::MatchClause::Where { predicate } => {
-                        match_predicate_requires_session(predicate)
-                    }
-                    zirql::MatchClause::From { source, .. }
-                    | zirql::MatchClause::Bind { value: source, .. } => {
-                        value_requires_session(capture::match_source_value(source))
-                    }
-                })
-        }
-        _ => nested(stage).into_iter().any(requires_session),
-    }
-}
-fn operand_requires_session(query: &Operand) -> bool {
-    let mut pending = vec![query];
-    while let Some(query) = pending.pop() {
-        match &query.value {
-            X::Input | X::Binding(_) => {}
-            X::Group(query) | X::Field { value: query, .. } => pending.push(query),
-            X::Sequence { input, steps } => {
-                if steps.iter().any(|step| match &step.value {
-                    Step::Stage(stage) => stage_requires_session(stage),
-                    Step::Emit { .. } => false,
-                }) {
-                    return true;
-                }
-                pending.push(input);
-            }
-            X::Set { left, right, .. } => {
-                pending.push(right);
-                pending.push(left);
-            }
-            X::Record(fields) => pending.extend(fields.iter().rev().map(|(_, value)| value)),
-        }
-    }
-    false
-}
-
-fn match_predicate_requires_session(predicate: &zirql::Predicate<model::Predicate>) -> bool {
-    match &predicate.value {
-        zirql::PredicateKind::Leaf(guard) => predicate_requires_session(guard),
-        zirql::PredicateKind::Not(value) | zirql::PredicateKind::Group(value) => {
-            match_predicate_requires_session(value)
-        }
-        zirql::PredicateKind::And(values) | zirql::PredicateKind::Or(values) => {
-            values.iter().any(match_predicate_requires_session)
-        }
-    }
-}
-
-fn predicate_requires_session(predicate: &model::Predicate) -> bool {
-    match predicate {
-        model::Predicate::SameValue { left, right, .. } => {
-            value_requires_session(&left.value.expression)
-                || value_requires_session(&right.value.expression)
-        }
-        model::Predicate::Computed { value, .. } => value
-            .operands()
-            .any(|value| value_requires_session(&value.expression)),
-        model::Predicate::Expression { value: name, .. }
-        | model::Predicate::OpValue { name, .. } => value_requires_session(&name.expression),
-        model::Predicate::Not { predicate, .. } | model::Predicate::Group { predicate, .. } => {
-            predicate_requires_session(predicate)
-        }
-        model::Predicate::And { predicates, .. } | model::Predicate::Or { predicates, .. } => {
-            predicates.iter().any(predicate_requires_session)
-        }
-        _ => false,
-    }
-}
-pub(super) fn value_requires_session(value: &zirql::ValueExpression<Operand>) -> bool {
-    value_requires_session_with_names(value, None)
-}
-
-pub(super) fn value_requires_session_in_scope(
-    value: &zirql::ValueExpression<Operand>,
-    names: &BTreeMap<String, program::Kind>,
-) -> bool {
-    value_requires_session_with_names(value, Some(names))
-}
-
-fn value_requires_session_with_names(
-    value: &zirql::ValueExpression<Operand>,
-    names: Option<&BTreeMap<String, program::Kind>>,
-) -> bool {
-    use zirql::ValueExpressionKind as K;
-    let mut pending = vec![value];
-    while let Some(value) = pending.pop() {
-        match &value.value {
-            K::Block { .. }
-            | K::ValueMatch { .. }
-            | K::Call { .. }
-            | K::NativeValue(_)
-            | K::Loop { .. }
-            | K::Fold { .. }
-            | K::Scan { .. }
-            | K::Break(_)
-            | K::Continue(_)
-            | K::Queue { .. }
-            | K::PopFront(_)
-            | K::PushBackAll { .. }
-            | K::IdentitySet { .. }
-            | K::Insert { .. } => return true,
-            K::Literal(_) | K::CurrentInput | K::PredicateSubject => {}
-            K::Name(name) => {
-                if matches!(
-                    names.and_then(|names| names.get(name)),
-                    Some(
-                        program::Kind::Computational(_)
-                            | program::Kind::Tuple(_)
-                            | program::Kind::Sequence(_)
-                            | program::Kind::Capture(_)
-                            | program::Kind::Captures(_)
-                    )
-                ) {
-                    return true;
-                }
-            }
-            K::NativeQuery(query) => {
-                if operand_requires_session(query) {
-                    return true;
-                }
-            }
-            _ => zirql::for_each_value_child(value, |child| pending.push(child)),
-        }
-    }
-    false
-}
-
 pub(super) fn has_constructed(expression: &model::Expression) -> bool {
     expression
         .first
@@ -2490,15 +2219,12 @@ pub(super) fn types_with_host(
     budget: &mut Budget,
     host: &ReportHost<'_>,
 ) -> Result<Vec<ValueType>, EvaluationError> {
-    if host.functions.is_empty() && !value_requires_session(&value.expression) {
-        return types(value, input, names, budget);
-    }
     let kind =
         functions::value_kind(host, &value.expression, input, names, budget).map_err(core_error)?;
     host.scalar_types(&kind, budget, &value.expression.range)
         .map_err(core_error)?
         .ok_or_else(|| {
-            EvaluationError::new("report requires a constructed value")
+            EvaluationError::new("native handles require an explicit scalar projection")
                 .at(value.expression.range.clone())
         })
 }
@@ -2509,15 +2235,6 @@ pub(super) fn projection_types_with_host(
     budget: &mut Budget,
     host: &ReportHost<'_>,
 ) -> Result<Vec<ValueType>, EvaluationError> {
-    if host.functions.is_empty()
-        && value
-            .projection
-            .fields
-            .iter()
-            .all(|(_, value)| !value_requires_session(value))
-    {
-        return projection_types(value, input, names, budget);
-    }
     let projection = &value.projection;
     if names.contains_key(&projection.subject.value)
         || parser::is_reserved(&projection.subject.value)
@@ -2530,17 +2247,16 @@ pub(super) fn projection_types_with_host(
     }
     let mut scope =
         functions::copy_scope(names, budget, &projection.subject.range).map_err(core_error)?;
-    scope.insert(
-        projection.subject.value.clone(),
-        host.subject_kind(&input, budget, &projection.subject.range)
-            .map_err(core_error)?,
-    );
+    let subject = host
+        .subject_kind(&input, budget, &projection.subject.range)
+        .map_err(core_error)?;
+    scope.insert(projection.subject.value.clone(), subject.clone());
     let mut fields = Vec::new();
     for (name, value) in &projection.fields {
         if fields.iter().any(|(other, _)| other == &name.value) {
             return Err(EvaluationError::new("duplicate projection field").at(name.range.clone()));
         }
-        let kind = functions::value_kind(host, value, input.clone(), &scope, budget)
+        let kind = functions::value_kind(host, value, subject.clone(), &scope, budget)
             .map_err(core_error)?;
         let types = host
             .scalar_types(&kind, budget, &value.range)

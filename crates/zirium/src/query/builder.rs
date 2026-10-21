@@ -313,33 +313,19 @@ impl<T> QueryExpr<T> {
         let function_host = report::ReportHost {
             functions: &self.functions,
         };
-        let mut functions =
-            if self.functions.is_empty() && !report::requires_session(&self.expression) {
-                None
-            } else {
-                Some(functions::Session::new(
-                    &self.functions,
-                    &function_host,
-                    self.function_limits,
-                    budget,
-                )?)
-            };
-        if let Some(session) = &mut functions {
-            session.prepare_expression(
-                &self.expression,
-                program::Kind::Operations,
-                &names,
-                &function_host,
-                budget,
-            )?;
-        } else {
-            program::validate_expression(
-                &self.expression,
-                program::Kind::Operations,
-                &names,
-                budget,
-            )?;
-        }
+        let mut functions = functions::Session::new(
+            &self.functions,
+            &function_host,
+            self.function_limits,
+            budget,
+        )?;
+        functions.prepare_expression(
+            &self.expression,
+            program::Kind::Operations,
+            &names,
+            &function_host,
+            budget,
+        )?;
 
         let selected = QueryOutput::Operations(collect(budget, document.operations())?);
         let mut access = DocumentAccess::Shared(document);
@@ -352,7 +338,7 @@ impl<T> QueryExpr<T> {
             budget,
         )?;
         let mut context = EvaluationContext {
-            functions: functions.as_ref(),
+            functions: &functions,
             current_stage: 0,
             document: &mut access,
             registry,
@@ -646,13 +632,39 @@ impl OpQuery {
         self.stage(Stage::ForwardSlice { range: range() })
     }
 }
-stages!(StringQuery; sort => Sort: StringQuery, min => Min: StringQuery, max => Max: StringQuery,
-    min_all => MinAll: StringQuery, max_all => MaxAll: StringQuery, tally => Tally: MapQuery<usize>);
+stages!(StringQuery; min => Min: StringQuery, max => Max: StringQuery,
+    min_all => MinAll: StringQuery, max_all => MaxAll: StringQuery);
+impl StringQuery {
+    pub fn sort(&self) -> Self {
+        self.stage(Stage::Sort {
+            constructed: report::collection_suffix(zirql::ValueSuffix::Sort, range()),
+            range: range(),
+        })
+    }
+    pub fn tally(&self) -> MapQuery<usize> {
+        self.stage(Stage::Tally {
+            constructed: report::collection_suffix(zirql::ValueSuffix::Tally, range()),
+            range: range(),
+        })
+    }
+}
 
 macro_rules! stream {
     ($ty:ty) => {
-        stages!($ty; unique => Unique: Self, reverse => Reverse: Self, count => Count: CountQuery);
+        stages!($ty; reverse => Reverse: Self);
         impl $ty {
+            pub fn unique(&self) -> Self {
+                self.stage(Stage::Unique {
+                    constructed: report::collection_suffix(zirql::ValueSuffix::Unique, range()),
+                    range: range(),
+                })
+            }
+            pub fn count(&self) -> CountQuery {
+                self.stage(Stage::Count {
+                    constructed: report::collection_suffix(zirql::ValueSuffix::Count, range()),
+                    range: range(),
+                })
+            }
             pub fn head(&self, count: usize) -> Self { self.stage(Stage::Head { count, range: range() }) }
             pub fn tail(&self, count: usize) -> Self { self.stage(Stage::Tail { count, range: range() }) }
             pub fn head_expr(&self, count: ReportExpr) -> Self { self.stage(Stage::Computed {value:model::ComputedStage::Head(count.value),range:range()}).with_parameters(count.parameters).with_functions(count.functions) }
@@ -680,7 +692,10 @@ impl<T> MapQuery<T> {
         }
     }
     pub fn sort(&self) -> Self {
-        self.stage(Stage::Sort { range: range() })
+        self.stage(Stage::Sort {
+            constructed: report::collection_suffix(zirql::ValueSuffix::Sort, range()),
+            range: range(),
+        })
     }
     pub fn sort_by_value(&self) -> Self {
         self.stage(Stage::SortBy {
@@ -720,7 +735,10 @@ impl<T> MapQuery<T> {
         .with_functions(count.functions)
     }
     pub fn count(&self) -> CountQuery {
-        self.stage(Stage::Count { range: range() })
+        self.stage(Stage::Count {
+            constructed: report::collection_suffix(zirql::ValueSuffix::Count, range()),
+            range: range(),
+        })
     }
 }
 impl StringQuery {
@@ -1846,16 +1864,9 @@ impl OpQuery {
 }
 /// Construct a typed read-only report without requesting an emitter.
 pub fn report(value: ReportExpr) -> ReportQuery {
-    let stage = if report::value_requires_session(&value.value.expression) {
-        Stage::FunctionValue {
-            value: value.value,
-            range: range(),
-        }
-    } else {
-        Stage::Comprehension {
-            value: value.value,
-            range: range(),
-        }
+    let stage = Stage::FunctionValue {
+        value: value.value,
+        range: range(),
     };
     QueryExpr::start(vec![stage])
         .with_parameters(value.parameters)

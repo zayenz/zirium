@@ -763,58 +763,6 @@ pub(super) fn admit_parameters(
         .collect()
 }
 
-pub(super) fn validate(
-    query: &Query,
-    document_name: Option<&str>,
-    budget: &mut zirql::Budget,
-) -> Result<(), EvaluationError> {
-    let mut names = BTreeMap::new();
-    if document_name.is_some() {
-        names.insert("document".to_owned(), Kind::Strings);
-    }
-    let mut parameters = query
-        .parameters
-        .iter()
-        .zip(&query.parameter_positions)
-        .peekable();
-    for (index, statement) in query.statements.iter().enumerate() {
-        while parameters
-            .peek()
-            .is_some_and(|(_, position)| **position == index)
-        {
-            let (declaration, _) = parameters.next().unwrap();
-            names.extend(parameter_names(std::slice::from_ref(declaration), budget)?);
-        }
-        let expression = match statement {
-            model::Statement::Binding { expression, .. }
-            | model::Statement::PatternBinding { expression, .. }
-            | model::Statement::Do(expression)
-            | model::Statement::Query(expression) => expression,
-        };
-        let kind = validate_expression(expression, Kind::Operations, &names, budget)?;
-        if let model::Statement::Binding { name, .. } = statement {
-            names.insert(name.clone(), kind);
-        }
-    }
-    for (declaration, _) in parameters {
-        names.extend(parameter_names(std::slice::from_ref(declaration), budget)?);
-    }
-    validate_expression(&query.expression, Kind::Operations, &names, budget)?;
-    Ok(())
-}
-
-pub(super) fn validate_expression(
-    expression: &model::Expression,
-    input: Kind,
-    names: &BTreeMap<String, Kind>,
-    budget: &mut Budget,
-) -> Result<Kind, EvaluationError> {
-    Validator {
-        host: report::ReportHost,
-    }
-    .expression(expression, input, names, budget)
-}
-
 pub(super) struct Validator<'f> {
     pub(super) host: report::ReportHost<'f>,
 }
@@ -864,9 +812,9 @@ impl Validator<'_> {
                 return Err(failure("tally must be the terminal stage"));
             }
             if matches!(kind, Kind::Constructed(_))
-                && let Some(value) = report::constructed_suffix(stage, budget)?
+                && let Some(value) = report::constructed_suffix(stage)
             {
-                let types = report::types_with_host(&value, kind, names, budget, &self.host)?;
+                let types = report::types_with_host(value, kind, names, budget, &self.host)?;
                 kind = Kind::Constructed(std::sync::Arc::new(types));
                 constructed_tally =
                     matches!(value.expression.value, zirql::ValueExpressionKind::Tally(_));
@@ -891,16 +839,9 @@ impl Validator<'_> {
                     kind = report::output_kind(value, budget, &range(stage.range()))?;
                 }
                 S::FunctionValue { value, .. } => {
-                    kind = if self.host.functions.is_empty()
-                        && !report::value_requires_session_in_scope(&value.expression, names)
-                    {
-                        Kind::Constructed(std::sync::Arc::new(report::types(
-                            value, kind, names, budget,
-                        )?))
-                    } else {
+                    kind =
                         functions::value_kind(&self.host, &value.expression, kind, names, budget)
-                            .map_err(core_error)?
-                    };
+                            .map_err(core_error)?;
                 }
                 S::FunctionPrimitive {
                     primitive,

@@ -4136,7 +4136,8 @@ fn shared_value_calls_and_saved_suffixes_keep_constructed_and_native_sources() {
         &mut document,
         r#"fn numbers()->sequence<int> { [3,1,3] }
         fn distinct()->int { let local=[3,1,3]; local | sort | unique | count }
-        numbers() | sort | unique | count; distinct();
+        fn filtered()->int { let local=[3,1,3]; local | filter(true) | unique | count }
+        numbers() | sort | unique | count; distinct(); filtered();
         let words=["ash","birch","apple","ash"]; words | filter(starts_with("a")) | sort | unique | count"#,
     );
     for output in functions {

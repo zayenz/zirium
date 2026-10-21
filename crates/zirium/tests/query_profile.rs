@@ -21,6 +21,16 @@ struct Case {
 fn cases(width: usize, depth: usize) -> Vec<Case> {
     vec![
         Case {
+            name: "report",
+            source: r#"report {"sum": 2 + 3, "items": [1, 2, 3]} | json"#,
+            expected: serde_json::to_string_pretty(
+                &serde_json::json!({"sum": 5, "items": [1, 2, 3]}),
+            )
+            .unwrap()
+            .len()
+                + 1,
+        },
+        Case {
             name: "count",
             source: "count",
             expected: 1 + width * (depth + 3),
