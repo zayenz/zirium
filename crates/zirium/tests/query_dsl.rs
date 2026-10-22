@@ -4952,3 +4952,67 @@ fn optional_native_sequences_admit_present_operations_in_functions_and_queues() 
             .is_err()
     );
 }
+
+#[test]
+fn report_field_ordering_and_grouping_retain_operation_subjects() {
+    use zirium::query::NativeValue;
+    use zirql::ConstructedValue as V;
+    let mut document =
+        document_from("\"alpha\"() : () -> ()\n\"beta\"() : () -> ()\n\"gamma\"() : () -> ()");
+    let original = document.root_operations().to_vec();
+    let source = r#"
+        let rows = [{"key": if (n | names | one) == "beta" {"a"} else {"b"}, "subject": n} for n in input];
+        report sort_by(rows,"key");
+        report sort_by(rows,"key",descending=true);
+        report group_by(rows,"key");
+    "#;
+    let mut outputs = vec![];
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let check_row = |row: &QueryOutput, index: usize| {
+        let QueryOutput::Native(NativeValue::Capture(row)) = row else {
+            panic!("native row")
+        };
+        let QueryOutput::Native(NativeValue::Constructed(key)) = &row.fields[0].1 else {
+            panic!("key")
+        };
+        assert_eq!(
+            key.value().data(),
+            &V::String(if index == 1 { "a" } else { "b" }.into())
+        );
+        assert_eq!(
+            row.fields[1].1,
+            QueryOutput::Operations(vec![original[index]])
+        );
+    };
+    for (output, expected) in outputs[..2].iter().zip([[1, 0, 2], [0, 2, 1]]) {
+        let QueryOutput::Native(NativeValue::Sequence(rows)) = output else {
+            panic!("ordered rows")
+        };
+        assert_eq!(rows.values().len(), 3);
+        for (row, index) in rows.values().iter().zip(expected) {
+            check_row(row, index);
+        }
+    }
+    let QueryOutput::Native(NativeValue::Sequence(groups)) = &outputs[2] else {
+        panic!("groups")
+    };
+    assert_eq!(groups.values().len(), 2);
+    for (group, expected) in groups.values().iter().zip([vec![0, 2], vec![1]]) {
+        let QueryOutput::Native(NativeValue::Capture(group)) = group else {
+            panic!("group")
+        };
+        let QueryOutput::Native(NativeValue::Sequence(items)) = &group.fields[1].1 else {
+            panic!("group items")
+        };
+        assert_eq!(items.values().len(), expected.len());
+        for (row, index) in items.values().iter().zip(expected) {
+            check_row(row, index);
+        }
+    }
+}

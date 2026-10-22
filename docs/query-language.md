@@ -684,7 +684,18 @@ CLI output stays buffered until the whole program, including rendering, succeeds
 
 Use [group_by](https://zayenz.se/zirql/guides/library-grouping/#group_by) to
 collect positional report rows by a field. Project native subjects into those
-rows explicitly; keyed arrays need an explicit positional view.
+rows explicitly; keyed arrays need an explicit positional view. Rows can also
+retain an operation subject while sorting or grouping by an ordinary field:
+
+```zirql
+let rows = [{"key": n | names | one, "subject": n} for n in input];
+report sort_by(rows, "key");
+report group_by(rows, "key");
+```
+
+Both reports retain the original operation subjects for later queries. Rows with equal keys
+retain their input order when sorted. Groups follow first-seen key order and
+keep their members in input order. Rendering remains explicit.
 
 For the [function fixture](../examples/cli/function-report.mlir), this short
 program groups functions by their represented `arith.addi` count:
