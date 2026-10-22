@@ -698,6 +698,47 @@ fn contextual_comprehensions_keep_order_and_native_typed_values() {
 }
 
 #[test]
+fn native_reports_retain_operations_with_or_without_unused_functions() {
+    use zirium::query::NativeValue;
+    let mut document = document_from("\"alpha\"() : () -> ()\n\"beta\"() : () -> ()");
+    let expected = document
+        .root_operations()
+        .iter()
+        .map(|&operation| QueryOutput::Operations(vec![operation]))
+        .collect::<Vec<_>>();
+    let report = "report [n for n in input]; report [n for n in input] | json; report [n for n in (input | tail(1)) union (input | head(1))];";
+    for prelude in ["", "fn id(x:int)->int{x} "] {
+        let mut outputs = Vec::new();
+        Query::parse(&format!("{prelude}{report}"))
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+                outputs.push(value);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(outputs.len(), 3);
+        let QueryOutput::Native(NativeValue::Sequence(rows)) = &outputs[0] else {
+            panic!("native operation report")
+        };
+        assert_eq!(rows.values(), expected);
+        let QueryOutput::Json(text) = &outputs[1] else {
+            panic!("explicit JSON report")
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text).unwrap(),
+            serde_json::json!([
+                [{"name": "alpha", "attributes": {}, "operand_types": [], "result_types": []}],
+                [{"name": "beta", "attributes": {}, "operand_types": [], "result_types": []}]
+            ])
+        );
+        let QueryOutput::Native(NativeValue::Sequence(rows)) = &outputs[2] else {
+            panic!("native union report")
+        };
+        assert_eq!(rows.values(), [expected[1].clone(), expected[0].clone()]);
+    }
+}
+
+#[test]
 fn comprehension_refusals_and_skipped_runtime_errors_keep_query_locations() {
     use zirium::query::NativeValue;
     use zirql::ConstructedValue as V;
@@ -754,11 +795,6 @@ fn comprehension_refusals_and_skipped_runtime_errors_keep_query_locations() {
             "- -9223372036854775808",
             "overflow",
         ),
-        (
-            "native = input; [n for n in native]",
-            "native",
-            "explicit scalar projection",
-        ),
         ("a = [null]; [n + 1 for n in a]", "n + 1", "numeric"),
     ] {
         let error = Query::parse(source)
@@ -775,14 +811,14 @@ fn comprehension_refusals_and_skipped_runtime_errors_keep_query_locations() {
     for source in ["[1e999 for n in [1]]", "[1e-999 for n in [1]]"] {
         assert!(Query::parse(source).is_err(), "{source}");
     }
-    let source = "[unknown(n) for n in [1] if false]";
-    let parsed = zirium::query::parser::parse(&zirium::query::lexer::lex(source));
-    let diagnostic = &parsed.diagnostics()[0];
-    assert_eq!(diagnostic.message(), "unsupported value call");
-    assert_eq!(diagnostic.range().as_range(), 1..1);
-    let error = Query::parse(source).unwrap_err();
-    assert_eq!(error.position, 1);
-    assert_eq!(error.message, diagnostic.message());
+    let source = r#"do set_attr("tag", "changed"); [unknown(n) for n in [1] if false]"#;
+    let error = Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(error.to_string().contains("undefined function: unknown"));
+    assert_eq!(&source[error.range().unwrap()], "unknown");
+    assert_eq!(document.query(&ops().attributes("tag")).unwrap().len(), 0);
 }
 
 #[test]

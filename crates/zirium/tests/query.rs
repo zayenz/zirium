@@ -67,8 +67,6 @@ fn query_boundaries_and_edit_validation() {
         "fixpoint(set_attr(\"tag\", \"x\"))",
         "input union (filter(true) | count)",
         "input union (set_attr(\"tag\", \"x\"))",
-        "select(op(\"x\"))",
-        "filter(true) | union(op(\"x\"))",
         "filter(true) |",
         "()",
         "fixpoint()",

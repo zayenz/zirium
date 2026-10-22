@@ -1449,6 +1449,18 @@ suppresses duplicate implicit output and remains pass-through. Bare saved names
 new value bodies use shared scalar rules; ordinary JSON literals retain their
 interpolation and null behavior.
 
+Reports and comprehensions can retain native operations without a function
+declaration. This report keeps the input operations in their original order
+until the explicit JSON emitter renders their descriptors:
+
+```sh
+zirium 'report [operation for operation in input] | json' examples/cli/function-report.mlir
+```
+
+Native owners and effect restrictions still apply inside the expression.
+Scalar operations require an explicit projection; `one` extracts exactly one
+value from a projected sequence.
+
 Common value expressions use `index_set(a)` for the keys of a positional array
 or a rank-one keyed array, and `tuple.1` for a positive one-based tuple
 position. Record fields, tuple positions and array lookups compose from left

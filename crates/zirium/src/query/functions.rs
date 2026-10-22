@@ -1156,65 +1156,6 @@ pub(super) fn normalize(
     }
     value
 }
-/// Normalize outer reads under the frontend's result policy. Constructed-only
-/// bodies project scalar data; function-capable bodies may retain native handles.
-/// Common admission rejects lexical shadowing before execution.
-pub(super) fn normalize_outer(
-    mut value: zirql::ValueExpression<report::Operand>,
-    names: &std::collections::HashSet<String>,
-    retain_native: bool,
-    budget: &mut Budget,
-) -> Result<zirql::ValueExpression<report::Operand>, zirql::QueryError> {
-    let result = zirql::walk_value_mut(&mut value, budget, 64, |value, _, budget| {
-        if let zirql::ValueExpressionKind::Name(name) = &value.value
-            && names.contains(name)
-        {
-            budget.charge(name.len() + 2, ValueLocation::Query(value.range.clone()))?;
-            budget.charge_results(2, ValueLocation::Query(value.range.clone()))?;
-            let query = Box::new(Located::new(
-                zirql::ExpressionKind::Binding(name.clone()),
-                value.range.clone(),
-            ));
-            value.value = if retain_native {
-                zirql::ValueExpressionKind::NativeValue(query)
-            } else {
-                zirql::ValueExpressionKind::NativeQuery(query)
-            };
-        }
-        if retain_native && matches!(value.value, zirql::ValueExpressionKind::NativeQuery(_)) {
-            let zirql::ValueExpressionKind::NativeQuery(query) = std::mem::replace(
-                &mut value.value,
-                zirql::ValueExpressionKind::Literal(ConstructedValue::Absent),
-            ) else {
-                unreachable!()
-            };
-            value.value = zirql::ValueExpressionKind::NativeValue(query);
-        }
-        match &mut value.value {
-            zirql::ValueExpressionKind::Lookup { value, key }
-            | zirql::ValueExpressionKind::HasKey { value, key } => {
-                for operand in [value, key] {
-                    let old = std::mem::replace(
-                        operand.as_mut(),
-                        Located::new(
-                            zirql::ValueExpressionKind::Literal(ConstructedValue::Absent),
-                            0..0,
-                        ),
-                    );
-                    **operand = normalize_outer(old, names, true, budget)?;
-                }
-            }
-            _ => {}
-        }
-        normalize_wrapper(value);
-        Ok(())
-    });
-    if let Err(error) = result {
-        zirql::dispose_native_value(value);
-        return Err(error);
-    }
-    Ok(value)
-}
 fn normalize_wrapper(value: &mut zirql::ValueExpression<report::Operand>) {
     use zirql::ValueExpressionKind as K;
     if matches!(&value.value,K::NativeQuery(q) if matches!(&q.value,zirql::ExpressionKind::Sequence{steps,..} if steps.len()==1 && matches!(&steps[0].value,zirql::ExpressionStep::Value(_))))
