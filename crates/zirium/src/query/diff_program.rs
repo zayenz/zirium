@@ -48,6 +48,8 @@ impl DiffDictionary {
 #[derive(Debug)]
 pub struct DiffProgram {
     pub(super) program: zirql::Program<DiffStage, SetOperator, ()>,
+    pub(super) functions: Vec<zirql::UnresolvedPatternFunctionDeclaration<Expression>>,
+    pub(super) parameters: Vec<zirql::ParameterDeclaration>,
     pub(super) parse_work: usize,
     pub(super) parse_results: usize,
 }
@@ -56,6 +58,7 @@ impl Drop for DiffProgram {
     fn drop(&mut self) {
         let program = std::mem::replace(&mut self.program, zirql::Program::new(Vec::new(), 0..0));
         dispose_statements(program.into_statements());
+        zirql::dispose_unresolved_pattern_functions(std::mem::take(&mut self.functions));
     }
 }
 
@@ -111,6 +114,57 @@ impl DiffProgram {
         document_names: (&str, &str),
         options: EvaluationOptions,
         budget: &mut Budget,
+        emit: impl FnMut(&Diff<'_>, DiffProgramOutput, &mut Budget) -> Result<(), EvaluationError>,
+    ) -> Result<(), EvaluationError> {
+        self.evaluate_with_parameters_and_budget(
+            diff,
+            document_names,
+            options,
+            zirql::ParameterInputs::Typed(&[]),
+            budget,
+            emit,
+        )
+    }
+
+    /// Required scalar declarations retained by this diff program.
+    pub fn parameters(&self) -> &[zirql::ParameterDeclaration] {
+        &self.parameters
+    }
+
+    /// Evaluate the program with typed caller inputs and default request bounds.
+    ///
+    /// # Errors
+    /// Returns located argument, language, ownership or callback failures.
+    pub fn evaluate_with_parameters(
+        &self,
+        diff: &Diff<'_>,
+        document_names: (&str, &str),
+        parameters: &[(String, zirql::ConstructedValue)],
+        emit: impl FnMut(&Diff<'_>, DiffProgramOutput, &mut Budget) -> Result<(), EvaluationError>,
+    ) -> Result<(), EvaluationError> {
+        self.evaluate_with_parameters_and_budget(
+            diff,
+            document_names,
+            EvaluationOptions::default(),
+            zirql::ParameterInputs::Typed(parameters),
+            &mut evaluation_budget(EvaluationLimits::default()),
+            emit,
+        )
+    }
+
+    /// Admit caller inputs, prepare declarations and evaluate with one budget.
+    /// Function bodies see their arguments and local lets; native signatures use
+    /// `Change`, `BeforeOperation` and `AfterOperation`.
+    ///
+    /// # Errors
+    /// Returns located argument, language, resource, ownership or callback failures.
+    pub fn evaluate_with_parameters_and_budget(
+        &self,
+        diff: &Diff<'_>,
+        document_names: (&str, &str),
+        options: EvaluationOptions,
+        parameters: zirql::ParameterInputs<'_>,
+        budget: &mut Budget,
         mut emit: impl FnMut(&Diff<'_>, DiffProgramOutput, &mut Budget) -> Result<(), EvaluationError>,
     ) -> Result<(), EvaluationError> {
         budget
@@ -130,30 +184,38 @@ impl DiffProgram {
             ("before_document".to_owned(), Kind::Strings),
             ("after_document".to_owned(), Kind::Strings),
         ]);
-        let host = DiffProjectionHost;
-        for statement in self.program.statements() {
-            match &statement.value {
-                zirql::Statement::Bind { name, .. } => {
-                    if matches!(
-                        name.value.as_str(),
-                        "input" | "before" | "after" | "before_document" | "after_document"
-                    ) {
-                        return Err(failure(
-                            format!("binding name `{}` is reserved in diff mode", name.value),
-                            &name.range,
-                        ));
-                    }
-                }
-                zirql::Statement::Evaluate { .. } => {}
-                _ => {
-                    return Err(EvaluationError::new(
-                        "pattern bindings are unsupported in diff queries",
-                    ));
-                }
-            }
+        let admitted = zirql::admit_parameters(
+            &self.parameters,
+            parameters,
+            &["input", "before_document", "after_document"],
+            self.program.range(),
+            budget,
+        )
+        .map_err(core_error)?;
+        let mut parameters = Vec::new();
+        for (name, value) in admitted {
+            let report =
+                super::comprehension::ConstructedReport::new(value, name.range.clone(), budget)?;
+            parameters.push((name, DiffProgramOutput::Constructed(report)));
         }
-        let functions = zirql::PreparedFunctions::prepare(std::iter::empty(), &host, budget)
-            .map_err(super::functions::error)?;
+        let host = DiffProjectionHost;
+        let mut signatures = Vec::new();
+        for function in &self.functions {
+            signatures.push(
+                function
+                    .resolve_signature(budget, resolve_type)
+                    .map_err(core_error)?,
+            );
+        }
+        let functions = zirql::PreparedFunctions::prepare_patterns_borrowed(
+            self.functions
+                .iter()
+                .zip(&signatures)
+                .map(|(function, signature)| function.with_signature(signature)),
+            &host,
+            budget,
+        )
+        .map_err(super::functions::error)?;
         let prepared = zirql::PreparedProgram::prepare(
             functions,
             &self.program,
@@ -186,40 +248,13 @@ impl DiffProgram {
             emit: &mut emit,
         };
         prepared
-            .evaluate(bindings, Vec::new(), Some(input), &mut context, budget)
+            .evaluate(bindings, parameters, Some(input), &mut context, budget)
             .map_err(super::functions::error)?;
         Ok(())
     }
 }
 
 pub(super) type Expression = zirql::Expression<DiffStage, SetOperator, ()>;
-
-#[derive(Debug)]
-pub(super) struct OwnedExpression(Option<Expression>);
-
-impl OwnedExpression {
-    pub(super) fn new(expression: Expression) -> Self {
-        Self(Some(expression))
-    }
-    pub(super) fn into_inner(mut self) -> Expression {
-        self.0.take().expect("retained expression")
-    }
-}
-impl std::ops::Deref for OwnedExpression {
-    type Target = Expression;
-    fn deref(&self) -> &Expression {
-        self.0
-            .as_ref()
-            .expect("a retained expression has not been transferred")
-    }
-}
-impl Drop for OwnedExpression {
-    fn drop(&mut self) {
-        if let Some(expression) = self.0.take() {
-            dispose_expression(expression);
-        }
-    }
-}
 
 pub(super) fn dispose_statements(
     statements: Vec<Located<zirql::Statement<DiffStage, SetOperator, ()>>>,
@@ -1632,6 +1667,58 @@ enum ValueKind {
 }
 struct DiffProjectionHost;
 
+pub(super) fn is_reserved_name(name: &str) -> bool {
+    zirql::is_common_operation_name(name)
+        || matches!(
+            name,
+            "input"
+                | "before_document"
+                | "after_document"
+                | "before"
+                | "after"
+                | "users"
+                | "defs"
+                | "parent"
+                | "children"
+                | "subtree"
+                | "root"
+                | "reachable"
+                | "closure"
+                | "slice"
+                | "backward_slice"
+                | "forward_slice"
+                | "names"
+                | "attr"
+                | "result_types"
+                | "operand_types"
+                | "emit"
+                | "json"
+                | "markdown"
+                | "print"
+                | "paths"
+                | "change"
+                | "changed"
+                | "op"
+                | "dialect"
+                | "result_type"
+                | "has_attr"
+        )
+}
+
+fn resolve_type(name: Located<&str>, _: &mut Budget) -> Result<D<ValueKind>, zirql::QueryError> {
+    Ok(D::Native(ValueKind::Native(match name.value {
+        "Change" => Kind::Changes,
+        "BeforeOperation" => Kind::Operations(DiffSide::Before),
+        "AfterOperation" => Kind::Operations(DiffSide::After),
+        _ => {
+            return Err(zirql::QueryError::query(
+                name.range,
+                "unknown diff function signature type",
+            ));
+        }
+    })))
+}
+
 fn value_scope(names: &BTreeMap<String, Kind>) -> BTreeMap<String, ValueKind> {
     names
         .iter()
@@ -2739,7 +2826,17 @@ impl FunctionHost<Context<'_, '_>> for DiffProjectionHost {
         )))
     }
     fn is_operation_name(&self, name: &str) -> bool {
-        zirql::is_common_operation_name(name)
+        is_reserved_name(name)
+    }
+    fn retains_native_admission(&self) -> bool {
+        true
+    }
+    fn resolve_type_name(
+        &self,
+        name: Located<&str>,
+        budget: &mut Budget,
+    ) -> Result<D<ValueKind>, zirql::QueryError> {
+        resolve_type(name, budget)
     }
     fn ordinary_value(
         &self,
@@ -2836,8 +2933,11 @@ impl RuntimeTypeHost<Context<'_, '_>> for DiffProjectionHost {
                 )
                 .into());
             }
-        } else if !matches!((expected, value), (D::String, DiffProgramOutput::Strings(values)) if values.len() == 1)
-        {
+        } else {
+            if let Some(value) = self.ordinary_value(value, context, budget, range)? {
+                return zirql::admit_constructed(&value, expected, budget, location)
+                    .map_err(Into::into);
+            }
             return Err(zirql::QueryError::query(
                 range.clone(),
                 "native diff declaration mismatch",

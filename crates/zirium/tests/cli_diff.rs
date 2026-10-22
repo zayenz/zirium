@@ -648,3 +648,50 @@ fn diff_existence_buffers_a_later_nested_failure() {
     assert!(failure.stdout.is_empty());
     assert!(String::from_utf8_lossy(&failure.stderr).contains("check"));
 }
+
+#[test]
+fn diff_parameters_and_functions_work_inline_and_from_a_file() {
+    let (before, after) = pair();
+    let source = r#"param limit: int; param step: int;
+        fn next(n: int) -> int { n + 1 }
+        let [first, ..] = [2, 3];
+        [first, next(limit + step)] | json"#;
+    let inline = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--param", "limit=1", "--param", "step=2", "--diff"])
+        .arg(&before)
+        .arg(&after)
+        .arg(source)
+        .output()
+        .unwrap();
+    assert!(
+        inline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inline.stderr)
+    );
+    assert_eq!(inline.stdout, b"[\n  2,\n  4\n]\n");
+    let path = before.with_extension("zirql");
+    fs::write(&path, source).unwrap();
+    let file = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--param", "limit=1", "--param", "step=2", "--program-file"])
+        .arg(path)
+        .arg("--diff")
+        .arg(&before)
+        .arg(&after)
+        .output()
+        .unwrap();
+    assert!(
+        file.status.success(),
+        "{}",
+        String::from_utf8_lossy(&file.stderr)
+    );
+    assert_eq!(file.stdout, inline.stdout);
+    let failure = Command::new(env!("CARGO_BIN_EXE_zirium"))
+        .args(["--param", "limit=1", "--param", "step=2", "--diff"])
+        .arg(before)
+        .arg(after)
+        .arg(format!("{source}; after | head(limit - 2)"))
+        .output()
+        .unwrap();
+    assert!(!failure.status.success());
+    assert!(failure.stdout.is_empty());
+}

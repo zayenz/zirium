@@ -30,9 +30,9 @@ native projections, accepted syntax and output/edit policy. Start with
 [functions](#typed-recursive-functions) as needed. The Zirql reference provides
 further explanation of the shared evaluator and its use in other hosts.
 
-The development checkout also uses Zirql's common program reader. It collects
-function declarations before reading their bodies and introduces parameters and
-`let` names at their written positions. Zirium supplies native expressions and
+The development checkout uses Zirql's common program reader for ordinary and
+diff text programs. It collects function declarations before reading their
+bodies and introduces parameters and `let` names at their written positions. Zirium supplies native expressions and
 types, legacy `name = query` bindings, `do`, and emission policy. Parsing only
 builds syntax; edits run during evaluation. The same request budget covers
 reading and execution.
@@ -146,7 +146,11 @@ primitive arguments use the same scope and request allowance. String predicates
 `head`/`tail`/indexed `defs`/`users`, and `check` counts accept checked expressions.
 Their native name, nonnegative count and index rules still apply. Known wrong
 types fail even in an empty stream or unchosen predicate branch. Inputs are
-never inserted into query source. Diff queries reject supplied parameters.
+never inserted into query source. Diff programs use the same parameter admission
+with repeated `--param` inputs. Their `head`, `tail` and `check` counts accept
+computed expressions; native `users` and `defs` indices keep literal syntax.
+See the [diff report example](semantic-diff.md#queries-and-output) for a
+parameterized report with a function and pattern let.
 
 The [parameterized function report](../examples/cli/function-report-parameters.zirql)
 keeps the literal report's `double` and `mix` rows, total operations `5` and total

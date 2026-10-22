@@ -600,21 +600,6 @@ fn run() -> Result<(), String> {
     if max_results.is_some() && diff_paths.is_some() {
         return Err("--max-results applies to document query programs".into());
     }
-    if diff_paths.is_some() && !parameters.is_empty() {
-        zirql::admit_parameters(
-            &[],
-            zirql::ParameterInputs::Cli(&parameters),
-            &[],
-            0..query_text.len(),
-            &mut zirql::Budget::for_program(zirql::ProgramLimits {
-                work: evaluation_limits.max_work,
-                results: max_results.unwrap_or(1_000_000),
-                nesting: 64,
-                stream_items: evaluation_limits.max_items,
-            }),
-        )
-        .map_err(|error| format!("{query_name}: {error}"))?;
-    }
     if let Some((before, after)) = diff_paths {
         if !paths.is_empty() {
             return Err("diff mode accepts only BEFORE, AFTER, and one optional query".into());
@@ -624,6 +609,7 @@ fn run() -> Result<(), String> {
             before,
             after,
             &query_text,
+            &parameters,
             registry,
             parse_limits,
             diff_options,
@@ -937,6 +923,7 @@ fn run_diff(
     before_path: OsString,
     after_path: OsString,
     query_text: &str,
+    parameters: &[String],
     registry: &DialectRegistry,
     parse_limits: ParseLimits,
     options: DiffOptions,
@@ -971,6 +958,7 @@ fn run_diff(
                 .as_ref()
                 .expect("a non-silent request parsed its program"),
             query_text.trim().is_empty(),
+            parameters,
             &before_name,
             &after_name,
             evaluation_limits,
@@ -1063,6 +1051,7 @@ fn evaluate_diff_cli(
     diff: &zirium::diff::Diff<'_>,
     program: &DiffProgram,
     empty: bool,
+    parameters: &[String],
     before_name: &str,
     after_name: &str,
     limits: EvaluationLimits,
@@ -1071,13 +1060,21 @@ fn evaluate_diff_cli(
     strict: bool,
     output: &mut StagedOutput,
 ) -> Result<(), String> {
+    let mut budget = zirql::Budget::new(zirql::Limits {
+        work: limits.max_work,
+        items: limits.max_items,
+        nesting: zirql::MAX_NESTING,
+    });
     if empty {
+        zirql::admit_parameters(
+            program.parameters(),
+            zirql::ParameterInputs::Cli(parameters),
+            &["input", "before_document", "after_document"],
+            0..0,
+            &mut budget,
+        )
+        .map_err(|error| error.to_string())?;
         if ndjson {
-            let mut budget = zirql::Budget::new(zirql::Limits {
-                work: limits.max_work,
-                items: limits.max_items,
-                nesting: zirql::MAX_NESTING,
-            });
             return write_diff_value(
                 diff,
                 DiffRuntime::Changes(diff.change_ids().collect()),
@@ -1093,13 +1090,14 @@ fn evaluate_diff_cli(
             .map_err(|error| error.to_string());
     }
     program
-        .evaluate(
+        .evaluate_with_parameters_and_budget(
             diff,
             (before_name, after_name),
-            limits,
             EvaluationOptions {
                 strict_unknown_references: strict,
             },
+            zirql::ParameterInputs::Cli(parameters),
+            &mut budget,
             |diff, value, budget| {
                 write_diff_value(
                     diff,

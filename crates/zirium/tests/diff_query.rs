@@ -118,15 +118,68 @@ fn typed_projected_graph_traversals_use_the_selected_document() {
 }
 
 #[test]
+fn legacy_diff_bindings_and_empty_statements_keep_their_output_policy() {
+    use zirium::query::{DiffProgram, DiffProgramOutput, EvaluationLimits, EvaluationOptions};
+    let before = document("module { %x = arith.constant 1 : i32 }");
+    let after = document("module { %x = arith.constant 2 : i32 }");
+    let diff = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits::default(),
+    )
+    .unwrap();
+    for (source, expected) in [
+        ("N = count", vec![]),
+        (
+            "; N = count;; N; ; count;; Last = count",
+            vec![DiffProgramOutput::Count(1), DiffProgramOutput::Count(1)],
+        ),
+    ] {
+        let mut values = Vec::new();
+        DiffProgram::parse(source)
+            .unwrap()
+            .evaluate(
+                &diff,
+                ("before", "after"),
+                EvaluationLimits::default(),
+                EvaluationOptions::default(),
+                |_, value, _| {
+                    values.push(value);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(values, expected, "{source}");
+    }
+    let source = "; N = count;; N = count";
+    let error = DiffProgram::parse(source).unwrap_err();
+    let repeated = source.rfind('N').unwrap();
+    assert_eq!(error.range(), Some(repeated..repeated + 1));
+    let source = "; N; N = count";
+    let error = DiffProgram::parse(source)
+        .unwrap()
+        .evaluate(
+            &diff,
+            ("before", "after"),
+            EvaluationLimits::default(),
+            EvaluationOptions::default(),
+            |_, _, _| panic!("scope admission precedes emission"),
+        )
+        .unwrap_err();
+    assert_eq!(error.range(), Some(2..3));
+    let source = "let N = count";
+    let error = DiffProgram::parse(source).unwrap_err();
+    assert_eq!(error.range(), Some(source.len()..source.len()));
+    assert_eq!(error.to_string(), "expected ';'");
+}
+
+#[test]
 fn diff_reader_rejects_unused_stage_arguments() {
     use zirium::query::DiffProgram;
 
-    for stage in [
-        "head(1, 2)",
-        "check(1, 2)",
-        "reverse(undefined())",
-        "unique()",
-    ] {
+    for stage in ["head(1, 2)", "reverse(undefined())", "unique()"] {
         let source = format!("after | {stage} | count");
         let error = DiffProgram::parse(&source).unwrap_err();
         assert_eq!(error.range(), Some(8..8 + stage.len()), "{source}: {error}");
@@ -576,7 +629,7 @@ fn flat_diff_sets_parse_and_drop_on_a_normal_thread() {
         // Later frontend failures also release partially accumulated expressions
         // and statements rather than falling back to recursive drop glue.
         assert!(DiffProgram::parse(&format!("{flat} union unknown()")).is_err());
-        assert!(DiffProgram::parse(&format!("{flat}; unknown()")).is_err());
+        assert!(DiffProgram::parse(&format!("{flat}; head()")).is_err());
     })
     .join()
     .unwrap();
@@ -840,4 +893,219 @@ fn diff_tally_keeps_native_sides_saved_lookup_and_dictionary_continuation() {
     ));
     assert_eq!(outputs[1], DiffProgramOutput::Count(1));
     assert_eq!(outputs[2], DiffProgramOutput::Count(2));
+}
+
+#[test]
+fn diff_programs_share_functions_patterns_parameters_and_computed_counts() {
+    use zirium::query::{DiffProgram, DiffProgramOutput, EvaluationLimits, EvaluationOptions};
+    use zirql::{Budget, ConstructedValue as V, ParameterInputs, ProgramLimits};
+    let before = document("module { %x = arith.constant 1 : i32 }");
+    let after = document("module { %x = arith.constant 2 : i32 }");
+    let diff = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits::default(),
+    )
+    .unwrap();
+    let source = r#"param limit: int;
+        let [first, ..] = values();
+        fn values() -> sequence<int> { [2, 3] }
+        fn increment(n: int) -> int { n + 1 }
+        before | names | head(limit + 0) | tail(increment(0)) | check(1 + 0, "one name") | json;
+        [first, increment(limit)] | json"#;
+    let program = DiffProgram::parse(source).unwrap();
+    assert_eq!(program.parameters().len(), 1);
+    let mut typed = Vec::new();
+    program
+        .evaluate_with_parameters(
+            &diff,
+            ("old", "new"),
+            &[("limit".into(), V::Integer(1))],
+            |_, value, _| {
+                typed.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        typed,
+        [
+            DiffProgramOutput::Json(serde_json::json!(["arith.constant"]), None),
+            DiffProgramOutput::Json(serde_json::json!([2, 2]), None)
+        ]
+    );
+    let mut cli = Vec::new();
+    program
+        .evaluate_with_parameters_and_budget(
+            &diff,
+            ("old", "new"),
+            EvaluationOptions::default(),
+            ParameterInputs::Cli(&["limit=1".into()]),
+            &mut Budget::for_program(ProgramLimits {
+                work: 1_000_000,
+                results: 100_000,
+                nesting: 64,
+                stream_items: 100_000,
+            }),
+            |_, value, _| {
+                cli.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(cli, typed);
+    let error = program
+        .evaluate(
+            &diff,
+            ("old", "new"),
+            EvaluationLimits::default(),
+            EvaluationOptions::default(),
+            |_, _, _| panic!("arguments precede emission"),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("missing"), "{error}");
+    for parameters in [
+        vec!["limit=bad".into()],
+        vec!["limit=1".into(), "extra=2".into()],
+    ] {
+        let error = program
+            .evaluate_with_parameters_and_budget(
+                &diff,
+                ("old", "new"),
+                EvaluationOptions::default(),
+                ParameterInputs::Cli(&parameters),
+                &mut Budget::for_program(ProgramLimits {
+                    work: 1_000_000,
+                    results: 100_000,
+                    nesting: 64,
+                    stream_items: 100_000,
+                }),
+                |_, _, _| panic!("arguments precede emission"),
+            )
+            .unwrap_err();
+        assert!(error.range().is_some(), "{error}");
+    }
+    let error = program
+        .evaluate_with_parameters(
+            &diff,
+            ("old", "new"),
+            &[("limit".into(), V::String("one".into()))],
+            |_, _, _| panic!("arguments precede emission"),
+        )
+        .unwrap_err();
+    assert!(error.range().is_some());
+
+    for (source, operand) in [
+        ("after | head(0 - 1)", "0 - 1"),
+        ("after | tail(1.5)", "1.5"),
+        ("after | check(1, 2)", "2"),
+    ] {
+        let error = DiffProgram::parse(source)
+            .unwrap()
+            .evaluate(
+                &diff,
+                ("old", "new"),
+                EvaluationLimits::default(),
+                EvaluationOptions::default(),
+                |_, _, _| panic!("invalid operands precede emission"),
+            )
+            .unwrap_err();
+        assert_eq!(
+            &source[error.range().unwrap()],
+            operand,
+            "{source}: {error}"
+        );
+    }
+    for source in [
+        "param limit: int; fn capture() -> int { limit } capture()",
+        "saved = names; fn capture() -> string { saved } capture()",
+        "fn capture() -> string { before_document } capture()",
+        "fn capture() -> int { count } capture()",
+    ] {
+        let parameters = if source.starts_with("param") {
+            vec![("limit".into(), V::Integer(1))]
+        } else {
+            vec![]
+        };
+        let error = DiffProgram::parse(source)
+            .unwrap()
+            .evaluate_with_parameters(&diff, ("old", "new"), &parameters, |_, _, _| {
+                panic!("scope precedes emission")
+            })
+            .unwrap_err();
+        assert!(error.range().is_some(), "{source}: {error}");
+    }
+}
+
+#[test]
+fn diff_functions_admit_scalar_bridges_and_keep_empty_native_sides() {
+    use zirium::{
+        diff::DiffSide,
+        query::{DiffProgram, DiffProgramOutput, EvaluationLimits, EvaluationOptions},
+    };
+    let before = document("module { %x = arith.constant 1 : i32 }");
+    let after = document("module { %x = arith.constant 2 : i32 }");
+    let diff = compare(
+        &before,
+        &after,
+        DialectRegistry::baseline(),
+        DiffOptions::default(),
+        DiffLimits::default(),
+    )
+    .unwrap();
+    let mut values = Vec::new();
+    DiffProgram::parse(
+        r#"fn same(xs: BeforeOperation) -> BeforeOperation { xs }
+        fn label(s: string) -> string { s }
+        fn amount(n: int) -> int { n }
+        same(before | filter(false));
+        [label(before_document | one), amount(before | count)] | json"#,
+    )
+    .unwrap()
+    .evaluate(
+        &diff,
+        ("old", "new"),
+        EvaluationLimits::default(),
+        EvaluationOptions::default(),
+        |_, value, _| {
+            values.push(value);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        values,
+        [
+            DiffProgramOutput::Operations(DiffSide::Before, vec![]),
+            DiffProgramOutput::Json(serde_json::json!(["old", 1]), None)
+        ]
+    );
+    let error = DiffProgram::parse("fn label(s: string) -> string { s } label(before_document)")
+        .unwrap()
+        .evaluate(
+            &diff,
+            ("old", "new"),
+            EvaluationLimits::default(),
+            EvaluationOptions::default(),
+            |_, _, _| panic!("scalar admission precedes emission"),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("expected string"), "{error}");
+    for selected in ["after", "after | filter(false)"] {
+        let source =
+            format!("fn same(xs: BeforeOperation) -> BeforeOperation {{ xs }} same({selected})");
+        let error = DiffProgram::parse(&source)
+            .unwrap()
+            .evaluate(
+                &diff,
+                ("old", "new"),
+                EvaluationLimits::default(),
+                EvaluationOptions::default(),
+                |_, _, _| panic!("side admission precedes emission"),
+            )
+            .unwrap_err();
+        assert!(error.range().is_some(), "{error}");
+    }
 }

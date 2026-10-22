@@ -342,10 +342,11 @@ Excessive nesting is reported when the expression is evaluated.
 
 Ordinary and diff programs use Zirql's statement order, immutable bindings,
 groups, sets and composition steps. In the development checkout, ordinary text
-programs also use `zirql::read_program` for function collection, parameters,
-pattern lets and separators. The adapter preserves the public parser's statements, final expression
-and parameter positions; typed builders continue to construct that frontend
-model directly. Zirium retains legacy bindings, `do` and native output policy.
+and diff text programs use `zirql::read_program` for function collection,
+parameters, pattern lets and separators. The ordinary adapter preserves the
+public parser's statements, final expression and parameter positions; typed
+builders continue to construct that frontend model directly. Zirium retains
+legacy bindings, `do` and native output policy.
 The legacy binding reader accepts a single `=` and leaves `==` to the
 expression reader. Queries parsed with `Query::parse("let n=1; n == 1")` or
 `Query::parse("let n=1; report n == 1")` both evaluate to the Boolean `true`.
@@ -381,7 +382,12 @@ Python resolves those selections to wrappers backed by immutable snapshots.
 Use `diff_op_input()` to build a relative fixed-point body, for example
 `changed_ops.fixpoint(diff_op_input().slice())`. Diff value projections include
 `names()`, `attr(...)`, `result_types()`, and `operand_types()`.
-See [semantic diff](semantic-diff.md) for examples.
+`DiffProgram::evaluate_with_parameters` accepts typed scalar inputs;
+`evaluate_with_parameters_and_budget` accepts `zirql::ParameterInputs` and one
+request budget. `parameters()` exposes the parameter declarations. Native function
+signatures use `Change`, `BeforeOperation` and `AfterOperation`, preserving
+comparison and side admission. See [semantic diff](semantic-diff.md) for a
+parameterized text report and the native builder examples.
 
 ## Constructed report builders
 

@@ -57,8 +57,11 @@ after | root(p => op("builtin.module") and one(_ | names) == "builtin.module") |
 bindings remain available, native leaves keep their change/before/after meanings,
 and pure shared expressions use the same cumulative budget. Change predicates
 refuse operation streams, including empty ones. Operations and changes do not
-expose record or list fields; select native projections explicitly. This diff
-surface has no function-declaration syntax or native capture clauses.
+expose record or list fields; select native projections explicitly. Diff programs
+accept shared pattern lets, required scalar parameters and named pure functions.
+Functions receive their arguments explicitly and cannot capture saved bindings,
+program parameters, document labels or the ambient change stream. Native capture
+clauses remain unavailable.
 
 After projection, `users`, `defs`, `parent`, `children`, `root`, `subtree`,
 `slice`, `closure`, and `reachable` inspect the selected complete document.
@@ -131,9 +134,29 @@ Diff output retains its existing table framing, including header-only empty
 string and map tables. Native before/after operation descriptors and change
 classification remain part of Zirium.
 
-Bindings retain their stream side. The reserved scalar bindings
+Bindings retain their stream side. The reserved bindings
 `before_document` and `after_document` contain the two CLI labels for
 `print("{before_document} -> {after_document}")` and similar reports.
+
+Use repeated `--param` options with inline programs or `--program-file`:
+
+```sh
+zirium --param limit=2 --diff before.mlir after.mlir '
+  param limit: int;
+  fn label(n: int) -> string { "Selected: " ++ to_string(n) }
+  let selected = after | head(limit + 0);
+  let (title, total) = (label(selected | count), selected | count);
+  {"title": title, "total": total} | json'
+```
+
+`head`, `tail` and `check` accept computed count expressions. Counts must be
+nonnegative integers; `check` also accepts an optional string message. Native
+`users(index)` and `defs(index)` keep their literal index syntax.
+
+Function signatures name native values with `Change`, `BeforeOperation` and
+`AfterOperation`. A before/after signature retains that side even for an empty
+selection. Native string selections remain sequences; use an explicit scalar
+projection such as `before_document | one` for a `string` argument.
 
 Change JSON uses schema `zirium.diff.v1`. Endpoints contain the operation name,
 symbol context, structural path, and half-open byte range. `--jsonl` adds both
@@ -164,6 +187,13 @@ explicit `Budget::for_program` aggregate allowance. Binding copies, projections,
 nested traversal and report construction spend that same allowance. The CLI
 retains its legacy limits and rejects `--max-results` in diff mode. JSON conversion
 and MLIR printing remain explicit rendering boundaries.
+
+`parameters()` exposes the required parameter declarations. `evaluate_with_parameters`
+accepts typed `(String, zirql::ConstructedValue)` pairs with default options and
+limits. `evaluate_with_parameters_and_budget` accepts `zirql::ParameterInputs`
+and a caller-owned budget; use `ParameterInputs::Cli` for `name=value` strings.
+The parameter-free methods report missing declarations through the same admission
+rules. Arguments are admitted before preparation or callbacks.
 
 ## Python
 
