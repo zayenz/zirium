@@ -1,7 +1,7 @@
 # Zirium query language
 
-These examples use Zirium 0.6.1. Repository-relative inputs are in the
-[`v0.6.1` checkout](https://github.com/zayenz/zirium/tree/v0.6.1);
+These examples use Zirium 0.7.0. Repository-relative inputs are in the
+[`v0.7.0` checkout](https://github.com/zayenz/zirium/tree/v0.7.0);
 see [getting started](getting-started.md) for installation.
 
 A query transforms an ordered stream. It starts with every operation
@@ -30,7 +30,7 @@ native projections, accepted syntax and output/edit policy. Start with
 [functions](#typed-recursive-functions) as needed. The Zirql reference provides
 further explanation of the shared evaluator and its use in other hosts.
 
-The development checkout uses Zirql's common program reader for ordinary and
+Zirium uses Zirql's common program reader for ordinary and
 diff text programs. It collects function declarations before reading their
 bodies and introduces parameters and `let` names at their written positions. Zirium supplies native expressions and
 types, legacy `name = query` bindings, `do`, and emission policy. Parsing only
@@ -621,7 +621,7 @@ sort_by((names # comma, and closing delimiter ) stay in the comment
 ' examples/cli/function-report.mlir
 ```
 
-The development adapter uses Zirql's common syntax recognition before reading
+The adapter uses Zirql's common syntax recognition before reading
 expressions and suffixes. Plain legacy JSON/interpolation keeps its established
 parsing allowance; common words inside strings do not trigger value-program
 allocation charges. Shared parsing and checked lookahead use the active request
@@ -637,10 +637,7 @@ admits quoted names; its ASCII spelling check does not replace host admission.
 
 ## Transform positional reports
 
-These forms require the development checkout, which pins Zirql Git revision
-[`49c30dac58ed2614fb9d6ba97dafe1432fa7a9cc`](https://github.com/zayenz/zirql/commit/49c30dac58ed2614fb9d6ba97dafe1432fa7a9cc).
-The published 0.6.1 integration predates them. Inline and `--program-file`
-programs use the same reader and evaluator.
+Inline and `--program-file` programs use the same reader and evaluator.
 
 ```sh
 cargo run --locked --bin zirium -- '
@@ -2025,7 +2022,7 @@ earlier scan states keep their original values.
 
 ## Native composition boundary
 
-The development checkout lowers filters, matches, ordering, maps, existence,
+Zirium lowers filters, matches, ordering, maps, existence,
 fixed points and paths directly to Zirql composition steps. Text queries, Rust
 builders and Python builders use the same preparation and iteration rules.
 Zirium supplies native predicates, navigation, handle identity and output shape;
@@ -2124,8 +2121,7 @@ measurements exclude host parsing/rendering and do not predict CLI latency.
 
 ## Shared data JSON
 
-The development dependency pins Zirql `49c30dac58ed2614fb9d6ba97dafe1432fa7a9cc`
-and uses its ordinary JSON codec for constructed
+Zirium uses Zirql 0.3.0's ordinary JSON codec for constructed
 reports and data inside native maps, sequences and captures. Scalars stay JSON
 scalars, positional collections stay arrays, and records preserve field order.
 General dictionaries retain explicit key/value entries; nominal members and
@@ -2170,13 +2166,13 @@ The report retains the operation count in its label, with parsed integer `2` and
 price `12.5`. [The shared scalar reference](https://zayenz.se/zirql/guides/library-strings/#parse_int)
 defines exact decimal grammar, overflow and underflow errors, signed zero and
 round-trippable formatting. These common calls work in ordinary reports and pure
-functions in this development checkout's pinned Zirql revision. Native handles
-need their existing scalar projection; conversion never formats a handle or changes
+functions. Native handles need their existing scalar projection; conversion never
+formats a handle or changes
 its owner, identity or coordinates.
 
 ## Collection selection and cardinality
 
-The development checkout uses the [shared collection stages](https://zayenz.se/zirql/guides/library-pipelines/)
+Zirium uses the [shared collection stages](https://zayenz.se/zirql/guides/library-pipelines/)
 and [length](https://zayenz.se/zirql/guides/library-collections/#length) for
 ordinary report data and admitted native selections/maps. Operation predicates
 retain their native subjects, document ownership and completeness policy.
@@ -2188,8 +2184,7 @@ report [3,1,3] | filter(_>1) | head(limit) | reverse | check(limit,message);
 ```
 
 This emits `[3,3]`. Keyed arrays retain axes and missing cells; project cells
-explicitly before removal or reversal. These additions require the development
-checkout; released Zirium 0.6.1 retains its published support.
+explicitly before removal or reversal.
 
 Legacy JSON map value predicates use the existing checked ordinary-data
 projection. JSON integers outside signed 64-bit range are refused with a located

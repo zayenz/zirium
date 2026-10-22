@@ -1,6 +1,6 @@
 # Compatibility and local wheel checks
 
-Zirium 0.6.1 requires Rust 1.88 or newer. Wheels support conventional CPython
+Zirium 0.7.0 requires Rust 1.88 or newer. Wheels support conventional CPython
 3.11 through 3.14 on Linux x86_64 and macOS arm64; CI checks both platforms.
 Wheels use version-specific ABIs, without `abi3` or `abi3t`. Other platforms and
 free-threaded CPython 3.14 are unsupported, though source builds may work.
@@ -31,7 +31,7 @@ cargo +stable test --doc --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo +stable doc --workspace --all-features --no-deps
 ```
 
-Zirium 0.6.1 uses the verified Zirql 0.2.0 registry release. The
+Zirium 0.7.0 uses the verified Zirql 0.3.0 registry release. The
 [release guide](releasing.md#zirql-dependency-and-source-distributions) describes
 the registry dependency and sdist contents. Run
 `cargo +stable package -p zirium --locked` to verify the Rust archive against
@@ -84,7 +84,7 @@ check_dir=$(mktemp -d)
 uv venv --python 3.14 "$check_dir/venv"
 uv pip install --python "$check_dir/venv/bin/python" "$wheel"
 (cd "$check_dir" && ./venv/bin/python -I -c \
-  'import zirium, zirium._zirium; from zirium.query import ops; assert zirium.__version__ == "0.6.1"; print(zirium._zirium.__file__); d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.query(ops().names().tally()) == {"test": 1}')
+  'import zirium, zirium._zirium; from zirium.query import ops; assert zirium.__version__ == "0.7.0"; print(zirium._zirium.__file__); d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.query(ops().names().tally()) == {"test": 1}')
 ```
 
 Change `3.14` to any supported conventional interpreter version to build and
@@ -100,9 +100,9 @@ Install the sdist into another fresh environment and repeat the isolated query:
 ```sh
 sdist_check=$(mktemp -d)
 uv venv --python 3.14 "$sdist_check/venv"
-uv pip install --no-cache --python "$sdist_check/venv/bin/python" target/sdist/zirium-0.6.1.tar.gz
+uv pip install --no-cache --python "$sdist_check/venv/bin/python" target/sdist/zirium-0.7.0.tar.gz
 (cd "$sdist_check" && ./venv/bin/python -I -c \
-  'import zirium; from zirium.query import ops; assert zirium.__version__ == "0.6.1"; d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.query(ops().names().tally()) == {"test": 1}')
+  'import zirium; from zirium.query import ops; assert zirium.__version__ == "0.7.0"; d=zirium.parse_text("\"test\"() : () -> ()").lower_strict().document; assert d is not None; assert d.query(ops().names().tally()) == {"test": 1}')
 ```
 
 The [release guide](releasing.md#zirql-dependency-and-source-distributions) records

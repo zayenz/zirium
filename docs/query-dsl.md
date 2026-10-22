@@ -1,7 +1,7 @@
 # Structured queries in Rust and Python
 
-These examples use Zirium 0.6.1. Repository-relative inputs are in the
-[`v0.6.1` checkout](https://github.com/zayenz/zirium/tree/v0.6.1);
+These examples use Zirium 0.7.0. Repository-relative inputs are in the
+[`v0.7.0` checkout](https://github.com/zayenz/zirium/tree/v0.7.0);
 see [getting started](getting-started.md) for installation.
 
 Build queries with methods and predicates, then evaluate them against a semantic
@@ -341,7 +341,7 @@ pipelines, boolean chains, and set chains do not consume a level per term.
 Excessive nesting is reported when the expression is evaluated.
 
 Ordinary and diff programs use Zirql's statement order, immutable bindings,
-groups, sets and composition steps. In the development checkout, ordinary text
+groups, sets and composition steps. Ordinary text
 and diff text programs use `zirql::read_program` for function collection,
 parameters, pattern lets and separators. The ordinary adapter preserves the
 public parser's statements, final expression and parameter positions; typed
@@ -517,8 +517,7 @@ existing semantic wrappers.
 
 ## Transform report data
 
-The methods in this section require the development checkout and its Zirql Git
-pin `49c30dac58ed2614fb9d6ba97dafe1432fa7a9cc`. They accept shared expressions
+The methods in this section accept shared expressions
 and patterns; they do not execute Rust or Python callbacks. Functions and
 parameter declarations compose with the existing report metadata.
 
@@ -973,7 +972,7 @@ continues to use native projections such as `attr("sym_name")` and `names`.
 
 ## Declaration metadata in the Rust adapter
 
-The development adapter uses Zirql's budgeted declaration copying and structural
+The adapter uses Zirql's budgeted declaration copying and structural
 native inspection. Copies retain empty sequence element contracts and field
 order; Zirium stores the copied declaration in `Arc` and retains native owner
 checks. Shared scalar type-fact admission checks primitive arguments and
@@ -984,7 +983,7 @@ the existing native or constructed admission checks.
 Count and index arguments use Zirql's located nonnegative integer conversion,
 including platform overflow refusal, with Zirium's argument diagnostics.
 MLIR kind conversion, native handles, source coordinates and domain admission
-remain in Zirium. These are Rust adapter APIs in the development dependency,
+remain in Zirium. These are Rust adapter APIs,
 not additional Rust/Python query syntax. See [the shared API contract](https://zayenz.se/zirql/guides/host-integration/#declaration-metadata-and-scalar-arguments).
 
 ## Markdown reports
@@ -1034,12 +1033,10 @@ In Rust, the corresponding scalar builders are
 `ReportExpr::string("1.25e1").parse_float()`. See the
 [shared contract](https://zayenz.se/zirql/guides/library-strings/#parse_int) and
 [textual report recipe](query-language.md#explicit-scalar-conversions).
-These builders require this development checkout; released Zirium 0.6.1 does not
-include them.
 
 ## Collection report builders
 
-In the development checkout, Rust `ReportExpr` exposes `filter(pattern, body)`,
+Rust `ReportExpr` exposes `filter(pattern, body)`,
 `count()`, `length()`, `unique()`, `tally()`, `head(count)`, `tail(count)`,
 `reverse()` and `check(operand, message)`. Bounds and optional check operands/messages are report
 expressions; use `None` for omitted Rust check arguments. These methods build the
@@ -1075,5 +1072,3 @@ keyed cells. Other selection operations require explicit positional/entry
 conversion of keyed arrays. Tuple and string values are refused. Runtime checks
 and native Unknown/completeness rules follow the
 [shared collection reference](https://zayenz.se/zirql/guides/library-pipelines/#filter).
-These builders require this development checkout; released Zirium 0.6.1 retains
-its published API.

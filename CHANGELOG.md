@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0
+
+- Use Zirql 0.3.0 for shared program reading, preparation, scalar conversions, formatting, collection operations and JSON/Markdown reports.
+- Preserve native MLIR values and declared empty schemas through reports, dictionary operations, sorting and grouping.
+- Expose collection report builders in Rust and Python, including structural unique and tally.
+- Read diff programs through the shared language reader, with typed parameters, functions, patterns and report expressions while retaining before/after identities.
+- Distinguish equality expressions from legacy binding syntax and keep native retention independent of unrelated function declarations.
+- Link the shared library reference from the query guides while keeping MLIR operations, completeness and source edits in Zirium.
+
 ## 0.6.1
 
 - Adopt Zirql 0.2 for general constructed collection keys, set elements and
