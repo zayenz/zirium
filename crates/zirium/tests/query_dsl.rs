@@ -4137,6 +4137,22 @@ fn shared_value_calls_and_saved_suffixes_keep_constructed_and_native_sources() {
             );
         }
     }
+    for (expression, expected) in [
+        ("1 == 1", true),
+        ("true==true", true),
+        ("n == 1", true),
+        ("n==2", false),
+    ] {
+        let direct = evaluate(&mut document, &format!("let n=1; {expression}"));
+        let reported = evaluate(&mut document, &format!("let n=1; report {expression}"));
+        for output in [&direct[0], &reported[0]] {
+            assert!(
+                matches!(output, QueryOutput::Native(NativeValue::Constructed(value))
+                    if value.value().data() == &V::Boolean(expected)),
+                "{expression}: {output:?}"
+            );
+        }
+    }
     for expression in ["d.n", "(d.n)", "t.1"] {
         let bindings = r#"let d={"n":1}; let t=(1,2);"#;
         let direct = evaluate(&mut document, &format!("{bindings} {expression}"));

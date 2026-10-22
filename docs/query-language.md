@@ -470,6 +470,15 @@ zirium 'let n=1; n+2' examples/cli/arithmetic.mlir
 Both commands print `3`. The same expressions work in program files and through
 `Query::parse`; no function declaration or `report` prefix is required.
 
+Equality uses `==` in both bare expressions and `report` expressions:
+
+```sh
+zirium 'let n=1; n == 1' examples/cli/arithmetic.mlir
+```
+
+This command prints `true`. Legacy bindings use a single `=`, as in
+`name = expression;`.
+
 The [library reference](https://zayenz.se/zirql/guides/library-reference/)
 organizes the shared expression forms and their contracts. Use its
 [scalar and string entries](https://zayenz.se/zirql/guides/library-strings/)

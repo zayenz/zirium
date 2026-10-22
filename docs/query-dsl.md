@@ -346,6 +346,9 @@ programs also use `zirql::read_program` for function collection, parameters,
 pattern lets and separators. The adapter preserves the public parser's statements, final expression
 and parameter positions; typed builders continue to construct that frontend
 model directly. Zirium retains legacy bindings, `do` and native output policy.
+The legacy binding reader accepts a single `=` and leaves `==` to the
+expression reader. Queries parsed with `Query::parse("let n=1; n == 1")` or
+`Query::parse("let n=1; report n == 1")` both evaluate to the Boolean `true`.
 
 Filter, match, ordering, mapping, existence, fixed-point and path bodies prepare
 through the shared runner. Each selector and existence relation receives one

@@ -2275,7 +2275,7 @@ impl zirql::ProgramReaderHost for NativeReader<'_> {
         let Ok(name) = probe.word() else {
             return Ok(None);
         };
-        if !probe.consume('=') {
+        if !probe.consume('=') || probe.remaining().starts_with('=') {
             return Ok(None);
         }
         budget.charge(
