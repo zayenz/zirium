@@ -1793,6 +1793,24 @@ nested(input | head(1))
 No operation is converted to a name for admission. A retained empty
 `dict<string, int>` is incompatible with `dict<int, int>` despite having no keys.
 
+A sequence of present operations satisfies `sequence<opt Operation>`. This
+example passes one to a function that uses an optional-element queue:
+
+```zirql
+fn first_present(nodes: sequence<opt Operation>) -> bool {
+  let present((first, _)) = pop_front(queue<opt Operation>(nodes));
+  occurs(first)
+}
+let selected = input | head(1);
+let nodes = [selected];
+report first_present(nodes) | json
+```
+
+This returns `true` for a document with at least one operation. Admission still
+checks every operation against the current document. An empty sequence
+retains its element declaration; an empty `sequence<SSAValue>` cannot satisfy
+`sequence<opt Operation>`.
+
 Function arguments and results are admitted against their whole declarations.
 Wrong arity, duplicate names, unknown calls, unavailable names and effects in
 any written body or branch fail before execution, even when unused. Runtime

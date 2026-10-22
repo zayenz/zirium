@@ -121,12 +121,15 @@ pub(super) fn sequence_items(
     let location = ValueLocation::Query(range.clone());
     match functions::unretained(value) {
         QueryOutput::Native(NativeValue::Sequence(sequence)) => {
-            if sequence.element.as_ref() != element {
+            if !zirql::declarations_compatible(&sequence.element, element, budget, &location)? {
                 return Err(zirql::QueryError::query(
                     range.clone(),
                     "incompatible native sequence element declaration",
                 )
                 .into());
+            }
+            for value in sequence.values.iter() {
+                zirql::admit_value(value, element, host, context, budget, location.clone())?;
             }
             budget.check_items(sequence.values.len(), location.clone())?;
             capture::slots::<QueryOutput>(sequence.values.len(), budget, range)
@@ -139,7 +142,12 @@ pub(super) fn sequence_items(
         }
         QueryOutput::Operations(operations)
         | QueryOutput::Native(NativeValue::OperationSequence(operations))
-            if matches!(element, D::Native(program::Kind::Operations)) =>
+            if zirql::declarations_compatible(
+                element,
+                &D::Native(program::Kind::Operations),
+                budget,
+                &location,
+            )? =>
         {
             budget.check_items(operations.len(), location)?;
             capture::slots::<QueryOutput>(operations.len(), budget, range)

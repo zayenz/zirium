@@ -471,7 +471,13 @@ impl RuntimeTypeHost<EvaluationContext<'_, '_>> for report::ReportHost<'_> {
                 (
                     D::Sequence(inner) | D::Array(inner),
                     QueryOutput::Native(NativeValue::OperationSequence(ops)),
-                ) if matches!(inner.as_ref(), D::Native(program::Kind::Operations)) => {
+                ) if zirql::declarations_compatible(
+                    inner,
+                    &D::Native(program::Kind::Operations),
+                    budget,
+                    &location,
+                )? =>
+                {
                     check_operations(context.document, ops, budget, range)?
                 }
                 (D::Integer, QueryOutput::Count(value)) if i64::try_from(*value).is_ok() => {}
@@ -495,7 +501,13 @@ impl RuntimeTypeHost<EvaluationContext<'_, '_>> for report::ReportHost<'_> {
                 (
                     D::Sequence(element) | D::Array(element),
                     QueryOutput::Native(NativeValue::Sequence(sequence)),
-                ) if element.as_ref() == sequence.element.as_ref() => {
+                ) if zirql::declarations_compatible(
+                    &sequence.element,
+                    element,
+                    budget,
+                    &location,
+                )? =>
+                {
                     budget.check_items(sequence.values.len(), location.clone())?;
                     for value in sequence.values.iter() {
                         zirql::admit_value(

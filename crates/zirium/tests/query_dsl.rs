@@ -4864,3 +4864,55 @@ fn nested_declared_dictionaries_retain_native_operations() {
         QueryOutput::Operations(vec![expected])
     );
 }
+
+#[test]
+fn optional_native_sequences_admit_present_operations_in_functions_and_queues() {
+    use zirium::query::{ConstructedValue as V, NativeValue};
+    let mut document = document_from(include_str!("../../../examples/cli/arithmetic.mlir"));
+    let source = r#"
+        fn size(d:sequence<opt Operation>)->int {1}
+        fn first_present(nodes:sequence<opt Operation>)->bool {
+            let present((first,_))=pop_front(queue<opt Operation>(nodes));
+            occurs(first)
+        }
+        report size([n for n in input]);
+        let selected=input | head(1);
+        report first_present([selected]);
+        report size(direct_children(selected));
+        report occurs(pop_front(queue<opt Operation>(direct_children(selected))));
+    "#;
+    let mut outputs = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(&outputs[0], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Integer(1))
+    );
+
+    assert!(
+        matches!(&outputs[1], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Boolean(true))
+    );
+
+    assert!(
+        matches!(&outputs[2], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Integer(1))
+    );
+    assert!(
+        matches!(&outputs[3], QueryOutput::Native(NativeValue::Constructed(value)) if value.value().data() == &V::Boolean(true))
+    );
+
+    let incompatible = r#"
+        fn empty(scope:Operation)->sequence<Operation> { direct_children(scope) | head(0) }
+        fn accept(nodes:sequence<opt SSAValue>)->int { 1 }
+        report accept(empty(input | head(1)));
+    "#;
+    assert!(
+        Query::parse(incompatible)
+            .unwrap()
+            .evaluate(&mut document, DialectRegistry::baseline(), |_, _| Ok(()))
+            .is_err()
+    );
+}
