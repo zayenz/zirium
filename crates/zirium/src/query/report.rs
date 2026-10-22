@@ -1199,6 +1199,7 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
     fn construct_map(
         &self,
         entries: Vec<(String, QueryOutput)>,
+        _: Option<program::Kind>,
         _: &mut EvaluationContext<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
@@ -1238,7 +1239,7 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
                 .collect::<Result<Vec<_>, _>>()?;
             return Ok(QueryOutput::Map(entries));
         }
-        self.construct_map(entries, context, budget, range)
+        self.construct_map(entries, None, context, budget, range)
     }
     fn capture_selection_kind(
         &self,

@@ -2085,6 +2085,7 @@ impl ProjectionHost<Context<'_, '_>> for DiffProjectionHost {
     fn construct_map(
         &self,
         entries: Vec<(String, DiffProgramOutput)>,
+        _: Option<ValueKind>,
         _: &mut Context<'_, '_>,
         budget: &mut Budget,
         range: &Range<usize>,
