@@ -101,6 +101,19 @@ reversal and bounds retain dictionary kind in saved, nested and JSON results.
 Navigation keeps its domain order. Native identity includes comparison ownership
 and before/after side; ordering never derives it from rendered descriptors.
 
+Diff dictionaries use Zirql's shared schema and entry admission. Retained
+schemas are checked even when the dictionary is empty, and nested dictionaries
+retain their native contents. Each native entry must belong to the current
+comparison and agree with its before/after side. For example:
+
+```zirql
+a = after | head(1);
+{a: {a: a}} | count
+```
+
+This retains the selected after operation as both keys and the inner value.
+`count` returns `1`. Rendering remains a separate boundary.
+
 [Fixed points](https://zayenz.se/zirql/guides/library-native/#fixpoint) must retain
 the admitted side. The initial change stream must fit the item ceiling before
 filtering. Flat pipelines and set chains do not add a nesting level per term.

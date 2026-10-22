@@ -403,59 +403,6 @@ impl<'c, 'a> FunctionHost<EvaluationContext<'c, 'a>> for report::ReportHost<'_> 
             || matches!(name, "operand" | "project" | "paths" | "match")
     }
 }
-fn admit_dictionary_schema(
-    host: &report::ReportHost<'_>,
-    schema: &(program::Kind, program::Kind),
-    expected: (&D<program::Kind>, &D<program::Kind>),
-    budget: &mut Budget,
-    location: &ValueLocation,
-) -> Result<(), zirql::QueryError> {
-    budget.within_evaluation(1, location.clone(), |budget| {
-        let range = match location {
-            ValueLocation::Query(range) | ValueLocation::Source(range) => range,
-        };
-        for (kind, expected, is_key) in [
-            (&schema.0, expected.0, true),
-            (&schema.1, expected.1, false),
-        ] {
-            let mut underlying = expected;
-            while let D::Optional(inner) = underlying {
-                budget.charge(1, location.clone())?;
-                underlying = inner;
-            }
-            if let (program::Kind::Dictionary(schema), D::Dictionary(key, value)) =
-                (kind, underlying)
-            {
-                admit_dictionary_schema(host, schema, (key, value), budget, location)?;
-                continue;
-            }
-            let facts = if is_key && *kind == program::Kind::Strings {
-                budget.charge_results(1, location.clone())?;
-                Some(vec![ValueType::String])
-            } else {
-                host.scalar_types(kind, budget, range)?
-            };
-            if let Some(facts) = facts {
-                for fact in facts {
-                    zirql::admit_type_facts(
-                        &fact,
-                        expected,
-                        zirql::TypeFactPolicy::Deferred,
-                        budget,
-                        location,
-                    )?;
-                }
-            } else if *kind != host.declaration_kind(underlying, budget, range)? {
-                return Err(zirql::QueryError::query(
-                    range.clone(),
-                    "dictionary schema does not satisfy its declaration",
-                ));
-            }
-        }
-        Ok(())
-    })
-}
-
 impl RuntimeTypeHost<EvaluationContext<'_, '_>> for report::ReportHost<'_> {
     type Kind = program::Kind;
     fn constructed_value<'v>(&self, value: &'v QueryOutput) -> Option<&'v ConstructedValue> {
@@ -488,85 +435,15 @@ impl RuntimeTypeHost<EvaluationContext<'_, '_>> for report::ReportHost<'_> {
                 location,
             );
         }
-        if let QueryOutput::Native(NativeValue::Dictionary(dictionary)) = unretained(value) {
-            let mut expected = expected;
-            while let D::Optional(inner) = expected {
-                budget.charge(1, location.clone())?;
-                expected = inner;
-            }
-            match expected {
-                D::Dictionary(key, value) => {
-                    admit_dictionary_schema(
-                        self,
-                        &dictionary.schema,
-                        (key, value),
-                        budget,
-                        &location,
-                    )?;
-                }
-                D::Native(program::Kind::Dictionary(schema)) if schema == &dictionary.schema => {}
-                _ => {
-                    return Err(zirql::QueryError::query(
-                        range.clone(),
-                        "dictionary schema does not satisfy its declaration",
-                    )
-                    .into());
-                }
-            }
-            for (key, item) in dictionary.entries() {
-                for (value, declaration) in [
-                    (
-                        key,
-                        match expected {
-                            D::Dictionary(key, _) => Some(key.as_ref()),
-                            _ => None,
-                        },
-                    ),
-                    (
-                        item,
-                        match expected {
-                            D::Dictionary(_, value) => Some(value.as_ref()),
-                            _ => None,
-                        },
-                    ),
-                ] {
-                    if let Some(declaration) = declaration {
-                        if let Some(ordinary) =
-                            self.ordinary_value(value, context, budget, range)?
-                        {
-                            zirql::admit_constructed(
-                                &ordinary,
-                                declaration,
-                                budget,
-                                location.clone(),
-                            )?;
-                            continue;
-                        }
-                        zirql::admit_value(
-                            value,
-                            declaration,
-                            self,
-                            context,
-                            budget,
-                            location.clone(),
-                        )?;
-                    } else if let Some(value) = self.constructed_value(value) {
-                        zirql::admit_constructed(value, &D::<()>::Value, budget, location.clone())?;
-                    } else if self
-                        .ordinary_value(value, context, budget, range)?
-                        .is_none()
-                    {
-                        let kind = self.kind(value, budget, range)?;
-                        self.admit_native(
-                            value,
-                            &D::Native(kind),
-                            context,
-                            budget,
-                            location.clone(),
-                        )?;
-                    }
-                }
-            }
+        if zirql::admit_dictionary(
+            value,
+            expected,
+            self,
+            context,
+            budget,
+            location.clone(),
+            &program::Kind::Strings,
+        )? {
             return Ok(());
         }
         {

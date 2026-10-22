@@ -1778,6 +1778,21 @@ Native capture records and maps check their declared fields and nested handles.
 There is no native-handle transport through external `param` declarations;
 those inputs remain int, string or bool.
 
+Dictionary admission checks retained key and value schemas before entries, including
+empty and nested dictionaries. Each native key or value still needs a valid
+current-document handle. For example, a nested dictionary can retain operations
+at both levels:
+
+```zirql
+fn nested(root: Operation) -> dict<Operation, dict<Operation, Operation>> {
+  {root: {root: root}}
+}
+nested(input | head(1))
+```
+
+No operation is converted to a name for admission. A retained empty
+`dict<string, int>` is incompatible with `dict<int, int>` despite having no keys.
+
 Function arguments and results are admitted against their whole declarations.
 Wrong arity, duplicate names, unknown calls, unavailable names and effects in
 any written body or branch fail before execution, even when unused. Runtime

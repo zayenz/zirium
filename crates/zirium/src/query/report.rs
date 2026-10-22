@@ -401,6 +401,15 @@ impl ProjectionHost<EvaluationContext<'_, '_>> for ReportHost<'_> {
             _ => None,
         }
     }
+    fn dictionary_view_kind<'k>(
+        &self,
+        kind: &'k program::Kind,
+    ) -> Option<&'k (program::Kind, program::Kind)> {
+        match kind {
+            program::Kind::Dictionary(schema) => Some(schema),
+            _ => None,
+        }
+    }
     fn construct_dictionary(
         &self,
         entries: Vec<(QueryOutput, QueryOutput)>,

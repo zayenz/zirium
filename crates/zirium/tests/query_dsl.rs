@@ -4830,3 +4830,37 @@ fn empty_native_tally_admits_its_retained_dictionary_schema() {
     assert!(error.range().is_some());
     assert!(!emitted);
 }
+
+#[test]
+fn nested_declared_dictionaries_retain_native_operations() {
+    let mut document = document();
+    let expected = document.query(&ops().head(1)).unwrap()[0];
+    let source = "fn nested(root:Operation)->dict<Operation,opt dict<Operation,Operation>> { {root:{root:root}} } nested(input | head(1))";
+    let mut outputs = Vec::new();
+    Query::parse(source)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, value| {
+            outputs.push(value);
+            Ok(())
+        })
+        .unwrap();
+    let QueryOutput::Native(zirium::query::NativeValue::Dictionary(outer)) = &outputs[0] else {
+        panic!("outer dictionary")
+    };
+    assert_eq!(
+        outer.entries()[0].0,
+        QueryOutput::Operations(vec![expected])
+    );
+    let QueryOutput::Native(zirium::query::NativeValue::Dictionary(inner)) = &outer.entries()[0].1
+    else {
+        panic!("inner dictionary")
+    };
+    assert_eq!(
+        inner.entries()[0].0,
+        QueryOutput::Operations(vec![expected])
+    );
+    assert_eq!(
+        inner.entries()[0].1,
+        QueryOutput::Operations(vec![expected])
+    );
+}

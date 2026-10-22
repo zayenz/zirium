@@ -2152,6 +2152,12 @@ impl ProjectionHost<Context<'_, '_>> for DiffProjectionHost {
             _ => None,
         }
     }
+    fn dictionary_view_kind<'k>(&self, kind: &'k ValueKind) -> Option<&'k (ValueKind, ValueKind)> {
+        match kind {
+            ValueKind::Dictionary(schema) => Some(schema),
+            _ => None,
+        }
+    }
     fn construct_dictionary(
         &self,
         entries: Vec<(DiffProgramOutput, DiffProgramOutput)>,
@@ -2790,57 +2796,6 @@ impl FunctionHost<Context<'_, '_>> for DiffProjectionHost {
         }
     }
 }
-fn admit_dictionary_schema(
-    host: &DiffProjectionHost,
-    schema: &(ValueKind, ValueKind),
-    expected: (&D<ValueKind>, &D<ValueKind>),
-    budget: &mut Budget,
-    location: &zirql::Location,
-) -> Result<(), zirql::QueryError> {
-    budget.within_evaluation(1, location.clone(), |budget| {
-        let range = match location {
-            zirql::Location::Query(range) | zirql::Location::Source(range) => range,
-        };
-        for (kind, expected, is_key) in [
-            (&schema.0, expected.0, true),
-            (&schema.1, expected.1, false),
-        ] {
-            let mut underlying = expected;
-            while let D::Optional(inner) = underlying {
-                budget.charge(1, location.clone())?;
-                underlying = inner;
-            }
-            if let (ValueKind::Dictionary(schema), D::Dictionary(key, value)) = (kind, underlying) {
-                admit_dictionary_schema(host, schema, (key, value), budget, location)?;
-                continue;
-            }
-            let facts = if is_key && *kind == ValueKind::Native(Kind::Strings) {
-                budget.charge_results(1, location.clone())?;
-                Some(vec![zirql::ValueType::String])
-            } else {
-                host.scalar_types(kind, budget, range)?
-            };
-            if let Some(facts) = facts {
-                for fact in facts {
-                    zirql::admit_type_facts(
-                        &fact,
-                        expected,
-                        zirql::TypeFactPolicy::Deferred,
-                        budget,
-                        location,
-                    )?;
-                }
-            } else if *kind != host.declaration_kind(underlying, budget, range)? {
-                return Err(zirql::QueryError::query(
-                    range.clone(),
-                    "dictionary schema does not satisfy its declaration",
-                ));
-            }
-        }
-        Ok(())
-    })
-}
-
 impl RuntimeTypeHost<Context<'_, '_>> for DiffProjectionHost {
     type Kind = ValueKind;
     fn constructed_value<'v>(
@@ -2861,85 +2816,15 @@ impl RuntimeTypeHost<Context<'_, '_>> for DiffProjectionHost {
             zirql::Location::Query(range) | zirql::Location::Source(range) => range,
         };
         budget.charge(1, location.clone())?;
-        if let DiffProgramOutput::Dictionary(dictionary) = value {
-            let mut expected = expected;
-            while let D::Optional(inner) = expected {
-                budget.charge(1, location.clone())?;
-                expected = inner;
-            }
-            match expected {
-                D::Dictionary(key, value) => {
-                    admit_dictionary_schema(
-                        self,
-                        &dictionary.schema,
-                        (key, value),
-                        budget,
-                        &location,
-                    )?;
-                }
-                D::Native(ValueKind::Dictionary(schema)) if schema == &dictionary.schema => {}
-                _ => {
-                    return Err(zirql::QueryError::query(
-                        range.clone(),
-                        "diff dictionary schema does not satisfy its declaration",
-                    )
-                    .into());
-                }
-            }
-            for (key, item) in dictionary.entries() {
-                for (value, declaration) in [
-                    (
-                        key,
-                        match expected {
-                            D::Dictionary(key, _) => Some(key.as_ref()),
-                            _ => None,
-                        },
-                    ),
-                    (
-                        item,
-                        match expected {
-                            D::Dictionary(_, value) => Some(value.as_ref()),
-                            _ => None,
-                        },
-                    ),
-                ] {
-                    if let Some(declaration) = declaration {
-                        if let Some(ordinary) =
-                            self.ordinary_value(value, context, budget, range)?
-                        {
-                            zirql::admit_constructed(
-                                &ordinary,
-                                declaration,
-                                budget,
-                                location.clone(),
-                            )?;
-                            continue;
-                        }
-                        zirql::admit_value(
-                            value,
-                            declaration,
-                            self,
-                            context,
-                            budget,
-                            location.clone(),
-                        )?;
-                    } else if let Some(value) = self.constructed_value(value) {
-                        zirql::admit_constructed(value, &D::<()>::Value, budget, location.clone())?;
-                    } else if self
-                        .ordinary_value(value, context, budget, range)?
-                        .is_none()
-                    {
-                        let kind = self.kind(value, budget, range)?;
-                        self.admit_native(
-                            value,
-                            &D::Native(kind),
-                            context,
-                            budget,
-                            location.clone(),
-                        )?;
-                    }
-                }
-            }
+        if zirql::admit_dictionary(
+            value,
+            expected,
+            self,
+            context,
+            budget,
+            location.clone(),
+            &ValueKind::Native(Kind::Strings),
+        )? {
             return Ok(());
         }
         if let D::Native(kind) = expected {
@@ -2998,5 +2883,138 @@ impl RuntimeTypeHost<Context<'_, '_>> for DiffProjectionHost {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        dialect::DialectRegistry,
+        diff::{DiffLimits, DiffOptions, compare},
+        parser::ParsedFile,
+        semantic::{Document, LoweringMode, lower_with_dialect_registry},
+    };
+
+    #[test]
+    fn dictionary_admission_checks_empty_schema_native_sides_and_comparison_owner() {
+        let document = |source: &str| -> Document {
+            let registry = DialectRegistry::baseline();
+            let parsed = ParsedFile::parse_with_registry(source.as_bytes(), registry).unwrap();
+            lower_with_dialect_registry(&parsed, LoweringMode::Strict, registry)
+                .document
+                .unwrap()
+        };
+        let before = document("module { %x = arith.constant 1 : i32 }");
+        let after = document("module { %x = arith.constant 2 : i32 }");
+        let diff = compare(
+            &before,
+            &after,
+            DialectRegistry::baseline(),
+            DiffOptions::default(),
+            DiffLimits::default(),
+        )
+        .unwrap();
+        let foreign = compare(
+            &before,
+            &after,
+            DialectRegistry::baseline(),
+            DiffOptions::default(),
+            DiffLimits::default(),
+        )
+        .unwrap();
+        let mut outputs = Vec::new();
+        DiffProgram::parse("a=after | head(1); {a:{a:a}}; after | head(0) | names | tally")
+            .unwrap()
+            .evaluate(
+                &diff,
+                ("before", "after"),
+                EvaluationLimits::default(),
+                EvaluationOptions::default(),
+                |_, value, _| {
+                    outputs.push(value);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let host = DiffProjectionHost;
+        let mut budget = evaluation_budget(EvaluationLimits::default());
+        let native = D::Native(ValueKind::Native(Kind::Operations(DiffSide::After)));
+        let declaration = D::Dictionary(
+            Box::new(native.clone()),
+            Box::new(D::Dictionary(Box::new(native.clone()), Box::new(native))),
+        );
+        let mut emit = |_: &Diff<'_>, _: DiffProgramOutput, _: &mut Budget| Ok(());
+        let mut context = Context {
+            diff: &diff,
+            options: EvaluationOptions::default(),
+            emit: &mut emit,
+        };
+        let location = zirql::Location::Query(7..12);
+        zirql::admit_value(
+            &outputs[0],
+            &declaration,
+            &host,
+            &mut context,
+            &mut budget,
+            location.clone(),
+        )
+        .unwrap();
+        let incompatible = D::Dictionary(Box::new(D::Integer), Box::new(D::Integer));
+        let error = zirql::admit_value(
+            &outputs[1],
+            &incompatible,
+            &host,
+            &mut context,
+            &mut budget,
+            location.clone(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, zirql::EvaluationError::Core(error) if error.location == location));
+        context.diff = &foreign;
+        assert!(matches!(
+            zirql::admit_value(
+                &outputs[0],
+                &declaration,
+                &host,
+                &mut context,
+                &mut budget,
+                location.clone()
+            ),
+            Err(zirql::EvaluationError::Host(_))
+        ));
+        context.diff = &diff;
+        let DiffProgramOutput::Dictionary(outer) = &outputs[0] else {
+            panic!("outer dictionary")
+        };
+        let DiffProgramOutput::Dictionary(inner) = &outer.entries()[0].1 else {
+            panic!("inner dictionary")
+        };
+        let DiffProgramOutput::Operations(_, ids) = &inner.entries()[0].1 else {
+            panic!("native value")
+        };
+        let invalid = DiffProgramOutput::Dictionary(DiffDictionary {
+            entries: Arc::new(vec![(
+                outer.entries()[0].0.clone(),
+                DiffProgramOutput::Operations(DiffSide::Before, ids.clone()),
+            )]),
+            schema: Arc::new((
+                ValueKind::Native(Kind::Operations(DiffSide::After)),
+                ValueKind::Native(Kind::Operations(DiffSide::Before)),
+            )),
+        });
+        let retained = D::Native(host.kind(&invalid, &mut budget, &(7..12)).unwrap());
+        let error = zirql::admit_value(
+            &invalid,
+            &retained,
+            &host,
+            &mut context,
+            &mut budget,
+            location.clone(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, zirql::EvaluationError::Core(error) if error.location == location && error.message.contains("side mismatch"))
+        );
     }
 }
