@@ -568,6 +568,16 @@ impl ReportExpr {
             inner: self.inner.clone().count(),
         }
     }
+    fn unique(&self) -> Self {
+        Self {
+            inner: self.inner.clone().unique(),
+        }
+    }
+    fn tally(&self) -> Self {
+        Self {
+            inner: self.inner.clone().tally(),
+        }
+    }
     fn filter(&self, pattern: &ReportPattern, body: &Bound<'_, PyAny>) -> PyResult<Self> {
         Ok(Self {
             inner: self.inner.clone().filter(

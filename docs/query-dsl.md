@@ -1034,13 +1034,19 @@ include them.
 ## Collection report builders
 
 In the development checkout, Rust `ReportExpr` exposes `filter(pattern, body)`,
-`count()`, `length()`, `head(count)`, `tail(count)`, `reverse()` and
-`check(operand, message)`. Bounds and optional check operands/messages are report
+`count()`, `length()`, `unique()`, `tally()`, `head(count)`, `tail(count)`,
+`reverse()` and `check(operand, message)`. Bounds and optional check operands/messages are report
 expressions; use `None` for omitted Rust check arguments. These methods build the
 same prepared value nodes as text and merge parameter/function metadata. Arrays,
 sets and dictionaries retain their kind, order and declared empty schemas.
 Dictionary predicates receive values, and keys stay attached to retained entries.
 Native `OpQuery` operations retain their existing document ownership and subjects.
+
+`unique()` retains the first occurrence of each identity. `tally()` returns a
+dictionary of counts whose keys follow first-occurrence order. Constructed values use
+structural identity; native leaves retain document ownership and identity. Both
+methods retain parameter and function declarations, so their results can be used
+with other report methods.
 
 Python mirrors the same operations:
 
@@ -1053,6 +1059,8 @@ assert document is not None
 selected = E([3, 1, 3]).filter(P.name("n"), E.name("n") > 1)
 result = document.query(report(selected.head(2).reverse().check(2, "two rows")))
 assert result == [3, 3]
+assert document.query(report(E(["load", "add", "load"]).unique())) == ["load", "add"]
+assert document.query(report(E(["load", "add", "load"]).tally())) == {"load": 2, "add": 1}
 assert document.query(report(E({"a": 1, "b": 3}).filter(P.name("v"), E.name("v") > 1))) == {"b": 3}
 ```
 

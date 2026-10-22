@@ -1575,6 +1575,24 @@ impl ReportExpr {
     pub fn count(self) -> Self {
         self.length()
     }
+    /// Retain the first occurrence of each identity in collection order.
+    pub fn unique(self) -> Self {
+        let functions = self.functions.clone();
+        let parameters = self.parameters.clone();
+        Self::node(zirql::ValueExpressionKind::Unique(Box::new(
+            self.into_expression(),
+        )))
+        .with_metadata(parameters, functions)
+    }
+    /// Return a dictionary of identity counts in first-occurrence key order.
+    pub fn tally(self) -> Self {
+        let functions = self.functions.clone();
+        let parameters = self.parameters.clone();
+        Self::node(zirql::ValueExpressionKind::Tally(Box::new(
+            self.into_expression(),
+        )))
+        .with_metadata(parameters, functions)
+    }
     /// Retain elements or dictionary values satisfying a known Boolean body.
     pub fn filter(self, pattern: Pattern, body: Self) -> Self {
         let functions = functions::merge(&self.functions, &body.functions);

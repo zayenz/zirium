@@ -4700,6 +4700,65 @@ fn collection_report_builders_share_runtime_bounds_and_dictionary_values() {
 }
 
 #[test]
+fn report_unique_and_tally_retain_request_metadata_and_match_text() {
+    use zirium::query::{
+        ConstructedValue as V, FunctionDefinition as F, FunctionParameter, FunctionType as T,
+        Located, NativeValue, ParameterDeclaration, ParameterType, ReportExpr as E, report,
+    };
+    let mut document = document();
+    let echo = F::new(
+        "echo",
+        vec![FunctionParameter {
+            name: Located::new("value".into(), 0..0),
+            declaration: T::String,
+        }],
+        T::String,
+        vec![],
+        E::name("value"),
+    )
+    .unwrap();
+    let words = E::from(
+        report(E::array([
+            E::call("echo", [E::name("word")]).to_string(),
+            E::string("add"),
+            E::call("echo", [E::name("word")]).to_string(),
+        ]))
+        .with_functions(vec![echo])
+        .with_parameters(vec![ParameterDeclaration {
+            name: Located::new("word".into(), 0..0),
+            ty: Located::new(ParameterType::String, 0..0),
+        }]),
+    );
+    let typed = report(E::record([
+        ("unique", words.clone().unique()),
+        ("tally", words.tally()),
+    ]));
+    let result = typed
+        .evaluate_with_parameters(
+            &document,
+            DialectRegistry::baseline(),
+            &[("word".into(), V::String("load".into()))],
+            EvaluationLimits::default(),
+        )
+        .unwrap();
+    let mut budget = typed.new_budget(EvaluationLimits::default());
+    assert_eq!(
+        result.to_json_with_budget(&mut budget).unwrap(),
+        serde_json::json!({"unique": ["load", "add"], "tally": {"load": 2, "add": 1}})
+    );
+    Query::parse(r#"fn echo(value:string)->string { value } let words=[to_string(echo("load")),"add",to_string(echo("load"))]; report {"unique":words | unique,"tally":words | tally};"#)
+        .unwrap()
+        .evaluate(&mut document, DialectRegistry::baseline(), |_, output| {
+            let QueryOutput::Native(NativeValue::Constructed(actual)) = output else {
+                panic!("constructed report")
+            };
+            assert_eq!(actual.value().data(), result.value().data());
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn native_tally_retains_equal_named_operations_and_composes_in_text_and_builders() {
     use zirium::query::NativeValue;
     let mut document = document();

@@ -1008,3 +1008,23 @@ def test_native_tally_preserves_equal_named_handles_and_dictionary_continuation(
     assert entries[0]["value"] == 1
     assert len(entries[0]["key"]) == 1
     assert document.query(ops().names().tally()) == {"test.same": 2}
+
+
+def test_report_unique_and_tally_keep_parameter_metadata_and_order():
+    from zirium.query import ReportExpr as E
+    from zirium.query import report
+
+    words = E(
+        report(E(["load", "add", "load"]).head(E.name("limit"))).with_parameters(
+            {"limit": "int"}
+        )
+    )
+    result = document().query(
+        report({"unique": words.unique(), "tally": words.tally()}),
+        parameters={"limit": 3},
+    )
+    assert result == {"unique": ["load", "add"], "tally": {"load": 2, "add": 1}}
+    assert isinstance(result, dict)
+    counts = result["tally"]
+    assert isinstance(counts, dict)
+    assert list(counts) == ["load", "add"]
