@@ -4719,9 +4719,9 @@ fn report_unique_and_tally_retain_request_metadata_and_match_text() {
     .unwrap();
     let words = E::from(
         report(E::array([
-            E::call("echo", [E::name("word")]).to_string(),
+            E::call("echo", [E::name("word")]),
             E::string("add"),
-            E::call("echo", [E::name("word")]).to_string(),
+            E::call("echo", [E::name("word")]),
         ]))
         .with_functions(vec![echo])
         .with_parameters(vec![ParameterDeclaration {
@@ -4746,7 +4746,7 @@ fn report_unique_and_tally_retain_request_metadata_and_match_text() {
         result.to_json_with_budget(&mut budget).unwrap(),
         serde_json::json!({"unique": ["load", "add"], "tally": {"load": 2, "add": 1}})
     );
-    Query::parse(r#"fn echo(value:string)->string { value } let words=[to_string(echo("load")),"add",to_string(echo("load"))]; report {"unique":words | unique,"tally":words | tally};"#)
+    Query::parse(r#"fn echo(value:string)->string { value } let words=[echo("load"),"add",echo("load")]; report {"unique":words | unique,"tally":words | tally};"#)
         .unwrap()
         .evaluate(&mut document, DialectRegistry::baseline(), |_, output| {
             let QueryOutput::Native(NativeValue::Constructed(actual)) = output else {

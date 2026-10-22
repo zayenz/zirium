@@ -2179,5 +2179,13 @@ let hist = input | tally;
 hist | reverse | head(1) | check(1) | sort_by(value) | json
 ```
 
-String keys retain ordinary dictionary JSON. General keys use tagged entry
-pairs and the existing native descriptor projection only for rendering.
+String keys retain ordinary dictionary JSON, including typed function results:
+
+```zirql
+fn echo(s:string)->string {s}
+report [echo("ash"),echo("ash")] | tally | json
+```
+
+This emits `{"ash":2}`, the same object as a literal string tally. General keys
+use tagged entry pairs and the existing native descriptor projection only for
+rendering.
